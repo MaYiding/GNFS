@@ -104,7 +104,8 @@ validate_structural_fields(const OOCAuthorizedCleanupIntentV2& intent) noexcept 
     if (lease_id_is_zero(intent.lease_id) || !identities_are_valid_and_distinct(intent)) {
         return failure(Code::invalid_value);
     }
-    if (intent.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 ||
+    if ((intent.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 &&
+         intent.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V4) ||
         intent.pair.store_id == 0 || intent.pair.generation == 0) {
         return failure(Code::invalid_value);
     }

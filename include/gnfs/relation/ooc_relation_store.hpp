@@ -12,6 +12,7 @@
 #include "gnfs/util/process.hpp"
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -89,7 +90,7 @@ enum class OOCRecoveryOutcome {
 
 /// Stable description of a flushed relation prefix.
 ///
-/// `store_id` is persisted in both V3 file headers, so a checkpoint can reject
+/// `store_id` is persisted in both V3/V4 file headers, so a checkpoint can reject
 /// either half of a different store across process restarts. `generation`
 /// rejects stale in-process handoffs and is restored from the paired sieve
 /// checkpoint; `count`/`data_end` describe the committed physical on-disk
@@ -105,7 +106,7 @@ struct OOCSnapshotDescriptor {
 };
 
 /// Immutable facts reproduced from the exact retained handles of one durable
-/// finalized V3 corpus.
+/// finalized V3/V4 corpus.
 ///
 /// This value grants no file, namespace, lease, or cleanup authority. The
 /// relation writer mints it only after final MAGIC and directory durability,
@@ -358,10 +359,34 @@ inline void validate_compact_relation_count(uint64_t count, uint64_t data_size,
     }
 }
 
+/// Compact V3 records were written by copying native objects. Keep that
+/// codec for compatibility, but make the V4 record contract explicit: every
+/// integer is a fixed-width little-endian value and the one-byte exponent is
+/// encoded without padding.
+enum class CompactRecordCodec : std::uint8_t {
+    NativeV3,
+    LittleEndianV4,
+};
+
+template <typename T> [[nodiscard]] T decode_compact_le(const std::uint8_t* ptr) noexcept {
+    static_assert(std::is_integral_v<T>);
+    using Unsigned = std::make_unsigned_t<T>;
+    Unsigned raw = 0;
+    for (std::size_t index = 0; index < sizeof(T); ++index) {
+        raw |= static_cast<Unsigned>(ptr[index]) << (index * 8U);
+    }
+    if constexpr (std::is_signed_v<T>) {
+        return std::bit_cast<T>(raw);
+    } else {
+        return raw;
+    }
+}
+
 /// Decode one compact OOC record with the same persistence limits used by
 /// core::Relation::serialize(). Keeping this as the single compact decoder lets
 /// both ordinary readers and resume validation prove the identical contract.
-inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, size_t avail) {
+inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, size_t avail,
+                                                         CompactRecordCodec codec) {
     gnfs::core::Relation rel;
     size_t pos = 0;
 
@@ -369,7 +394,11 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
         if (pos > avail || sizeof(value) > avail - pos) {
             throw std::runtime_error("OOCRelationReader: corrupt record (truncated)");
         }
-        std::memcpy(&value, ptr + pos, sizeof(value));
+        if (codec == CompactRecordCodec::NativeV3) {
+            std::memcpy(&value, ptr + pos, sizeof(value));
+        } else {
+            value = decode_compact_le<std::remove_cvref_t<decltype(value)>>(ptr + pos);
+        }
         pos += sizeof(value);
     };
 
@@ -400,8 +429,14 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
                       gnfs::core::Relation::MAX_SERIALIZED_FACTORS, "rational_factors");
     rel.rational_factors.resize(rational_count);
     if (rational_count > 0) {
-        std::memcpy(rel.rational_factors.data(), ptr + pos, rational_bytes);
-        pos += rational_bytes;
+        if (codec == CompactRecordCodec::NativeV3) {
+            std::memcpy(rel.rational_factors.data(), ptr + pos, rational_bytes);
+            pos += rational_bytes;
+        } else {
+            for (auto& factor : rel.rational_factors) {
+                read_val(factor);
+            }
+        }
     }
 
     uint32_t algebraic_count = 0;
@@ -411,8 +446,14 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
                       gnfs::core::Relation::MAX_SERIALIZED_FACTORS, "algebraic_factors");
     rel.algebraic_factors.resize(algebraic_count);
     if (algebraic_count > 0) {
-        std::memcpy(rel.algebraic_factors.data(), ptr + pos, algebraic_bytes);
-        pos += algebraic_bytes;
+        if (codec == CompactRecordCodec::NativeV3) {
+            std::memcpy(rel.algebraic_factors.data(), ptr + pos, algebraic_bytes);
+            pos += algebraic_bytes;
+        } else {
+            for (auto& factor : rel.algebraic_factors) {
+                read_val(factor);
+            }
+        }
     }
 
     uint32_t rational_lp_count = 0;
@@ -471,8 +512,9 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
 ///   - Read phase: mmap both files for O(1) random access to any relation
 ///
 /// File format:
-///   V3 .relidx: [magic][version][store_id][count][offset_0][offset_1]...
-///   V3 .reldata: [data_magic][version][store_id][serialized_relation_0]...
+///   V4 .relidx: [magic][version][store_id][count][offset_0][offset_1]... (little-endian)
+///   V4 .reldata: [data_magic][version][store_id][serialized_relation_0]... (little-endian)
+///   V3 .relidx/.reldata: the legacy native-endian compact-record contract
 ///   V2 .relidx: [magic][version][store_id][count][offset_0][offset_1]...
 ///   legacy finalized V1: [legacy magic][count][offset_0][offset_1]...
 ///   V1/V2 .reldata: [serialized_relation_0][serialized_relation_1]...
@@ -491,15 +533,21 @@ public:
     static constexpr uint64_t MAGIC_V3_FINAL = OOCRelationStoreFormat::MAGIC_V3_FINAL;
     static constexpr uint64_t MAGIC_V3_INCOMPLETE = OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE;
     static constexpr uint64_t MAGIC_V3_DATA = OOCRelationStoreFormat::MAGIC_V3_DATA;
+    static constexpr uint64_t MAGIC_V4_FINAL = OOCRelationStoreFormat::MAGIC_V4_FINAL;
+    static constexpr uint64_t MAGIC_V4_INCOMPLETE = OOCRelationStoreFormat::MAGIC_V4_INCOMPLETE;
+    static constexpr uint64_t MAGIC_V4_DATA = OOCRelationStoreFormat::MAGIC_V4_DATA;
 
     static constexpr uint64_t FORMAT_VERSION_V2 = OOCRelationStoreFormat::FORMAT_VERSION_V2;
     static constexpr uint64_t FORMAT_VERSION_V3 = OOCRelationStoreFormat::FORMAT_VERSION_V3;
+    static constexpr uint64_t FORMAT_VERSION_V4 = OOCRelationStoreFormat::FORMAT_VERSION_V4;
 
-    // New writes and all paired recovery use V3. Explicit V1/V2 constants are
-    // retained solely for ordinary finalized-reader compatibility.
-    static constexpr uint64_t MAGIC = MAGIC_V3_FINAL;
-    static constexpr uint64_t MAGIC_INCOMPLETE = MAGIC_V3_INCOMPLETE;
-    static constexpr uint64_t FORMAT_VERSION = FORMAT_VERSION_V3;
+    // New writes and all paired recovery use V4's explicit little-endian
+    // compact-record codec. V1/V2/V3 constants remain for compatibility
+    // readers and recovery of pre-V4 stores.
+    static constexpr uint64_t MAGIC = MAGIC_V4_FINAL;
+    static constexpr uint64_t MAGIC_INCOMPLETE = MAGIC_V4_INCOMPLETE;
+    static constexpr uint64_t MAGIC_DATA = MAGIC_V4_DATA;
+    static constexpr uint64_t FORMAT_VERSION = FORMAT_VERSION_V4;
 
     static constexpr uint64_t INDEX_FORMAT_VERSION_OFFSET =
         OOCRelationStoreFormat::INDEX_FORMAT_VERSION_OFFSET;
@@ -642,7 +690,7 @@ private:
     };
 
 public:
-    /// Fresh create writes paired incomplete V3 headers with one durable store
+    /// Fresh create writes paired incomplete V4 headers with one durable store
     /// identity.
     explicit OOCRelationWriter(const std::string& base_path)
         : OOCRelationWriter(base_path, std::nullopt, std::nullopt, nullptr,
@@ -779,6 +827,9 @@ private:
                 }
             };
             validate_recovery_descriptor(*recovery_descriptor);
+            record_codec_ = recovery_descriptor->format_version == FORMAT_VERSION_V3
+                                ? detail::CompactRecordCodec::NativeV3
+                                : detail::CompactRecordCodec::LittleEndianV4;
             // Resolve the pair exactly once. All structural validation,
             // record validation, truncation, metadata rollback, and later
             // append/finalize operations use these retained handles.
@@ -800,7 +851,7 @@ private:
                 throw std::runtime_error("OOCRelationWriter recovery: incomplete V2 store cannot "
                                          "verify paired identity");
             }
-            if (existing_magic == MAGIC_V3_FINAL) {
+            if (existing_magic == MAGIC_V3_FINAL || existing_magic == MAGIC) {
                 // A clean pipeline end finalizes the corpus before deleting the
                 // paired sieve checkpoint. A crash in that window must never
                 // turn the immutable corpus back into an appendable one.
@@ -849,8 +900,7 @@ private:
             // version and store_id remain immutable throughout.
             idx_stream_.seek(INDEX_COUNT_OFFSET, "resume constructor count seek");
             const uint64_t incomplete_count = 0;
-            idx_stream_.write_exact(&incomplete_count, sizeof(incomplete_count),
-                                    "resume constructor count rollback");
+            write_u64_checked(idx_stream_, incomplete_count, "resume constructor count rollback");
             idx_stream_.flush("resume constructor count rollback");
 
             const uint64_t idx_pos =
@@ -1049,20 +1099,16 @@ private:
                     const uint64_t durable_store_id = store_id_;
                     const uint64_t incomplete_count = 0;
                     ooc_cleanup_detail::invoke_with_stable_base_lock(*cleanup_lock, [&] {
-                        idx_stream_.write_exact(&magic, sizeof(magic), "constructor index magic");
-                        idx_stream_.write_exact(&format_version, sizeof(format_version),
-                                                "constructor index version");
-                        idx_stream_.write_exact(&durable_store_id, sizeof(durable_store_id),
-                                                "constructor index store identity");
-                        idx_stream_.write_exact(&incomplete_count, sizeof(incomplete_count),
-                                                "constructor index count");
-                        const uint64_t data_magic = MAGIC_V3_DATA;
-                        data_stream_.write_exact(&data_magic, sizeof(data_magic),
-                                                 "constructor data magic");
-                        data_stream_.write_exact(&format_version, sizeof(format_version),
-                                                 "constructor data version");
-                        data_stream_.write_exact(&durable_store_id, sizeof(durable_store_id),
-                                                 "constructor data store identity");
+                        write_u64_checked(idx_stream_, magic, "constructor index magic");
+                        write_u64_checked(idx_stream_, format_version, "constructor index version");
+                        write_u64_checked(idx_stream_, durable_store_id,
+                                          "constructor index store identity");
+                        write_u64_checked(idx_stream_, incomplete_count, "constructor index count");
+                        const uint64_t data_magic = MAGIC_DATA;
+                        write_u64_checked(data_stream_, data_magic, "constructor data magic");
+                        write_u64_checked(data_stream_, format_version, "constructor data version");
+                        write_u64_checked(data_stream_, durable_store_id,
+                                          "constructor data store identity");
                         validate_open_v3_pair_headers("constructor header validation",
                                                       incomplete_count);
                     });
@@ -1248,7 +1294,7 @@ public:
                 require_store_named_identity("write authority preflight");
             }
             const uint64_t offset = data_stream_.position("write data offset");
-            idx_stream_.write_exact(&offset, sizeof(offset), "write index offset");
+            write_u64_checked(idx_stream_, offset, "write index offset");
             serialize(rel);
 
             ++count_;
@@ -1278,7 +1324,7 @@ public:
 
             // The next offset slot is a temporary end sentinel. A later append
             // overwrites this exact slot with the next relation's start offset.
-            idx_stream_.write_exact(&end_offset, sizeof(end_offset), "checkpoint_prefix sentinel");
+            write_u64_checked(idx_stream_, end_offset, "checkpoint_prefix sentinel");
             idx_stream_.flush("checkpoint_prefix index flush");
 
             sync_store_files_and_directory();
@@ -1289,7 +1335,7 @@ public:
             descriptor.generation = ++generation_;
             descriptor.count = static_cast<uint64_t>(count_);
             descriptor.data_end = end_offset;
-            validate_exact_v3_pair(descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+            validate_exact_v3_pair(descriptor, incomplete_magic(), uint64_t{0},
                                    OffsetValidation::BoundaryOnly, "checkpoint_prefix");
             suspended_descriptor_ = descriptor;
             state_ = OOCWriterState::Suspended;
@@ -1315,7 +1361,7 @@ public:
 
         try {
             require_store_named_identity("resume_append preflight");
-            validate_exact_v3_pair(descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+            validate_exact_v3_pair(descriptor, incomplete_magic(), uint64_t{0},
                                    OffsetValidation::BoundaryOnly, "resume_append");
             validate_open_v3_pair_headers("resume_append retained header validation", uint64_t{0});
 
@@ -1377,9 +1423,9 @@ private:
                 validate_open_v3_pair_headers("finalize header validation", uint64_t{0});
 
                 const uint64_t end_offset = data_stream_.position("finalize data end");
-                idx_stream_.write_exact(&end_offset, sizeof(end_offset), "finalize sentinel");
+                write_u64_checked(idx_stream_, end_offset, "finalize sentinel");
 
-                descriptor.format_version = FORMAT_VERSION;
+                descriptor.format_version = format_version_value();
                 descriptor.generation = ++generation_;
                 descriptor.store_id = store_id_;
                 descriptor.count = static_cast<uint64_t>(count_);
@@ -1388,7 +1434,7 @@ private:
                 // Suspended already has a flushed sentinel and retains the
                 // exact handles with append authority logically disabled.
                 descriptor = *suspended_descriptor_;
-                validate_exact_v3_pair(descriptor, MAGIC_V3_INCOMPLETE, uint64_t{0},
+                validate_exact_v3_pair(descriptor, incomplete_magic(), uint64_t{0},
                                        OffsetValidation::FullTable, "finalize suspended prefix");
                 offsets_validated_before_metadata = true;
                 validate_open_v3_pair_headers("finalize retained header validation", uint64_t{0});
@@ -1399,7 +1445,7 @@ private:
             // advertise a prefix whose sentinel/count were not persisted.
             idx_stream_.seek(INDEX_COUNT_OFFSET, "finalize count seek");
             const uint64_t final_count = descriptor.count;
-            idx_stream_.write_exact(&final_count, sizeof(final_count), "finalize count write");
+            write_u64_checked(idx_stream_, final_count, "finalize count write");
 
             if (data_stream_.is_open())
                 data_stream_.flush("finalize data flush");
@@ -1413,7 +1459,7 @@ private:
                 hook(FinalizeStage::MetadataDurable);
             }
 
-            validate_exact_v3_pair(descriptor, MAGIC_V3_INCOMPLETE, descriptor.count,
+            validate_exact_v3_pair(descriptor, incomplete_magic(), descriptor.count,
                                    offsets_validated_before_metadata
                                        ? OffsetValidation::BoundaryOnly
                                        : OffsetValidation::FullTable,
@@ -1422,8 +1468,8 @@ private:
                                           descriptor.count);
             require_store_named_identity("finalize authority before magic");
             idx_stream_.seek(0, "finalize magic seek");
-            const uint64_t final_magic = MAGIC_V3_FINAL;
-            idx_stream_.write_exact(&final_magic, sizeof(final_magic), "finalize magic write");
+            const uint64_t final_magic = final_magic_value();
+            write_u64_checked(idx_stream_, final_magic, "finalize magic write");
             idx_stream_.flush("finalize magic flush");
 
             // Once final magic has been flushed and both handles have closed,
@@ -1569,7 +1615,7 @@ public:
                 "OOCRelationWriter: cleanup handoff descriptor identity mismatch");
         }
         const OOCExactCleanupExpectation exact{
-            .index_magic = MAGIC_V3_FINAL,
+            .index_magic = final_magic_value(),
             .persisted_count = descriptor.count,
             .index_size = index_size_for_count(descriptor.count),
             .data_size = descriptor.data_end,
@@ -1693,7 +1739,7 @@ public:
                     };
                 }
                 exact = OOCExactCleanupExpectation{
-                    .index_magic = MAGIC_V3_FINAL,
+                    .index_magic = final_magic_value(),
                     .persisted_count = finalized_descriptor_->count,
                     .index_size = index_size_for_count(finalized_descriptor_->count),
                     .data_size = finalized_descriptor_->data_end,
@@ -2296,13 +2342,14 @@ private:
     static std::optional<OOCSnapshotDescriptor> reject_legacy_resume(bool legacy_resume) {
         if (legacy_resume) {
             throw std::invalid_argument("OOCRelationWriter: bare resume is unsupported; a paired "
-                                        "V3 descriptor is required");
+                                        "V3 or V4 descriptor is required");
         }
         return std::nullopt;
     }
 
     static void validate_recovery_descriptor(const OOCSnapshotDescriptor& descriptor) {
-        if (descriptor.format_version != FORMAT_VERSION) {
+        if (descriptor.format_version != FORMAT_VERSION_V3 &&
+            descriptor.format_version != FORMAT_VERSION_V4) {
             throw std::invalid_argument(
                 "OOCRelationWriter recovery: unsupported descriptor format version");
         }
@@ -2314,8 +2361,7 @@ private:
         }
         (void)index_size_for_count(descriptor.count);
         if (descriptor.data_end < DATA_HEADER_BYTES) {
-            throw std::invalid_argument(
-                "OOCRelationWriter recovery: data extent predates V3 header");
+            throw std::invalid_argument("OOCRelationWriter recovery: data extent predates header");
         }
         if ((descriptor.count == 0 && descriptor.data_end != DATA_HEADER_BYTES) ||
             (descriptor.count != 0 && descriptor.data_end == DATA_HEADER_BYTES)) {
@@ -2328,28 +2374,68 @@ private:
         }
     }
 
-    static uint64_t read_u64_checked(gnfs::util::NativeBinaryUpdateFile& file,
-                                     const char* operation, const char* field) {
+    void write_u64_checked(gnfs::util::NativeBinaryUpdateFile& file, uint64_t value,
+                           const char* operation) const {
+        if (record_codec_ == detail::CompactRecordCodec::NativeV3) {
+            file.write_exact(&value, sizeof(value), operation);
+            return;
+        }
+        std::array<std::uint8_t, sizeof(value)> bytes{};
+        for (std::size_t index = 0; index < bytes.size(); ++index) {
+            bytes[index] = static_cast<std::uint8_t>(value >> (index * 8U));
+        }
+        file.write_exact(bytes.data(), bytes.size(), operation);
+    }
+
+    uint64_t read_u64_checked(gnfs::util::NativeBinaryUpdateFile& file, const char* operation,
+                              const char* field) const {
         uint64_t value = 0;
         const std::string read_operation = std::string(operation) + " read " + field;
-        file.read_exact(&value, sizeof(value), read_operation.c_str());
+        if (record_codec_ == detail::CompactRecordCodec::NativeV3) {
+            file.read_exact(&value, sizeof(value), read_operation.c_str());
+        } else {
+            std::array<std::uint8_t, sizeof(value)> bytes{};
+            file.read_exact(bytes.data(), bytes.size(), read_operation.c_str());
+            value = detail::decode_compact_le<std::uint64_t>(bytes.data());
+        }
         return value;
     }
 
-    /// Validate an exact V3 snapshot through the writer's retained handles.
+    [[nodiscard]] uint64_t format_version_value() const noexcept {
+        return record_codec_ == detail::CompactRecordCodec::NativeV3 ? FORMAT_VERSION_V3
+                                                                       : FORMAT_VERSION_V4;
+    }
+
+    [[nodiscard]] uint64_t incomplete_magic() const noexcept {
+        return record_codec_ == detail::CompactRecordCodec::NativeV3 ? MAGIC_V3_INCOMPLETE
+                                                                       : MAGIC_V4_INCOMPLETE;
+    }
+
+    [[nodiscard]] uint64_t final_magic_value() const noexcept {
+        return record_codec_ == detail::CompactRecordCodec::NativeV3 ? MAGIC_V3_FINAL
+                                                                       : MAGIC_V4_FINAL;
+    }
+
+    [[nodiscard]] uint64_t data_magic_value() const noexcept {
+        return record_codec_ == detail::CompactRecordCodec::NativeV3 ? MAGIC_V3_DATA : MAGIC_V4_DATA;
+    }
+
+    /// Validate an exact V3/V4 snapshot through the writer's retained handles.
     /// No canonical pathname is resolved between validation and the next
     /// mutation.
     void validate_exact_v3_pair(const OOCSnapshotDescriptor& descriptor, uint64_t expected_magic,
                                 std::optional<uint64_t> expected_persisted_count,
                                 OffsetValidation offset_validation, const char* operation) {
-        if (descriptor.format_version != FORMAT_VERSION_V3 || descriptor.store_id == 0) {
+        if ((descriptor.format_version != FORMAT_VERSION_V3 &&
+             descriptor.format_version != FORMAT_VERSION_V4) ||
+            descriptor.store_id == 0) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": invalid V3 descriptor identity");
+                                     ": invalid descriptor identity");
         }
         (void)index_size_for_count(descriptor.count);
         if (descriptor.data_end < DATA_HEADER_BYTES) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": invalid V3 data extent");
+                                     ": invalid data extent");
         }
 
         const uint64_t index_size = idx_stream_.size(operation);
@@ -2372,12 +2458,15 @@ private:
         const uint64_t data_store_id =
             read_u64_checked(data_stream_, operation, "data store identity");
 
-        if (index_magic != expected_magic || index_version != FORMAT_VERSION_V3 ||
-            data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
+        const uint64_t expected_data_magic = descriptor.format_version == FORMAT_VERSION_V3
+                                                 ? MAGIC_V3_DATA
+                                                 : MAGIC_V4_DATA;
+        if (index_magic != expected_magic || index_version != descriptor.format_version ||
+            data_magic != expected_data_magic || data_version != descriptor.format_version ||
             index_store_id == 0 || index_store_id != descriptor.store_id ||
             data_store_id != index_store_id) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": V3 index/data header mismatch");
+                                     ": index/data header mismatch");
         }
         if (expected_persisted_count && persisted_count != *expected_persisted_count) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
@@ -2419,15 +2508,14 @@ private:
 
     uint64_t read_open_index_magic() {
         idx_stream_.seek(0, "recovery index magic seek");
-        uint64_t magic = 0;
-        idx_stream_.read_exact(&magic, sizeof(magic), "recovery index magic read");
-        return magic;
+        return read_u64_checked(idx_stream_, "recovery index", "magic");
     }
 
     static OOCValidatedResumePrefix validate_records(gnfs::util::NativeBinaryUpdateFile& data,
                                                      const std::vector<uint64_t>& offsets,
                                                      uint64_t count, uint64_t data_end,
-                                                     uint64_t checkpoint_count) {
+                                                     uint64_t checkpoint_count,
+                                                     detail::CompactRecordCodec codec) {
         if (checkpoint_count > count) {
             throw std::logic_error(
                 "OOCRelationWriter recovery: checkpoint receipt exceeds validated prefix");
@@ -2457,7 +2545,7 @@ private:
             data.seek(offsets[i], "recovery relation seek");
             data.read_exact(record.data(), record_size, "recovery relation read");
             const auto relation =
-                detail::deserialize_compact_relation(record.data(), record.size());
+                detail::deserialize_compact_relation(record.data(), record.size(), codec);
             prefix.seen.insert(relation.ab());
             prefix.accepted_sequence.append(relation);
             if (prefix.accepted_sequence.count() == checkpoint_count) {
@@ -2488,15 +2576,16 @@ private:
         const uint64_t index_size = idx_stream_.size(operation);
         const uint64_t data_size = data_stream_.size(operation);
         if (index_size < INDEX_HEADER_BYTES || data_size < DATA_HEADER_BYTES) {
-            throw std::runtime_error("OOCRelationWriter recovery: finalized V3 header truncated");
+            throw std::runtime_error("OOCRelationWriter recovery: finalized header truncated");
         }
 
         idx_stream_.seek(0, operation);
         data_stream_.seek(0, operation);
-        if (read_u64_checked(idx_stream_, operation, "index magic") != MAGIC_V3_FINAL) {
+        if (read_u64_checked(idx_stream_, operation, "index magic") != final_magic_value()) {
             throw std::runtime_error("OOCRelationWriter recovery: finalized magic changed");
         }
-        if (read_u64_checked(idx_stream_, operation, "index format version") != FORMAT_VERSION_V3) {
+        if (read_u64_checked(idx_stream_, operation, "index format version") !=
+            format_version_value()) {
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized format version mismatch");
         }
@@ -2512,10 +2601,9 @@ private:
         const uint64_t data_version = read_u64_checked(data_stream_, operation, "data version");
         const uint64_t data_store_id =
             read_u64_checked(data_stream_, operation, "data store identity");
-        if (data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
+        if (data_magic != data_magic_value() || data_version != format_version_value() ||
             data_store_id != finalized_store_id) {
-            throw std::runtime_error(
-                "OOCRelationWriter recovery: finalized V3 index/data header mismatch");
+            throw std::runtime_error("OOCRelationWriter recovery: finalized index/data header mismatch");
         }
         if (final_count != descriptor.count) {
             throw std::runtime_error(
@@ -2545,7 +2633,8 @@ private:
             throw std::runtime_error(
                 "OOCRelationWriter recovery: finalized corpus does not contain checkpoint prefix");
         }
-        return validate_records(data_stream_, offsets, final_count, data_size, descriptor.count);
+        return validate_records(data_stream_, offsets, final_count, data_size, descriptor.count,
+                                record_codec_);
     }
 
     OOCValidatedResumePrefix validate_resume_prefix(const OOCSnapshotDescriptor& descriptor) {
@@ -2553,7 +2642,7 @@ private:
         const uint64_t index_size = idx_stream_.size(operation);
         const uint64_t data_size = data_stream_.size(operation);
         if (index_size < INDEX_HEADER_BYTES || data_size < DATA_HEADER_BYTES) {
-            throw std::runtime_error("OOCRelationWriter resume: V3 file header truncated");
+            throw std::runtime_error("OOCRelationWriter resume: file header truncated");
         }
 
         idx_stream_.seek(0, operation);
@@ -2571,16 +2660,16 @@ private:
             throw std::runtime_error(
                 "OOCRelationWriter resume: legacy incomplete store is unsupported");
         }
-        if (magic == MAGIC_V3_FINAL) {
-            throw std::runtime_error("OOCRelationWriter resume: file already finalized (V3)");
+        if (magic == MAGIC_V3_FINAL || magic == MAGIC_V4_FINAL) {
+            throw std::runtime_error("OOCRelationWriter resume: file already finalized");
         }
-        if (magic != MAGIC_V3_INCOMPLETE) {
+        if (magic != MAGIC_V3_INCOMPLETE && magic != MAGIC_V4_INCOMPLETE) {
             throw std::runtime_error("OOCRelationWriter resume: invalid magic in idx (corrupt?)");
         }
 
         const uint64_t persisted_format_version =
             read_u64_checked(idx_stream_, operation, "index format version");
-        if (persisted_format_version != FORMAT_VERSION_V3) {
+        if (persisted_format_version != descriptor.format_version) {
             throw std::runtime_error("OOCRelationWriter resume: format version mismatch");
         }
         const uint64_t persisted_store_id =
@@ -2597,9 +2686,9 @@ private:
         const uint64_t data_version = read_u64_checked(data_stream_, operation, "data version");
         const uint64_t data_store_id =
             read_u64_checked(data_stream_, operation, "data store identity");
-        if (data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
+        if (data_magic != data_magic_value() || data_version != descriptor.format_version ||
             data_store_id != persisted_store_id) {
-            throw std::runtime_error("OOCRelationWriter resume: V3 index/data header mismatch");
+            throw std::runtime_error("OOCRelationWriter resume: index/data header mismatch");
         }
 
         const uint64_t count = descriptor.count;
@@ -2620,7 +2709,7 @@ private:
         }
         if (offsets.front() != DATA_HEADER_BYTES) {
             throw std::runtime_error(
-                "OOCRelationWriter resume: first offset does not follow V3 data header");
+                "OOCRelationWriter resume: first offset does not follow data header");
         }
         if (offsets.back() != descriptor.data_end) {
             throw std::runtime_error(
@@ -2633,7 +2722,8 @@ private:
             }
         }
 
-        return validate_records(data_stream_, offsets, count, descriptor.data_end, count);
+        return validate_records(data_stream_, offsets, count, descriptor.data_end, count,
+                                record_codec_);
     }
 
     void acquire_prefix_reader(const OOCSnapshotDescriptor& descriptor) {
@@ -2653,41 +2743,64 @@ private:
     }
 
     void serialize(const gnfs::core::Relation& rel) {
-        write_val(rel.a);
-        write_val(rel.b);
-        write_vec32(rel.rational_factors);
-        write_vec32(rel.algebraic_factors);
-        write_pp_vec(rel.rational_large_prime);
-        write_pp_vec(rel.algebraic_large_prime);
+        write_compact_val_le(rel.a);
+        write_compact_val_le(rel.b);
+        write_compact_vec32_le(rel.rational_factors);
+        write_compact_vec32_le(rel.algebraic_factors);
+        write_compact_pp_vec_le(rel.rational_large_prime);
+        write_compact_pp_vec_le(rel.algebraic_large_prime);
         // extra_ab_pairs
         auto sz = static_cast<uint32_t>(rel.extra_ab_pairs.size());
-        write_val(sz);
+        write_compact_val_le(sz);
         for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-            write_val(ea);
-            write_val(eb);
+            write_compact_val_le(ea);
+            write_compact_val_le(eb);
         }
     }
 
-    template <typename T> void write_val(const T& v) {
-        data_stream_.write_exact(&v, sizeof(T), "serialize scalar");
+    template <typename T> void write_compact_val_le(const T& value) {
+        static_assert(std::is_integral_v<T>);
+        if (record_codec_ == detail::CompactRecordCodec::NativeV3) {
+            data_stream_.write_exact(&value, sizeof(T), "serialize native scalar");
+            return;
+        }
+        using Unsigned = std::make_unsigned_t<T>;
+        const Unsigned raw = [&] {
+            if constexpr (std::is_signed_v<T>) {
+                return std::bit_cast<Unsigned>(value);
+            } else {
+                return value;
+            }
+        }();
+        std::array<std::uint8_t, sizeof(T)> bytes{};
+        for (std::size_t index = 0; index < bytes.size(); ++index) {
+            bytes[index] = static_cast<std::uint8_t>(raw >> (index * 8U));
+        }
+        data_stream_.write_exact(bytes.data(), bytes.size(), "serialize little-endian scalar");
     }
 
-    void write_vec32(const std::vector<uint32_t>& v) {
+    void write_compact_vec32_le(const std::vector<uint32_t>& v) {
         auto sz = static_cast<uint32_t>(v.size());
-        write_val(sz);
-        if (sz > 0) {
-            data_stream_.write_exact(v.data(), static_cast<size_t>(sz) * sizeof(uint32_t),
-                                     "serialize factor vector");
+        write_compact_val_le(sz);
+        if (record_codec_ == detail::CompactRecordCodec::NativeV3) {
+            if (!v.empty()) {
+                data_stream_.write_exact(v.data(), v.size() * sizeof(uint32_t),
+                                         "serialize native factor vector");
+            }
+        } else {
+            for (const uint32_t factor : v) {
+                write_compact_val_le(factor);
+            }
         }
     }
 
-    void write_pp_vec(const std::vector<gnfs::core::PrimePower>& v) {
+    void write_compact_pp_vec_le(const std::vector<gnfs::core::PrimePower>& v) {
         auto sz = static_cast<uint32_t>(v.size());
-        write_val(sz);
+        write_compact_val_le(sz);
         for (const auto& pp : v) {
-            write_val(pp.p);
-            write_val(pp.r);
-            write_val(pp.e);
+            write_compact_val_le(pp.p);
+            write_compact_val_le(pp.r);
+            write_compact_val_le(pp.e);
         }
     }
 
@@ -2708,25 +2821,21 @@ private:
         data_stream_.seek(0, operation);
         idx_stream_.seek(0, operation);
 
-        const auto read_u64 = [&](gnfs::util::NativeBinaryUpdateFile& file, const char* field) {
-            uint64_t value = 0;
-            file.read_exact(&value, sizeof(value), operation);
-            (void)field;
-            return value;
-        };
-        const uint64_t index_magic = read_u64(idx_stream_, "index magic");
-        const uint64_t index_version = read_u64(idx_stream_, "index version");
-        const uint64_t index_store_id = read_u64(idx_stream_, "index store identity");
-        const uint64_t persisted_count = read_u64(idx_stream_, "index count");
-        const uint64_t data_magic = read_u64(data_stream_, "data magic");
-        const uint64_t data_version = read_u64(data_stream_, "data version");
-        const uint64_t data_store_id = read_u64(data_stream_, "data store identity");
+        const uint64_t index_magic = read_u64_checked(idx_stream_, operation, "index magic");
+        const uint64_t index_version = read_u64_checked(idx_stream_, operation, "index version");
+        const uint64_t index_store_id =
+            read_u64_checked(idx_stream_, operation, "index store identity");
+        const uint64_t persisted_count = read_u64_checked(idx_stream_, operation, "index count");
+        const uint64_t data_magic = read_u64_checked(data_stream_, operation, "data magic");
+        const uint64_t data_version = read_u64_checked(data_stream_, operation, "data version");
+        const uint64_t data_store_id =
+            read_u64_checked(data_stream_, operation, "data store identity");
 
-        if (index_magic != MAGIC_V3_INCOMPLETE || index_version != FORMAT_VERSION_V3 ||
-            data_magic != MAGIC_V3_DATA || data_version != FORMAT_VERSION_V3 ||
+        if (index_magic != incomplete_magic() || index_version != format_version_value() ||
+            data_magic != data_magic_value() || data_version != format_version_value() ||
             index_store_id == 0 || index_store_id != store_id_ || data_store_id != index_store_id) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
-                                     ": V3 index/data header mismatch");
+                                     ": index/data header mismatch");
         }
         if (expected_persisted_count && persisted_count != *expected_persisted_count) {
             throw std::runtime_error(std::string("OOCRelationWriter::") + operation +
@@ -2882,6 +2991,7 @@ private:
     gnfs::util::NativeBinaryUpdateFile data_stream_;
     gnfs::util::NativeBinaryUpdateFile idx_stream_;
     size_t count_ = 0;
+    detail::CompactRecordCodec record_codec_ = detail::CompactRecordCodec::LittleEndianV4;
     int uncaught_at_ctor_ = 0;
     uint64_t store_id_ = allocate_store_id();
     uint64_t generation_ = 0;
@@ -2923,7 +3033,7 @@ public:
     OOCRelationReader(OOCRelationReader&& other) noexcept
         : idx_file_(std::move(other.idx_file_)), data_file_(std::move(other.data_file_)),
           count_(std::exchange(other.count_, 0)), offsets_(std::exchange(other.offsets_, nullptr)),
-          binding_(std::move(other.binding_)) {}
+          codec_(other.codec_), binding_(std::move(other.binding_)) {}
 
     OOCRelationReader& operator=(OOCRelationReader&& other) noexcept {
         if (this != &other) {
@@ -2931,6 +3041,7 @@ public:
             data_file_ = std::move(other.data_file_);
             count_ = std::exchange(other.count_, 0);
             offsets_ = std::exchange(other.offsets_, nullptr);
+            codec_ = other.codec_;
             binding_ = std::move(other.binding_);
         }
         return *this;
@@ -2941,11 +3052,11 @@ public:
         initialize_bound(nullptr);
     }
 
-    /// Open a descriptor-bound finalized V2 or V3 corpus.
+    /// Open a descriptor-bound finalized V2, V3, or V4 corpus.
     ///
     /// Unlike a path-level preflight followed by an ordinary reader open, this
     /// overload validates the persisted identity and both file extents against
-    /// the same mapped handles that serve subsequent reads. V3 additionally
+    /// the same mapped handles that serve subsequent reads. V3/V4 additionally
     /// requires matching store identities in the index and data headers. V2
     /// has no data-file identity, so callers opening V2 retain the historical
     /// exclusive-ownership requirement.
@@ -2955,7 +3066,7 @@ public:
         initialize_bound(&expected);
     }
 
-    /// Adopt a caller-validated exact finalized V3 pair without reopening a
+    /// Adopt a caller-validated exact finalized V3/V4 pair without reopening a
     /// path.
     ///
     /// The caller must establish native identity, no-follow, owner/mode/link,
@@ -2995,8 +3106,8 @@ public:
         if (idx >= count_) {
             throw std::out_of_range("OOCRelationReader::read: index out of range");
         }
-        uint64_t start = offsets_[idx];
-        uint64_t end = offsets_[idx + 1];
+        uint64_t start = offset_at(idx);
+        uint64_t end = offset_at(idx + 1);
         if (start >= end || end > data_file_.size()) {
             throw std::runtime_error("OOCRelationReader::read: corrupt offsets");
         }
@@ -3006,7 +3117,7 @@ public:
 
         const uint8_t* ptr = data_file_.data() + start;
         size_t avail = static_cast<size_t>(end - start);
-        return detail::deserialize_compact_relation(ptr, avail);
+        return detail::deserialize_compact_relation(ptr, avail, codec_);
     }
 
     /// Read all relations into a vector (for compatibility with in-memory pipeline).
@@ -3033,6 +3144,29 @@ public:
     }
 
 private:
+    [[nodiscard]] static uint64_t read_codec_u64(const gnfs::util::MmapFile& file, size_t offset,
+                                                 detail::CompactRecordCodec codec) {
+        if (offset > file.size() || sizeof(uint64_t) > file.size() - offset) {
+            throw std::runtime_error("OOCRelationReader: truncated encoded integer");
+        }
+        if (codec == detail::CompactRecordCodec::NativeV3) {
+            return file.read_at<uint64_t>(offset);
+        }
+        return detail::decode_compact_le<uint64_t>(file.data() + offset);
+    }
+
+    [[nodiscard]] uint64_t offset_at(size_t index) const {
+        if (offsets_ == nullptr || index > count_) {
+            throw std::out_of_range("OOCRelationReader: offset index out of range");
+        }
+        if (codec_ == detail::CompactRecordCodec::NativeV3) {
+            uint64_t value = 0;
+            std::memcpy(&value, offsets_ + index * sizeof(uint64_t), sizeof(value));
+            return value;
+        }
+        return detail::decode_compact_le<uint64_t>(offsets_ + index * sizeof(uint64_t));
+    }
+
     struct OwnedExactPair final {
         OwnedExactPair(gnfs::util::OwnedNativeFile&& index_file,
                        gnfs::util::OwnedNativeFile&& data_file) noexcept
@@ -3049,7 +3183,8 @@ private:
 
     static void validate_expected_descriptor(const OOCSnapshotDescriptor& expected) {
         if (expected.format_version != OOCRelationWriter::FORMAT_VERSION_V2 &&
-            expected.format_version != OOCRelationWriter::FORMAT_VERSION_V3) {
+            expected.format_version != OOCRelationWriter::FORMAT_VERSION_V3 &&
+            expected.format_version != OOCRelationWriter::FORMAT_VERSION_V4) {
             throw std::invalid_argument(
                 "OOCRelationReader: expected descriptor format version mismatch");
         }
@@ -3080,9 +3215,10 @@ private:
 
     static void validate_owned_v3_descriptor(const OOCSnapshotDescriptor& expected) {
         validate_expected_descriptor(expected);
-        if (expected.format_version != OOCRelationWriter::FORMAT_VERSION_V3) {
+        if (expected.format_version != OOCRelationWriter::FORMAT_VERSION_V3 &&
+            expected.format_version != OOCRelationWriter::FORMAT_VERSION_V4) {
             throw std::invalid_argument(
-                "OOCRelationReader: owned exact pair requires finalized V3");
+                "OOCRelationReader: owned exact pair requires finalized V3 or V4");
         }
         if (expected.data_end < OOCRelationWriter::DATA_HEADER_BYTES ||
             (expected.count == 0 && expected.data_end != OOCRelationWriter::DATA_HEADER_BYTES) ||
@@ -3099,55 +3235,77 @@ private:
     }
 
     void initialize(const OOCSnapshotDescriptor* expected) {
-        // Validate finalized V1, V2, or V3 from the exact mappings used for
+        // Validate finalized V1, V2, V3, or V4 from the exact mappings used for
         // subsequent reads. Descriptor-bound opens accept V2 and V3.
         // Incomplete files are rejected in both modes.
         if (idx_file_.size() < 16) {
             throw std::runtime_error("OOCRelationReader: index file too small");
         }
-        const uint64_t magic = idx_file_.read_at<uint64_t>(0);
+        const uint64_t native_magic = idx_file_.read_at<uint64_t>(0);
+        const uint64_t little_magic =
+            detail::decode_compact_le<std::uint64_t>(idx_file_.data());
+        uint64_t magic = native_magic;
+        if (native_magic == OOCRelationWriter::MAGIC_V4_FINAL) {
+            codec_ = detail::CompactRecordCodec::LittleEndianV4;
+        } else if (little_magic == OOCRelationWriter::MAGIC_V4_FINAL) {
+            magic = little_magic;
+            codec_ = detail::CompactRecordCodec::LittleEndianV4;
+        } else {
+            codec_ = detail::CompactRecordCodec::NativeV3;
+        }
         uint64_t stored_count = 0;
         uint64_t stored_version = 0;
         uint64_t stored_store_id = 0;
         size_t index_header_bytes = 0;
         uint64_t expected_first_offset = 0;
         if (magic == OOCRelationWriter::MAGIC_V2_FINAL ||
-            magic == OOCRelationWriter::MAGIC_V3_FINAL) {
+            magic == OOCRelationWriter::MAGIC_V3_FINAL ||
+            magic == OOCRelationWriter::MAGIC_V4_FINAL) {
             if (idx_file_.size() < OOCRelationWriter::INDEX_HEADER_BYTES) {
                 throw std::runtime_error("OOCRelationReader: index header truncated");
             }
             stored_version =
-                idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET);
-            const uint64_t required_version = magic == OOCRelationWriter::MAGIC_V3_FINAL
-                                                  ? OOCRelationWriter::FORMAT_VERSION_V3
-                                                  : OOCRelationWriter::FORMAT_VERSION_V2;
+                read_codec_u64(idx_file_, OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET, codec_);
+            const uint64_t required_version = magic == OOCRelationWriter::MAGIC_V4_FINAL
+                                                  ? OOCRelationWriter::FORMAT_VERSION_V4
+                                                  : magic == OOCRelationWriter::MAGIC_V3_FINAL
+                                                        ? OOCRelationWriter::FORMAT_VERSION_V3
+                                                        : OOCRelationWriter::FORMAT_VERSION_V2;
             if (stored_version != required_version) {
                 throw std::runtime_error("OOCRelationReader: format version mismatch");
             }
-            stored_store_id = idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_STORE_ID_OFFSET);
+            stored_store_id =
+                read_codec_u64(idx_file_, OOCRelationWriter::INDEX_STORE_ID_OFFSET, codec_);
             if (stored_store_id == 0) {
                 throw std::runtime_error("OOCRelationReader: store identity is zero");
             }
-            stored_count = idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_COUNT_OFFSET);
+            stored_count =
+                read_codec_u64(idx_file_, OOCRelationWriter::INDEX_COUNT_OFFSET, codec_);
             index_header_bytes = static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES);
 
-            if (magic == OOCRelationWriter::MAGIC_V3_FINAL) {
+            if (magic == OOCRelationWriter::MAGIC_V3_FINAL ||
+                magic == OOCRelationWriter::MAGIC_V4_FINAL) {
                 if (data_file_.size() < OOCRelationWriter::DATA_HEADER_BYTES) {
-                    throw std::runtime_error("OOCRelationReader: V3 data header truncated");
+                    throw std::runtime_error("OOCRelationReader: data header truncated");
                 }
-                if (data_file_.read_at<uint64_t>(0) != OOCRelationWriter::MAGIC_V3_DATA) {
-                    throw std::runtime_error("OOCRelationReader: invalid V3 data magic");
+                const uint64_t data_magic = read_codec_u64(data_file_, 0, codec_);
+                const uint64_t expected_data_magic =
+                    magic == OOCRelationWriter::MAGIC_V4_FINAL
+                        ? OOCRelationWriter::MAGIC_V4_DATA
+                        : OOCRelationWriter::MAGIC_V3_DATA;
+                if (data_magic != expected_data_magic) {
+                    throw std::runtime_error("OOCRelationReader: invalid data magic");
                 }
-                const uint64_t data_version =
-                    data_file_.read_at<uint64_t>(OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET);
-                if (data_version != OOCRelationWriter::FORMAT_VERSION_V3) {
-                    throw std::runtime_error("OOCRelationReader: V3 data version mismatch");
+                const uint64_t data_version = read_codec_u64(
+                    data_file_, OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET, codec_);
+                if (data_version != required_version) {
+                    throw std::runtime_error("OOCRelationReader: data version mismatch");
                 }
                 const uint64_t data_store_id =
-                    data_file_.read_at<uint64_t>(OOCRelationWriter::DATA_STORE_ID_OFFSET);
+                    read_codec_u64(data_file_, OOCRelationWriter::DATA_STORE_ID_OFFSET, codec_);
                 if (data_store_id != stored_store_id) {
                     throw std::runtime_error(
-                        "OOCRelationReader: V3 index/data store identity mismatch");
+                        "OOCRelationReader: index/data store identity mismatch");
                 }
                 expected_first_offset = OOCRelationWriter::DATA_HEADER_BYTES;
             }
@@ -3169,7 +3327,7 @@ private:
         } else if (magic == OOCRelationWriter::MAGIC_V1_FINAL) {
             if (expected != nullptr) {
                 throw std::runtime_error(
-                    "OOCRelationReader: expected descriptor requires finalized V2 or V3 store");
+                    "OOCRelationReader: expected descriptor requires finalized V2, V3, or V4 store");
             }
             stored_count = idx_file_.read_at<uint64_t>(8);
             index_header_bytes = 16;
@@ -3211,19 +3369,19 @@ private:
                                                 static_cast<uint64_t>(data_file_.size()),
                                                 expected_first_offset, "OOCRelationReader");
 
-        offsets_ = idx_file_.ptr_at<uint64_t>(index_header_bytes);
-        if (offsets_[0] != expected_first_offset) {
+        offsets_ = idx_file_.data() + index_header_bytes;
+        if (offset_at(0) != expected_first_offset) {
             throw std::runtime_error("OOCRelationReader: invalid first offset");
         }
-        if (expected != nullptr && offsets_[count_] != expected->data_end) {
+        if (expected != nullptr && offset_at(count_) != expected->data_end) {
             throw std::runtime_error("OOCRelationReader: final sentinel does not match descriptor");
         }
-        if (offsets_[count_] != static_cast<uint64_t>(data_file_.size())) {
+        if (offset_at(count_) != static_cast<uint64_t>(data_file_.size())) {
             throw std::runtime_error("OOCRelationReader: final sentinel does not match data size");
         }
         for (size_t i = 0; i < count_; ++i) {
-            if (offsets_[i] >= offsets_[i + 1] ||
-                offsets_[i + 1] > static_cast<uint64_t>(data_file_.size())) {
+            if (offset_at(i) >= offset_at(i + 1) ||
+                offset_at(i + 1) > static_cast<uint64_t>(data_file_.size())) {
                 throw std::runtime_error("OOCRelationReader: non-monotonic or out-of-range offset");
             }
         }
@@ -3235,7 +3393,8 @@ private:
     gnfs::util::MmapFile idx_file_;
     gnfs::util::MmapFile data_file_;
     size_t count_ = 0;
-    const uint64_t* offsets_ = nullptr;
+    const uint8_t* offsets_ = nullptr;
+    detail::CompactRecordCodec codec_ = detail::CompactRecordCodec::NativeV3;
     struct BindingIdentity final {};
     std::shared_ptr<const BindingIdentity> binding_;
 
@@ -3405,7 +3564,7 @@ inline void OOCRelationWriter::finalize_and_publish_private_handoff_built(
 /// Move-only same-handle reader owner for one adopted private handoff.
 ///
 /// Construction commits both exact files into OOCRelationReader together,
-/// validates the complete finalized V3 corpus, and retains the adoption
+/// validates the complete finalized V3/V4 corpus, and retains the adoption
 /// receipt's parent/private-directory bindings and BaseLock for the reader
 /// lifetime. The reader is destroyed before the receipt releases those
 /// handles. This owner exposes no path, native handle, cleanup receipt, or arm
@@ -3575,27 +3734,38 @@ public:
                 throw std::runtime_error("OOCRelationPrefixReader: index file too small");
             }
             if (data_file_.size() < OOCRelationWriter::DATA_HEADER_BYTES) {
-                throw std::runtime_error("OOCRelationPrefixReader: V3 data header truncated");
+                throw std::runtime_error("OOCRelationPrefixReader: data header truncated");
             }
-            const uint64_t magic = idx_file_.read_at<uint64_t>(0);
-            if (magic != OOCRelationWriter::MAGIC_V3_INCOMPLETE) {
+            codec_ = descriptor_.format_version == OOCRelationWriter::FORMAT_VERSION_V3
+                         ? detail::CompactRecordCodec::NativeV3
+                         : detail::CompactRecordCodec::LittleEndianV4;
+            const uint64_t magic = read_codec_u64(idx_file_, 0);
+            const uint64_t expected_magic =
+                descriptor_.format_version == OOCRelationWriter::FORMAT_VERSION_V3
+                    ? OOCRelationWriter::MAGIC_V3_INCOMPLETE
+                    : OOCRelationWriter::MAGIC_V4_INCOMPLETE;
+            if (magic != expected_magic) {
                 throw std::runtime_error("OOCRelationPrefixReader: store is not incomplete");
             }
             const uint64_t index_store_id =
-                idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_STORE_ID_OFFSET);
-            if (descriptor_.format_version != OOCRelationWriter::FORMAT_VERSION_V3 ||
-                idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET) !=
-                    OOCRelationWriter::FORMAT_VERSION_V3 ||
+                read_codec_u64(idx_file_, OOCRelationWriter::INDEX_STORE_ID_OFFSET);
+            const uint64_t expected_data_magic =
+                descriptor_.format_version == OOCRelationWriter::FORMAT_VERSION_V3
+                    ? OOCRelationWriter::MAGIC_V3_DATA
+                    : OOCRelationWriter::MAGIC_V4_DATA;
+            if ((descriptor_.format_version != OOCRelationWriter::FORMAT_VERSION_V3 &&
+                 descriptor_.format_version != OOCRelationWriter::FORMAT_VERSION_V4) ||
+                read_codec_u64(idx_file_, OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET) !=
+                    descriptor_.format_version ||
                 index_store_id == 0 || index_store_id != descriptor_.store_id ||
-                data_file_.read_at<uint64_t>(0) != OOCRelationWriter::MAGIC_V3_DATA ||
-                data_file_.read_at<uint64_t>(OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET) !=
-                    OOCRelationWriter::FORMAT_VERSION_V3 ||
-                data_file_.read_at<uint64_t>(OOCRelationWriter::DATA_STORE_ID_OFFSET) !=
-                    index_store_id) {
+                read_codec_u64(data_file_, 0) != expected_data_magic ||
+                read_codec_u64(data_file_, OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET) !=
+                    descriptor_.format_version ||
+                read_codec_u64(data_file_, OOCRelationWriter::DATA_STORE_ID_OFFSET) != index_store_id) {
                 throw std::runtime_error(
-                    "OOCRelationPrefixReader: V3 index/data identity or format mismatch");
+                    "OOCRelationPrefixReader: index/data identity or format mismatch");
             }
-            if (idx_file_.read_at<uint64_t>(OOCRelationWriter::INDEX_COUNT_OFFSET) != 0) {
+            if (read_codec_u64(idx_file_, OOCRelationWriter::INDEX_COUNT_OFFSET) != 0) {
                 throw std::runtime_error("OOCRelationPrefixReader: incomplete count is not zero");
             }
             if (descriptor.count > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
@@ -3616,25 +3786,24 @@ public:
                                                     OOCRelationWriter::DATA_HEADER_BYTES,
                                                     "OOCRelationPrefixReader");
 
-            offsets_ = idx_file_.ptr_at<uint64_t>(
-                static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES));
-            if (offsets_[count_] != descriptor.data_end) {
+            offsets_ = idx_file_.data() + static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES);
+            if (offset_at(count_) != descriptor.data_end) {
                 throw std::runtime_error(
                     "OOCRelationPrefixReader: descriptor end does not match sentinel");
             }
-            if (offsets_[0] != OOCRelationWriter::DATA_HEADER_BYTES) {
+            if (offset_at(0) != OOCRelationWriter::DATA_HEADER_BYTES) {
                 throw std::runtime_error(
-                    "OOCRelationPrefixReader: first offset does not follow V3 data header");
+                    "OOCRelationPrefixReader: first offset does not follow data header");
             }
             if (count_ == 0) {
                 if (descriptor.data_end != OOCRelationWriter::DATA_HEADER_BYTES) {
                     throw std::runtime_error(
-                        "OOCRelationPrefixReader: empty prefix extent is not the V3 header size");
+                        "OOCRelationPrefixReader: empty prefix extent is not the data header size");
                 }
             } else {
                 for (size_t i = 0; i < count_; ++i) {
-                    const uint64_t start = offsets_[i];
-                    const uint64_t end = offsets_[i + 1];
+                    const uint64_t start = offset_at(i);
+                    const uint64_t end = offset_at(i + 1);
                     if (start >= end || end > descriptor.data_end) {
                         throw std::runtime_error(
                             "OOCRelationPrefixReader: non-monotonic or out-of-range offset");
@@ -3679,8 +3848,8 @@ public:
         if (idx >= count_) {
             throw std::out_of_range("OOCRelationPrefixReader::read: index out of range");
         }
-        const uint64_t start = offsets_[idx];
-        const uint64_t end = offsets_[idx + 1];
+        const uint64_t start = offset_at(idx);
+        const uint64_t end = offset_at(idx + 1);
         if (start >= end || end > descriptor_.data_end ||
             end > static_cast<uint64_t>(data_file_.size())) {
             throw std::runtime_error("OOCRelationPrefixReader::read: corrupt offsets");
@@ -3690,7 +3859,7 @@ public:
                 "OOCRelationPrefixReader::read: record exceeds persistence limit");
         }
         return detail::deserialize_compact_relation(data_file_.data() + start,
-                                                    static_cast<size_t>(end - start));
+                                                    static_cast<size_t>(end - start), codec_);
     }
 
     [[nodiscard]] std::vector<gnfs::core::Relation> read_all() const {
@@ -3703,11 +3872,34 @@ public:
     }
 
 private:
+    [[nodiscard]] uint64_t read_codec_u64(const gnfs::util::MmapFile& file, size_t offset) const {
+        if (offset > file.size() || sizeof(uint64_t) > file.size() - offset) {
+            throw std::runtime_error("OOCRelationPrefixReader: truncated encoded integer");
+        }
+        if (codec_ == detail::CompactRecordCodec::NativeV3) {
+            return file.read_at<uint64_t>(offset);
+        }
+        return detail::decode_compact_le<uint64_t>(file.data() + offset);
+    }
+
+    [[nodiscard]] uint64_t offset_at(size_t index) const {
+        if (index > count_ || offsets_ == nullptr) {
+            throw std::out_of_range("OOCRelationPrefixReader: offset index out of range");
+        }
+        if (codec_ == detail::CompactRecordCodec::NativeV3) {
+            uint64_t value = 0;
+            std::memcpy(&value, offsets_ + index * sizeof(uint64_t), sizeof(value));
+            return value;
+        }
+        return detail::decode_compact_le<uint64_t>(offsets_ + index * sizeof(uint64_t));
+    }
+
     gnfs::util::MmapFile idx_file_;
     gnfs::util::MmapFile data_file_;
     OOCSnapshotDescriptor descriptor_;
     size_t count_ = 0;
-    const uint64_t* offsets_ = nullptr;
+    const uint8_t* offsets_ = nullptr;
+    detail::CompactRecordCodec codec_ = detail::CompactRecordCodec::NativeV3;
     OOCRelationWriter* owner_ = nullptr;
 };
 

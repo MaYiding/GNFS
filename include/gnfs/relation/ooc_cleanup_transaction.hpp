@@ -156,7 +156,7 @@ struct OOCExactCleanupExpectation final {
 
 /// Move-only authority to start cleanup for one pair created by a trusted
 /// owner. The stable native identities are captured at ownership acquisition;
-/// store_id correlates the two V3 headers but never grants authority alone.
+/// store_id correlates the two V3/V4 headers but never grants authority alone.
 ///
 /// No public path/store-id factory exists. Only a fresh writer issues this
 /// receipt while it still owns the exact O_EXCL-created pair. Structural
@@ -1293,6 +1293,41 @@ windows_regular_single_link(const BY_HANDLE_FILE_INFORMATION& info) noexcept {
     return value;
 }
 
+[[nodiscard]] inline std::uint64_t read_little_u64(std::span<const std::byte> bytes,
+                                                   std::size_t offset) {
+    if (offset > bytes.size() || sizeof(std::uint64_t) > bytes.size() - offset) {
+        fail(OOCCleanupStatus::UnexpectedFailure, OOCCleanupStage::None, protocol_error());
+    }
+    std::uint64_t value = 0;
+    for (std::size_t index = 0; index < sizeof(value); ++index) {
+        value |= static_cast<std::uint64_t>(std::to_integer<unsigned char>(bytes[offset + index]))
+                 << (index * 8U);
+    }
+    return value;
+}
+
+[[nodiscard]] inline bool is_v4_index_magic(std::uint64_t magic) noexcept {
+    return magic == OOCRelationStoreFormat::MAGIC_V4_FINAL ||
+           magic == OOCRelationStoreFormat::MAGIC_V4_INCOMPLETE;
+}
+
+[[nodiscard]] inline bool is_index_magic(std::uint64_t magic) noexcept {
+    return magic == OOCRelationStoreFormat::MAGIC_V3_FINAL ||
+           magic == OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE ||
+           is_v4_index_magic(magic);
+}
+
+[[nodiscard]] inline bool is_data_magic(std::uint64_t magic) noexcept {
+    return magic == OOCRelationStoreFormat::MAGIC_V3_DATA ||
+           magic == OOCRelationStoreFormat::MAGIC_V4_DATA;
+}
+
+[[nodiscard]] inline std::uint64_t expected_header_version(std::uint64_t magic) noexcept {
+    return is_v4_index_magic(magic) || magic == OOCRelationStoreFormat::MAGIC_V4_DATA
+               ? OOCRelationStoreFormat::FORMAT_VERSION_V4
+               : OOCRelationStoreFormat::FORMAT_VERSION_V3;
+}
+
 struct ArtifactFingerprint final {
     FileIdentity identity;
     std::uint64_t header_magic = 0;
@@ -1321,17 +1356,22 @@ artifact_fingerprint(const InspectResult& inspected, ArtifactKind kind,
         return std::nullopt;
     }
 
-    const auto magic = read_native_u64(inspected.bytes, 0);
-    const auto version = read_native_u64(inspected.bytes, 8);
-    const auto store_id = read_native_u64(inspected.bytes, 16);
-    const bool valid_magic = kind == ArtifactKind::Index
-                                 ? magic == OOCRelationStoreFormat::MAGIC_V3_FINAL ||
-                                       magic == OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE
-                                 : magic == OOCRelationStoreFormat::MAGIC_V3_DATA;
+    const auto native_magic = read_native_u64(inspected.bytes, 0);
+    const auto little_magic = read_little_u64(inspected.bytes, 0);
+    const bool little_endian = is_v4_index_magic(native_magic) ||
+                               is_v4_index_magic(little_magic) ||
+                               little_magic == OOCRelationStoreFormat::MAGIC_V4_DATA;
+    const auto magic = little_endian ? little_magic : native_magic;
+    const auto version = little_endian ? read_little_u64(inspected.bytes, 8)
+                                       : read_native_u64(inspected.bytes, 8);
+    const auto store_id = little_endian ? read_little_u64(inspected.bytes, 16)
+                                        : read_native_u64(inspected.bytes, 16);
+    const bool valid_magic = kind == ArtifactKind::Index ? is_index_magic(magic)
+                                                          : is_data_magic(magic);
     const std::uint64_t minimum_size = kind == ArtifactKind::Index
                                            ? OOCRelationStoreFormat::INDEX_HEADER_BYTES
                                            : OOCRelationStoreFormat::DATA_HEADER_BYTES;
-    if (!valid_magic || version != OOCRelationStoreFormat::FORMAT_VERSION_V3 || store_id == 0 ||
+    if (!valid_magic || version != expected_header_version(magic) || store_id == 0 ||
         store_id != expected_store_id || inspected.identity.size < minimum_size) {
         return std::nullopt;
     }
@@ -1343,7 +1383,11 @@ artifact_fingerprint(const InspectResult& inspected, ArtifactKind kind,
         .header_store_id = store_id,
         .header_count =
             kind == ArtifactKind::Index
-                ? read_native_u64(inspected.bytes, OOCRelationStoreFormat::INDEX_COUNT_OFFSET)
+                ? (little_endian
+                       ? read_little_u64(inspected.bytes,
+                                         OOCRelationStoreFormat::INDEX_COUNT_OFFSET)
+                       : read_native_u64(inspected.bytes,
+                                         OOCRelationStoreFormat::INDEX_COUNT_OFFSET))
                 : 0,
     };
 }
@@ -1616,18 +1660,17 @@ inline void append_fingerprint(std::vector<std::byte>& bytes,
     if (cursor != MARKER_PAYLOAD_BYTES || intent.platform_id != PLATFORM_ID ||
         intent.store_id == 0 || intent.index.header_store_id != intent.store_id ||
         intent.data.header_store_id != intent.store_id ||
-        intent.index.header_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 ||
-        intent.data.header_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 ||
-        (intent.index.header_magic != OOCRelationStoreFormat::MAGIC_V3_FINAL &&
-         intent.index.header_magic != OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE) ||
-        intent.data.header_magic != OOCRelationStoreFormat::MAGIC_V3_DATA ||
+        intent.index.header_version != expected_header_version(intent.index.header_magic) ||
+        intent.data.header_version != expected_header_version(intent.data.header_magic) ||
+        !is_index_magic(intent.index.header_magic) || !is_data_magic(intent.data.header_magic) ||
         intent.data.header_count != 0 ||
         intent.index.identity.size < OOCRelationStoreFormat::INDEX_HEADER_BYTES ||
         intent.data.identity.size < OOCRelationStoreFormat::DATA_HEADER_BYTES ||
         intent.index.identity == intent.data.identity) {
         fail(OOCCleanupStatus::IntentCorrupt, OOCCleanupStage::None, protocol_error());
     }
-    if (intent.index.header_magic == OOCRelationStoreFormat::MAGIC_V3_FINAL) {
+    if (intent.index.header_magic == OOCRelationStoreFormat::MAGIC_V3_FINAL ||
+        intent.index.header_magic == OOCRelationStoreFormat::MAGIC_V4_FINAL) {
         constexpr std::uint64_t offset_bytes = sizeof(std::uint64_t);
         if (intent.index.header_count >
             (std::numeric_limits<std::uint64_t>::max() -
@@ -2880,13 +2923,13 @@ inline void require_source_pair_unchanged(const OOCCleanupPaths& paths,
 
 [[nodiscard]] inline bool
 expectation_is_well_formed(const OOCExactCleanupExpectation& exact) noexcept {
-    if ((exact.index_magic != OOCRelationStoreFormat::MAGIC_V3_FINAL &&
-         exact.index_magic != OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE) ||
+    if (!is_index_magic(exact.index_magic) ||
         exact.index_size < OOCRelationStoreFormat::INDEX_HEADER_BYTES ||
         exact.data_size < OOCRelationStoreFormat::DATA_HEADER_BYTES) {
         return false;
     }
-    if (exact.index_magic == OOCRelationStoreFormat::MAGIC_V3_FINAL) {
+    if (exact.index_magic == OOCRelationStoreFormat::MAGIC_V3_FINAL ||
+        exact.index_magic == OOCRelationStoreFormat::MAGIC_V4_FINAL) {
         constexpr std::uint64_t offset_bytes = sizeof(std::uint64_t);
         if (exact.persisted_count > (std::numeric_limits<std::uint64_t>::max() -
                                      OOCRelationStoreFormat::INDEX_HEADER_BYTES - offset_bytes) /
@@ -2905,7 +2948,8 @@ expectation_is_well_formed(const OOCExactCleanupExpectation& exact) noexcept {
         return false;
     }
     if (!request.exact) {
-        return intent.index.header_magic == OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE;
+        return intent.index.header_magic == OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE ||
+               intent.index.header_magic == OOCRelationStoreFormat::MAGIC_V4_INCOMPLETE;
     }
     return expectation_is_well_formed(*request.exact) &&
            request.exact->index_magic == intent.index.header_magic &&
@@ -4752,13 +4796,20 @@ read_private_handoff_leaf(util::durable_immutable_record::NativeHandle directory
                                                        const OOCCleanupPaths& paths) {
     try {
         const auto source = capture_source_pair(paths, record.pair.store_id);
-        if (record.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 ||
+        if ((record.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 &&
+             record.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V4) ||
             record.pair.generation == 0 ||
-            source.index.header_magic != OOCRelationStoreFormat::MAGIC_V3_FINAL ||
-            source.index.header_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 ||
+            source.index.header_magic !=
+                (record.pair.format_version == OOCRelationStoreFormat::FORMAT_VERSION_V4
+                     ? OOCRelationStoreFormat::MAGIC_V4_FINAL
+                     : OOCRelationStoreFormat::MAGIC_V3_FINAL) ||
+            source.index.header_version != record.pair.format_version ||
             source.index.header_count != record.pair.count ||
-            source.data.header_magic != OOCRelationStoreFormat::MAGIC_V3_DATA ||
-            source.data.header_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 ||
+            source.data.header_magic != (record.pair.format_version ==
+                                                 OOCRelationStoreFormat::FORMAT_VERSION_V4
+                                             ? OOCRelationStoreFormat::MAGIC_V4_DATA
+                                             : OOCRelationStoreFormat::MAGIC_V3_DATA) ||
+            source.data.header_version != record.pair.format_version ||
             source.index.identity.size != record.pair.index_extent ||
             source.data.identity.size != record.pair.data_extent ||
             record.index.extent != record.pair.index_extent ||
@@ -5785,11 +5836,11 @@ recover_owned_private_lease_locked(const OOCCleanupPaths& paths, const BaseLock&
 
 } // namespace ooc_cleanup_detail
 
-/// Recoverable cleanup for one closed V3 `.relidx`/`.reldata` pair.
+/// Recoverable cleanup for one closed V3/V4 `.relidx`/`.reldata` pair.
 ///
 /// An unspent move-only ownership receipt is the only authority that can
 /// create an intent. The immutable SHA-256-protected intent records native
-/// file identities, exact sizes, the complete V3 index header, and paired data
+/// file identities, exact sizes, the complete V3/V4 index header, and paired data
 /// ownership. Live
 /// files move to same-directory quarantine names with no-replace rename. A
 /// marker is first made durable in its deterministic pending leaf and then
@@ -6025,7 +6076,7 @@ public:
     adopt_private_handoff(const std::filesystem::path& base_path,
                           OOCPrivateHandoffAdoptionTestHooks hooks = {}) noexcept;
 
-    /// Publish an immutable application payload bound to one exact finalized V3
+    /// Publish an immutable application payload bound to one exact finalized V3/V4
     /// pair and its still-preactive private lease. Canonical durability consumes
     /// pair ownership. RESERVED is then durably revoked; the lease receipt is
     /// deliberately left move-only but stale, with its live lock released.
@@ -6037,7 +6088,8 @@ public:
         if (pair_ownership.spent_ || pair_ownership.store_id_ == 0 || lease.spent_ ||
             lease.active_ || !lease.live_lock_ || payload_kind == 0 || payload_version == 0 ||
             opaque_payload.size() > OOC_PRIVATE_HANDOFF_MAX_OPAQUE_PAYLOAD_BYTES ||
-            pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 ||
+            (pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 &&
+             pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V4) ||
             pair.store_id != pair_ownership.store_id_ || pair.generation == 0 ||
             pair.index_extent < OOCRelationStoreFormat::INDEX_HEADER_BYTES ||
             pair.data_extent < OOCRelationStoreFormat::DATA_HEADER_BYTES) {

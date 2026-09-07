@@ -2423,7 +2423,9 @@ capture_cleanup_ownership(const std::filesystem::path& base_path, std::uint64_t 
 
 [[nodiscard]] OOCExactCleanupExpectation exact_for(const OOCSnapshotDescriptor& descriptor) {
     return OOCExactCleanupExpectation{
-        .index_magic = OOCRelationStoreFormat::MAGIC_V3_FINAL,
+        .index_magic = descriptor.format_version == OOCRelationStoreFormat::FORMAT_VERSION_V4
+                           ? OOCRelationStoreFormat::MAGIC_V4_FINAL
+                           : OOCRelationStoreFormat::MAGIC_V3_FINAL,
         .persisted_count = descriptor.count,
         .index_size = OOCRelationWriter::index_size_for_count(descriptor.count),
         .data_size = descriptor.data_end,
@@ -3057,7 +3059,9 @@ void test_receipt_authority_and_pending_publication() {
         const auto moved_cleanup = OOCCleanupTransaction::begin_or_resume(
             destination,
             OOCExactCleanupExpectation{
-                .index_magic = OOCRelationStoreFormat::MAGIC_V3_FINAL,
+                .index_magic = descriptor.format_version == OOCRelationStoreFormat::FORMAT_VERSION_V4
+                                   ? OOCRelationStoreFormat::MAGIC_V4_FINAL
+                                   : OOCRelationStoreFormat::MAGIC_V3_FINAL,
                 .persisted_count = descriptor.count,
                 .index_size = OOCRelationWriter::index_size_for_count(descriptor.count),
                 .data_size = descriptor.data_end,
@@ -3265,7 +3269,7 @@ void test_real_finalized_store_cleanup() {
     register_cleanup_ownership(base, descriptor.store_id, descriptor.store_id,
                                std::move(*ownership));
 
-    CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+    CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
     CHECK(descriptor.store_id != 0);
     CHECK(descriptor.count == 2);
     {
@@ -3282,7 +3286,9 @@ void test_real_finalized_store_cleanup() {
         .store_id = descriptor.store_id,
         .exact =
             OOCExactCleanupExpectation{
-                .index_magic = OOCRelationStoreFormat::MAGIC_V3_FINAL,
+                .index_magic = descriptor.format_version == OOCRelationStoreFormat::FORMAT_VERSION_V4
+                                   ? OOCRelationStoreFormat::MAGIC_V4_FINAL
+                                   : OOCRelationStoreFormat::MAGIC_V3_FINAL,
                 .persisted_count = descriptor.count,
                 .index_size = OOCRelationWriter::index_size_for_count(descriptor.count),
                 .data_size = descriptor.data_end,
