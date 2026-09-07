@@ -163,11 +163,11 @@ inline int compute_rank_est(const LingenResult& lingen) noexcept {
 // of arbitrary length (m), not a 64×64 matrix.
 inline void mksol_accumulate(const BlockVector& V_k, const DenseGF2_64x64& F_k,
                              BlockVector& accumulator) {
-    if (V_k.length != accumulator.length || V_k.data.size() < V_k.length ||
-        accumulator.data.size() < accumulator.length) {
+    V_k.validate_storage();
+    accumulator.validate_storage();
+    if (V_k.length != accumulator.length) {
         throw std::invalid_argument("mksol_accumulate: incompatible block vector lengths");
     }
-    assert(V_k.length == accumulator.length);
     const size_t m = V_k.length;
     for (size_t r = 0; r < m; ++r) {
         uint64_t v = V_k.data[r];

@@ -47,15 +47,17 @@ struct BlockVector {
     }
 
     void xor_with(const BlockVector& other) {
-        if (other.length < length || data.size() < length || other.data.size() < length) {
+        validate_storage();
+        other.validate_storage();
+        if (other.length < length) {
             throw std::invalid_argument("BlockVector::xor_with: incompatible lengths");
         }
-        assert(other.length >= length);
         for (size_t i = 0; i < length; ++i)
             data[i] ^= other.data[i];
     }
 
     [[nodiscard]] bool is_zero() const {
+        validate_storage();
         for (size_t i = 0; i < length; ++i)
             if (data[i] != 0)
                 return false;
@@ -63,17 +65,21 @@ struct BlockVector {
     }
 
     [[nodiscard]] std::vector<bool> extract_column(size_t j) const {
+        validate_storage();
         if (j >= 64) {
             throw std::out_of_range("BlockVector::extract_column: column must be < 64");
-        }
-        if (data.size() < length) {
-            throw std::invalid_argument("BlockVector::extract_column: invalid storage length");
         }
         std::vector<bool> col(length, false);
         uint64_t mask = 1ULL << j;
         for (size_t i = 0; i < length; ++i)
             col[i] = (data[i] & mask) != 0;
         return col;
+    }
+
+    void validate_storage() const {
+        if (length > data.size()) {
+            throw std::invalid_argument("BlockVector length exceeds storage");
+        }
     }
 };
 
@@ -175,7 +181,9 @@ struct DenseGF2_64x64 {
 /// Compute inner product C = A^T * B where A, B are block vectors
 /// C is a 64x64 GF(2) matrix: C[j] = XOR of B[i] for all i where bit j of A[i] is set
 inline DenseGF2_64x64 inner_product_64x64(const BlockVector& A, const BlockVector& B) {
-    if (A.length != B.length || A.data.size() < A.length || B.data.size() < B.length) {
+    A.validate_storage();
+    B.validate_storage();
+    if (A.length != B.length) {
         throw std::invalid_argument("inner_product_64x64: incompatible block vector lengths");
     }
     DenseGF2_64x64 C;
