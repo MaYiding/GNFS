@@ -58,6 +58,16 @@ int checks_failed = 0;
         }                                                                                          \
     } while (false)
 
+template <typename Exception, typename Function> bool throws_as(Function&& function) {
+    try {
+        function();
+    } catch (const Exception&) {
+        return true;
+    } catch (...) {
+    }
+    return false;
+}
+
 void check_factors(const std::optional<TwoLargePrimeFactors>& result, uint64_t expected_p,
                    uint64_t expected_q) {
     CHECK(result.has_value());
@@ -255,6 +265,49 @@ void test_partial_merge_rejects_exponent_overflow() {
     const auto full = merge_partials(input, 2, false);
     CHECK(full.empty());
 }
+void test_sieve_polynomial_rejects_invalid_contracts() {
+    const Integer modulus(3);
+    const std::vector<FBPrime> valid_factor_base{{0, 0, 0}, {2, 1, 1}};
+    SIQSPoly valid_poly;
+    valid_poly.A = Integer(1);
+    valid_poly.B = Integer(1);
+    valid_poly.solns.assign(valid_factor_base.size(), {std::numeric_limits<uint32_t>::max(),
+                                                       std::numeric_limits<uint32_t>::max()});
+    std::vector<SIQSRelation> relations;
+    std::mutex relations_mutex;
+    std::vector<uint8_t> sieve_buffer;
+    std::vector<uint8_t> exponent_buffer(valid_factor_base.size(), 0);
+    const auto invoke = [&](const SIQSPoly& poly, const std::vector<FBPrime>& factor_base,
+                            uint32_t sieve_half, std::vector<uint8_t>& exponents) {
+        sieve_polynomial(poly, modulus, factor_base, sieve_half,
+                         std::numeric_limits<uint8_t>::max(), 3, 100, 0, relations, relations_mutex,
+                         sieve_buffer, exponents);
+    };
+    invoke(valid_poly, valid_factor_base, 1, exponent_buffer);
+    CHECK(relations.empty());
+    CHECK(throws_as<std::invalid_argument>(
+        [&] { invoke(valid_poly, valid_factor_base, 0, exponent_buffer); }));
+    CHECK(throws_as<std::overflow_error>([&] {
+        invoke(valid_poly, valid_factor_base, std::numeric_limits<uint32_t>::max() / 2u + 1u,
+               exponent_buffer);
+    }));
+    std::vector<uint8_t> short_exponents;
+    CHECK(throws_as<std::invalid_argument>(
+        [&] { invoke(valid_poly, valid_factor_base, 1, short_exponents); }));
+    SIQSPoly short_solutions = valid_poly;
+    short_solutions.solns.pop_back();
+    CHECK(throws_as<std::invalid_argument>(
+        [&] { invoke(short_solutions, valid_factor_base, 1, exponent_buffer); }));
+    auto invalid_prime_factor_base = valid_factor_base;
+    invalid_prime_factor_base[1].p = 1;
+    CHECK(throws_as<std::invalid_argument>(
+        [&] { invoke(valid_poly, invalid_prime_factor_base, 1, exponent_buffer); }));
+    SIQSPoly invalid_a_index = valid_poly;
+    invalid_a_index.a_indices = {2};
+    CHECK(throws_as<std::invalid_argument>(
+        [&] { invoke(invalid_a_index, valid_factor_base, 1, exponent_buffer); }));
+}
+
 void test_residual_classification_is_exact_and_deterministic() {
     CHECK(!classify_siqs_residual(0, 100, 10'000).has_value());
     CHECK(!classify_siqs_residual(1, 100, 10'000).has_value());
@@ -1004,6 +1057,7 @@ int main() {
     test_merge_partials_rejects_non_semiprime_splitter_output();
     test_merge_partials_converges_beyond_legacy_round_cap();
     test_partial_merge_rejects_exponent_overflow();
+    test_sieve_polynomial_rejects_invalid_contracts();
     test_residual_classification_is_exact_and_deterministic();
     test_nonnegative_mpz_to_uint64_checked();
     test_shadow_sink_factory_exceptions_roll_back_for_retry();
