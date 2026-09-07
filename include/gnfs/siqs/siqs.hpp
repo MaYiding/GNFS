@@ -1307,6 +1307,7 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
     std::vector<SIQSRelation> pool;
     pool.reserve(relations.size());
     size_t factored_2lp = 0, failed_2lp = 0, raw_1lp = 0, raw_2lp = 0;
+    size_t merged_1lp_pairs = 0, merged_2lp_cycles = 0;
 
     for (auto& rel : relations) {
         if (rel.large_prime == 0) {
@@ -1361,6 +1362,22 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
                 continue;
             }
         }
+
+        // A repeated-prime 2LP is already a complete graph cycle: one
+        // relation contributes two incidences of the same LP.  Do not put it
+        // into the LP bucket twice, where the greedy pairing loop would merge
+        // the relation with itself and square its value/exponents.  The
+        // legacy relation representation stores one square-root LP factor.
+        if (rel.large_prime2 > 1 && rel.large_prime == rel.large_prime2) {
+            const uint64_t self_loop_lp = rel.large_prime;
+            rel.large_prime = 0;
+            rel.large_prime2 = 0;
+            rel.merge_lps.push_back(self_loop_lp);
+            full.push_back(std::move(rel));
+            ++merged_2lp_cycles;
+            continue;
+        }
+
         pool.push_back(std::move(rel));
     }
 
@@ -1377,7 +1394,6 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
     // finite LP chains to converge.
     const size_t max_merge_rounds = pool.size();
     std::vector<bool> consumed(pool.size(), false);
-    size_t merged_1lp_pairs = 0, merged_2lp_cycles = 0;
 
     for (size_t round = 0; round < max_merge_rounds; round++) {
         // Build LP → relation index mapping
