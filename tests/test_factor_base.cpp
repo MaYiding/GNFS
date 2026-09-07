@@ -1,6 +1,7 @@
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
+#include "support/test_check.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -552,7 +553,7 @@ void test_serialization_invalid() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        GNFS_TEST_CHECK(caught);
     };
 
     // Bad magic
