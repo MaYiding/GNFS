@@ -789,6 +789,30 @@ void test_merge() {
     std::cout << "  Merge: PASS" << std::endl;
 }
 
+void test_merge_respects_max_relations() {
+    std::cout << "Testing merge max_relations guard..." << std::endl;
+
+    CollectorConfig destination_config;
+    destination_config.check_duplicates = true;
+    destination_config.max_relations = 3;
+    RelationCollector destination(destination_config);
+    CHECK(destination.add(Relation(1, 2)));
+
+    CollectorConfig source_config;
+    source_config.check_duplicates = true;
+    RelationCollector source(source_config);
+    for (int64_t a = 10; a < 15; ++a) {
+        CHECK(source.add(Relation(a, static_cast<uint64_t>(a + 1))));
+    }
+
+    CHECK(destination.merge(source) == 2);
+    CHECK(destination.size() == destination_config.max_relations);
+    CHECK(destination.stats().total_relations == destination_config.max_relations);
+    CHECK(destination.add(Relation(20, 21)) == false);
+
+    std::cout << "  Merge max_relations guard: PASS" << std::endl;
+}
+
 void test_filter_duplicates() {
     std::cout << "Testing filter_duplicates..." << std::endl;
 
@@ -3339,6 +3363,7 @@ int main() {
     test_load_respects_max_relations();
     test_concurrent_add();
     test_merge();
+    test_merge_respects_max_relations();
     test_filter_duplicates();
     test_sort_relations();
     test_callback();
