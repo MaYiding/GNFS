@@ -556,7 +556,7 @@ private:
 
         // Precompute skewness powers (was: 3 × std::pow per (i,j) pair)
         uint32_t max_deg = std::max(d_f, d_g);
-        constexpr uint32_t MAX_DEG_STACK = 16;  // GNFS degree ≤ 6,余量到 16
+        constexpr uint32_t MAX_DEG_STACK = 16; // GNFS degree ≤ 6,余量到 16
         // Keep the common GNFS degree range allocation-free, but do not rely on
         // assert() to make the public evaluator safe for higher-degree inputs.
         // In Release, indexing the fixed arrays with max_deg > 16 used to be

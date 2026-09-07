@@ -191,8 +191,7 @@ void test_score_consistency() {
 /// fixed-size stack fast path. Release builds used to index those arrays past
 /// the end because the only guard was an assert(max_deg <= 16).
 void test_high_degree_score_uses_dynamic_powers() {
-    std::cout << "Testing high-degree Murphy score uses dynamic power buffers..."
-              << std::endl;
+    std::cout << "Testing high-degree Murphy score uses dynamic power buffers..." << std::endl;
 
     MurphyParams params;
     params.alpha_bound = 100;
