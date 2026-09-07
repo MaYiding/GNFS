@@ -365,6 +365,22 @@ void test_fail_closed_special_q_count() {
     std::cout << "  Fail-closed counts: PASS" << std::endl;
 }
 
+void test_special_q_batch_extreme_count() {
+    std::cout << "Testing SpecialQBatch extreme count..." << std::endl;
+
+    auto fb = make_special_q_boundary_factor_base();
+    SpecialQRange range;
+    range.min_q = 3;
+    range.max_q = 23;
+    SpecialQGenerator gen(fb, range);
+
+    const auto batch = SpecialQBatch::fetch(gen, std::numeric_limits<size_t>::max());
+    CHECK(batch.size() == 4);
+    CHECK(gen.next() == std::nullopt);
+
+    std::cout << "  Extreme count: PASS" << std::endl;
+}
+
 void test_range_selector() {
     std::cout << "Testing SpecialQRangeSelector..." << std::endl;
 
@@ -567,6 +583,7 @@ int main() {
     test_fail_closed_special_q_iteration();
     test_fail_closed_special_q_reset_and_ranges();
     test_fail_closed_special_q_count();
+    test_special_q_batch_extreme_count();
     test_range_selector();
     test_range_selector_parameter_guards();
     test_empty_range();

@@ -175,8 +175,8 @@ public:
     /// @param count 最多获取多少个
     static SpecialQBatch fetch(SpecialQGenerator& gen, size_t count) {
         SpecialQBatch batch;
-        batch.items_.reserve(count);
 
+        // Grow only as entries are produced; count may be much larger than the range.
         while (batch.items_.size() < count) {
             auto sq = gen.next();
             if (!sq)
