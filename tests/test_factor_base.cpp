@@ -525,6 +525,36 @@ void test_serialization_roundtrip() {
 void test_serialization_invalid() {
     std::cout << "Testing serialization error handling..." << std::endl;
 
+    const auto write_value = [](std::stringstream& ss, const auto& value) {
+        ss.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    };
+    const auto write_prefix = [&](std::stringstream& ss, uint64_t sieve_count,
+                                  uint32_t rational_count) {
+        const uint32_t magic = 0x47464246;
+        const uint32_t version = 1;
+        const uint32_t rational_bound = 100;
+        const uint32_t algebraic_bound = 100;
+        const uint64_t large_prime_bound = 10'000;
+        const uint8_t log_scale = 16;
+        write_value(ss, magic);
+        write_value(ss, version);
+        write_value(ss, rational_bound);
+        write_value(ss, algebraic_bound);
+        write_value(ss, large_prime_bound);
+        write_value(ss, log_scale);
+        write_value(ss, sieve_count);
+        write_value(ss, rational_count);
+    };
+    const auto expect_load_failure = [](std::stringstream& ss) {
+        bool caught = false;
+        try {
+            FactorBase::load(ss);
+        } catch (const std::runtime_error&) {
+            caught = true;
+        }
+        assert(caught);
+    };
+
     // Bad magic
     {
         std::stringstream ss;
@@ -629,6 +659,92 @@ void test_serialization_invalid() {
             caught = true;
         }
         assert(caught);
+    }
+
+    // Serialized factor-base entries are consumed as moduli by the cofactor
+    // and sieve paths. Reject malformed domains at the load boundary instead
+    // of allowing p=0 or a non-prime to reach a division operation.
+    {
+        std::stringstream ss;
+        write_prefix(ss, 0, 1);
+        const uint32_t p = 0;
+        const uint32_t log_p = 1;
+        const uint32_t algebraic_count = 0;
+        write_value(ss, p);
+        write_value(ss, log_p);
+        write_value(ss, algebraic_count);
+        expect_load_failure(ss);
+    }
+    {
+        std::stringstream ss;
+        write_prefix(ss, 0, 1);
+        const uint32_t p = 9; // composite
+        const uint32_t log_p = 1;
+        const uint32_t algebraic_count = 0;
+        write_value(ss, p);
+        write_value(ss, log_p);
+        write_value(ss, algebraic_count);
+        expect_load_failure(ss);
+    }
+    {
+        std::stringstream ss;
+        write_prefix(ss, 0, 2);
+        const uint32_t p = 2;
+        const uint32_t log_p = 1;
+        write_value(ss, p);
+        write_value(ss, log_p);
+        write_value(ss, p);
+        write_value(ss, log_p);
+        const uint32_t algebraic_count = 0;
+        write_value(ss, algebraic_count);
+        expect_load_failure(ss);
+    }
+    {
+        std::stringstream ss;
+        write_prefix(ss, 0, 0);
+        const uint32_t algebraic_count = 1;
+        const uint32_t p = 3;
+        const uint32_t root = 3; // finite roots must be < p
+        const uint32_t log_p = 1;
+        const uint8_t degree = 1;
+        write_value(ss, algebraic_count);
+        write_value(ss, p);
+        write_value(ss, root);
+        write_value(ss, log_p);
+        write_value(ss, degree);
+        expect_load_failure(ss);
+    }
+    {
+        std::stringstream ss;
+        write_prefix(ss, 0, 0);
+        const uint32_t algebraic_count = 1;
+        const uint32_t p = 3;
+        const uint32_t root = 1;
+        const uint32_t log_p = 1;
+        const uint8_t degree = 0;
+        write_value(ss, algebraic_count);
+        write_value(ss, p);
+        write_value(ss, root);
+        write_value(ss, log_p);
+        write_value(ss, degree);
+        expect_load_failure(ss);
+    }
+    {
+        std::stringstream ss;
+        write_prefix(ss, 0, 0);
+        const uint32_t algebraic_count = 2;
+        const uint32_t p = 3;
+        const uint32_t root = 1;
+        const uint32_t log_p = 1;
+        const uint8_t degree = 1;
+        write_value(ss, algebraic_count);
+        for (int i = 0; i < 2; ++i) {
+            write_value(ss, p);
+            write_value(ss, root);
+            write_value(ss, log_p);
+            write_value(ss, degree);
+        }
+        expect_load_failure(ss);
     }
 
     std::cout << "  Serialization error handling: PASS" << std::endl;
