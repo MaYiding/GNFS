@@ -429,6 +429,33 @@ void test_parallel_for_index_exception_waits_for_all_tasks() {
     std::cout << "  parallel_for_index exception wait: PASS" << std::endl;
 }
 
+void test_parallel_for_stealing_size_max_range() {
+    std::cout << "Testing parallel_for_stealing SIZE_MAX range..." << std::endl;
+
+    ThreadPool pool(4);
+    const size_t max_size = std::numeric_limits<size_t>::max();
+    std::atomic<size_t> visits{0};
+    bool caught = false;
+    try {
+        pool.parallel_for_stealing(
+            max_size - 3, max_size,
+            [&](size_t index) {
+                if (index < max_size - 3 || index >= max_size) {
+                    throw std::runtime_error("parallel_for_stealing wrapped index");
+                }
+                visits.fetch_add(1, std::memory_order_relaxed);
+            },
+            2);
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+
+    GNFS_TEST_CHECK(!caught);
+    GNFS_TEST_CHECK(visits.load(std::memory_order_relaxed) == 3);
+
+    std::cout << "  parallel_for_stealing SIZE_MAX range: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== ThreadPool Tests ===" << std::endl;
 
@@ -446,6 +473,7 @@ int main() {
     test_parallel_for_size_max_range();
     test_parallel_for_exception_waits_for_all_tasks();
     test_parallel_for_index_exception_waits_for_all_tasks();
+    test_parallel_for_stealing_size_max_range();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
