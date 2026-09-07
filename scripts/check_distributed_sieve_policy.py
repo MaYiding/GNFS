@@ -5641,7 +5641,7 @@ WORKER_CLEANUP_RECEIPT_TIER_B_SAFE_MACROS = {
         '}while(false)',
         (
             3240,
-            "5ff4fb6f879a9060eae91a95dcd8a0272da08573c6733402c4e1d34c71425507",
+            "ec6ac01bfada149d47a087e8ec2abfe077889fb4632aa3f1f7a469f131418364",
         ),
     ),
 }

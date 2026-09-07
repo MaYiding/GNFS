@@ -352,7 +352,7 @@ void test_v4_little_endian_wire_and_v3_recovery() {
     relation.rational_factors = {0x21222324U};
     relation.algebraic_factors = {0x25262728U};
     relation.rational_large_prime.push_back({0x3132333435363738ULL, 0x4142434445464748ULL, 5});
-    relation.algebraic_large_prime.push_back({0x5152535455565758ULL, 0x6162636465666768ULL, 7});
+    relation.algebraic_large_prime.push_back({0x6162636465666768ULL, 0x5152535455565758ULL, 7});
     relation.extra_ab_pairs.emplace_back(0x7172737475767778LL, 0x0102030405060709ULL);
 
     OOCSnapshotDescriptor v4_descriptor;

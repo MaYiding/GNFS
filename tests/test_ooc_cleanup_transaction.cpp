@@ -3305,24 +3305,6 @@ void test_exact_finalized_expectation() {
     }
 }
 
-void test_cleanup_rejects_mixed_wire_pair() {
-    TempDirectory temp;
-    constexpr std::uint64_t store_id = 0xabc0'1234'5678'9101ULL;
-
-    for (const bool index_v4 : {false, true}) {
-        const auto base = temp.path() / (index_v4 ? "mixed-v4-index" : "mixed-v3-index");
-        write_mixed_wire_pair(base, store_id + static_cast<std::uint64_t>(index_v4), index_v4);
-
-        const auto result = begin_cleanup(base, store_id + static_cast<std::uint64_t>(index_v4));
-        CHECK(result.status == OOCCleanupStatus::SourcePairInvalid);
-        const auto paths = OOCCleanupTransaction::paths_for(base);
-        CHECK(exists(paths.index_path));
-        CHECK(exists(paths.data_path));
-        CHECK(!exists(paths.intent_path));
-        CHECK(!exists(paths.intent_pending_path));
-    }
-}
-
 void test_real_finalized_store_cleanup() {
     TempDirectory temp;
     const auto base = temp.path() / "real-finalized";
@@ -16462,6 +16444,8 @@ void test_process_crash_recovery(const std::string& executable) {
     }
 }
 
+void test_cleanup_rejects_mixed_wire_pair();
+
 void run_core_suite(const std::string& executable) {
     test_fault_point_recovery();
     test_receipt_authority_and_pending_publication();
@@ -16674,6 +16658,30 @@ void run_private_lease_crash_suite(const std::string& executable) {
     test_private_lease_marker_attacks_fail_closed();
     test_private_lease_recovery_rejects_directory_aba();
     test_private_lease_recovery_rejects_marker_replacement();
+}
+
+void test_cleanup_rejects_mixed_wire_pair() {
+    TempDirectory temp;
+    constexpr std::uint64_t store_id = 0xabc0'1234'5678'9101ULL;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    for (const bool index_v4 : {false, true}) {
+        const auto base = temp.path() / (index_v4 ? "mixed-v4-index" : "mixed-v3-index");
+        write_mixed_wire_pair(base, store_id + static_cast<std::uint64_t>(index_v4), index_v4);
+
+        const auto result = begin_cleanup(base, store_id + static_cast<std::uint64_t>(index_v4));
+        require(result.status == OOCCleanupStatus::SourcePairInvalid,
+                "mixed OOC wire pair was not rejected");
+        const auto paths = OOCCleanupTransaction::paths_for(base);
+        require(exists(paths.index_path), "mixed OOC index was removed");
+        require(exists(paths.data_path), "mixed OOC data was removed");
+        require(!exists(paths.intent_path), "mixed OOC intent was created");
+        require(!exists(paths.intent_pending_path), "mixed OOC pending intent was created");
+    }
 }
 
 } // namespace
