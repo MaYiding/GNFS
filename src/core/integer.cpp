@@ -12,6 +12,10 @@ namespace gnfs::core {
 
 namespace {
 
+bool is_valid_string_base(int base) {
+    return (base >= 2 && base <= 62) || (base <= -2 && base >= -36);
+}
+
 void set_mpz_from_uint64(mpz_t dest, uint64_t value) {
     mpz_import(dest, 1, 1, sizeof(value), 0, 0, &value);
 }
@@ -185,7 +189,18 @@ int64_t Integer::to_int64() const {
 }
 
 std::string Integer::to_string(int base) const {
+    // GMP returns a null pointer for unsupported bases. Validate before the
+    // call so malformed formatting requests become catchable API errors.
+    if (base == 0) {
+        base = 10;
+    }
+    if (!is_valid_string_base(base)) {
+        throw std::invalid_argument("Integer string conversion base must be in [2,62] or [-36,-2]");
+    }
     char* str = mpz_get_str(nullptr, base, value_);
+    if (str == nullptr) {
+        throw std::runtime_error("Integer string conversion failed");
+    }
     std::string result(str);
     free(str);
     return result;

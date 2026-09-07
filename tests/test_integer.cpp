@@ -197,6 +197,29 @@ void test_stream_output() {
     std::cout << "  Stream output: PASS" << std::endl;
 }
 
+void test_string_conversion_base_boundaries() {
+    std::cout << "Testing string conversion base boundaries..." << std::endl;
+
+    Integer value(255);
+    GNFS_TEST_CHECK(value.to_string(0) == "255"); // GMP's decimal shorthand
+    GNFS_TEST_CHECK(value.to_string(2) == "11111111");
+    GNFS_TEST_CHECK(value.to_string(62) == "47");
+    GNFS_TEST_CHECK(value.to_string(-2) == "11111111");
+    GNFS_TEST_CHECK(value.to_string(-36) == "73");
+
+    for (const int base : {1, 63, -1, -37}) {
+        bool threw = false;
+        try {
+            (void)value.to_string(base);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        GNFS_TEST_CHECK(threw);
+    }
+
+    std::cout << "  String conversion bases: PASS" << std::endl;
+}
+
 void test_uint64_construction() {
     std::cout << "Testing uint64_t construction..." << std::endl;
 
@@ -459,6 +482,7 @@ int main() {
     test_powmod();
     test_primality();
     test_stream_output();
+    test_string_conversion_base_boundaries();
     test_uint64_construction();
     test_safe_abs();
     test_relation_ab_int64_min();
