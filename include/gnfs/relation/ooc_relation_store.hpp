@@ -2403,21 +2403,22 @@ private:
 
     [[nodiscard]] uint64_t format_version_value() const noexcept {
         return record_codec_ == detail::CompactRecordCodec::NativeV3 ? FORMAT_VERSION_V3
-                                                                       : FORMAT_VERSION_V4;
+                                                                     : FORMAT_VERSION_V4;
     }
 
     [[nodiscard]] uint64_t incomplete_magic() const noexcept {
         return record_codec_ == detail::CompactRecordCodec::NativeV3 ? MAGIC_V3_INCOMPLETE
-                                                                       : MAGIC_V4_INCOMPLETE;
+                                                                     : MAGIC_V4_INCOMPLETE;
     }
 
     [[nodiscard]] uint64_t final_magic_value() const noexcept {
         return record_codec_ == detail::CompactRecordCodec::NativeV3 ? MAGIC_V3_FINAL
-                                                                       : MAGIC_V4_FINAL;
+                                                                     : MAGIC_V4_FINAL;
     }
 
     [[nodiscard]] uint64_t data_magic_value() const noexcept {
-        return record_codec_ == detail::CompactRecordCodec::NativeV3 ? MAGIC_V3_DATA : MAGIC_V4_DATA;
+        return record_codec_ == detail::CompactRecordCodec::NativeV3 ? MAGIC_V3_DATA
+                                                                     : MAGIC_V4_DATA;
     }
 
     /// Validate an exact V3/V4 snapshot through the writer's retained handles.
@@ -2458,9 +2459,8 @@ private:
         const uint64_t data_store_id =
             read_u64_checked(data_stream_, operation, "data store identity");
 
-        const uint64_t expected_data_magic = descriptor.format_version == FORMAT_VERSION_V3
-                                                 ? MAGIC_V3_DATA
-                                                 : MAGIC_V4_DATA;
+        const uint64_t expected_data_magic =
+            descriptor.format_version == FORMAT_VERSION_V3 ? MAGIC_V3_DATA : MAGIC_V4_DATA;
         if (index_magic != expected_magic || index_version != descriptor.format_version ||
             data_magic != expected_data_magic || data_version != descriptor.format_version ||
             index_store_id == 0 || index_store_id != descriptor.store_id ||
@@ -2603,7 +2603,8 @@ private:
             read_u64_checked(data_stream_, operation, "data store identity");
         if (data_magic != data_magic_value() || data_version != format_version_value() ||
             data_store_id != finalized_store_id) {
-            throw std::runtime_error("OOCRelationWriter recovery: finalized index/data header mismatch");
+            throw std::runtime_error(
+                "OOCRelationWriter recovery: finalized index/data header mismatch");
         }
         if (final_count != descriptor.count) {
             throw std::runtime_error(
@@ -3242,8 +3243,7 @@ private:
             throw std::runtime_error("OOCRelationReader: index file too small");
         }
         const uint64_t native_magic = idx_file_.read_at<uint64_t>(0);
-        const uint64_t little_magic =
-            detail::decode_compact_le<std::uint64_t>(idx_file_.data());
+        const uint64_t little_magic = detail::decode_compact_le<std::uint64_t>(idx_file_.data());
         uint64_t magic = native_magic;
         if (native_magic == OOCRelationWriter::MAGIC_V4_FINAL) {
             codec_ = detail::CompactRecordCodec::LittleEndianV4;
@@ -3266,11 +3266,10 @@ private:
             }
             stored_version =
                 read_codec_u64(idx_file_, OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET, codec_);
-            const uint64_t required_version = magic == OOCRelationWriter::MAGIC_V4_FINAL
-                                                  ? OOCRelationWriter::FORMAT_VERSION_V4
-                                                  : magic == OOCRelationWriter::MAGIC_V3_FINAL
-                                                        ? OOCRelationWriter::FORMAT_VERSION_V3
-                                                        : OOCRelationWriter::FORMAT_VERSION_V2;
+            const uint64_t required_version =
+                magic == OOCRelationWriter::MAGIC_V4_FINAL   ? OOCRelationWriter::FORMAT_VERSION_V4
+                : magic == OOCRelationWriter::MAGIC_V3_FINAL ? OOCRelationWriter::FORMAT_VERSION_V3
+                                                             : OOCRelationWriter::FORMAT_VERSION_V2;
             if (stored_version != required_version) {
                 throw std::runtime_error("OOCRelationReader: format version mismatch");
             }
@@ -3279,8 +3278,7 @@ private:
             if (stored_store_id == 0) {
                 throw std::runtime_error("OOCRelationReader: store identity is zero");
             }
-            stored_count =
-                read_codec_u64(idx_file_, OOCRelationWriter::INDEX_COUNT_OFFSET, codec_);
+            stored_count = read_codec_u64(idx_file_, OOCRelationWriter::INDEX_COUNT_OFFSET, codec_);
             index_header_bytes = static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES);
 
             if (magic == OOCRelationWriter::MAGIC_V3_FINAL ||
@@ -3289,10 +3287,9 @@ private:
                     throw std::runtime_error("OOCRelationReader: data header truncated");
                 }
                 const uint64_t data_magic = read_codec_u64(data_file_, 0, codec_);
-                const uint64_t expected_data_magic =
-                    magic == OOCRelationWriter::MAGIC_V4_FINAL
-                        ? OOCRelationWriter::MAGIC_V4_DATA
-                        : OOCRelationWriter::MAGIC_V3_DATA;
+                const uint64_t expected_data_magic = magic == OOCRelationWriter::MAGIC_V4_FINAL
+                                                         ? OOCRelationWriter::MAGIC_V4_DATA
+                                                         : OOCRelationWriter::MAGIC_V3_DATA;
                 if (data_magic != expected_data_magic) {
                     throw std::runtime_error("OOCRelationReader: invalid data magic");
                 }
@@ -3326,8 +3323,8 @@ private:
             }
         } else if (magic == OOCRelationWriter::MAGIC_V1_FINAL) {
             if (expected != nullptr) {
-                throw std::runtime_error(
-                    "OOCRelationReader: expected descriptor requires finalized V2, V3, or V4 store");
+                throw std::runtime_error("OOCRelationReader: expected descriptor requires "
+                                         "finalized V2, V3, or V4 store");
             }
             stored_count = idx_file_.read_at<uint64_t>(8);
             index_header_bytes = 16;
@@ -3761,7 +3758,8 @@ public:
                 read_codec_u64(data_file_, 0) != expected_data_magic ||
                 read_codec_u64(data_file_, OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET) !=
                     descriptor_.format_version ||
-                read_codec_u64(data_file_, OOCRelationWriter::DATA_STORE_ID_OFFSET) != index_store_id) {
+                read_codec_u64(data_file_, OOCRelationWriter::DATA_STORE_ID_OFFSET) !=
+                    index_store_id) {
                 throw std::runtime_error(
                     "OOCRelationPrefixReader: index/data identity or format mismatch");
             }
@@ -3786,7 +3784,8 @@ public:
                                                     OOCRelationWriter::DATA_HEADER_BYTES,
                                                     "OOCRelationPrefixReader");
 
-            offsets_ = idx_file_.data() + static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES);
+            offsets_ =
+                idx_file_.data() + static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES);
             if (offset_at(count_) != descriptor.data_end) {
                 throw std::runtime_error(
                     "OOCRelationPrefixReader: descriptor end does not match sentinel");

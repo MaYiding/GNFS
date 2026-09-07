@@ -3,8 +3,8 @@
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <barrier>
 #include <cstdint>
 #include <cstdio>
@@ -24,10 +24,10 @@ using gnfs::core::PrimePower;
 using gnfs::core::Relation;
 using gnfs::relation::OOCCleanupStatus;
 using gnfs::relation::OOCCleanupTransaction;
-using gnfs::relation::OOCRelationStoreFormat;
 using gnfs::relation::OOCRecoveryOutcome;
 using gnfs::relation::OOCRelationPrefixReader;
 using gnfs::relation::OOCRelationReader;
+using gnfs::relation::OOCRelationStoreFormat;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
 using gnfs::relation::OOCWriterState;
@@ -213,11 +213,9 @@ uint64_t read_little_u64_at(const std::string& path, std::streamoff offset) {
     return value;
 }
 
-uint64_t read_wire_u64_at(const std::string& path, std::streamoff offset,
-                          uint64_t format_version) {
-    return format_version == OOCRelationWriter::FORMAT_VERSION_V4
-               ? read_little_u64_at(path, offset)
-               : read_u64_at(path, offset);
+uint64_t read_wire_u64_at(const std::string& path, std::streamoff offset, uint64_t format_version) {
+    return format_version == OOCRelationWriter::FORMAT_VERSION_V4 ? read_little_u64_at(path, offset)
+                                                                  : read_u64_at(path, offset);
 }
 
 OOCSnapshotDescriptor create_finalized_store(const std::string& base_path) {
@@ -266,7 +264,8 @@ OOCSnapshotDescriptor create_v3_finalized_store(const std::string& base_path, si
         write_native_u64(index, store_id);
         write_native_u64(index, count);
         for (size_t ordinal = 0; ordinal <= count; ++ordinal) {
-            write_native_u64(index, OOCRelationStoreFormat::DATA_HEADER_BYTES + ordinal * record_bytes);
+            write_native_u64(index,
+                             OOCRelationStoreFormat::DATA_HEADER_BYTES + ordinal * record_bytes);
         }
     }
     {
@@ -289,10 +288,10 @@ OOCSnapshotDescriptor create_v3_finalized_store(const std::string& base_path, si
     }
     std::error_code permission_error;
     for (const auto& suffix : {std::string(".relidx"), std::string(".reldata")}) {
-        std::filesystem::permissions(
-            base_path + suffix, std::filesystem::perms::owner_read |
-                                    std::filesystem::perms::owner_write,
-            std::filesystem::perm_options::replace, permission_error);
+        std::filesystem::permissions(base_path + suffix,
+                                     std::filesystem::perms::owner_read |
+                                         std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::replace, permission_error);
         CHECK(!permission_error);
         permission_error.clear();
     }
@@ -422,15 +421,13 @@ void check_v3_pair_layout(const std::string& base_path, const OOCSnapshotDescrip
     CHECK(read_wire_u64_at(index_path, OOCRelationWriter::INDEX_STORE_ID_OFFSET,
                            descriptor.format_version) == descriptor.store_id);
     CHECK(read_wire_u64_at(index_path, OOCRelationWriter::INDEX_COUNT_OFFSET,
-                           descriptor.format_version) ==
-          expected_persisted_count);
+                           descriptor.format_version) == expected_persisted_count);
     CHECK(read_wire_u64_at(data_path, 0, descriptor.format_version) ==
           (descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V4
                ? OOCRelationWriter::MAGIC_V4_DATA
                : OOCRelationWriter::MAGIC_V3_DATA));
     CHECK(read_wire_u64_at(data_path, OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET,
-                           descriptor.format_version) ==
-          descriptor.format_version);
+                           descriptor.format_version) == descriptor.format_version);
     CHECK(read_wire_u64_at(data_path, OOCRelationWriter::DATA_STORE_ID_OFFSET,
                            descriptor.format_version) == descriptor.store_id);
     CHECK(std::filesystem::file_size(index_path) ==
@@ -1527,9 +1524,7 @@ void test_empty_v1_v2_finalized_reader_compatibility() {
     const std::string path = make_path("legacy_empty_finalized_reader");
     OOCArtifacts cleanup(path);
     OOCSnapshotDescriptor v3_descriptor;
-    {
-        v3_descriptor = create_v3_finalized_store(path, 0);
-    }
+    { v3_descriptor = create_v3_finalized_store(path, 0); }
     CHECK(v3_descriptor.count == 0);
     CHECK(v3_descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES);
 

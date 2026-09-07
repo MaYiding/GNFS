@@ -424,13 +424,12 @@ private:
         little_magic |= static_cast<std::uint64_t>(std::to_integer<unsigned char>(bytes[index]))
                         << (index * 8U);
     }
-    const bool little_endian =
-        native_magic == relation::OOCRelationWriter::MAGIC_V4_FINAL ||
-        native_magic == relation::OOCRelationWriter::MAGIC_V4_INCOMPLETE ||
-        native_magic == relation::OOCRelationWriter::MAGIC_V4_DATA ||
-        little_magic == relation::OOCRelationWriter::MAGIC_V4_FINAL ||
-        little_magic == relation::OOCRelationWriter::MAGIC_V4_INCOMPLETE ||
-        little_magic == relation::OOCRelationWriter::MAGIC_V4_DATA;
+    const bool little_endian = native_magic == relation::OOCRelationWriter::MAGIC_V4_FINAL ||
+                               native_magic == relation::OOCRelationWriter::MAGIC_V4_INCOMPLETE ||
+                               native_magic == relation::OOCRelationWriter::MAGIC_V4_DATA ||
+                               little_magic == relation::OOCRelationWriter::MAGIC_V4_FINAL ||
+                               little_magic == relation::OOCRelationWriter::MAGIC_V4_INCOMPLETE ||
+                               little_magic == relation::OOCRelationWriter::MAGIC_V4_DATA;
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::filesystem::filesystem_error("open merge-writer-authority fixture integer", path,
@@ -1122,9 +1121,9 @@ void require_raw_merge_writer_residue_shape(const RawMergeWriterResidueFixtureV1
     CHECK(!std::filesystem::exists(paths.private_handoff_pending_path));
     CHECK(!std::filesystem::exists(paths.private_handoff_rollback_path));
 
-    const std::uint64_t expected_magic =
-        fixture.finalized() ? relation::OOCRelationWriter::MAGIC
-                             : relation::OOCRelationWriter::MAGIC_INCOMPLETE;
+    const std::uint64_t expected_magic = fixture.finalized()
+                                             ? relation::OOCRelationWriter::MAGIC
+                                             : relation::OOCRelationWriter::MAGIC_INCOMPLETE;
     CHECK(read_file_u64(paths.index_path, 0) == expected_magic);
     const std::uint64_t expected_header_count =
         fixture.finalized() ? fixture.persisted_relation_count() : 0U;

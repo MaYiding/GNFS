@@ -1313,8 +1313,7 @@ windows_regular_single_link(const BY_HANDLE_FILE_INFORMATION& info) noexcept {
 
 [[nodiscard]] inline bool is_index_magic(std::uint64_t magic) noexcept {
     return magic == OOCRelationStoreFormat::MAGIC_V3_FINAL ||
-           magic == OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE ||
-           is_v4_index_magic(magic);
+           magic == OOCRelationStoreFormat::MAGIC_V3_INCOMPLETE || is_v4_index_magic(magic);
 }
 
 [[nodiscard]] inline bool is_data_magic(std::uint64_t magic) noexcept {
@@ -1358,16 +1357,15 @@ artifact_fingerprint(const InspectResult& inspected, ArtifactKind kind,
 
     const auto native_magic = read_native_u64(inspected.bytes, 0);
     const auto little_magic = read_little_u64(inspected.bytes, 0);
-    const bool little_endian = is_v4_index_magic(native_magic) ||
-                               is_v4_index_magic(little_magic) ||
+    const bool little_endian = is_v4_index_magic(native_magic) || is_v4_index_magic(little_magic) ||
                                little_magic == OOCRelationStoreFormat::MAGIC_V4_DATA;
     const auto magic = little_endian ? little_magic : native_magic;
-    const auto version = little_endian ? read_little_u64(inspected.bytes, 8)
-                                       : read_native_u64(inspected.bytes, 8);
-    const auto store_id = little_endian ? read_little_u64(inspected.bytes, 16)
-                                        : read_native_u64(inspected.bytes, 16);
-    const bool valid_magic = kind == ArtifactKind::Index ? is_index_magic(magic)
-                                                          : is_data_magic(magic);
+    const auto version =
+        little_endian ? read_little_u64(inspected.bytes, 8) : read_native_u64(inspected.bytes, 8);
+    const auto store_id =
+        little_endian ? read_little_u64(inspected.bytes, 16) : read_native_u64(inspected.bytes, 16);
+    const bool valid_magic =
+        kind == ArtifactKind::Index ? is_index_magic(magic) : is_data_magic(magic);
     const std::uint64_t minimum_size = kind == ArtifactKind::Index
                                            ? OOCRelationStoreFormat::INDEX_HEADER_BYTES
                                            : OOCRelationStoreFormat::DATA_HEADER_BYTES;
@@ -1383,11 +1381,10 @@ artifact_fingerprint(const InspectResult& inspected, ArtifactKind kind,
         .header_store_id = store_id,
         .header_count =
             kind == ArtifactKind::Index
-                ? (little_endian
-                       ? read_little_u64(inspected.bytes,
-                                         OOCRelationStoreFormat::INDEX_COUNT_OFFSET)
-                       : read_native_u64(inspected.bytes,
-                                         OOCRelationStoreFormat::INDEX_COUNT_OFFSET))
+                ? (little_endian ? read_little_u64(inspected.bytes,
+                                                   OOCRelationStoreFormat::INDEX_COUNT_OFFSET)
+                                 : read_native_u64(inspected.bytes,
+                                                   OOCRelationStoreFormat::INDEX_COUNT_OFFSET))
                 : 0,
     };
 }
@@ -4805,10 +4802,10 @@ read_private_handoff_leaf(util::durable_immutable_record::NativeHandle directory
                      : OOCRelationStoreFormat::MAGIC_V3_FINAL) ||
             source.index.header_version != record.pair.format_version ||
             source.index.header_count != record.pair.count ||
-            source.data.header_magic != (record.pair.format_version ==
-                                                 OOCRelationStoreFormat::FORMAT_VERSION_V4
-                                             ? OOCRelationStoreFormat::MAGIC_V4_DATA
-                                             : OOCRelationStoreFormat::MAGIC_V3_DATA) ||
+            source.data.header_magic !=
+                (record.pair.format_version == OOCRelationStoreFormat::FORMAT_VERSION_V4
+                     ? OOCRelationStoreFormat::MAGIC_V4_DATA
+                     : OOCRelationStoreFormat::MAGIC_V3_DATA) ||
             source.data.header_version != record.pair.format_version ||
             source.index.identity.size != record.pair.index_extent ||
             source.data.identity.size != record.pair.data_extent ||

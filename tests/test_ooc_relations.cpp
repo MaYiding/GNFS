@@ -8,8 +8,8 @@
 #include <gnfs/util/native_binary_update_file.hpp>
 #include <gnfs/util/temp_path.hpp>
 
-#include <cerrno>
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -363,14 +363,13 @@ void test_v4_little_endian_wire_and_v3_recovery() {
     }
     TEST_ASSERT(v4_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V4,
                 "fresh writer should publish V4");
-    const auto index_header = read_bytes_at(v4.base + ".relidx", 0,
-                                            static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES));
-    const auto data_header = read_bytes_at(v4.base + ".reldata", 0,
-                                            static_cast<size_t>(OOCRelationWriter::DATA_HEADER_BYTES));
-    const auto record = read_bytes_at(v4.base + ".reldata",
-                                      static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES),
-                                      static_cast<size_t>(v4_descriptor.data_end -
-                                                          OOCRelationWriter::DATA_HEADER_BYTES));
+    const auto index_header = read_bytes_at(
+        v4.base + ".relidx", 0, static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES));
+    const auto data_header = read_bytes_at(
+        v4.base + ".reldata", 0, static_cast<size_t>(OOCRelationWriter::DATA_HEADER_BYTES));
+    const auto record = read_bytes_at(
+        v4.base + ".reldata", static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES),
+        static_cast<size_t>(v4_descriptor.data_end - OOCRelationWriter::DATA_HEADER_BYTES));
     check_le_u64(index_header, 0, OOCRelationWriter::MAGIC_V4_FINAL);
     check_le_u64(index_header, OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET,
                  OOCRelationWriter::FORMAT_VERSION_V4);
@@ -394,7 +393,8 @@ void test_v4_little_endian_wire_and_v3_recovery() {
     RelationSequenceReceiptAccumulator sequence;
     sequence.append(legacy_relation);
     OOCRelationWriter recovered(v3.base, v3_descriptor, sequence.finish());
-    TEST_ASSERT(recovered.recovery_outcome() == gnfs::relation::OOCRecoveryOutcome::AppendablePrefix,
+    TEST_ASSERT(recovered.recovery_outcome() ==
+                    gnfs::relation::OOCRecoveryOutcome::AppendablePrefix,
                 "V3 fixture should recover as an appendable prefix");
     TEST_ASSERT(recovered.count() == 1, "V3 fixture recovery should retain one relation");
     const OOCSnapshotDescriptor recovered_descriptor = recovered.finalize();
