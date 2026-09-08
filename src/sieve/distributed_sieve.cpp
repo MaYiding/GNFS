@@ -91,11 +91,7 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept {
 
     if (const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
         env != nullptr && env[0] != '\0') {
-        char* end = nullptr;
-        long v = std::strtol(env, &end, 10);
-        if (end != env && v >= 0) {
-            cfg.sq_per_worker = static_cast<size_t>(v);
-        }
+        cfg.sq_per_worker = parse_distributed_sieve_sq_per_worker_env();
     }
 
     cfg.worker_timeout_ms = parse_distributed_sieve_worker_timeout_env();
@@ -828,11 +824,7 @@ DistributedSieveConfig parse_distributed_sieve_env() noexcept {
 
     if (const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
         env != nullptr && env[0] != '\0') {
-        char* end = nullptr;
-        long v = std::strtol(env, &end, 10);
-        if (end != env && v >= 0) {
-            cfg.sq_per_worker = static_cast<size_t>(v);
-        }
+        cfg.sq_per_worker = parse_distributed_sieve_sq_per_worker_env();
     }
 
     cfg.worker_timeout_ms = parse_distributed_sieve_worker_timeout_env();
