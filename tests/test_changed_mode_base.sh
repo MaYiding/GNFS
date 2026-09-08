@@ -91,4 +91,9 @@ for expected in feature.txt staged.txt untracked.txt; do
 done
 pass "committed, staged, unstaged, and untracked paths"
 
+map_output=$(zsh "${PROJECT_ROOT}/scripts/test.sh" module-map-check)
+print -r -- "$map_output" | grep -F "测试模块映射合同通过" >/dev/null ||
+    fail "registered test module mapping contract failed"
+pass "registered test module mapping"
+
 print -r -- "Changed-mode base contract passed."
