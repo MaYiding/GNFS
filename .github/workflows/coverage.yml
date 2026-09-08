@@ -42,7 +42,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcovr libgmp-dev libntl-dev
+          sudo apt-get install -y gcovr libgmp-dev libntl-dev zsh
 
       - name: Configure coverage build
         run: |
