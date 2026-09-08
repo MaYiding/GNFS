@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -30,13 +32,14 @@ public:
         if (sorted_) {
             auto it = std::lower_bound(indices_.begin(), indices_.end(), col);
             if (it != indices_.end() && *it == col) {
-                return;  // Already set
+                return; // Already set
             }
             sorted_ = false;
         } else {
             // Unsorted: linear scan to prevent duplicate append (preserves set idempotency)
             for (auto idx : indices_) {
-                if (idx == col) return;  // Already present
+                if (idx == col)
+                    return; // Already present
             }
         }
         indices_.push_back(col);
@@ -52,7 +55,9 @@ public:
 
     /// Reserve capacity for upcoming append_unchecked/set calls.
     /// Called by matrix_builder build_row with FB+LP+QC+SM count upper bound.
-    void reserve(size_t n) { indices_.reserve(n); }
+    void reserve(size_t n) {
+        indices_.reserve(n);
+    }
 
     /// 清除位
     void clear(uint32_t col) {
@@ -83,7 +88,8 @@ public:
         // 未排序：线性扫描，计算出现次数 mod 2（GF(2) 语义）
         size_t count = 0;
         for (auto idx : indices_) {
-            if (idx == col) ++count;
+            if (idx == col)
+                ++count;
         }
         return count % 2 == 1;
     }
@@ -96,13 +102,13 @@ public:
             // Remove duplicates (GF(2): even count = 0)
             IndexList unique;
             unique.reserve(indices_.size());
-            for (size_t i = 0; i < indices_.size(); ) {
+            for (size_t i = 0; i < indices_.size();) {
                 uint32_t val = indices_[i];
                 size_t count = 1;
                 while (i + count < indices_.size() && indices_[i + count] == val) {
                     count++;
                 }
-                if (count % 2 == 1) {  // Odd count = 1 in GF(2)
+                if (count % 2 == 1) { // Odd count = 1 in GF(2)
                     unique.push_back(val);
                 }
                 i += count;
@@ -282,7 +288,8 @@ public:
 
     /// 计算平均行重量
     [[nodiscard]] double average_row_weight() const noexcept {
-        if (rows_.empty()) return 0.0;
+        if (rows_.empty())
+            return 0.0;
         return static_cast<double>(total_weight()) / static_cast<double>(rows_.size());
     }
 
@@ -326,7 +333,7 @@ public:
             bool sum = false;
             for (uint32_t col : rows_[i].indices()) {
                 if (col < x.size() && x[col]) {
-                    sum = !sum;  // XOR
+                    sum = !sum; // XOR
                 }
             }
             result[i] = sum;
@@ -387,7 +394,8 @@ public:
     /// 是否全零
     [[nodiscard]] bool is_zero() const noexcept {
         for (uint64_t block : bits_) {
-            if (block != 0) return false;
+            if (block != 0)
+                return false;
         }
         return true;
     }
@@ -468,8 +476,7 @@ public:
             const auto& idx = mat.row(i).indices();
             for (uint32_t c : idx) {
                 if (c >= num_cols_) {
-                    throw std::out_of_range(
-                        "CSRMatrix: column index out of range");
+                    throw std::out_of_range("CSRMatrix: column index out of range");
                 }
             }
             std::copy(idx.begin(), idx.end(), col_indices_.begin() + static_cast<ptrdiff_t>(pos));
@@ -477,9 +484,15 @@ public:
         }
     }
 
-    [[nodiscard]] size_t num_rows() const noexcept { return num_rows_; }
-    [[nodiscard]] size_t num_cols() const noexcept { return num_cols_; }
-    [[nodiscard]] size_t nnz() const noexcept { return col_indices_.size(); }
+    [[nodiscard]] size_t num_rows() const noexcept {
+        return num_rows_;
+    }
+    [[nodiscard]] size_t num_cols() const noexcept {
+        return num_cols_;
+    }
+    [[nodiscard]] size_t nnz() const noexcept {
+        return col_indices_.size();
+    }
 
     /// Get column indices for row i as a contiguous span
     [[nodiscard]] const uint32_t* row_begin(size_t i) const noexcept {
@@ -493,8 +506,12 @@ public:
     }
 
     /// Access underlying data for direct iteration
-    [[nodiscard]] const std::vector<uint32_t>& col_indices() const noexcept { return col_indices_; }
-    [[nodiscard]] const std::vector<size_t>& row_offsets() const noexcept { return row_offsets_; }
+    [[nodiscard]] const std::vector<uint32_t>& col_indices() const noexcept {
+        return col_indices_;
+    }
+    [[nodiscard]] const std::vector<size_t>& row_offsets() const noexcept {
+        return row_offsets_;
+    }
 
     /// uint32 view of row_offsets, lazily materialised on first request.
     /// Exists so the Metal SpMV layer can hand the CSR straight to the
@@ -504,13 +521,18 @@ public:
     /// total nnz under 2^32 (60d ≈ 500M nnz at most). Returned pointer
     /// stays valid for the lifetime of the CSRMatrix.
     [[nodiscard]] const uint32_t* row_offsets_u32() const {
+        // The Metal dispatcher can invoke SpMV concurrently from multiple
+        // Krylov streams. Protect the one-time vector materialisation so two
+        // streams cannot race on resize()/writes to the mutable cache.
+        if (!row_offsets_u32_mutex_)
+            row_offsets_u32_mutex_ = std::make_shared<std::mutex>();
+        std::lock_guard<std::mutex> lock(*row_offsets_u32_mutex_);
         if (row_offsets_u32_.empty() && !row_offsets_.empty()) {
             row_offsets_u32_.resize(row_offsets_.size());
             for (size_t i = 0; i < row_offsets_.size(); ++i) {
                 if (row_offsets_[i] > UINT32_MAX) {
                     row_offsets_u32_.clear();
-                    throw std::overflow_error(
-                        "CSRMatrix::row_offsets_u32: nnz exceeds 2^32");
+                    throw std::overflow_error("CSRMatrix::row_offsets_u32: nnz exceeds 2^32");
                 }
                 row_offsets_u32_[i] = static_cast<uint32_t>(row_offsets_[i]);
             }
@@ -519,9 +541,10 @@ public:
     }
 
 private:
-    std::vector<uint32_t> col_indices_;   // All column indices, packed contiguously
+    std::vector<uint32_t> col_indices_; // All column indices, packed contiguously
     std::vector<size_t> row_offsets_;   // row_offsets_[i] = start of row i in col_indices_
-    mutable std::vector<uint32_t> row_offsets_u32_;  // Lazy uint32 view for Metal
+    mutable std::vector<uint32_t> row_offsets_u32_; // Lazy uint32 view for Metal
+    mutable std::shared_ptr<std::mutex> row_offsets_u32_mutex_ = std::make_shared<std::mutex>();
     size_t num_rows_ = 0;
     size_t num_cols_ = 0;
 };
