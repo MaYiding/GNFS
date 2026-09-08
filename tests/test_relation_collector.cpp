@@ -1112,6 +1112,65 @@ void test_ooc_merge_respects_max_relations() {
     std::cout << "  OOC merge max_relations guard: PASS" << std::endl;
 }
 
+static void check_merge_callback_contract(const char* mode, const CollectorConfig& config) {
+    RelationCollector destination(config);
+    CHECK(destination.add(Relation(1, 2)));
+
+    const Integer n("143");
+    const Integer m("12");
+    destination.set_polynomial_context(n, m);
+
+    RelationCollector source;
+    CHECK(source.add(Relation(1, 2)));  // Duplicate at the destination.
+    CHECK(source.add(Relation(3, 4)));  // Accepted.
+    CHECK(source.add(Relation(12, 1))); // Rejected by the destination's N/m context.
+    CHECK(source.add(Relation(5, 6)));  // Accepted.
+
+    std::vector<ABPair> callbacks;
+    destination.set_callback([&](const Relation& relation) {
+        // merge() must release both collector mutexes before dispatch.
+        CHECK(destination.size() == 3);
+        CHECK(destination.stats().total_relations == destination.size());
+        CHECK(source.size() == 4);
+        callbacks.push_back(relation.ab());
+    });
+
+    CHECK(destination.merge(source) == 2);
+    CHECK(destination.size() == 3);
+    CHECK(callbacks.size() == 2);
+    CHECK(callbacks[0].a == 3);
+    CHECK(callbacks[0].b == 4);
+    CHECK(callbacks[1].a == 5);
+    CHECK(callbacks[1].b == 6);
+
+    const auto stats = destination.stats();
+    CHECK(stats.total_relations == 3);
+    CHECK(stats.duplicates_rejected == 1);
+    CHECK(stats.n_divisible_rejected == 1);
+
+    std::cout << "  Merge callback contract (" << mode << "): PASS" << std::endl;
+}
+
+void test_merge_callback_contract() {
+    std::cout << "Testing merge callbacks across destination storage modes..." << std::endl;
+
+    CollectorConfig vector_config;
+    vector_config.check_duplicates = true;
+    check_merge_callback_contract("vector", vector_config);
+
+    CollectorConfig pool_config = vector_config;
+    pool_config.use_pool = true;
+    pool_config.pool_initial_bytes = 256;
+    check_merge_callback_contract("pool", pool_config);
+
+    const auto ooc_path = make_tmp_ooc_path("merge_callback");
+    OOCArtifacts cleanup(ooc_path);
+    CollectorConfig ooc_config = vector_config;
+    ooc_config.ooc_enabled = true;
+    ooc_config.ooc_base_path = ooc_path;
+    check_merge_callback_contract("ooc", ooc_config);
+}
+
 /// Best-effort cleanup for the private directory reserved by RelationSink.
 struct OOCSinkLeaseArtifacts {
     std::filesystem::path lease_root;
@@ -3399,6 +3458,7 @@ int main() {
     test_sort_relations();
     test_callback();
     test_callback_no_deadlock();
+    test_merge_callback_contract();
     test_n_divisibility_rejection();
 
     std::cout << "\n=== OOC mode tests (BACKLOG #11c) ===" << std::endl;

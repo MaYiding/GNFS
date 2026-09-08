@@ -1430,7 +1430,12 @@ public:
     size_t merge(const RelationCollector& other) {
         if (this == &other)
             return 0; // Self-merge: UB with std::mutex
-        std::scoped_lock lock(mutex_, other.mutex_);
+        NewRelationCallback callback;
+        std::vector<Relation> callback_relations;
+        std::unique_lock<std::mutex> destination_lock(mutex_, std::defer_lock);
+        std::unique_lock<std::mutex> source_lock(other.mutex_, std::defer_lock);
+        std::lock(destination_lock, source_lock);
+
         require_appendable_ooc_owner("merge");
         if (ooc_writer_ && ooc_writer_->state() != OOCWriterState::Open) {
             throw std::logic_error("RelationCollector::merge: OOC writer is not appendable");
@@ -1438,6 +1443,8 @@ public:
         if (other.config_.ooc_enabled) {
             throw std::logic_error("RelationCollector::merge: OOC source is unsupported");
         }
+
+        callback = callback_;
 
         // Source iteration: pmr vector 优先 (pool mode), 否则 std::vector.
         // 通过 lambda 统一两个路径,避免代码重复.
@@ -1476,6 +1483,9 @@ public:
             }
 
             try {
+                if (callback) {
+                    callback_relations.push_back(copy);
+                }
                 if (ooc_writer_) {
                     ooc_writer_->write(copy);
                     accepted_sequence_.append(copy);
@@ -1505,6 +1515,14 @@ public:
                 if (merge_one(rel))
                     ++added;
             }
+        }
+
+        // All destination/source locks are released before callbacks so they
+        // can safely inspect either collector or acquire unrelated locks.
+        destination_lock.unlock();
+        source_lock.unlock();
+        for (const auto& rel : callback_relations) {
+            callback(rel);
         }
 
         return added;
