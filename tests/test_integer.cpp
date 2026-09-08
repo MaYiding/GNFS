@@ -475,6 +475,65 @@ void test_int64_min_boundaries() {
     std::cout << "  INT64_MIN/MAX/UINT64_MAX boundaries: PASS" << std::endl;
 }
 
+void test_uint64_arithmetic_boundaries() {
+    std::cout << "Testing Integer uint64_t arithmetic boundaries..." << std::endl;
+
+    const uint64_t two63 = uint64_t{1} << 63;
+    const uint64_t max_value = UINT64_MAX;
+
+    Integer add(0);
+    add += two63;
+    GNFS_TEST_CHECK(add.to_string() == "9223372036854775808");
+
+    Integer sub(0);
+    sub -= two63;
+    GNFS_TEST_CHECK(sub.to_string() == "-9223372036854775808");
+
+    Integer mul(1);
+    mul *= two63;
+    GNFS_TEST_CHECK(mul.to_string() == "9223372036854775808");
+
+    Integer div("18446744073709551615");
+    div /= max_value;
+    GNFS_TEST_CHECK(div.is_one());
+
+    Integer rem("18446744073709551616");
+    rem %= max_value;
+    GNFS_TEST_CHECK(rem.is_one());
+
+    Integer max_add(0);
+    max_add += static_cast<unsigned long long>(ULLONG_MAX);
+    GNFS_TEST_CHECK(max_add.to_string() == "18446744073709551615");
+
+    Integer max_sub(0);
+    max_sub -= max_value;
+    GNFS_TEST_CHECK(max_sub.to_string() == "-18446744073709551615");
+
+    Integer max_mul(1);
+    max_mul *= max_value;
+    GNFS_TEST_CHECK(max_mul.to_string() == "18446744073709551615");
+
+    bool div_zero_threw = false;
+    try {
+        Integer value(1);
+        value /= uint64_t{0};
+    } catch (const std::domain_error&) {
+        div_zero_threw = true;
+    }
+    GNFS_TEST_CHECK(div_zero_threw);
+
+    bool mod_zero_threw = false;
+    try {
+        Integer value(1);
+        value %= uint64_t{0};
+    } catch (const std::domain_error&) {
+        mod_zero_threw = true;
+    }
+    GNFS_TEST_CHECK(mod_zero_threw);
+
+    std::cout << "  uint64_t arithmetic: PASS" << std::endl;
+}
+
 void test_safe_gcd_with_int64_min() {
     std::cout << "Testing std::gcd with safe_abs (no UB)..." << std::endl;
 
@@ -513,6 +572,7 @@ int main() {
     test_relation_ab_int64_min();
     test_safe_gcd_with_int64_min();
     test_int64_min_boundaries();
+    test_uint64_arithmetic_boundaries();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

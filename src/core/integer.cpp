@@ -549,4 +549,40 @@ Integer& Integer::operator%=(int64_t value) {
     return *this;
 }
 
+Integer& Integer::add_uint64(uint64_t value) {
+    Integer rhs(value);
+    mpz_add(value_, value_, rhs.value_);
+    return *this;
+}
+
+Integer& Integer::sub_uint64(uint64_t value) {
+    Integer rhs(value);
+    mpz_sub(value_, value_, rhs.value_);
+    return *this;
+}
+
+Integer& Integer::mul_uint64(uint64_t value) {
+    Integer rhs(value);
+    mpz_mul(value_, value_, rhs.value_);
+    return *this;
+}
+
+Integer& Integer::div_uint64(uint64_t value) {
+    if (value == 0) {
+        throw std::domain_error("Division by zero");
+    }
+    Integer rhs(value);
+    mpz_tdiv_q(value_, value_, rhs.value_);
+    return *this;
+}
+
+Integer& Integer::mod_uint64(uint64_t value) {
+    if (value == 0) {
+        throw std::domain_error("Integer modulo by zero");
+    }
+    Integer rhs(value);
+    mpz_tdiv_r(value_, value_, rhs.value_);
+    return *this;
+}
+
 } // namespace gnfs::core

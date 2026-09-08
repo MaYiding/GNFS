@@ -104,6 +104,35 @@ public:
     Integer& operator/=(int64_t value);
     Integer& operator%=(int64_t value);
 
+    // Keep unsigned 64-bit operands exact instead of implicitly narrowing
+    // them to int64_t before the GMP operation. The size constraint also
+    // covers the distinct native unsigned type on LP64/LLP64 targets.
+    template <typename T>
+        requires(std::is_integral_v<T> && std::is_unsigned_v<T> && sizeof(T) == sizeof(uint64_t))
+    Integer& operator*=(T value) {
+        return mul_uint64(static_cast<uint64_t>(value));
+    }
+    template <typename T>
+        requires(std::is_integral_v<T> && std::is_unsigned_v<T> && sizeof(T) == sizeof(uint64_t))
+    Integer& operator+=(T value) {
+        return add_uint64(static_cast<uint64_t>(value));
+    }
+    template <typename T>
+        requires(std::is_integral_v<T> && std::is_unsigned_v<T> && sizeof(T) == sizeof(uint64_t))
+    Integer& operator-=(T value) {
+        return sub_uint64(static_cast<uint64_t>(value));
+    }
+    template <typename T>
+        requires(std::is_integral_v<T> && std::is_unsigned_v<T> && sizeof(T) == sizeof(uint64_t))
+    Integer& operator/=(T value) {
+        return div_uint64(static_cast<uint64_t>(value));
+    }
+    template <typename T>
+        requires(std::is_integral_v<T> && std::is_unsigned_v<T> && sizeof(T) == sizeof(uint64_t))
+    Integer& operator%=(T value) {
+        return mod_uint64(static_cast<uint64_t>(value));
+    }
+
     Integer operator+(const Integer& other) const;
     Integer operator-(const Integer& other) const;
     Integer operator*(const Integer& other) const;
@@ -171,6 +200,12 @@ public:
     }
 
 private:
+    Integer& add_uint64(uint64_t value);
+    Integer& sub_uint64(uint64_t value);
+    Integer& mul_uint64(uint64_t value);
+    Integer& div_uint64(uint64_t value);
+    Integer& mod_uint64(uint64_t value);
+
     mpz_t value_;
 };
 
