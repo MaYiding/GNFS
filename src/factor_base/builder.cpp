@@ -2,10 +2,11 @@
 #include "gnfs/sqrt/modular_poly.hpp"
 #include "gnfs/util/primes.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
+#include <cstring>
 #include <istream>
 #include <limits>
 #include <ostream>
@@ -20,10 +21,84 @@ namespace gnfs::factor_base {
 
 namespace {
 
-// The on-disk count is bounded to uint32_t, so the high bit is available as a
-// compatibility marker for an explicitly configured zero. Legacy version-1
-// files wrote zero for an unset count (meaning all algebraic entries).
+constexpr uint32_t FACTOR_BASE_MAGIC = 0x47464246; // "GFBF"
+constexpr uint32_t FACTOR_BASE_VERSION = 1;
+// The high bit is available because serialized counts are bounded to uint32_t.
+// Legacy v1 files used zero for an unset count, so only an explicitly configured
+// zero receives this marker.
 constexpr uint64_t EXPLICIT_ZERO_SIEVE_COUNT = UINT64_C(1) << 63;
+
+enum class FactorBaseWireEncoding {
+    LittleEndian,
+    NativeEndian,
+};
+
+[[nodiscard]] uint32_t decode_u32_le(const unsigned char* bytes) noexcept {
+    return static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8U) |
+           (static_cast<uint32_t>(bytes[2]) << 16U) | (static_cast<uint32_t>(bytes[3]) << 24U);
+}
+
+[[nodiscard]] uint64_t decode_u64_le(const unsigned char* bytes) noexcept {
+    return static_cast<uint64_t>(bytes[0]) | (static_cast<uint64_t>(bytes[1]) << 8U) |
+           (static_cast<uint64_t>(bytes[2]) << 16U) | (static_cast<uint64_t>(bytes[3]) << 24U) |
+           (static_cast<uint64_t>(bytes[4]) << 32U) | (static_cast<uint64_t>(bytes[5]) << 40U) |
+           (static_cast<uint64_t>(bytes[6]) << 48U) | (static_cast<uint64_t>(bytes[7]) << 56U);
+}
+
+void encode_u32_le(unsigned char* bytes, uint32_t value) noexcept {
+    bytes[0] = static_cast<unsigned char>(value & 0xffU);
+    bytes[1] = static_cast<unsigned char>((value >> 8U) & 0xffU);
+    bytes[2] = static_cast<unsigned char>((value >> 16U) & 0xffU);
+    bytes[3] = static_cast<unsigned char>((value >> 24U) & 0xffU);
+}
+
+void encode_u64_le(unsigned char* bytes, uint64_t value) noexcept {
+    bytes[0] = static_cast<unsigned char>(value & 0xffU);
+    bytes[1] = static_cast<unsigned char>((value >> 8U) & 0xffU);
+    bytes[2] = static_cast<unsigned char>((value >> 16U) & 0xffU);
+    bytes[3] = static_cast<unsigned char>((value >> 24U) & 0xffU);
+    bytes[4] = static_cast<unsigned char>((value >> 32U) & 0xffU);
+    bytes[5] = static_cast<unsigned char>((value >> 40U) & 0xffU);
+    bytes[6] = static_cast<unsigned char>((value >> 48U) & 0xffU);
+    bytes[7] = static_cast<unsigned char>((value >> 56U) & 0xffU);
+}
+
+template <typename T> [[nodiscard]] T decode_native(const unsigned char* bytes) noexcept {
+    T value{};
+    std::memcpy(&value, bytes, sizeof(value));
+    return value;
+}
+
+template <typename T>
+[[nodiscard]] T read_scalar(const unsigned char* bytes, FactorBaseWireEncoding encoding) noexcept {
+    if (encoding == FactorBaseWireEncoding::LittleEndian) {
+        if constexpr (sizeof(T) == sizeof(uint32_t)) {
+            return static_cast<T>(decode_u32_le(bytes));
+        } else {
+            static_assert(sizeof(T) == sizeof(uint64_t));
+            return static_cast<T>(decode_u64_le(bytes));
+        }
+    }
+    return decode_native<T>(bytes);
+}
+
+void write_le(std::ostream& os, uint32_t value, const char* field) {
+    unsigned char bytes[sizeof(value)];
+    encode_u32_le(bytes, value);
+    os.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+    if (!os) {
+        throw std::runtime_error(std::string("FactorBase::save: write failed for ") + field);
+    }
+}
+
+void write_le(std::ostream& os, uint64_t value, const char* field) {
+    unsigned char bytes[sizeof(value)];
+    encode_u64_le(bytes, value);
+    os.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+    if (!os) {
+        throw std::runtime_error(std::string("FactorBase::save: write failed for ") + field);
+    }
+}
 
 [[nodiscard]] size_t sieve_element_count(uint32_t bound) {
     const uint64_t count = static_cast<uint64_t>(bound) + 1;
@@ -40,13 +115,11 @@ constexpr uint64_t EXPLICIT_ZERO_SIEVE_COUNT = UINT64_C(1) << 63;
     const double estimate = static_cast<double>(bound) /
                             std::log(static_cast<double>(static_cast<uint64_t>(bound) + 1)) *
                             multiplier;
-    if (!std::isfinite(estimate) || estimate <= 0.0) {
+    if (!std::isfinite(estimate) || estimate <= 0) {
         return 0;
     }
-
-    const size_t max_size = (std::numeric_limits<size_t>::max)();
-    if (estimate >= static_cast<double>(max_size)) {
-        return max_size;
+    if (estimate > static_cast<double>((std::numeric_limits<size_t>::max)())) {
+        throw std::overflow_error("FactorBaseBuilder: prime-count estimate exceeds size_t");
     }
     return static_cast<size_t>(estimate);
 }
@@ -58,8 +131,7 @@ constexpr uint64_t EXPLICIT_ZERO_SIEVE_COUNT = UINT64_C(1) << 63;
 // ============================================================
 
 void FactorBase::save(std::ostream& os) const {
-    const size_t sieve_count = sieve_algebraic_count();
-    if (sieve_count > algebraic_.size()) {
+    if (sieve_algebraic_count_ > algebraic_.size()) {
         throw std::runtime_error(
             "FactorBase::save: sieve_algebraic_count exceeds algebraic-prime count");
     }
@@ -70,48 +142,46 @@ void FactorBase::save(std::ostream& os) const {
         throw std::overflow_error("FactorBase::save: algebraic-prime count exceeds uint32_t");
     }
 
-    const auto write_bytes = [&os](const void* data, std::size_t size, const char* field) {
-        os.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
-        if (!os) {
-            throw std::runtime_error(std::string("FactorBase::save: write failed for ") + field);
-        }
-    };
-
-    // Magic + version header
-    constexpr uint32_t MAGIC = 0x47464246; // "GFBF" (GNFS Factor Base Format)
-    constexpr uint32_t VERSION = 1;
-    write_bytes(&MAGIC, sizeof(MAGIC), "magic");
-    write_bytes(&VERSION, sizeof(VERSION), "version");
+    // Version 1 is canonical little-endian. The loader below still accepts
+    // version-1 files emitted by older native-endian builds.
+    write_le(os, FACTOR_BASE_MAGIC, "magic");
+    write_le(os, FACTOR_BASE_VERSION, "version");
 
     // Params
-    write_bytes(&params_.rational_bound, sizeof(params_.rational_bound), "rational_bound");
-    write_bytes(&params_.algebraic_bound, sizeof(params_.algebraic_bound), "algebraic_bound");
-    write_bytes(&params_.large_prime_bound, sizeof(params_.large_prime_bound), "large_prime_bound");
-    write_bytes(&params_.log_scale, sizeof(params_.log_scale), "log_scale");
+    write_le(os, params_.rational_bound, "rational_bound");
+    write_le(os, params_.algebraic_bound, "algebraic_bound");
+    write_le(os, params_.large_prime_bound, "large_prime_bound");
+    os.put(static_cast<char>(params_.log_scale));
+    if (!os) {
+        throw std::runtime_error("FactorBase::save: write failed for log_scale");
+    }
 
     // Sieve algebraic count (high bit marks an explicit zero; legacy zero is unset).
-    uint64_t sac = static_cast<uint64_t>(sieve_count);
-    if (has_explicit_sieve_algebraic_count() && sieve_count == 0) {
-        sac = EXPLICIT_ZERO_SIEVE_COUNT;
+    uint64_t encoded_sieve_count = static_cast<uint64_t>(sieve_algebraic_count_);
+    if (sieve_algebraic_count_set_ && sieve_algebraic_count_ == 0) {
+        encoded_sieve_count = EXPLICIT_ZERO_SIEVE_COUNT;
     }
-    write_bytes(&sac, sizeof(sac), "sieve_algebraic_count");
+    write_le(os, encoded_sieve_count, "sieve_algebraic_count");
 
     // Rational primes
     uint32_t rat_count = static_cast<uint32_t>(rational_.size());
-    write_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
+    write_le(os, rat_count, "rational-prime count");
     for (const auto& rp : rational_) {
-        write_bytes(&rp.p, sizeof(rp.p), "rational-prime value");
-        write_bytes(&rp.log_p, sizeof(rp.log_p), "rational-prime log");
+        write_le(os, rp.p, "rational-prime value");
+        write_le(os, rp.log_p, "rational-prime log");
     }
 
     // Algebraic primes
     uint32_t alg_count = static_cast<uint32_t>(algebraic_.size());
-    write_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
+    write_le(os, alg_count, "algebraic-prime count");
     for (const auto& ap : algebraic_) {
-        write_bytes(&ap.p, sizeof(ap.p), "algebraic-prime value");
-        write_bytes(&ap.r, sizeof(ap.r), "algebraic-prime root");
-        write_bytes(&ap.log_p, sizeof(ap.log_p), "algebraic-prime log");
-        write_bytes(&ap.degree, sizeof(ap.degree), "algebraic-prime degree");
+        write_le(os, ap.p, "algebraic-prime value");
+        write_le(os, ap.r, "algebraic-prime root");
+        write_le(os, ap.log_p, "algebraic-prime log");
+        os.put(static_cast<char>(ap.degree));
+        if (!os) {
+            throw std::runtime_error("FactorBase::save: write failed for algebraic-prime degree");
+        }
     }
 }
 
@@ -123,31 +193,62 @@ FactorBase FactorBase::load(std::istream& is) {
         }
     };
 
-    // Magic + version
-    uint32_t magic = 0;
-    uint32_t version = 0;
-    read_bytes(&magic, sizeof(magic), "magic");
-    read_bytes(&version, sizeof(version), "version");
-    if (magic != 0x47464246)
-        throw std::runtime_error("FactorBase::load: invalid magic number");
-    if (version != 1)
+    const auto read_encoded = [&read_bytes](std::size_t size, const char* field) {
+        std::array<unsigned char, sizeof(uint64_t)> bytes{};
+        read_bytes(bytes.data(), size, field);
+        return bytes;
+    };
+
+    // Detect the canonical little-endian header while retaining compatibility
+    // with version-1 files written in the host's native byte order.
+    const auto header = read_encoded(sizeof(uint64_t), "header");
+    const uint32_t little_magic = decode_u32_le(header.data());
+    const uint32_t little_version = decode_u32_le(header.data() + sizeof(uint32_t));
+    const uint32_t native_magic = decode_native<uint32_t>(header.data());
+    const uint32_t native_version = decode_native<uint32_t>(header.data() + sizeof(uint32_t));
+
+    FactorBaseWireEncoding encoding;
+    if (little_magic == FACTOR_BASE_MAGIC && little_version == FACTOR_BASE_VERSION) {
+        encoding = FactorBaseWireEncoding::LittleEndian;
+    } else if (native_magic == FACTOR_BASE_MAGIC && native_version == FACTOR_BASE_VERSION) {
+        encoding = FactorBaseWireEncoding::NativeEndian;
+    } else if (little_magic == FACTOR_BASE_MAGIC) {
         throw std::runtime_error("FactorBase::load: unsupported version " +
-                                 std::to_string(version));
+                                 std::to_string(little_version));
+    } else if (native_magic == FACTOR_BASE_MAGIC) {
+        throw std::runtime_error("FactorBase::load: unsupported version " +
+                                 std::to_string(native_version));
+    } else {
+        throw std::runtime_error("FactorBase::load: invalid magic number");
+    }
+
+    const auto read_u32 = [&read_encoded, encoding](const char* field) {
+        const auto bytes = read_encoded(sizeof(uint32_t), field);
+        return read_scalar<uint32_t>(bytes.data(), encoding);
+    };
+    const auto read_u64 = [&read_encoded, encoding](const char* field) {
+        const auto bytes = read_encoded(sizeof(uint64_t), field);
+        return read_scalar<uint64_t>(bytes.data(), encoding);
+    };
+    const auto read_u8 = [&read_bytes](const char* field) {
+        unsigned char value = 0;
+        read_bytes(&value, sizeof(value), field);
+        return value;
+    };
 
     // Params
     FactorBaseParams params;
-    read_bytes(&params.rational_bound, sizeof(params.rational_bound), "rational_bound");
-    read_bytes(&params.algebraic_bound, sizeof(params.algebraic_bound), "algebraic_bound");
-    read_bytes(&params.large_prime_bound, sizeof(params.large_prime_bound), "large_prime_bound");
-    read_bytes(&params.log_scale, sizeof(params.log_scale), "log_scale");
+    params.rational_bound = read_u32("rational_bound");
+    params.algebraic_bound = read_u32("algebraic_bound");
+    params.large_prime_bound = read_u64("large_prime_bound");
+    params.log_scale = read_u8("log_scale");
 
     FactorBase fb(params);
 
     // Sieve algebraic count
-    uint64_t encoded_sac = 0;
-    read_bytes(&encoded_sac, sizeof(encoded_sac), "sieve_algebraic_count");
-    const bool explicit_zero = (encoded_sac & EXPLICIT_ZERO_SIEVE_COUNT) != 0;
-    const uint64_t sac = encoded_sac & ~EXPLICIT_ZERO_SIEVE_COUNT;
+    const uint64_t encoded_sieve_count = read_u64("sieve_algebraic_count");
+    const bool explicit_zero = (encoded_sieve_count & EXPLICIT_ZERO_SIEVE_COUNT) != 0;
+    const uint64_t sac = encoded_sieve_count & ~EXPLICIT_ZERO_SIEVE_COUNT;
     if (explicit_zero && sac != 0) {
         throw std::runtime_error("FactorBase::load: invalid explicit-zero sieve count marker");
     }
@@ -160,13 +261,13 @@ FactorBase FactorBase::load(std::istream& is) {
 
     // Rational primes
     uint32_t rat_count = 0;
-    read_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
+    rat_count = read_u32("rational-prime count");
     fb.rational_.clear();
     std::unordered_set<uint32_t> rational_keys;
     for (size_t i = 0; i < static_cast<size_t>(rat_count); ++i) {
         RationalPrime rp{};
-        read_bytes(&rp.p, sizeof(rp.p), "rational-prime value");
-        read_bytes(&rp.log_p, sizeof(rp.log_p), "rational-prime log");
+        rp.p = read_u32("rational-prime value");
+        rp.log_p = read_u32("rational-prime log");
         if (rp.p < 2 || !util::is_prime_u32(rp.p)) {
             throw std::runtime_error("FactorBase::load: rational-prime value is not prime");
         }
@@ -178,15 +279,15 @@ FactorBase FactorBase::load(std::istream& is) {
 
     // Algebraic primes
     uint32_t alg_count = 0;
-    read_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
+    alg_count = read_u32("algebraic-prime count");
     fb.algebraic_.clear();
     std::unordered_set<uint64_t> algebraic_keys;
     for (size_t i = 0; i < static_cast<size_t>(alg_count); ++i) {
         AlgebraicPrime ap{};
-        read_bytes(&ap.p, sizeof(ap.p), "algebraic-prime value");
-        read_bytes(&ap.r, sizeof(ap.r), "algebraic-prime root");
-        read_bytes(&ap.log_p, sizeof(ap.log_p), "algebraic-prime log");
-        read_bytes(&ap.degree, sizeof(ap.degree), "algebraic-prime degree");
+        ap.p = read_u32("algebraic-prime value");
+        ap.r = read_u32("algebraic-prime root");
+        ap.log_p = read_u32("algebraic-prime log");
+        ap.degree = read_u8("algebraic-prime degree");
         if (ap.p < 2 || !util::is_prime_u32(ap.p)) {
             throw std::runtime_error("FactorBase::load: algebraic-prime value is not prime");
         }
@@ -268,13 +369,13 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     fb.set_sieve_algebraic_count_explicit(fb.algebraic_count());
 
     // 如果 special_q_bound > algebraic_bound，继续构建 SQ 范围的代数素数。
-    // 注意: 必须显式过滤 algebraic_bound==UINT32_MAX 否则 +1 wrap=0。对
-    // algebraic_bound==0 将范围起点钳制到 2，避免把有效的素数范围当作空范围。
-    // params.hpp 实际把 B 限到 1e9，这层是 future-proof 防御。
+    // 注意: 必须显式过滤 algebraic_bound==UINT32_MAX 否则 +1 wrap=0 让 find_…_range
+    // 收到 (min_p=0, max_p>0),min_p<2 早 return 会救住但语义不对。params.hpp 实际
+    // 把 B 限到 1e9,这层是 future-proof 防御。
     if (opts.special_q_bound > opts.algebraic_bound && opts.algebraic_bound < UINT32_MAX) {
         const uint32_t special_q_min = std::max<uint32_t>(opts.algebraic_bound + 1, 2);
-        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound, opts.log_scale,
-                                    opts.parallel);
+        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound,
+                                    opts.log_scale, opts.parallel);
     }
 
     fb.build_index();
@@ -426,7 +527,8 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
 }
 
 void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                              uint32_t bound, uint8_t log_scale, bool parallel,
+                                              uint32_t bound, uint8_t log_scale,
+                                              bool parallel,
                                               const std::vector<bool>* shared_sieve) {
     if (bound < 2)
         return;
@@ -437,7 +539,7 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
     if (shared_sieve != nullptr && shared_sieve->size() > static_cast<size_t>(bound)) {
         sieve_ptr = shared_sieve;
     } else {
-        local_sieve = build_eratosthenes_sieve(bound, parallel);
+        local_sieve = build_eratosthenes_sieve(bound);
         sieve_ptr = &local_sieve;
     }
     const auto& is_prime_sieve = *sieve_ptr;
