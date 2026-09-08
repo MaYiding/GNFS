@@ -54,6 +54,34 @@ fixed-width sieve state 的 factor-base 素数范围是 `[2, INT32_MAX]`，且
 
 ---
 
+## Sieve E-Core QoS (`GNFS_SIEVE_ECORE_THREADS`)
+
+`GNFS_SIEVE_ECORE_THREADS=N` 控制 lattice sieve 中使用 macOS Utility QoS
+的 worker 数量。默认值为 `0`，即所有 worker 保持 User Initiated QoS。
+正值钳制到 `num_threads - 1`，因此始终至少保留一个 User Initiated worker。
+Linux 上 QoS 设置是 no-op，但解析和线程分组保持一致。
+
+解析器接受十进制数字前缀，以保留既有配置兼容性。未设置、空值、零、负值和无数字
+前缀的输入都解析为 `0`。超出 `unsigned long long` 或 `size_t` 范围的正值按有效正值
+处理，并钳制到 `num_threads - 1`；它们不会因整数溢出而关闭 QoS 分组。
+
+```bash
+GNFS_SIEVE_ECORE_THREADS=0 ./gnfs <N>  # 禁用 E-core QoS 提示
+GNFS_SIEVE_ECORE_THREADS=6 ./gnfs <N>  # 最多 6 个 Utility QoS worker
+```
+
+集成点：
+
+- `include/gnfs/sieve/ecore_qos.hpp`：无异常解析、线程数钳制和 QoS 分组。
+- `include/gnfs/sieve/lattice_sieve.hpp`：实际 worker 启动路径。
+- `src/sieve/distributed_sieve_execution_policy.cpp`：分布式冻结策略沿用相同的
+  溢出和线程上限合同。
+- `tests/test_sieve_ecore_qos.cpp`：默认值、负值、前缀、溢出和线程上限合同。
+
+该开关只改变调度提示，不改变 special-Q 顺序、sieve 分数、候选关系或停止条件。
+
+---
+
 ## Special-Q Local Compute Budget (Config)
 
 `max_special_q_batch_workers` 和 `max_local_sieve_threads` 是本地 production

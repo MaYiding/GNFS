@@ -18,6 +18,12 @@ GNFS_MURPHY_ALPHA_THREADS=8 ./gnfs <N>   # 显式 8-thread
 # 默认: hardware_concurrency
 ```
 
+解析契约:
+- 未设置或空值使用 `hardware_concurrency()` (报告 0 时回退 4)。
+- `0`、负数或非数字值强制序列路径。
+- 正数最多使用 `hardware_concurrency() * 2` 个线程；超大值会钳制到该上限，避免异常 ENV 导致无界线程池分配。
+- 为保持历史兼容，带数字前缀的值 (例如 `8workers`) 按前缀解析。
+
 **ROI**: M5 10-core → 5-7x compute_alpha speedup (CZ求根 perfect embarrassingly
 parallel by prime). Kleinjung selector + 多 polynomial 评估时 sieve 主流程
 wall-time 显著缩短.

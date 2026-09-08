@@ -112,24 +112,28 @@ void test_env_non_numeric_to_one() {
     apply_env("garbage");
     assert(ecm_stage1_parallel_threads() == 1);
 
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 4;
+    const std::size_t cap = static_cast<std::size_t>(hw) * 2;
+
+    // Positive values above INT_MAX must clamp instead of wrapping through
+    // atoi() and selecting the sequential path.
+    apply_env("2147483648");
+    if (ecm_stage1_parallel_threads() != cap) {
+        std::cerr << "\n  ERROR: INT_MAX+1 did not clamp to " << cap << std::endl;
+        std::abort();
+    }
+
+    // strtoull overflow is treated as an oversized positive value.
+    apply_env("184467440737095516160");
+    if (ecm_stage1_parallel_threads() != cap) {
+        std::cerr << "\n  ERROR: overflowing value did not clamp to " << cap << std::endl;
+        std::abort();
+    }
+
     // " " (whitespace only) -> 1 (no numeric prefix).
     apply_env("   ");
     assert(ecm_stage1_parallel_threads() == 1);
-
-    unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0)
-        hw = 4;
-    const std::size_t cap = static_cast<std::size_t>(hw) * 2;
-
-    // Overflowing values must take the documented high-value clamp path,
-    // without relying on std::atoi's unrepresentable-result behavior.
-    apply_env("184467440737095516160");
-    const std::size_t overflow_value = ecm_stage1_parallel_threads();
-    if (overflow_value != cap) {
-        std::cerr << "\n  ERROR: overflowing value parsed to " << overflow_value
-                  << ", expected clamped value " << cap << std::endl;
-        std::abort();
-    }
 
     apply_env(nullptr);
     std::cout << " PASS\n";

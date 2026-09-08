@@ -3,6 +3,7 @@
 #include "../core/integer.hpp"
 #include "../core/polynomial_context.hpp"
 #include "../core/types.hpp"
+#include "../util/primes.hpp"
 #include "factor_base.hpp"
 
 #include <cstddef>
@@ -13,6 +14,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace gnfs::factor_base {
@@ -241,12 +243,19 @@ struct FbCheckpoint {
         if (rat_count > 100'000'000u) {
             throw std::runtime_error("FbCheckpoint::load: rat_count corrupt");
         }
+        require_records_fit(in, rat_count, 8, 12, "rational count");
         ck.rational.clear();
-        ck.rational.reserve(rat_count);
+        std::unordered_set<uint32_t> rational_keys;
         for (size_t i = 0; i < static_cast<size_t>(rat_count); ++i) {
             RationalPrime rp;
             rp.p = read_u32(in, "rational prime");
             rp.log_p = read_u32(in, "rational log");
+            if (rp.p < 2 || !util::is_prime_u32(rp.p)) {
+                throw std::runtime_error("FbCheckpoint::load: rational-prime value is not prime");
+            }
+            if (!rational_keys.insert(rp.p).second) {
+                throw std::runtime_error("FbCheckpoint::load: duplicate rational-prime value");
+            }
             ck.rational.push_back(rp);
         }
 
@@ -254,8 +263,9 @@ struct FbCheckpoint {
         if (alg_count > 100'000'000u) {
             throw std::runtime_error("FbCheckpoint::load: alg_count corrupt");
         }
+        require_records_fit(in, alg_count, 16, 8, "algebraic count");
         ck.algebraic.clear();
-        ck.algebraic.reserve(alg_count);
+        std::unordered_set<uint64_t> algebraic_keys;
         for (size_t i = 0; i < static_cast<size_t>(alg_count); ++i) {
             AlgebraicPrime ap;
             uint32_t deg_pad = 0;
@@ -263,7 +273,25 @@ struct FbCheckpoint {
             ap.r = read_u32(in, "algebraic root");
             ap.log_p = read_u32(in, "algebraic log");
             deg_pad = read_u32(in, "algebraic degree");
+            if (deg_pad > (std::numeric_limits<uint8_t>::max)()) {
+                throw std::runtime_error(
+                    "FbCheckpoint::load: algebraic-prime degree exceeds uint8_t");
+            }
             ap.degree = static_cast<uint8_t>(deg_pad);
+            if (ap.p < 2 || !util::is_prime_u32(ap.p)) {
+                throw std::runtime_error("FbCheckpoint::load: algebraic-prime value is not prime");
+            }
+            if (ap.r != AlgebraicPrime::PROJECTIVE_ROOT && ap.r >= ap.p) {
+                throw std::runtime_error(
+                    "FbCheckpoint::load: algebraic-prime root is out of range");
+            }
+            if (ap.degree == 0) {
+                throw std::runtime_error("FbCheckpoint::load: algebraic-prime degree is zero");
+            }
+            const uint64_t key = (static_cast<uint64_t>(ap.p) << 32) | ap.r;
+            if (!algebraic_keys.insert(key).second) {
+                throw std::runtime_error("FbCheckpoint::load: duplicate algebraic-prime key");
+            }
             ck.algebraic.push_back(ap);
         }
 
@@ -274,6 +302,10 @@ struct FbCheckpoint {
         if (marker_explicit_zero && count != 0) {
             throw std::runtime_error(
                 "FbCheckpoint::load: invalid explicit-zero sieve count marker");
+        }
+        if (count > ck.algebraic.size()) {
+            throw std::runtime_error(
+                "FbCheckpoint::load: sieve algebraic count exceeds algebraic count");
         }
         ck.sieve_algebraic_count = count;
         ck.sieve_algebraic_count_explicit = marker_explicit_zero;
@@ -375,6 +407,37 @@ private:
         return decode_u64(bytes);
     }
 
+    // Count fields are attacker-controlled when resuming from a persisted file.
+    // Validate the minimum payload and trailer before growing any containers.
+    static uint64_t remaining_bytes(std::ifstream& in, const char* field) {
+        const std::streampos current = in.tellg();
+        if (current == std::streampos(-1)) {
+            throw std::runtime_error(std::string("FbCheckpoint::load: cannot seek before ") +
+                                     field);
+        }
+        in.seekg(0, std::ios::end);
+        const std::streampos end = in.tellg();
+        if (end == std::streampos(-1) || end < current) {
+            in.clear();
+            in.seekg(current);
+            throw std::runtime_error(std::string("FbCheckpoint::load: cannot measure ") + field);
+        }
+        in.seekg(current);
+        if (!in) {
+            throw std::runtime_error(std::string("FbCheckpoint::load: cannot restore ") + field);
+        }
+        return static_cast<uint64_t>(end - current);
+    }
+
+    static void require_records_fit(std::ifstream& in, uint32_t count, uint64_t record_size,
+                                    uint64_t trailer_size, const char* field) {
+        const uint64_t remaining = remaining_bytes(in, field);
+        if (remaining < trailer_size ||
+            static_cast<uint64_t>(count) > (remaining - trailer_size) / record_size) {
+            throw std::runtime_error(std::string("FbCheckpoint::load: truncated ") + field);
+        }
+    }
+
     [[nodiscard]] static constexpr size_t max_serialized_count() noexcept {
         return static_cast<size_t>((std::numeric_limits<uint32_t>::max)());
     }
@@ -419,8 +482,19 @@ private:
             throw std::runtime_error("FbCheckpoint::read_integer: byte_count too large");
         }
         if (sgn == 0) {
+            if (byte_count != 0) {
+                throw std::runtime_error(
+                    "FbCheckpoint::read_integer: zero integer has non-zero byte count");
+            }
             x = Integer(static_cast<int64_t>(0));
             return;
+        }
+        if (byte_count == 0) {
+            throw std::runtime_error(
+                "FbCheckpoint::read_integer: non-zero integer has zero byte count");
+        }
+        if (static_cast<uint64_t>(byte_count) > remaining_bytes(in, "integer body")) {
+            throw std::runtime_error("FbCheckpoint::read_integer: truncated body");
         }
         std::vector<unsigned char> buf(byte_count);
         if (byte_count > 0) {
