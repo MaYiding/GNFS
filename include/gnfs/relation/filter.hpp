@@ -739,11 +739,31 @@ public:
         for (const auto& [key, count] : counts) {
             if (count >= 2) {
                 // n 个关系共享一个大素数可产生 C(n,2) 对
-                pairs += count * (count - 1) / 2;
+                pairs = util::saturating_size_add(pairs, saturating_pair_count(count));
             }
         }
 
         return pairs;
+    }
+
+    /// Compute C(count, 2) without overflowing the intermediate product.
+    ///
+    /// A large LP bucket can make the diagnostic pair count exceed size_t even
+    /// when the input relation vector itself is representable. Divide the even
+    /// factor first, then saturate the product and the cross-key accumulation.
+    [[nodiscard]] static constexpr size_t saturating_pair_count(size_t count) noexcept {
+        if (count < 2) {
+            return 0;
+        }
+
+        size_t lhs = count;
+        size_t rhs = count - 1;
+        if ((lhs & size_t{1}) == 0) {
+            lhs /= 2;
+        } else {
+            rhs /= 2;
+        }
+        return util::saturating_size_product(lhs, rhs);
     }
 };
 

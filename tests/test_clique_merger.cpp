@@ -2,11 +2,19 @@
 #include "gnfs/relation/clique_merger.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
 
 using namespace gnfs::relation;
-using gnfs::core::Relation;
 using gnfs::core::PrimePower;
+using gnfs::core::Relation;
+
+static void require_clique_test(bool condition, const char* message) {
+    if (!condition) {
+        std::cerr << "  FAIL: " << message << '\n';
+        std::exit(EXIT_FAILURE);
+    }
+}
 
 // Helper: 1LP relation (rational)
 static Relation make_1rat(int64_t a, int64_t b, uint64_t lp) {
@@ -18,8 +26,7 @@ static Relation make_1rat(int64_t a, int64_t b, uint64_t lp) {
 }
 
 // Helper: 2LP relation (one rat + one alg)
-static Relation make_2lp(int64_t a, int64_t b, uint64_t rat_lp,
-                         uint64_t alg_p, uint64_t alg_r) {
+static Relation make_2lp(int64_t a, int64_t b, uint64_t rat_lp, uint64_t alg_p, uint64_t alg_r) {
     Relation r(a, static_cast<uint64_t>(b));
     r.rational_factors = {0, 1};
     r.algebraic_factors = {0};
@@ -71,8 +78,8 @@ void test_1lp_4clique() {
     // Result varies: at least 1 full, ideally 2.
     // Conservative assertion: ≥ 1 full.
     assert(stats.full_produced >= 1);
-    std::cout << "  PASS (full=" << stats.full_produced
-              << ", components=" << stats.components_found << ")" << std::endl;
+    std::cout << "  PASS (full=" << stats.full_produced << ", components=" << stats.components_found
+              << ")" << std::endl;
 }
 
 void test_2lp_triangle() {
@@ -81,9 +88,9 @@ void test_2lp_triangle() {
     // then →R3 (cancel A,C) → full. Result: 1 full from 3 rels.
     std::cout << "Testing CliqueRelationMerger 2LP triangle..." << std::endl;
     std::vector<Relation> rels;
-    rels.push_back(make_2lp(1, 1, 101, 201, 1));  // R1: rat=101, alg=(201,1)
-    rels.push_back(make_2lp(2, 1, 101, 202, 2));  // R2: rat=101, alg=(202,2)
-    rels.push_back(make_2lp(3, 1, 103, 201, 1));  // R3: rat=103, alg=(201,1)
+    rels.push_back(make_2lp(1, 1, 101, 201, 1)); // R1: rat=101, alg=(201,1)
+    rels.push_back(make_2lp(2, 1, 101, 202, 2)); // R2: rat=101, alg=(202,2)
+    rels.push_back(make_2lp(3, 1, 103, 201, 1)); // R3: rat=103, alg=(201,1)
     // LP sharing: R1↔R2 share rat 101; R1↔R3 share alg (201,1); R2 and R3 no overlap.
     // Component: {R1, R2, R3}
     CliqueStats stats;
@@ -92,8 +99,7 @@ void test_2lp_triangle() {
     assert(stats.components_with_excess == 1);
     // Either 1 full (triangle cancels all) or 0 if residual LPs prevent
     // BFS from completing — depends on traversal order.
-    std::cout << "  PASS (full=" << stats.full_produced
-              << ", residual=" << stats.residual_emitted
+    std::cout << "  PASS (full=" << stats.full_produced << ", residual=" << stats.residual_emitted
               << ", lp_rejections=" << stats.lp_cancel_rejections << ")" << std::endl;
 }
 
@@ -111,6 +117,38 @@ void test_no_overlap() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_component_output_order_is_deterministic() {
+    std::cout << "Testing deterministic clique component output order..." << std::endl;
+
+    std::vector<Relation> input;
+    input.push_back(make_1rat(1, 1, 101));
+    input.push_back(make_1rat(2, 1, 101));
+    input.push_back(make_1rat(3, 1, 103));
+    input.push_back(make_1rat(4, 1, 103));
+    input.push_back(make_1rat(5, 1, 107));
+    input.push_back(make_1rat(6, 1, 107));
+
+    auto first = input;
+    auto second = input;
+    auto first_out = CliqueRelationMerger::merge_cliques(std::move(first));
+    auto second_out = CliqueRelationMerger::merge_cliques(std::move(second));
+
+    require_clique_test(first_out.size() == 3, "expected one full relation per component");
+    require_clique_test(second_out.size() == first_out.size(), "repeated run changed output count");
+    for (size_t i = 0; i < first_out.size(); ++i) {
+        require_clique_test(first_out[i].a == static_cast<int64_t>(1 + 2 * i),
+                            "component output order is not input-ordinal order");
+        require_clique_test(first_out[i].extra_ab_pairs.size() == 1,
+                            "component merge did not retain its second source");
+        require_clique_test(second_out[i].a == first_out[i].a,
+                            "repeated run changed component output order");
+        require_clique_test(second_out[i].extra_ab_pairs == first_out[i].extra_ab_pairs,
+                            "repeated run changed component source payload");
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_3lp_filtered() {
     // 3LP+ relation should be discarded pre-emptively
     std::cout << "Testing CliqueRelationMerger 3LP+ filter..." << std::endl;
@@ -119,7 +157,7 @@ void test_3lp_filtered() {
     r.algebraic_factors = {0};
     r.rational_large_prime.push_back(PrimePower{101, 0, 1});
     r.algebraic_large_prime.push_back(PrimePower{201, 1, 1});
-    r.algebraic_large_prime.push_back(PrimePower{202, 2, 1});  // 3rd LP
+    r.algebraic_large_prime.push_back(PrimePower{202, 2, 1}); // 3rd LP
     std::vector<Relation> rels;
     rels.push_back(std::move(r));
     CliqueStats stats;
@@ -155,7 +193,7 @@ void test_all_3lp_filtered() {
         r.algebraic_factors = {0};
         r.rational_large_prime.push_back(PrimePower{101u + uint32_t(i), 0, 1});
         r.algebraic_large_prime.push_back(PrimePower{201u + uint32_t(i), 1, 1});
-        r.algebraic_large_prime.push_back(PrimePower{202u + uint32_t(i), 2, 1});  // 3rd LP
+        r.algebraic_large_prime.push_back(PrimePower{202u + uint32_t(i), 2, 1}); // 3rd LP
         rels.push_back(std::move(r));
     }
     CliqueStats stats;
@@ -201,6 +239,7 @@ int main() {
     test_1lp_4clique();
     test_2lp_triangle();
     test_no_overlap();
+    test_component_output_order_is_deterministic();
     test_3lp_filtered();
     test_all_3lp_filtered();
     test_stats_to_string();
