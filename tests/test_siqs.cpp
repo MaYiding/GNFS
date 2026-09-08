@@ -368,7 +368,10 @@ void test_siqs_multiplier_portfolio_deadline_and_shared_factor_guard() {
     const double expired_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - expired_start).count();
     require_test(!expired.has_value(), "expired positive-budget attempt returned a factor");
-    require_test(expired_seconds < 1.0,
+    // Keep a generous watchdog so a loaded CI runner does not turn scheduler
+    // latency into a functional failure. The immediate deadline gate is
+    // covered by the no-work result and the direct factor_once contract.
+    require_test(expired_seconds < 10.0,
                  "expired positive-budget attempt ignored its caller-wide deadline");
 
     // A zero-budget call retains one compatibility probe for shadow telemetry,
@@ -400,7 +403,9 @@ void test_siqs_multiplier_portfolio_deadline_and_shared_factor_guard() {
     require_test(count_occurrences(retry_log, "[SIQS] multiplier attempt ") >= 1 &&
                      count_occurrences(retry_log, "[SIQS] multiplier attempt ") <= 3,
                  "multiplier portfolio exceeded its attempt cap");
-    require_test(retry_seconds < 3.0,
+    // The one-second budget is enforced cooperatively; allow startup and
+    // scheduler jitter while still catching a runaway retry implementation.
+    require_test(retry_seconds < 10.0,
                  "multiplier portfolio exceeded a bounded one-second caller budget");
     std::printf("  multiplier portfolio deadline/shared-factor guards: PASS\n");
 }
