@@ -4,6 +4,7 @@
 #include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/siqs/siqs.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -17,6 +18,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using gnfs::core::Integer;
 using gnfs::tests::siqs_live_sieve_fixture_v1;
@@ -268,6 +270,49 @@ void test_init_poly_handles_large_a_factor_count() {
                  "large A-factor initialization produced incomplete B residues");
 
     std::printf("  init_poly large A-factor boundary (17 factors): PASS\n");
+}
+
+void test_multiplier_candidate_ranking() {
+    const Integer N("1000000007");
+    require_test(rank_multiplier_candidates(N, 0).empty(),
+                 "zero multiplier ranking limit was not empty");
+
+    const auto ranked = rank_multiplier_candidates(N, 64);
+    require_test(!ranked.empty(), "multiplier ranking returned no candidates");
+    require_test(ranked.front() == select_multiplier(N),
+                 "top ranked multiplier changed select_multiplier compatibility");
+    require_test(ranked == rank_multiplier_candidates(N, 64),
+                 "multiplier ranking was not deterministic");
+
+    for (size_t i = 0; i < ranked.size(); ++i) {
+        require_test(std::find(ranked.begin(), ranked.begin() + static_cast<std::ptrdiff_t>(i),
+                               ranked[i]) == ranked.begin() + static_cast<std::ptrdiff_t>(i),
+                     "multiplier ranking returned duplicate candidates");
+    }
+
+    const auto top_three = rank_multiplier_candidates(N, 3);
+    require_test(top_three.size() == 3, "positive multiplier ranking limit was not respected");
+    require_test(std::equal(top_three.begin(), top_three.end(), ranked.begin()),
+                 "multiplier ranking limit did not preserve the sorted prefix");
+    require_test(rank_multiplier_candidates(N, std::numeric_limits<size_t>::max()) == ranked,
+                 "oversized multiplier ranking limit was not clamped");
+
+    bool invalid_zero_thrown = false;
+    try {
+        (void)rank_multiplier_candidates(Integer(0), 1);
+    } catch (const std::invalid_argument&) {
+        invalid_zero_thrown = true;
+    }
+    require_test(invalid_zero_thrown, "zero N did not fail closed for multiplier ranking");
+
+    bool invalid_negative_thrown = false;
+    try {
+        (void)rank_multiplier_candidates(Integer(-1), 1);
+    } catch (const std::invalid_argument&) {
+        invalid_negative_thrown = true;
+    }
+    require_test(invalid_negative_thrown, "negative N did not fail closed for multiplier ranking");
+    std::printf("  multiplier candidate ranking: PASS (%zu candidates)\n", ranked.size());
 }
 
 void test_siqs_rejects_tiny_inputs_without_sieving() {
@@ -551,6 +596,7 @@ int main() {
     test_factor_base();
     test_factor_base_rejects_unrepresentable_count();
     test_init_poly_handles_large_a_factor_count();
+    test_multiplier_candidate_ranking();
     test_siqs_rejects_tiny_inputs_without_sieving();
     test_split_cofactor_edge();
 
