@@ -7,6 +7,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <thread>
@@ -393,6 +394,30 @@ void test_compute_alpha_parallel_equals_sequential() {
     std::cout << "  PASSED (all values within " << tol << " tolerance)" << std::endl;
 }
 
+void test_alpha_thread_env_boundaries() {
+    std::cout << "Testing Murphy alpha thread ENV boundaries..." << std::endl;
+
+    using gnfs::polynomial::detail::parse_murphy_alpha_threads_env;
+    constexpr uint32_t hardware_threads = 8;
+    constexpr uint32_t cap = 16;
+
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env(nullptr, hardware_threads) == hardware_threads);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("", hardware_threads) == hardware_threads);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("0", hardware_threads) == 0);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("-1", hardware_threads) == 0);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("garbage", hardware_threads) == 0);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("2workers", hardware_threads) == 2);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("  +4", hardware_threads) == 4);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("2147483648", hardware_threads) == cap);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("999999999999999999999999999999999",
+                                                   hardware_threads) == cap);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("16", hardware_threads) == cap);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env("17", hardware_threads) == cap);
+    GNFS_TEST_CHECK(parse_murphy_alpha_threads_env(nullptr, 0) == 4);
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Murphy Evaluator Tests ===" << std::endl << std::endl;
 
@@ -406,6 +431,7 @@ int main() {
     test_quick_compare();
     test_concurrent_evaluation();
     test_compute_alpha_parallel_equals_sequential();
+    test_alpha_thread_env_boundaries();
 
     std::cout << std::endl << "All Murphy evaluator tests passed!" << std::endl;
     return 0;
