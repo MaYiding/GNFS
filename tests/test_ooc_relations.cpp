@@ -8,6 +8,7 @@
 #include <gnfs/util/native_binary_update_file.hpp>
 #include <gnfs/util/temp_path.hpp>
 
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -34,6 +35,7 @@ using gnfs::relation::OOCRelationReader;
 using gnfs::relation::OOCRelationWriter;
 using gnfs::relation::OOCSnapshotDescriptor;
 using gnfs::util::NativeBinaryUpdateFile;
+using gnfs::relation::RelationSequenceReceiptAccumulator;
 using gnfs::util::OwnedNativeFile;
 
 static int tests_passed = 0;
@@ -250,9 +252,163 @@ static OOCSnapshotDescriptor write_finalized_pair(const std::string& base_path,
     return writer.finalize();
 }
 
+static std::vector<unsigned char> read_bytes_at(const std::string& path, std::streamoff offset,
+                                                size_t count) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("cannot open test file for byte inspection");
+    }
+    input.seekg(offset);
+    std::vector<unsigned char> bytes(count);
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(count));
+    if (!input) {
+        throw std::runtime_error("cannot read test bytes");
+    }
+    return bytes;
+}
+
+static void append_native_u64(std::ofstream& output, uint64_t value) {
+    output.write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+static void append_native_u32(std::ofstream& output, uint32_t value) {
+    output.write(reinterpret_cast<const char*>(&value), sizeof(value));
+}
+
+static void write_v3_incomplete_fixture(const std::string& base_path, const Relation& relation,
+                                        OOCSnapshotDescriptor& descriptor) {
+    constexpr uint64_t store_id = 0x0102030405060708ULL;
+    constexpr uint64_t data_offset = OOCRelationWriter::DATA_HEADER_BYTES;
+    constexpr uint64_t record_bytes = sizeof(int64_t) + sizeof(uint64_t) + 5 * sizeof(uint32_t);
+    const uint64_t data_end = data_offset + record_bytes;
+
+    {
+        std::ofstream index(base_path + ".relidx", std::ios::binary | std::ios::trunc);
+        if (!index) {
+            throw std::runtime_error("cannot create V3 index fixture");
+        }
+        append_native_u64(index, OOCRelationWriter::MAGIC_V3_INCOMPLETE);
+        append_native_u64(index, OOCRelationWriter::FORMAT_VERSION_V3);
+        append_native_u64(index, store_id);
+        append_native_u64(index, 0);
+        append_native_u64(index, data_offset);
+        append_native_u64(index, data_end);
+    }
+    {
+        std::ofstream data(base_path + ".reldata", std::ios::binary | std::ios::trunc);
+        if (!data) {
+            throw std::runtime_error("cannot create V3 data fixture");
+        }
+        append_native_u64(data, OOCRelationWriter::MAGIC_V3_DATA);
+        append_native_u64(data, OOCRelationWriter::FORMAT_VERSION_V3);
+        append_native_u64(data, store_id);
+        append_native_u64(data, static_cast<uint64_t>(relation.a));
+        append_native_u64(data, relation.b);
+        append_native_u32(data, 0);
+        append_native_u32(data, 0);
+        append_native_u32(data, 0);
+        append_native_u32(data, 0);
+        append_native_u32(data, 0);
+    }
+    std::error_code permission_error;
+    std::filesystem::permissions(base_path + ".relidx",
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, permission_error);
+    if (permission_error) {
+        throw std::system_error(permission_error, "cannot set V3 index fixture permissions");
+    }
+    permission_error.clear();
+    std::filesystem::permissions(base_path + ".reldata",
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, permission_error);
+    if (permission_error) {
+        throw std::system_error(permission_error, "cannot set V3 data fixture permissions");
+    }
+    descriptor = OOCSnapshotDescriptor{
+        .format_version = OOCRelationWriter::FORMAT_VERSION_V3,
+        .store_id = store_id,
+        .generation = 1,
+        .count = 1,
+        .data_end = data_end,
+    };
+}
+
+static void check_le_u64(const std::vector<unsigned char>& bytes, size_t offset, uint64_t value) {
+    for (size_t index = 0; index < sizeof(value); ++index) {
+        TEST_ASSERT(bytes[offset + index] == static_cast<unsigned char>(value >> (index * 8U)),
+                    "V4 field is not little-endian");
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
+
+void test_v4_little_endian_wire_and_v3_recovery() {
+    TempFiles v4(gnfs::util::temp_path("gnfs_test_ooc_v4_wire"));
+    Relation relation(0x0102030405060708LL, 0x1112131415161718ULL);
+    relation.rational_factors = {0x21222324U};
+    relation.algebraic_factors = {0x25262728U};
+    relation.rational_large_prime.push_back({0x3132333435363738ULL, 0x4142434445464748ULL, 5});
+    relation.algebraic_large_prime.push_back({0x6162636465666768ULL, 0x5152535455565758ULL, 7});
+    relation.extra_ab_pairs.emplace_back(0x7172737475767778LL, 0x0102030405060709ULL);
+
+    OOCSnapshotDescriptor v4_descriptor;
+    {
+        OOCRelationWriter writer(v4.base);
+        TEST_ASSERT(writer.write(relation) == 0, "V4 fixture write should succeed");
+        v4_descriptor = writer.finalize();
+    }
+    TEST_ASSERT(v4_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V4,
+                "fresh writer should publish V4");
+    const auto index_header = read_bytes_at(
+        v4.base + ".relidx", 0, static_cast<size_t>(OOCRelationWriter::INDEX_HEADER_BYTES));
+    const auto data_header = read_bytes_at(
+        v4.base + ".reldata", 0, static_cast<size_t>(OOCRelationWriter::DATA_HEADER_BYTES));
+    const auto record = read_bytes_at(
+        v4.base + ".reldata", static_cast<std::streamoff>(OOCRelationWriter::DATA_HEADER_BYTES),
+        static_cast<size_t>(v4_descriptor.data_end - OOCRelationWriter::DATA_HEADER_BYTES));
+    check_le_u64(index_header, 0, OOCRelationWriter::MAGIC_V4_FINAL);
+    check_le_u64(index_header, OOCRelationWriter::INDEX_FORMAT_VERSION_OFFSET,
+                 OOCRelationWriter::FORMAT_VERSION_V4);
+    check_le_u64(index_header, OOCRelationWriter::INDEX_COUNT_OFFSET, 1);
+    check_le_u64(data_header, 0, OOCRelationWriter::MAGIC_V4_DATA);
+    check_le_u64(data_header, OOCRelationWriter::DATA_FORMAT_VERSION_OFFSET,
+                 OOCRelationWriter::FORMAT_VERSION_V4);
+    check_le_u64(record, 0, static_cast<uint64_t>(relation.a));
+    check_le_u64(record, sizeof(int64_t), relation.b);
+    TEST_ASSERT(record[2 * sizeof(uint64_t)] == 1 && record[2 * sizeof(uint64_t) + 1] == 0,
+                "V4 count field should use little-endian encoding");
+    check_le_u64(record, 36, relation.rational_large_prime.front().p);
+    OOCRelationReader v4_reader(v4.base, v4_descriptor);
+    TEST_ASSERT(relations_equal(relation, v4_reader.read(0)), "V4 relation should round-trip");
+    TEST_PASS("V4 explicit little-endian headers, offsets, and compact fields");
+
+    TempFiles v3(gnfs::util::temp_path("gnfs_test_ooc_v3_fixture"));
+    Relation legacy_relation(7, 11);
+    OOCSnapshotDescriptor v3_descriptor;
+    write_v3_incomplete_fixture(v3.base, legacy_relation, v3_descriptor);
+    RelationSequenceReceiptAccumulator sequence;
+    sequence.append(legacy_relation);
+    OOCRelationWriter recovered(v3.base, v3_descriptor, sequence.finish());
+    TEST_ASSERT(recovered.recovery_outcome() ==
+                    gnfs::relation::OOCRecoveryOutcome::AppendablePrefix,
+                "V3 fixture should recover as an appendable prefix");
+    TEST_ASSERT(recovered.count() == 1, "V3 fixture recovery should retain one relation");
+    const OOCSnapshotDescriptor recovered_prefix = recovered.checkpoint_prefix();
+    TEST_ASSERT(recovered_prefix.format_version == OOCRelationWriter::FORMAT_VERSION_V3,
+                "V3 recovery checkpoint should preserve the legacy wire version");
+    recovered.resume_append(recovered_prefix);
+    const OOCSnapshotDescriptor recovered_descriptor = recovered.finalize();
+    TEST_ASSERT(recovered_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3,
+                "V3 recovery should preserve the legacy wire version");
+    OOCRelationReader v3_reader(v3.base, recovered_descriptor);
+    TEST_ASSERT(relations_equal(legacy_relation, v3_reader.read(0)),
+                "V3 native fixture should remain readable after recovery");
+    TEST_PASS("V3 native-endian fixture recovery and read compatibility");
+}
 
 void test_write_read_single() {
     TempFiles tmp(gnfs::util::temp_path("gnfs_test_ooc_single"));
@@ -1028,6 +1184,7 @@ int main() {
     std::cout << "═══════════════════════════════════════════\n\n";
 
     test_write_read_single();
+    test_v4_little_endian_wire_and_v3_recovery();
     test_write_read_batch();
     test_random_access();
     test_read_all();

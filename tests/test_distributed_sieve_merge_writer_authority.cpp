@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -414,6 +415,21 @@ private:
 
 [[nodiscard]] std::uint64_t read_file_u64(const std::filesystem::path& path, std::uint64_t offset) {
     CHECK(offset <= static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()));
+    const auto bytes = read_file_bytes(path);
+    CHECK(bytes.size() >= sizeof(std::uint64_t));
+    std::uint64_t native_magic = 0;
+    std::memcpy(&native_magic, bytes.data(), sizeof(native_magic));
+    std::uint64_t little_magic = 0;
+    for (std::size_t index = 0; index < sizeof(std::uint64_t); ++index) {
+        little_magic |= static_cast<std::uint64_t>(std::to_integer<unsigned char>(bytes[index]))
+                        << (index * 8U);
+    }
+    const bool little_endian = native_magic == relation::OOCRelationWriter::MAGIC_V4_FINAL ||
+                               native_magic == relation::OOCRelationWriter::MAGIC_V4_INCOMPLETE ||
+                               native_magic == relation::OOCRelationWriter::MAGIC_V4_DATA ||
+                               little_magic == relation::OOCRelationWriter::MAGIC_V4_FINAL ||
+                               little_magic == relation::OOCRelationWriter::MAGIC_V4_INCOMPLETE ||
+                               little_magic == relation::OOCRelationWriter::MAGIC_V4_DATA;
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         throw std::filesystem::filesystem_error("open merge-writer-authority fixture integer", path,
@@ -421,7 +437,16 @@ private:
     }
     input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
     std::uint64_t value = 0;
-    input.read(reinterpret_cast<char*>(&value), static_cast<std::streamsize>(sizeof(value)));
+    if (little_endian) {
+        std::array<unsigned char, sizeof(value)> encoded{};
+        input.read(reinterpret_cast<char*>(encoded.data()),
+                   static_cast<std::streamsize>(encoded.size()));
+        for (std::size_t index = 0; index < encoded.size(); ++index) {
+            value |= static_cast<std::uint64_t>(encoded[index]) << (index * 8U);
+        }
+    } else {
+        input.read(reinterpret_cast<char*>(&value), static_cast<std::streamsize>(sizeof(value)));
+    }
     if (!input) {
         throw TestFailure("cannot read merge-writer-authority fixture integer");
     }
@@ -1097,8 +1122,8 @@ void require_raw_merge_writer_residue_shape(const RawMergeWriterResidueFixtureV1
     CHECK(!std::filesystem::exists(paths.private_handoff_rollback_path));
 
     const std::uint64_t expected_magic = fixture.finalized()
-                                             ? relation::OOCRelationWriter::MAGIC_V3_FINAL
-                                             : relation::OOCRelationWriter::MAGIC_V3_INCOMPLETE;
+                                             ? relation::OOCRelationWriter::MAGIC
+                                             : relation::OOCRelationWriter::MAGIC_INCOMPLETE;
     CHECK(read_file_u64(paths.index_path, 0) == expected_magic);
     const std::uint64_t expected_header_count =
         fixture.finalized() ? fixture.persisted_relation_count() : 0U;

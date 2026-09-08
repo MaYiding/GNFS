@@ -33,7 +33,7 @@ namespace gnfs::sieve::distributed_sieve_execution_policy_detail {
 inline constexpr WorkSemanticVersionsV1 DISTRIBUTED_SIEVE_BOUND_WORK_VERSIONS_V1{
     .relation_serialization_version = 1,
     .ooc_format_version =
-        static_cast<std::uint32_t>(relation::OOCRelationStoreFormat::FORMAT_VERSION_V3),
+        static_cast<std::uint32_t>(relation::OOCRelationStoreFormat::FORMAT_VERSION_V4),
     .digest_version = 1,
     .handoff_version = 1,
     .retry_policy_version = 1,

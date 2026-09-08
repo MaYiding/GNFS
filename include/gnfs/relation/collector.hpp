@@ -1030,7 +1030,7 @@ public:
         return {std::move(corpus), descriptor};
     }
 
-    /// Finalize and transfer the collector's original OOC V3 store into a
+    /// Finalize and transfer the collector's original OOC V3/V4 store into a
     /// move-only corpus. This is a one-shot terminal handoff.
     ///
     /// A fresh writer transfers its move-only cleanup receipt only after corpus
@@ -1162,7 +1162,7 @@ public:
     /// Exception-only cleanup for a fresh OOC store not paired with resume.
     ///
     /// Recovery stores are preserved. Open prefixes and finalized fresh
-    /// corpora are removed only after the writer validates their exact V3
+    /// corpora are removed only after the writer validates their exact V3/V4
     /// identity, so callback-driven path replacement fails closed.
     [[nodiscard]] bool discard_uncommitted_fresh_ooc_noexcept() noexcept {
         try {
@@ -1605,7 +1605,9 @@ private:
 
     void validate_descriptor_matches_collector(const OOCSnapshotDescriptor& descriptor,
                                                const char* operation) const {
-        if (!ooc_writer_ || descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V3 ||
+        if (!ooc_writer_ ||
+            (descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V3 &&
+             descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V4) ||
             descriptor.store_id == 0 || descriptor.store_id != ooc_writer_->store_id() ||
             descriptor.count != static_cast<uint64_t>(ooc_writer_->count()) ||
             descriptor.count != static_cast<uint64_t>(stats_.total_relations) ||

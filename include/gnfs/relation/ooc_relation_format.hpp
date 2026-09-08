@@ -14,9 +14,13 @@ struct OOCRelationStoreFormat final {
     static constexpr uint64_t MAGIC_V3_FINAL = 0x474E46535233464CULL;      // 'GNFSR3FL'
     static constexpr uint64_t MAGIC_V3_INCOMPLETE = 0x474E46535233494EULL; // 'GNFSR3IN'
     static constexpr uint64_t MAGIC_V3_DATA = 0x474E465352334441ULL;       // 'GNFSR3DA'
+    static constexpr uint64_t MAGIC_V4_FINAL = 0x474E46535234464CULL;      // 'GNFSR4FL'
+    static constexpr uint64_t MAGIC_V4_INCOMPLETE = 0x474E46535234494EULL; // 'GNFSR4IN'
+    static constexpr uint64_t MAGIC_V4_DATA = 0x474E465352344441ULL;       // 'GNFSR4DA'
 
     static constexpr uint64_t FORMAT_VERSION_V2 = 2;
     static constexpr uint64_t FORMAT_VERSION_V3 = 3;
+    static constexpr uint64_t FORMAT_VERSION_V4 = 4;
 
     static constexpr uint64_t INDEX_FORMAT_VERSION_OFFSET = 8;
     static constexpr uint64_t INDEX_STORE_ID_OFFSET = 16;

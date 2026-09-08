@@ -110,9 +110,10 @@ private:
 };
 
 inline void validate_finalized_ooc_ownership_descriptor(const OOCSnapshotDescriptor& descriptor) {
-    if (descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V3) {
+    if (descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V3 &&
+        descriptor.format_version != OOCRelationWriter::FORMAT_VERSION_V4) {
         throw std::invalid_argument(
-            "RelationCorpus: ownership promotion requires finalized OOC V3");
+            "RelationCorpus: ownership promotion requires finalized OOC V3 or V4");
     }
     if (descriptor.store_id == 0) {
         throw std::invalid_argument("RelationCorpus: OOC descriptor store identity is zero");
@@ -124,7 +125,7 @@ inline void validate_finalized_ooc_ownership_descriptor(const OOCSnapshotDescrip
         ((descriptor.count == 0) !=
          (descriptor.data_end == OOCRelationWriter::DATA_HEADER_BYTES))) {
         throw std::invalid_argument(
-            "RelationCorpus: OOC V3 descriptor has invalid physical data extent");
+            "RelationCorpus: OOC descriptor has invalid physical data extent");
     }
     (void)OOCRelationWriter::index_size_for_count(descriptor.count);
 }
@@ -195,7 +196,9 @@ public:
 private:
     [[nodiscard]] OOCExactCleanupExpectation exact_expectation() const {
         return OOCExactCleanupExpectation{
-            .index_magic = OOCRelationWriter::MAGIC_V3_FINAL,
+            .index_magic = descriptor_.format_version == OOCRelationWriter::FORMAT_VERSION_V4
+                               ? OOCRelationWriter::MAGIC_V4_FINAL
+                               : OOCRelationWriter::MAGIC_V3_FINAL,
             .persisted_count = descriptor_.count,
             .index_size = OOCRelationWriter::index_size_for_count(descriptor_.count),
             .data_size = descriptor_.data_end,
@@ -376,7 +379,7 @@ public:
         relation_corpus_detail::validate_finalized_ooc_ownership_descriptor(descriptor);
         base_path = relation_corpus_detail::freeze_ooc_path(base_path);
 
-        // Expected-descriptor construction binds the corpus to one mapped V3
+        // Expected-descriptor construction binds the corpus to one mapped V3/V4
         // index/data pair and validates both headers, identity, count, exact
         // extents, sentinel, and every offset. This public reopen carries no
         // cleanup receipt, so arm_ooc_cleanup() remains fail-closed.

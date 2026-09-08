@@ -304,9 +304,21 @@ class Checks:
             "python3 scripts/check_distributed_sieve_policy.py --self-test",
             "python3 scripts/check_harness.py",
             "bash tests/test_harness_hooks.sh",
+            "zsh tests/test_changed_mode_base.sh",
         ):
             if command not in workflow:
                 self.fail(f".github/workflows/scripts.yml: missing CI command {command!r}")
+
+        changed_library = self.read("scripts/lib/changed_files.zsh")
+        for marker in (
+            'source "${PROJECT_ROOT}/scripts/lib/changed_files.zsh"',
+            "resolve_changed_base",
+            "collect_changed_files",
+            "GNFS_TEST_BASE_SHA",
+            'git -C "$project_root" merge-base HEAD',
+        ):
+            if marker not in test_runner + changed_library:
+                self.fail(f"changed-mode base contract is missing marker {marker!r}")
 
         release_readiness = self.read(".github/workflows/release-readiness.yml")
         for marker in (

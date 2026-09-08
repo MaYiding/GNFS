@@ -221,6 +221,23 @@ void test_roots_mod_p() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_roots_mod_p_rejects_non_prime_moduli() {
+    std::cout << "Testing roots_mod_p modulus validation..." << std::endl;
+
+    auto f = make_poly({-1, 0, 1}); // x^2 - 1
+    for (uint32_t p : {uint32_t(0), uint32_t(1), uint32_t(91), uint32_t(1001)}) {
+        bool caught = false;
+        try {
+            (void)f.roots_mod_p(p);
+        } catch (const std::invalid_argument&) {
+            caught = true;
+        }
+        GNFS_TEST_CHECK(caught);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_addition() {
     std::cout << "Testing addition..." << std::endl;
 
@@ -567,6 +584,7 @@ int main() {
     test_evaluate_double();
     test_evaluate_mod();
     test_roots_mod_p();
+    test_roots_mod_p_rejects_non_prime_moduli();
     test_addition();
     test_subtraction();
     test_scalar_multiply();

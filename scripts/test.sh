@@ -167,6 +167,7 @@ RETRY_COUNT=0
 RETRY_EXPLICIT=0
 
 source "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh"
+source "${PROJECT_ROOT}/scripts/lib/changed_files.zsh"
 
 # 统计变量
 TOTAL_TESTS=0
@@ -7426,8 +7427,18 @@ do_module() {
     for mod in "${modules[@]}"; do
         local tests="${MODULE_TESTS[$mod]:-}"
         if [[ -z "$tests" ]]; then
-            log_warn "未知模块: ${mod}"
+            # A typo must never look like a successful empty selection. Keep
+            # the invalid request in the global report so callers and CI see
+            # a non-zero result even when the main dispatcher preserves the
+            # summary path after do_module returns.
+            log_fail "未知模块: ${mod}"
             log_info "可用模块: ${(k)MODULE_TESTS}"
+            (( module_fail += 1 ))
+            (( TOTAL_TESTS += 1 ))
+            (( FAILED_TESTS += 1 ))
+            # Keep user-provided module text out of JSON so quotes or control
+            # characters cannot corrupt the runner report.
+            REPORT_ENTRIES+=("{\"name\":\"module_selection\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"unknown_module\"}")
             continue
         fi
 
@@ -7636,13 +7647,18 @@ do_changed() {
 
     cd "$PROJECT_ROOT"
 
-    # 收集所有变更文件
+    # Include committed changes since the selected base as well as local
+    # unstaged, staged, and untracked paths. This matters on clean feature
+    # branches where `git diff HEAD` alone is empty.
+    local changed_base=""
+    if changed_base=$(resolve_changed_base "$PROJECT_ROOT"); then
+        log_info "变更基线: ${changed_base}"
+    else
+        log_warn "无法解析变更基线；仅检查当前工作树、暂存区和未跟踪文件"
+    fi
+
     local changed_files=""
-    changed_files+=$(git diff --name-only HEAD 2>/dev/null || true)
-    changed_files+=$'\n'
-    changed_files+=$(git diff --name-only --cached 2>/dev/null || true)
-    changed_files+=$'\n'
-    changed_files+=$(git ls-files --others --exclude-standard 2>/dev/null || true)
+    changed_files=$(collect_changed_files "$PROJECT_ROOT" "$changed_base" 2>/dev/null || true)
 
     # sed keeps a successful exit status for an empty stream. grep -v '^$'
     # returns 1 when the worktree is clean and would terminate this function

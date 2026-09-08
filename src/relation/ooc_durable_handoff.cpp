@@ -80,7 +80,8 @@ validate_structural_fields(const OOCPrivateHandoffRecordV1& record) noexcept {
     if (lease_id_is_zero(record.lease_id) || !identities_are_valid_and_distinct(record)) {
         return failure(OOCPrivateHandoffProtocolCode::invalid_value);
     }
-    if (record.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 ||
+    if ((record.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V3 &&
+         record.pair.format_version != OOCRelationStoreFormat::FORMAT_VERSION_V4) ||
         record.pair.store_id == 0 || record.pair.generation == 0) {
         return failure(OOCPrivateHandoffProtocolCode::invalid_value);
     }

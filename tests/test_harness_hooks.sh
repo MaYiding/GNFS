@@ -204,6 +204,56 @@ PY
     pass "${name}"
 }
 
+assert_unknown_module_rejected() {
+    local name="$1"
+    local runner_root="${TEST_TMPDIR}/${name// /_}/repo"
+    local output="${TEST_TMPDIR}/${name// /_}.runner.out"
+    local runner_status=0
+    local unknown_module='__gnfs_unknown_module__"'
+
+    # Run a copied runner so its report and any skipped-build bookkeeping stay
+    # inside TEST_TMPDIR instead of touching the checkout's build directory.
+    mkdir -p "${runner_root}/scripts/lib" "${runner_root}/build"
+    cp "${PROJECT_ROOT}/scripts/test.sh" "${runner_root}/scripts/test.sh"
+    cp "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh" \
+        "${runner_root}/scripts/lib/process_tree_timeout.zsh"
+    cp "${PROJECT_ROOT}/scripts/lib/changed_files.zsh" \
+        "${runner_root}/scripts/lib/changed_files.zsh"
+
+    set +e
+    zsh "${runner_root}/scripts/test.sh" --no-build --no-color module \
+        "${unknown_module}" >"${output}" 2>&1
+    runner_status=$?
+    set -e
+    if [[ "${runner_status}" -eq 0 ]]; then
+        fail "${name}: unknown module selection unexpectedly succeeded: $(<"${output}")"
+    fi
+    if ! grep -q '未知模块' "${output}" || ! grep -q '失败: 1' "${output}"; then
+        fail "${name}: missing fail-closed module diagnostic: $(<"${output}")"
+    fi
+    "${PYTHON}" - "${runner_root}/build/test_report.json" "${name}" <<'PY'
+import json
+import pathlib
+import sys
+
+report_path = pathlib.Path(sys.argv[1])
+name = sys.argv[2]
+try:
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"{name}: missing or invalid test report: {exc}")
+if report.get("total") != 1 or report.get("passed") != 0 or \
+        report.get("failed") != 1 or report.get("skipped") != 0:
+    raise SystemExit(f"{name}: unexpected report counters: {report!r}")
+tests = report.get("tests")
+if not isinstance(tests, list) or len(tests) != 1 or \
+        tests[0].get("status") != "fail" or \
+        tests[0].get("detail") != "unknown_module":
+    raise SystemExit(f"{name}: unexpected report entry: {report!r}")
+PY
+    pass "${name}"
+}
+
 "${PYTHON}" "${CHECKER}" >/dev/null
 pass "repository Harness checker passes"
 
@@ -260,8 +310,9 @@ if command -v zsh >/dev/null 2>&1; then
     assert_runner_report_cleanup "perf missing binary report" perf
     assert_runner_report_cleanup "stress missing binary report" stress
     assert_runner_failure_report "stress real failure report" stress
+    assert_unknown_module_rejected "unknown module selection fails closed"
 else
-    pass "zsh-only Runner report contracts skipped"
+    pass "zsh-only Runner contracts skipped"
 fi
 
 echo "GNFS Harness Hook tests passed."
