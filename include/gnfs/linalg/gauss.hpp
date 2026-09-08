@@ -62,8 +62,10 @@ public:
             size_t pivot = find_pivot(matrix, col, pivot_row);
 
             if (pivot == SIZE_MAX) {
-                // 这列没有主元，是自由变量
-                result.free_cols.push_back(col);
+                // No pivot in this column.  The complete free-column list is
+                // assembled from is_pivot_col after elimination so columns
+                // encountered before and after the final pivot are each
+                // recorded exactly once.
                 continue;
             }
 
@@ -86,9 +88,11 @@ public:
             ++pivot_row;
         }
 
-        // 剩余的列都是自由变量
-        for (size_t col = result.pivot_cols.empty() ? 0 :
-                result.pivot_cols.back() + 1; col < num_cols; ++col) {
+        // Every non-pivot column is free.  The elimination loop can stop as
+        // soon as all rows have pivots, so scan the full column range here;
+        // doing so also avoids appending columns twice when no-pivot columns
+        // were seen while rows were still available.
+        for (size_t col = 0; col < num_cols; ++col) {
             if (!is_pivot_col[col]) {
                 result.free_cols.push_back(col);
             }

@@ -422,6 +422,37 @@ void test_gaussian_larger() {
     std::cout << "  Gaussian (larger): PASSED" << std::endl;
 }
 
+// Regression: free columns must be unique when elimination continues after
+// the last pivot while dependent rows are still available.
+void test_gaussian_free_columns_unique() {
+    std::cout << "Testing Gaussian free-column uniqueness..." << std::endl;
+
+    // Three rows, one independent row, and four columns.  The duplicate row
+    // becomes zero after the first pivot, leaving columns 1..3 free while
+    // pivot_row is still below num_rows and exercising the old duplicate path.
+    SparseMatrix matrix(3, 4);
+    matrix.set(0, 0);
+    matrix.set(0, 3);
+    matrix.set(1, 0);
+    matrix.set(1, 3);
+
+    GaussianConfig config;
+    config.compute_null_space = true;
+    GaussianEliminator eliminator(config);
+    const auto result = eliminator.eliminate(matrix);
+
+    GNFS_TEST_CHECK(result.rank == 1);
+    GNFS_TEST_CHECK(result.free_cols == std::vector<size_t>({1, 2, 3}));
+    GNFS_TEST_CHECK(result.null_space.size() == 3);
+    GNFS_TEST_CHECK(result.null_space[0].test(1));
+    GNFS_TEST_CHECK(result.null_space[1].test(2));
+    GNFS_TEST_CHECK(result.null_space[2].test(3));
+    GNFS_TEST_CHECK(!result.null_space[0].test(2));
+    GNFS_TEST_CHECK(!result.null_space[0].test(3));
+
+    std::cout << "  Gaussian free-column uniqueness: PASSED" << std::endl;
+}
+
 // Test matrix builder with relations
 void test_matrix_builder() {
     std::cout << "Testing MatrixBuilder..." << std::endl;
@@ -1613,6 +1644,7 @@ int main() {
     test_bitvector_contract();
     test_gaussian_simple();
     test_gaussian_larger();
+    test_gaussian_free_columns_unique();
     test_matrix_builder();
     test_matrix_builder_sign_wide_b();
     test_default_schirokauer_primes();
