@@ -322,6 +322,34 @@ inline constexpr uint64_t MAX_COMPACT_RELATION_BYTES =
 inline constexpr uint64_t MIN_COMPACT_RELATION_BYTES =
     sizeof(int64_t) + sizeof(uint64_t) + 5 * sizeof(uint32_t);
 
+/// Validate the semantic fields that make a compact relation safe for the
+/// GF(2) large-prime incidence view. The compact format stores raw
+/// PrimePower entries, so size checks alone would allow a live p=0 or an
+/// out-of-domain algebraic root to cross the persistence boundary.
+inline void validate_compact_large_prime_values(const gnfs::core::Relation& relation,
+                                                const char* operation) {
+    const auto invalid = [&](const char* field) {
+        throw std::runtime_error(std::string(operation) + ": corrupt relation (" + field + ")");
+    };
+    for (const auto& lp : relation.rational_large_prime) {
+        // Zero-exponent entries are retained by merged relation payloads so
+        // the raw vectors remain a lossless square-root record. They have no
+        // GF(2) incidence or square-root contribution, so only live entries
+        // need a prime-domain check.
+        if (lp.e != 0 && lp.p < 2)
+            invalid("rational large-prime p < 2");
+    }
+    constexpr uint64_t projective_root = std::numeric_limits<uint32_t>::max();
+    for (const auto& lp : relation.algebraic_large_prime) {
+        if (lp.e != 0) {
+            if (lp.p < 2)
+                invalid("algebraic large-prime p < 2");
+            if (lp.r != projective_root && lp.r >= lp.p)
+                invalid("algebraic large-prime root is outside its prime");
+        }
+    }
+}
+
 inline void validate_compact_relation_count(uint64_t count, uint64_t data_size,
                                             uint64_t data_header_bytes, const char* operation) {
     if (data_size < data_header_bytes ||
@@ -422,6 +450,8 @@ inline gnfs::core::Relation deserialize_compact_relation(const uint8_t* ptr, siz
                 "OOCRelationReader: corrupt record (extra (a,b) pair b must be nonzero)");
         }
     }
+
+    validate_compact_large_prime_values(rel, "OOCRelationReader");
 
     if (pos != avail) {
         throw std::runtime_error("OOCRelationReader: corrupt record (trailing bytes)");
@@ -1209,6 +1239,7 @@ public:
         // preflight happens before tellp(), index writes, data writes, or count
         // mutation, so a rejected relation leaves the writer Open and unchanged.
         rel.validate_persistence_limits();
+        detail::validate_compact_large_prime_values(rel, "OOCRelationWriter::write");
 
         try {
             if (exact_append_batch_active_) {
