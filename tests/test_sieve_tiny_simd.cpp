@@ -23,47 +23,42 @@ namespace {
 int tests_passed = 0;
 int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg)                                                \
-    do {                                                                      \
-        if (!(cond)) {                                                        \
-            std::cerr << "FAIL: " << (msg) << " (line " << __LINE__ << ")\n"; \
-            ++tests_failed;                                                   \
-            return;                                                           \
-        }                                                                     \
+#define TEST_ASSERT(cond, msg)                                                                     \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "FAIL: " << (msg) << " (line " << __LINE__ << ")\n";                      \
+            ++tests_failed;                                                                        \
+            return;                                                                                \
+        }                                                                                          \
     } while (0)
 
-#define TEST_PASS(name)                              \
-    do {                                             \
-        std::cout << "  PASS: " << (name) << "\n";   \
-        ++tests_passed;                              \
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::cout << "  PASS: " << (name) << "\n";                                                 \
+        ++tests_passed;                                                                            \
     } while (0)
 
+using gnfs::sieve::detail::apply_log_p_range;
 using gnfs::sieve::detail::apply_log_p_stride;
 using gnfs::sieve::detail::apply_log_p_stride_scalar;
-using gnfs::sieve::detail::apply_log_p_range;
 using gnfs::sieve::detail::tiny_simd_enabled;
 
 // The first 54 odd primes up to 256 (matches the TINY_THRESHOLD = 256 in
 // lattice_sieve.hpp build_prime_entries split).
 constexpr uint32_t kTinyPrimes[] = {
-      2,   3,   5,   7,  11,  13,  17,  19,  23,  29,
-     31,  37,  41,  43,  47,  53,  59,  61,  67,  71,
-     73,  79,  83,  89,  97, 101, 103, 107, 109, 113,
-    127, 131, 137, 139, 149, 151, 157, 163, 167, 173,
-    179, 181, 191, 193, 197, 199, 211, 223, 227, 229,
-    233, 239, 241, 251};
+    2,   3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,  59,  61,
+    67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151,
+    157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251};
 
-// Reference scalar implementation — identical to the original lattice_sieve
-// stride loop before the helper was introduced.  We do not rely on
-// `apply_log_p_stride_scalar` here so we can cross-check the helper itself.
-void reference_stride(std::vector<uint16_t>& arr,
-                      size_t start,
-                      size_t end,
-                      size_t stride,
+// Reference scalar implementation. Keep this independent from the production
+// helpers so the SIMD/unrolled path is checked against the score contract.
+void reference_stride(std::vector<uint16_t>& arr, size_t start, size_t end, size_t stride,
                       uint16_t lp) {
-    if (stride == 0 || start >= end) return;
+    if (stride == 0 || start >= end)
+        return;
     for (size_t idx = start; idx < end; idx += stride) {
-        arr[idx] = static_cast<uint16_t>(arr[idx] + lp);
+        const uint32_t sum = static_cast<uint32_t>(arr[idx]) + static_cast<uint32_t>(lp);
+        arr[idx] = static_cast<uint16_t>(sum > UINT16_MAX ? UINT16_MAX : sum);
     }
 }
 
@@ -81,30 +76,29 @@ std::vector<uint16_t> make_seeded(size_t n, uint32_t seed) {
 // ── Tier A: pure parity tests ─────────────────────────────────────────────
 
 void test_parity_basic_strides() {
-    constexpr size_t REGION = 1u << 12;  // 4 KB
+    constexpr size_t REGION = 1u << 12; // 4 KB
     constexpr uint16_t LP = 7;
 
     for (uint32_t p : kTinyPrimes) {
         for (size_t start_off = 0; start_off < 8; ++start_off) {
             const uint32_t seed = 0xC0FFEEu ^ p ^ static_cast<uint32_t>(start_off);
             auto a = make_seeded(REGION, seed);
-            auto b = a;  // identical seed
+            auto b = a; // identical seed
 
             size_t start = std::min(start_off, REGION - 1);
             reference_stride(a, start, REGION, p, LP);
             apply_log_p_stride(b.data(), start, REGION, p, LP);
 
-            TEST_ASSERT(a == b,
-                        "stride parity p=" + std::to_string(p) +
-                            " start=" + std::to_string(start_off));
+            TEST_ASSERT(a == b, "stride parity p=" + std::to_string(p) +
+                                    " start=" + std::to_string(start_off));
         }
     }
     TEST_PASS("apply_log_p_stride parity across all tiny primes & start offsets");
 }
 
 void test_parity_random_lp() {
-    // Random log_p values + region sizes, ensure accumulating writes survive
-    // overflow (uint16_t wraps cleanly with `+=`).
+    // Random log_p values + region sizes, including contributions that reach
+    // the uint16_t saturation boundary.
     constexpr size_t TRIALS = 64;
     std::mt19937 rng(0xABCD1234u);
 
@@ -143,10 +137,9 @@ void test_parity_with_accumulated_array() {
         reference_stride(a, 0, REGION, p, 0x0123);
         apply_log_p_stride(b.data(), 0, REGION, p, 0x0123);
 
-        TEST_ASSERT(a == b,
-                    "overflow-prone parity p=" + std::to_string(p));
+        TEST_ASSERT(a == b, "overflow-prone parity p=" + std::to_string(p));
     }
-    TEST_PASS("apply_log_p_stride parity under wraparound (uint16_t overflow)");
+    TEST_PASS("apply_log_p_stride parity under uint16_t saturation");
 }
 
 void test_edge_cases() {
@@ -187,8 +180,7 @@ void test_env_gate_disables_simd() {
         apply_log_p_stride_scalar(a.data(), 0, REGION, p, LP);
         apply_log_p_stride(b.data(), 0, REGION, p, LP);
 
-        TEST_ASSERT(a == b,
-                    "scalar vs helper parity p=" + std::to_string(p));
+        TEST_ASSERT(a == b, "scalar vs helper parity p=" + std::to_string(p));
     }
     TEST_PASS("apply_log_p_stride_scalar reference == apply_log_p_stride helper");
 }
@@ -203,11 +195,13 @@ void test_apply_log_p_range_parity() {
         auto b = a;
 
         const uint16_t lp = 0x1234;
-        for (size_t i = 0; i < len; ++i) a[i] = static_cast<uint16_t>(a[i] + lp);
+        for (size_t i = 0; i < len; ++i) {
+            const uint32_t sum = static_cast<uint32_t>(a[i]) + static_cast<uint32_t>(lp);
+            a[i] = static_cast<uint16_t>(sum > UINT16_MAX ? UINT16_MAX : sum);
+        }
         apply_log_p_range(b.data(), len, lp);
 
-        TEST_ASSERT(a == b,
-                    "apply_log_p_range parity len=" + std::to_string(len));
+        TEST_ASSERT(a == b, "apply_log_p_range parity len=" + std::to_string(len));
     }
     TEST_PASS("apply_log_p_range parity across lengths 0..4096");
 }
@@ -217,10 +211,10 @@ void test_apply_log_p_range_parity() {
 void test_full_row_mix() {
     // Mimic a single sieve_row_chunk pass: apply *all* tiny primes via the
     // helper, then via the reference, on the same buffer; results must agree.
-    constexpr size_t REGION = 1u << 16;  // 64 KB row, typical bucket region.
+    constexpr size_t REGION = 1u << 16; // 64 KB row, typical bucket region.
     std::mt19937 rng(0xFEED5EEDu);
 
-    std::vector<std::pair<size_t, uint16_t>> work;  // (start_offset, log_p)
+    std::vector<std::pair<size_t, uint16_t>> work; // (start_offset, log_p)
     work.reserve(std::size(kTinyPrimes));
     for (uint32_t p : kTinyPrimes) {
         work.push_back({rng() % p, static_cast<uint16_t>((rng() & 0xFFu) + 1)});
@@ -273,19 +267,18 @@ void bench_full_row_apply() {
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
-        std::cout << "  [bench] " << label << ": " << us << " us total ("
-                  << (us / ITERS) << " us/iter)\n";
+        std::cout << "  [bench] " << label << ": " << us << " us total (" << (us / ITERS)
+                  << " us/iter)\n";
         return us;
     };
 
-    double t_simd = run(static_cast<void (*)(uint16_t*, size_t, size_t, size_t, uint16_t)>(
-                            &apply_log_p_stride),
-                        arr_helper, "apply_log_p_stride (SIMD/unrolled)");
-    double t_scal = run(&apply_log_p_stride_scalar,
-                        arr_scalar, "apply_log_p_stride_scalar (reference)");
+    double t_simd =
+        run(static_cast<void (*)(uint16_t*, size_t, size_t, size_t, uint16_t)>(&apply_log_p_stride),
+            arr_helper, "apply_log_p_stride (SIMD/unrolled)");
+    double t_scal =
+        run(&apply_log_p_stride_scalar, arr_scalar, "apply_log_p_stride_scalar (reference)");
 
-    TEST_ASSERT(arr_helper == arr_scalar,
-                "bench parity guard — buffers must match exactly");
+    TEST_ASSERT(arr_helper == arr_scalar, "bench parity guard — buffers must match exactly");
 
     double ratio = t_scal / t_simd;
     std::cout << "  [bench] speedup (scalar / helper) = " << ratio << "x\n";
@@ -294,7 +287,7 @@ void bench_full_row_apply() {
     TEST_PASS("micro-bench: SIMD/unrolled path matches scalar reference");
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "============================================\n"
@@ -315,8 +308,7 @@ int main() {
     bench_full_row_apply();
 
     std::cout << "\n============================================\n"
-              << "  Results: " << tests_passed << " passed, "
-              << tests_failed << " failed\n"
+              << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n"
               << "============================================\n";
     return (tests_failed == 0) ? 0 : 1;
 }
