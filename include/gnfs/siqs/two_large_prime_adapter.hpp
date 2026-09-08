@@ -3,6 +3,7 @@
 /// @file two_large_prime_adapter.hpp
 /// @brief Validate and prepare raw SIQS relations for the 2LP graph boundary.
 
+#include <gnfs/siqs/deadline.hpp>
 #include <gnfs/siqs/raw_relation_corpus_view.hpp>
 #include <gnfs/siqs/two_large_prime.hpp>
 #include <gnfs/siqs/two_large_prime_graph.hpp>
@@ -169,7 +170,8 @@ struct AcceptedRelation {
 template <class Splitter>
 [[nodiscard]] std::optional<PreparedTwoLargePrimeCorpus>
 prepare_two_large_prime_corpus(SIQSRawRelationCorpusView relations, size_t factor_base_size,
-                               uint64_t large_prime_bound, Splitter&& splitter) {
+                               uint64_t large_prime_bound, Splitter&& splitter,
+                               const SIQSDeadline* deadline = nullptr) {
     using two_large_prime_adapter_detail::AcceptedRelation;
 
     if (factor_base_size == 0 || large_prime_bound < 2) {
@@ -182,7 +184,10 @@ prepare_two_large_prime_corpus(SIQSRawRelationCorpusView relations, size_t facto
     std::vector<AcceptedRelation> accepted;
     accepted.reserve(relations.size());
 
+    size_t relation_ordinal = 0;
     for (const SIQSRelation& relation : relations) {
+        if ((relation_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return std::nullopt;
         if (!two_large_prime_adapter_detail::has_valid_raw_shape(relation, factor_base_size)) {
             two_large_prime_adapter_detail::record_rejection(
                 corpus.stats,
@@ -233,7 +238,10 @@ prepare_two_large_prime_corpus(SIQSRawRelationCorpusView relations, size_t facto
     corpus.edges.reserve(accepted.size());
     corpus.sources.reserve(accepted.size());
     const AcceptedRelation* previous_relation = nullptr;
+    size_t accepted_ordinal = 0;
     for (const AcceptedRelation& accepted_relation : accepted) {
+        if ((accepted_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return std::nullopt;
         if (previous_relation != nullptr && two_large_prime_adapter_detail::accepted_relation_equal(
                                                 *previous_relation, accepted_relation)) {
             two_large_prime_adapter_detail::record_rejection(
@@ -277,9 +285,11 @@ prepare_two_large_prime_corpus(SIQSRawRelationCorpusView relations, size_t facto
 template <class Splitter>
 [[nodiscard]] std::optional<PreparedTwoLargePrimeCorpus>
 prepare_two_large_prime_corpus(std::span<const SIQSRelation> relations, size_t factor_base_size,
-                               uint64_t large_prime_bound, Splitter&& splitter) {
+                               uint64_t large_prime_bound, Splitter&& splitter,
+                               const SIQSDeadline* deadline = nullptr) {
     return prepare_two_large_prime_corpus(SIQSRawRelationCorpusView(relations), factor_base_size,
-                                          large_prime_bound, std::forward<Splitter>(splitter));
+                                          large_prime_bound, std::forward<Splitter>(splitter),
+                                          deadline);
 }
 
 } // namespace gnfs::siqs

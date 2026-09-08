@@ -676,12 +676,15 @@ SIQS's `L_N(1/2, 1)`.
   production-ready. Use GNFS for ≥60 digits until then
 - **No checkpointing**: each SIQS run starts from scratch. Acceptable since the
   whole algorithm completes inside the GNFS Phase 2 budget
-- **Multiplier retry is not live yet**: `rank_multiplier_candidates` exposes a
-  deterministic, stable candidate order with a bounded limit, while production
-  `factor()` still runs only the top candidate. An unlucky N therefore still
-  falls through to GNFS after that attempt. A later portfolio slice must share
-  one monotonic deadline across attempts and emit shadow telemetry only for the
-  winning or final attempt.
+- **Multiplier portfolio is bounded and live**: production `factor()` ranks a
+  deterministic candidate order and tries up to three multipliers under one
+  caller-wide monotonic deadline. The deadline is checked at sieve, merge,
+  linear-algebra, extraction, and shadow-proof boundaries as well as inside
+  their bounded hot loops. A candidate that shares a factor with `N` is handled
+  directly instead of constructing a degenerate `kN`. The first attempt keeps
+  the requested shadow mode; retries disable shadow telemetry so one invocation
+  emits at most one observe/prefer record. Tiny/even inputs retain their fast
+  paths, and a zero budget permits only the first bounded compatibility probe.
 
 ## References
 

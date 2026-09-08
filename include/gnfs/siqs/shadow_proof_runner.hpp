@@ -4,6 +4,7 @@
 /// @brief Bounded, read-only SIQS shadow proof orchestration.
 
 #include <gnfs/core/integer.hpp>
+#include <gnfs/siqs/deadline.hpp>
 #include <gnfs/siqs/live_sieve_capture.hpp>
 #include <gnfs/siqs/post_merge_dependency.hpp>
 #include <gnfs/siqs/raw_relation_corpus_view.hpp>
@@ -271,9 +272,13 @@ checked_siqs_shadow_relation_payload_bytes(const SIQSRelation& relation) {
 }
 
 [[nodiscard]] inline std::optional<size_t>
-checked_siqs_shadow_corpus_payload_bytes(SIQSRawRelationCorpusView raw_relations) {
+checked_siqs_shadow_corpus_payload_bytes(SIQSRawRelationCorpusView raw_relations,
+                                         const SIQSDeadline* deadline = nullptr) {
     size_t total = 0;
+    size_t relation_ordinal = 0;
     for (const SIQSRelation& relation : raw_relations) {
+        if ((relation_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return std::nullopt;
         const auto relation_bytes = checked_siqs_shadow_relation_payload_bytes(relation);
         if (!relation_bytes || *relation_bytes > std::numeric_limits<size_t>::max() - total) {
             return std::nullopt;
@@ -285,8 +290,10 @@ checked_siqs_shadow_corpus_payload_bytes(SIQSRawRelationCorpusView raw_relations
 
 /// Source-compatible wrapper for one contiguous raw corpus.
 [[nodiscard]] inline std::optional<size_t>
-checked_siqs_shadow_corpus_payload_bytes(std::span<const SIQSRelation> raw_relations) {
-    return checked_siqs_shadow_corpus_payload_bytes(SIQSRawRelationCorpusView(raw_relations));
+checked_siqs_shadow_corpus_payload_bytes(std::span<const SIQSRelation> raw_relations,
+                                         const SIQSDeadline* deadline = nullptr) {
+    return checked_siqs_shadow_corpus_payload_bytes(SIQSRawRelationCorpusView(raw_relations),
+                                                    deadline);
 }
 
 namespace shadow_proof_detail {
@@ -506,12 +513,11 @@ assembly_fallback(SIQSShadowAssemblyStatus status) noexcept {
 /// lvalue-callable function of one cofactor; the same lvalue is used for the
 /// bounded preflight and the owning assembly rebuild.
 template <class Splitter>
-[[nodiscard]] SIQSShadowProofResult
-run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
-                      std::span<const uint32_t> factor_base_primes,
-                      const core::Integer& square_modulus, const core::Integer& gcd_target,
-                      uint64_t large_prime_bound, Splitter&& splitter,
-                      const SIQSShadowProofOptions& options = {}) noexcept {
+[[nodiscard]] SIQSShadowProofResult run_siqs_shadow_proof(
+    SIQSRawRelationCorpusView raw_relations, std::span<const uint32_t> factor_base_primes,
+    const core::Integer& square_modulus, const core::Integer& gcd_target,
+    uint64_t large_prime_bound, Splitter&& splitter, const SIQSShadowProofOptions& options = {},
+    const SIQSDeadline* deadline = nullptr) noexcept {
     using shadow_proof_detail::SIQSShadowProofResultFactory;
 
     SIQSShadowProofEvidence evidence;
@@ -522,6 +528,11 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
     SIQSShadowProofStage current_stage = SIQSShadowProofStage::not_started;
 
     try {
+        if (siqs_deadline_expired(deadline)) {
+            return SIQSShadowProofResultFactory::make(
+                SIQSShadowProofTerminalStatus::stage_failure, current_stage,
+                SIQSShadowProofFallbackReason::none, std::move(evidence));
+        }
         current_stage = SIQSShadowProofStage::input_validation;
         size_t required_rows = 0;
         size_t assembly_row_capacity = 0;
@@ -546,12 +557,18 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
         }
 
         current_stage = SIQSShadowProofStage::payload_accounting;
+        if (siqs_deadline_expired(deadline)) {
+            return SIQSShadowProofResultFactory::make(
+                SIQSShadowProofTerminalStatus::stage_failure, current_stage,
+                SIQSShadowProofFallbackReason::none, std::move(evidence));
+        }
         if (raw_relations.size() > options.limits.max_raw_relations) {
             return SIQSShadowProofResultFactory::make(
                 SIQSShadowProofTerminalStatus::bounded_fallback, current_stage,
                 SIQSShadowProofFallbackReason::raw_relation_limit, std::move(evidence));
         }
-        evidence.raw_payload_bytes = checked_siqs_shadow_corpus_payload_bytes(raw_relations);
+        evidence.raw_payload_bytes =
+            checked_siqs_shadow_corpus_payload_bytes(raw_relations, deadline);
         if (!evidence.raw_payload_bytes) {
             return SIQSShadowProofResultFactory::make(
                 SIQSShadowProofTerminalStatus::stage_failure, current_stage,
@@ -571,8 +588,14 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
         // assembly creates its second owning adapter/graph corpus.
         {
             current_stage = SIQSShadowProofStage::adapter_preflight;
-            auto prepared = prepare_two_large_prime_corpus(raw_relations, factor_base_primes.size(),
-                                                           large_prime_bound, observed_splitter);
+            auto prepared =
+                prepare_two_large_prime_corpus(raw_relations, factor_base_primes.size(),
+                                               large_prime_bound, observed_splitter, deadline);
+            if (siqs_deadline_expired(deadline)) {
+                return SIQSShadowProofResultFactory::make(
+                    SIQSShadowProofTerminalStatus::stage_failure, current_stage,
+                    SIQSShadowProofFallbackReason::none, std::move(evidence));
+            }
             if (!prepared || !shadow_proof_detail::adapter_stats_are_consistent(
                                  prepared->stats, raw_relations.size())) {
                 return SIQSShadowProofResultFactory::make(
@@ -600,7 +623,12 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
             current_stage = SIQSShadowProofStage::graph_preflight;
             auto graph_result = build_two_large_prime_cycle_basis(
                 std::span<const TwoLargePrimeEdge>(prepared->edges.data(), prepared->edges.size()),
-                options.limits.graph);
+                options.limits.graph, deadline);
+            if (siqs_deadline_expired(deadline)) {
+                return SIQSShadowProofResultFactory::make(
+                    SIQSShadowProofTerminalStatus::stage_failure, current_stage,
+                    SIQSShadowProofFallbackReason::none, std::move(evidence));
+            }
             evidence.graph_status = graph_result.status();
             if (const auto fallback = shadow_proof_detail::graph_fallback(graph_result.status())) {
                 return SIQSShadowProofResultFactory::make(
@@ -640,6 +668,11 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
         }
 
         current_stage = SIQSShadowProofStage::assembly;
+        if (siqs_deadline_expired(deadline)) {
+            return SIQSShadowProofResultFactory::make(
+                SIQSShadowProofTerminalStatus::stage_failure, current_stage,
+                SIQSShadowProofFallbackReason::none, std::move(evidence));
+        }
         auto assembly_result = assemble_siqs_shadow_rows_bounded(
             raw_relations, factor_base_primes, square_modulus, large_prime_bound, options.assembly,
             SIQSShadowAssemblyLimits{
@@ -647,7 +680,7 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
                 options.limits.max_row_candidates,
                 options.limits.max_pretrim_rows,
             },
-            observed_splitter);
+            observed_splitter, deadline);
         evidence.assembly_status = assembly_result.status();
         evidence.assembly_limit_evidence = assembly_result.limit_evidence();
         if (observed_splitter.exception() != shadow_proof_detail::SplitterException::none) {
@@ -727,6 +760,11 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
         }
 
         current_stage = SIQSShadowProofStage::matrix;
+        if (siqs_deadline_expired(deadline)) {
+            return SIQSShadowProofResultFactory::make(
+                SIQSShadowProofTerminalStatus::stage_failure, current_stage,
+                SIQSShadowProofFallbackReason::none, std::move(evidence));
+        }
         evidence.matrix_rows = assembly.rows.size();
         evidence.matrix_columns = factor_base_primes.size();
         evidence.minimum_nullity = evidence.matrix_rows > evidence.matrix_columns
@@ -736,7 +774,7 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
             checked_siqs_shadow_dense_matrix_bytes(evidence.matrix_rows, evidence.matrix_columns);
         auto matrix_result = solve_siqs_shadow_matrix(
             std::span<const SIQSShadowRow>(assembly.rows.data(), assembly.rows.size()),
-            factor_base_primes, square_modulus, options.matrix);
+            factor_base_primes, square_modulus, options.matrix, deadline);
         evidence.matrix_status = matrix_result.status();
         if (const auto fallback = shadow_proof_detail::matrix_fallback(matrix_result.status())) {
             return SIQSShadowProofResultFactory::make(
@@ -776,6 +814,11 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
             std::span<const SIQSShadowRow>(assembly.rows.data(), assembly.rows.size());
         for (size_t dependency_index = 0; dependency_index < solution.dependencies.size();
              ++dependency_index) {
+            if (siqs_deadline_expired(deadline)) {
+                return SIQSShadowProofResultFactory::make(
+                    SIQSShadowProofTerminalStatus::stage_failure, current_stage,
+                    SIQSShadowProofFallbackReason::none, std::move(evidence));
+            }
             const auto& dependency = solution.dependencies[dependency_index];
             current_stage = SIQSShadowProofStage::dependency_verification;
             ++evidence.dependencies_examined;
@@ -857,15 +900,14 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
 
 /// Source-compatible wrapper for one contiguous raw corpus.
 template <class Splitter>
-[[nodiscard]] SIQSShadowProofResult
-run_siqs_shadow_proof(std::span<const SIQSRelation> raw_relations,
-                      std::span<const uint32_t> factor_base_primes,
-                      const core::Integer& square_modulus, const core::Integer& gcd_target,
-                      uint64_t large_prime_bound, Splitter&& splitter,
-                      const SIQSShadowProofOptions& options = {}) noexcept {
+[[nodiscard]] SIQSShadowProofResult run_siqs_shadow_proof(
+    std::span<const SIQSRelation> raw_relations, std::span<const uint32_t> factor_base_primes,
+    const core::Integer& square_modulus, const core::Integer& gcd_target,
+    uint64_t large_prime_bound, Splitter&& splitter, const SIQSShadowProofOptions& options = {},
+    const SIQSDeadline* deadline = nullptr) noexcept {
     return run_siqs_shadow_proof(SIQSRawRelationCorpusView(raw_relations), factor_base_primes,
                                  square_modulus, gcd_target, large_prime_bound,
-                                 std::forward<Splitter>(splitter), options);
+                                 std::forward<Splitter>(splitter), options, deadline);
 }
 
 } // namespace gnfs::siqs

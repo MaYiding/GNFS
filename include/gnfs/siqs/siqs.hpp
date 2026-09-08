@@ -14,6 +14,7 @@
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/siqs/congruence.hpp>
+#include <gnfs/siqs/deadline.hpp>
 #include <gnfs/siqs/live_sieve_capture.hpp>
 #include <gnfs/siqs/relation.hpp>
 #include <gnfs/siqs/runtime_facts.hpp>
@@ -912,8 +913,12 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                              std::vector<SIQSRelation>& out_relations, std::mutex& relations_mutex,
                              std::vector<uint8_t>& sieve_buf, std::vector<uint8_t>& exp_buf,
                              SIQSLiveSieveCaptureController* live_capture = nullptr,
-                             SIQSShadowTwoLargePrimeCaptureSink* shadow_two_lp_capture = nullptr) {
+                             SIQSShadowTwoLargePrimeCaptureSink* shadow_two_lp_capture = nullptr,
+                             const SIQSDeadline* deadline = nullptr) {
     if (live_capture != nullptr && live_capture->stopped()) {
+        return;
+    }
+    if (siqs_deadline_expired(deadline)) {
         return;
     }
 
@@ -928,8 +933,11 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
 
     // Find first FB index with p >= small_cutoff (avoid branch in hot loop)
     size_t fb_start = 1;
-    while (fb_start < fb.size() && fb[fb_start].p < small_cutoff)
+    while (fb_start < fb.size() && fb[fb_start].p < small_cutoff) {
+        if ((fb_start & 127u) == 0 && siqs_deadline_expired(deadline))
+            return;
         fb_start++;
+    }
 
     // Phase 1: Block sieve — process sieve in L1-cache-sized blocks
     // Each block stays in L1 cache (~128KB on M-series), improving hit rate for
@@ -939,6 +947,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
     if (sieve_size <= BLOCK_SIZE) {
         // Small sieve: no blocking needed
         for (size_t i = fb_start; i < fb.size(); i++) {
+            if (siqs_deadline_expired(deadline))
+                return;
             uint32_t p = fb[i].p;
             uint32_t s1 = poly.solns[i].soln1;
             uint32_t s2 = poly.solns[i].soln2;
@@ -946,8 +956,11 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                 continue;
             uint8_t logp = fb[i].logp;
             if (s1 == s2) {
-                for (uint64_t pos = s1; pos < sieve_size; pos += p)
+                for (uint64_t pos = s1; pos < sieve_size; pos += p) {
                     saturating_sieve_add(sieve[static_cast<size_t>(pos)], logp);
+                    if ((pos & 4095u) == 0 && siqs_deadline_expired(deadline))
+                        return;
+                }
             } else {
                 uint64_t pos1 = s1, pos2 = s2;
                 if (pos1 > pos2)
@@ -957,6 +970,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                     saturating_sieve_add(sieve[static_cast<size_t>(pos2)], logp);
                     pos1 += p;
                     pos2 += p;
+                    if ((pos2 & 4095u) == 0 && siqs_deadline_expired(deadline))
+                        return;
                 }
                 if (pos1 < sieve_size)
                     saturating_sieve_add(sieve[static_cast<size_t>(pos1)], logp);
@@ -969,6 +984,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
         // exceeds L1 by 2×, insufficient cache pressure). Sieve throughput is already
         // near hardware-limited (~12B writes/sec approaching M1 peak).
         for (size_t i = fb_start; i < fb.size(); i++) {
+            if (siqs_deadline_expired(deadline))
+                return;
             uint32_t p = fb[i].p;
             uint32_t s1 = poly.solns[i].soln1;
             uint32_t s2 = poly.solns[i].soln2;
@@ -976,8 +993,11 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                 continue;
             uint8_t logp = fb[i].logp;
             if (s1 == s2) {
-                for (uint64_t pos = s1; pos < sieve_size; pos += p)
+                for (uint64_t pos = s1; pos < sieve_size; pos += p) {
                     saturating_sieve_add(sieve[static_cast<size_t>(pos)], logp);
+                    if ((pos & 4095u) == 0 && siqs_deadline_expired(deadline))
+                        return;
+                }
             } else {
                 uint64_t pos1 = s1, pos2 = s2;
                 if (pos1 > pos2)
@@ -987,6 +1007,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                     saturating_sieve_add(sieve[static_cast<size_t>(pos2)], logp);
                     pos1 += p;
                     pos2 += p;
+                    if ((pos2 & 4095u) == 0 && siqs_deadline_expired(deadline))
+                        return;
                 }
                 if (pos1 < sieve_size)
                     saturating_sieve_add(sieve[static_cast<size_t>(pos1)], logp);
@@ -1009,6 +1031,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
     touched_buf.reserve(fb.size());
 
     for (size_t cand_pos = 0; cand_pos < sieve_size; cand_pos++) {
+        if ((cand_pos & 63u) == 0 && siqs_deadline_expired(deadline))
+            return;
         if (sieve[cand_pos] < threshold)
             continue;
 
@@ -1127,6 +1151,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
 
             // Trial divide by all FB primes (early exit when fully smooth)
             for (size_t i = 1; i < fb.size() && q128 > 1 && !exponent_overflow; i++) {
+                if ((i & 255u) == 0 && siqs_deadline_expired(deadline))
+                    return;
                 uint32_t p = fb[i].p;
                 if (q128 % p == 0) {
                     record_touched(static_cast<uint32_t>(i));
@@ -1182,6 +1208,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
             }
             for (size_t i = 1; i < fb.size() && mpz_cmp_ui(q_mpz, 1) > 0 && !exponent_overflow;
                  i++) {
+                if ((i & 255u) == 0 && siqs_deadline_expired(deadline))
+                    return;
                 uint32_t p = fb[i].p;
                 if (mpz_divisible_ui_p(q_mpz, p)) {
                     record_touched(static_cast<uint32_t>(i));
@@ -1271,6 +1299,8 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
         if (live_capture != nullptr && live_capture->stopped()) {
             break;
         }
+        if (siqs_deadline_expired(deadline))
+            break;
     }
 }
 
@@ -1334,7 +1364,8 @@ inline SIQSRelation merge_two(const SIQSRelation& a, const SIQSRelation& b, size
 ///    - Newly created 1LP relations feed back into the graph
 ///    - Repeat until no more merges possible
 inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relations,
-                                                size_t fb_size, bool verbose = false) {
+                                                size_t fb_size, bool verbose = false,
+                                                const SIQSDeadline* deadline = nullptr) {
     std::vector<SIQSRelation> full;
     // SIQS typical 10-30% relations are fully smooth (large_prime==0).
     full.reserve(relations.size() / 4);
@@ -1345,7 +1376,10 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
     size_t factored_2lp = 0, failed_2lp = 0, raw_1lp = 0, raw_2lp = 0;
     size_t merged_1lp_pairs = 0, merged_2lp_cycles = 0;
 
-    for (auto& rel : relations) {
+    for (size_t relation_index = 0; relation_index < relations.size(); ++relation_index) {
+        if ((relation_index & 63u) == 0 && siqs_deadline_expired(deadline))
+            return full;
+        auto& rel = relations[relation_index];
         if (rel.large_prime == 0) {
             full.push_back(std::move(rel));
             continue;
@@ -1432,10 +1466,14 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
     std::vector<bool> consumed(pool.size(), false);
 
     for (size_t round = 0; round < max_merge_rounds; round++) {
+        if (siqs_deadline_expired(deadline))
+            return full;
         // Build LP → relation index mapping
         std::unordered_map<uint64_t, std::vector<size_t>> lp_index;
         lp_index.reserve(pool.size() * 2); // each rel contributes 1-2 LP keys
         for (size_t i = 0; i < pool.size(); i++) {
+            if ((i & 63u) == 0 && siqs_deadline_expired(deadline))
+                return full;
             if (consumed[i])
                 continue;
             lp_index[pool[i].large_prime].push_back(i);
@@ -1447,6 +1485,8 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
 
         // Process each LP: merge pairs that share this LP
         for (auto& [lp, indices] : lp_index) {
+            if (siqs_deadline_expired(deadline))
+                return full;
             // Remove consumed entries
             size_t write = 0;
             for (size_t r = 0; r < indices.size(); r++) {
@@ -1456,6 +1496,8 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
             indices.resize(write);
 
             while (indices.size() >= 2) {
+                if (siqs_deadline_expired(deadline))
+                    return full;
                 size_t ai = indices.back();
                 indices.pop_back();
                 if (consumed[ai])
@@ -1539,7 +1581,7 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
 /// Matrix layout: ncols rows × nrows cols (transposed), packed in 64-bit words
 inline std::vector<std::vector<size_t>>
 dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb_size,
-                           size_t max_deps = 64) {
+                           size_t max_deps = 64, const SIQSDeadline* deadline = nullptr) {
     size_t nrows = relations.size();
     size_t ncols = fb_size;
 
@@ -1549,6 +1591,8 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
     std::vector<std::vector<uint64_t>> M(ncols, std::vector<uint64_t>(words_per_row, 0));
 
     for (size_t r = 0; r < nrows; r++) {
+        if ((r & 63u) == 0 && siqs_deadline_expired(deadline))
+            return {};
         const auto& rel = relations[r];
         size_t word = r / 64, bit = r % 64;
         if (rel.negative)
@@ -1565,7 +1609,10 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
     std::vector<size_t> pivot_col(ncols, SIZE_MAX);
     std::vector<bool> is_pivot(nrows, false);
 
+    std::atomic<bool> elimination_timed_out{false};
     for (size_t row = 0; row < ncols; row++) {
+        if (siqs_deadline_expired(deadline))
+            return {};
         // Find leftmost set bit
         size_t pc = SIZE_MAX;
         for (size_t w = 0; w < words_per_row; w++) {
@@ -1590,12 +1637,21 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
             unsigned nt = std::max(1u, std::thread::hardware_concurrency());
             auto elim_chunk = [&](size_t start, size_t end) {
                 for (size_t other = start; other < end; other++) {
+                    if ((other & 63u) == 0 && siqs_deadline_expired(deadline)) {
+                        elimination_timed_out.store(true, std::memory_order_relaxed);
+                        break;
+                    }
                     if (other == row)
                         continue;
                     if (M[other][w_pc] & mask) {
                         uint64_t* dst = M[other].data();
-                        for (size_t k = 0; k < words_per_row; k++)
+                        for (size_t k = 0; k < words_per_row; k++) {
                             dst[k] ^= pivot_row_data[k];
+                            if ((k & 1023u) == 0 && siqs_deadline_expired(deadline)) {
+                                elimination_timed_out.store(true, std::memory_order_relaxed);
+                                break;
+                            }
+                        }
                     }
                 }
             };
@@ -1608,14 +1664,21 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
             }
             for (auto& t : threads)
                 t.join();
+            if (elimination_timed_out.load(std::memory_order_relaxed))
+                return {};
         } else {
             for (size_t other = 0; other < ncols; other++) {
+                if ((other & 63u) == 0 && siqs_deadline_expired(deadline))
+                    return {};
                 if (other == row)
                     continue;
                 if (M[other][w_pc] & mask) {
                     uint64_t* dst = M[other].data();
-                    for (size_t k = 0; k < words_per_row; k++)
+                    for (size_t k = 0; k < words_per_row; k++) {
                         dst[k] ^= pivot_row_data[k];
+                        if ((k & 1023u) == 0 && siqs_deadline_expired(deadline))
+                            return {};
+                    }
                 }
             }
         }
@@ -1624,6 +1687,8 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
     // Extract null space: free variables (non-pivot columns)
     std::vector<std::vector<size_t>> deps;
     for (size_t col = 0; col < nrows && deps.size() < max_deps; col++) {
+        if ((col & 63u) == 0 && siqs_deadline_expired(deadline))
+            return {};
         if (is_pivot[col])
             continue;
         // Free variable col → null vector
@@ -1631,6 +1696,8 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
         dep.push_back(col);
         // Find pivot rows that depend on this free variable
         for (size_t row = 0; row < ncols; row++) {
+            if ((row & 255u) == 0 && siqs_deadline_expired(deadline))
+                return {};
             if (pivot_col[row] == SIZE_MAX)
                 continue;
             size_t w = col / 64, b = col % 64;
@@ -1647,18 +1714,24 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
 
 /// Build GF(2) matrix from relations and find null space
 inline std::vector<std::vector<size_t>> solve_matrix(const std::vector<SIQSRelation>& relations,
-                                                     size_t fb_size) {
+                                                     size_t fb_size,
+                                                     const SIQSDeadline* deadline = nullptr) {
     size_t nrows = relations.size();
     size_t ncols = fb_size;
 
+    if (siqs_deadline_expired(deadline))
+        return {};
+
     if (ncols <= 100000) {
         // Dense Gaussian — O(ncols × nrows² / 64), fast for SIQS
-        return dense_gauss_left_nullspace(relations, fb_size, 64);
+        return dense_gauss_left_nullspace(relations, fb_size, 64, deadline);
     }
 
     // Block Lanczos for very large matrices
     linalg::SparseMatrix matrix(nrows, ncols);
     for (size_t r = 0; r < nrows; r++) {
+        if ((r & 63u) == 0 && siqs_deadline_expired(deadline))
+            return {};
         const auto& rel = relations[r];
         if (rel.negative)
             matrix.set(r, 0);
@@ -1669,6 +1742,8 @@ inline std::vector<std::vector<size_t>> solve_matrix(const std::vector<SIQSRelat
     }
     linalg::BlockLanczos bl;
     auto bl_deps = bl.find_dependencies(matrix, 64);
+    if (siqs_deadline_expired(deadline))
+        return {};
     std::vector<std::vector<size_t>> deps;
     for (auto& bv : bl_deps) {
         std::vector<size_t> dep;
@@ -1690,14 +1765,18 @@ inline std::vector<std::vector<size_t>> solve_matrix(const std::vector<SIQSRelat
 /// @param gcd_N: target for GCD (always original N)
 inline std::optional<std::pair<Integer, Integer>>
 try_extract(const Integer& mod_N, const Integer& gcd_N, const std::vector<SIQSRelation>& relations,
-            const std::vector<size_t>& dep, const std::vector<FBPrime>& fb) {
+            const std::vector<size_t>& dep, const std::vector<FBPrime>& fb,
+            const SIQSDeadline* deadline = nullptr) {
     // Verify exponents are all even (matrix correctness check)
     std::vector<uint32_t> total_exp(fb.size(), 0);
     // Track sign parity: M[0] encodes the sign of the factorized Q side.
     // XOR of `negative` across the dependency must be zero before that side
     // can be represented by an ordinary modular square Y².
     uint32_t sign_parity = 0;
-    for (size_t idx : dep) {
+    for (size_t dependency_index = 0; dependency_index < dep.size(); ++dependency_index) {
+        if ((dependency_index & 31u) == 0 && siqs_deadline_expired(deadline))
+            return std::nullopt;
+        const size_t idx = dep[dependency_index];
         const auto& rel = relations[idx];
         if (rel.negative)
             sign_parity ^= 1;
@@ -1708,13 +1787,18 @@ try_extract(const Integer& mod_N, const Integer& gcd_N, const std::vector<SIQSRe
     if (sign_parity)
         return std::nullopt; // odd number of negative values → skip
     for (size_t i = 0; i < fb.size(); i++) {
+        if ((i & 255u) == 0 && siqs_deadline_expired(deadline))
+            return std::nullopt;
         if (total_exp[i] & 1)
             return std::nullopt; // parity error → skip
     }
 
     // Compute X = product of value_i mod mod_N
     Integer X(1);
-    for (size_t idx : dep) {
+    for (size_t dependency_index = 0; dependency_index < dep.size(); ++dependency_index) {
+        if ((dependency_index & 31u) == 0 && siqs_deadline_expired(deadline))
+            return std::nullopt;
+        const size_t idx = dep[dependency_index];
         mpz_mul(X.get_mpz(), X.get_mpz(), relations[idx].value.get_mpz());
         mpz_mod(X.get_mpz(), X.get_mpz(), mod_N.get_mpz());
     }
@@ -1723,6 +1807,8 @@ try_extract(const Integer& mod_N, const Integer& gcd_N, const std::vector<SIQSRe
     Integer Y(1);
     Integer pe; // hoist — reused per FB prime
     for (size_t i = 1; i < fb.size(); i++) {
+        if ((i & 255u) == 0 && siqs_deadline_expired(deadline))
+            return std::nullopt;
         uint32_t half_exp = total_exp[i] / 2;
         if (half_exp > 0) {
             mpz_set_ui(pe.get_mpz(), fb[i].p);
@@ -1734,7 +1820,10 @@ try_extract(const Integer& mod_N, const Integer& gcd_N, const std::vector<SIQSRe
 
     // Include LP factors from merged relations
     Integer lp_int; // hoist — reused per LP
-    for (size_t idx : dep) {
+    for (size_t dependency_index = 0; dependency_index < dep.size(); ++dependency_index) {
+        if ((dependency_index & 31u) == 0 && siqs_deadline_expired(deadline))
+            return std::nullopt;
+        const size_t idx = dep[dependency_index];
         for (uint64_t lp : relations[idx].merge_lps) {
             // Integer's uint64_t assignment is lossless on Windows LLP64,
             // where GMP's mpz_set_ui accepts only a 32-bit unsigned long.
@@ -1769,12 +1858,17 @@ try_extract(const Integer& mod_N, const Integer& gcd_N, const std::vector<SIQSRe
 }
 
 /// Try random XOR combinations of dependency vectors to increase success probability
-inline std::optional<std::pair<Integer, Integer>> try_extract_with_combos(
-    const Integer& mod_N, const Integer& gcd_N, const std::vector<SIQSRelation>& relations,
-    const std::vector<std::vector<size_t>>& deps, const std::vector<FBPrime>& fb) {
+inline std::optional<std::pair<Integer, Integer>>
+try_extract_with_combos(const Integer& mod_N, const Integer& gcd_N,
+                        const std::vector<SIQSRelation>& relations,
+                        const std::vector<std::vector<size_t>>& deps,
+                        const std::vector<FBPrime>& fb, const SIQSDeadline* deadline = nullptr) {
     // First try each dependency individually
-    for (const auto& dep : deps) {
-        auto result = try_extract(mod_N, gcd_N, relations, dep, fb);
+    for (size_t dependency_index = 0; dependency_index < deps.size(); ++dependency_index) {
+        if (siqs_deadline_expired(deadline))
+            return std::nullopt;
+        const auto& dep = deps[dependency_index];
+        auto result = try_extract(mod_N, gcd_N, relations, dep, fb, deadline);
         if (result)
             return result;
     }
@@ -1784,6 +1878,8 @@ inline std::optional<std::pair<Integer, Integer>> try_extract_with_combos(
     size_t max_combos = std::min(deps.size() * 3, size_t(200));
 
     for (size_t attempt = 0; attempt < max_combos; attempt++) {
+        if (siqs_deadline_expired(deadline))
+            return std::nullopt;
         size_t i = rng() % deps.size();
         size_t j = rng() % deps.size();
         if (i == j)
@@ -1798,13 +1894,15 @@ inline std::optional<std::pair<Integer, Integer>> try_extract_with_combos(
 
         std::vector<size_t> combined;
         for (size_t k = 0; k < relations.size(); k++) {
+            if ((k & 255u) == 0 && siqs_deadline_expired(deadline))
+                return std::nullopt;
             if (in_dep[k])
                 combined.push_back(k);
         }
         if (combined.empty())
             continue;
 
-        auto result = try_extract(mod_N, gcd_N, relations, combined, fb);
+        auto result = try_extract(mod_N, gcd_N, relations, combined, fb, deadline);
         if (result)
             return result;
     }
@@ -1882,10 +1980,20 @@ static_assert(noexcept(siqs_factor_detail::commit_prefer_route(
     nullptr, std::declval<const Integer&>(), std::declval<const SIQSShadowProofPreferDecision&>(),
     std::nullopt)));
 
-inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3600,
-                                        bool verbose = true) {
-    const SIQSShadowProofMode shadow_proof_mode =
-        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
+namespace siqs_factor_detail {
+
+inline std::optional<SIQSResult>
+factor_once(const Integer& N, double max_seconds, bool verbose, uint32_t multiplier,
+            SIQSShadowProofMode shadow_proof_mode, bool* shadow_proof_observe_record_committed_out,
+            bool* shadow_proof_prefer_returned_out, SIQSDeadline deadline,
+            bool allow_unbounded_probe = false) {
+    if (shadow_proof_observe_record_committed_out != nullptr)
+        *shadow_proof_observe_record_committed_out = false;
+    if (shadow_proof_prefer_returned_out != nullptr)
+        *shadow_proof_prefer_returned_out = false;
+
+    if (multiplier == 0)
+        throw std::invalid_argument("SIQS multiplier must be positive");
 
     // SIQS is a medium-size composite factorer. Reject non-positive and
     // tiny odd inputs before parameter selection; handle even composites
@@ -1913,12 +2021,24 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     auto elapsed = [&]() {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     };
+    // A zero-budget first attempt is retained as a compatibility probe for
+    // explicit shadow fallback decisions. Positive budgets always enforce the
+    // caller's absolute deadline, even when the per-attempt remainder is <= 0.
+    const bool enforce_deadline = deadline != SIQSDeadline::max() && !allow_unbounded_probe;
+    const auto budget_available = [&]() noexcept {
+        return !enforce_deadline || !siqs_deadline_expired(&deadline);
+    };
+
+    // Check before parameter selection and factor-base construction. A
+    // caller-wide deadline that has already elapsed must not pay the setup
+    // cost of another multiplier attempt; the compatibility probe is the
+    // only deliberate exception and bypasses this gate.
+    if (!budget_available())
+        return std::nullopt;
 
     size_t digits = N.to_string().size();
     auto params = select_params(digits);
 
-    // Knuth-Schroeppel multiplier selection
-    uint32_t multiplier = select_multiplier(N);
     Integer kN;
     if (multiplier > 1) {
         mpz_mul_ui(kN.get_mpz(), N.get_mpz(), multiplier); // kN = N * k (skip source copy)
@@ -2035,7 +2155,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         size_t local_full = 0, local_1lp = 0, local_2lp = 0;
 
         while (!enough.load(std::memory_order_relaxed) &&
-               elapsed() < static_cast<double>(max_seconds)) {
+               elapsed() < static_cast<double>(max_seconds) && budget_available()) {
             SIQSPoly poly;
             choose_A(kN, params.sieve_half, params.num_a_factors, fb, local_rng, poly.a_indices,
                      poly.A);
@@ -2050,7 +2170,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
                 size_t before = local_relations.size();
                 sieve_polynomial(poly, kN, fb, params.sieve_half, threshold,
                                  params.small_prime_cutoff, lp_bound, lp_bound_sq, local_relations,
-                                 dummy_mutex, sieve_buf, exp_buf, nullptr, nullptr);
+                                 dummy_mutex, sieve_buf, exp_buf, nullptr, nullptr, &deadline);
 
                 // Incrementally count new relations by type
                 for (size_t ri = before; ri < local_relations.size(); ri++) {
@@ -2090,7 +2210,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
 
                 if (enough.load(std::memory_order_relaxed))
                     break;
-                if (elapsed() >= static_cast<double>(max_seconds))
+                if (elapsed() >= static_cast<double>(max_seconds) || !budget_available())
                     break;
 
                 // Gray code switch to next B
@@ -2145,6 +2265,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     // flushed, and stream-error free on the caller's stderr stream.
     bool shadow_proof_observe_record_committed = false;
     const SIQSShadowProofOptions shadow_options{};
+    const SIQSDeadline* shadow_deadline = allow_unbounded_probe ? nullptr : &deadline;
     const auto run_shadow_proof = [&]() {
         std::vector<uint32_t> factor_base_primes;
         factor_base_primes.reserve(fb.size());
@@ -2156,14 +2277,18 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         return run_siqs_shadow_proof(
             std::span<const SIQSRelation>(all_relations.data(), all_relations.size()),
             std::span<const uint32_t>(factor_base_primes.data(), factor_base_primes.size()), kN, N,
-            lp_bound, shadow_splitter, shadow_options);
+            lp_bound, shadow_splitter, shadow_options, shadow_deadline);
     };
-    if (shadow_proof_mode == SIQSShadowProofMode::observe) {
+    if ((budget_available() || allow_unbounded_probe) &&
+        shadow_proof_mode == SIQSShadowProofMode::observe) {
         const SIQSShadowProofObserveRecord shadow_record = observe_siqs_shadow_proof(
             all_relations.size(), fb.size(), lp_bound, shadow_options, run_shadow_proof);
         shadow_proof_observe_record_committed =
             emit_siqs_shadow_proof_observe_record(shadow_record);
-    } else if (shadow_proof_mode == SIQSShadowProofMode::prefer) {
+        if (shadow_proof_observe_record_committed_out != nullptr)
+            *shadow_proof_observe_record_committed_out = shadow_proof_observe_record_committed;
+    } else if ((budget_available() || allow_unbounded_probe) &&
+               shadow_proof_mode == SIQSShadowProofMode::prefer) {
         try {
             SIQSShadowProofResult shadow_result = run_shadow_proof();
             SIQSShadowProofPreferDraft draft =
@@ -2196,7 +2321,9 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
             std::optional<SIQSResult> routed_shadow_result =
                 siqs_factor_detail::commit_prefer_route(stderr, N, decision,
                                                         std::move(prepared_shadow_result));
-            if (routed_shadow_result.has_value()) {
+            if (routed_shadow_result.has_value() && budget_available()) {
+                if (shadow_proof_prefer_returned_out != nullptr)
+                    *shadow_proof_prefer_returned_out = true;
                 return routed_shadow_result;
             }
         } catch (...) {
@@ -2204,8 +2331,13 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         }
     }
 
+    if (shadow_proof_observe_record_committed_out != nullptr)
+        *shadow_proof_observe_record_committed_out = shadow_proof_observe_record_committed;
+    if (!budget_available())
+        return std::nullopt;
+
     // Merge partials
-    auto relations = merge_partials(all_relations, fb_size, verbose);
+    auto relations = merge_partials(all_relations, fb_size, verbose, &deadline);
 
     if (verbose) {
         fprintf(stderr, "[SIQS] After merge: %zu usable relations (target=%zu, %.3fs)\n",
@@ -2219,6 +2351,9 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         }
         return std::nullopt;
     }
+
+    if (!budget_available())
+        return std::nullopt;
 
     // Trim excess relations to reduce LA cost.
     // O(n²) Gaussian: halving rows gives ~4× speedup.
@@ -2234,7 +2369,10 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         fprintf(stderr, "[SIQS] Starting linear algebra (%zux%zu)...\n", relations.size(), fb_size);
     }
 
-    auto deps = solve_matrix(relations, fb_size);
+    auto deps = solve_matrix(relations, fb_size, &deadline);
+
+    if (!budget_available())
+        return std::nullopt;
 
     if (verbose) {
         fprintf(stderr, "[SIQS] Found %zu dependencies (%.3fs)\n", deps.size(), elapsed());
@@ -2243,7 +2381,9 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     // Try dependencies — use ORIGINAL N for GCD (not kN)
     // Since kN | (X²-Y²), we have N | (X²-Y²), so gcd(X-Y, N) works directly.
     // Compute X,Y mod kN (for correct arithmetic), but gcd against N.
-    auto result = try_extract_with_combos(kN, N, relations, deps, fb);
+    auto result = try_extract_with_combos(kN, N, relations, deps, fb, &deadline);
+    if (!budget_available())
+        return std::nullopt;
     if (result) {
         SIQSResult sr;
         sr.factor1 = std::move(result->first);
@@ -2264,6 +2404,104 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
 
     if (verbose) {
         fprintf(stderr, "[SIQS] All dependencies + combos failed\n");
+    }
+    return std::nullopt;
+}
+
+} // namespace siqs_factor_detail
+
+/// Run a bounded multiplier portfolio with one caller-wide cooperative budget.
+/// The first attempt retains the requested shadow mode; retries disable shadow
+/// telemetry so one invocation cannot emit duplicate observe/prefer records.
+inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3600,
+                                        bool verbose = true) {
+    const SIQSShadowProofMode shadow_proof_mode =
+        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
+    const SIQSDeadline started = std::chrono::steady_clock::now();
+    const auto elapsed = [&]() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    };
+
+    // Clamp before converting a public size_t span into the clock's integral
+    // duration. This keeps oversized API budgets portable across clock periods.
+    const SIQSDeadline deadline = [&]() {
+        using Clock = std::chrono::steady_clock;
+        const auto max_span = Clock::time_point::max() - started;
+        const long double max_span_seconds =
+            static_cast<long double>(max_span.count()) *
+            static_cast<long double>(Clock::duration::period::num) /
+            static_cast<long double>(Clock::duration::period::den);
+        const long double requested_seconds = static_cast<long double>(max_seconds);
+        if (requested_seconds >= max_span_seconds)
+            return Clock::time_point::max();
+        return started + std::chrono::duration_cast<Clock::duration>(
+                             std::chrono::duration<long double>(requested_seconds));
+    }();
+
+    // Preserve the legacy tiny/even fast paths before ranking. A zero-budget
+    // call may still perform its bounded shadow compatibility probe.
+    if (mpz_cmp_ui(N.get_mpz(), 15) < 0 || mpz_even_p(N.get_mpz())) {
+        return siqs_factor_detail::factor_once(N, static_cast<double>(max_seconds), verbose, 1,
+                                               shadow_proof_mode, nullptr, nullptr, deadline,
+                                               max_seconds == 0);
+    }
+
+    constexpr size_t max_multiplier_attempts = 3;
+    const auto ranked = rank_multiplier_candidates(N, max_multiplier_attempts);
+    bool shadow_proof_observe_record_committed = false;
+
+    for (size_t attempt = 0; attempt < ranked.size(); ++attempt) {
+        const double elapsed_seconds = elapsed();
+        const double remaining = static_cast<double>(max_seconds) - elapsed_seconds;
+        const bool zero_budget_probe = max_seconds == 0 && attempt == 0;
+        if (!zero_budget_probe && siqs_deadline_expired(&deadline))
+            break;
+
+        const uint32_t multiplier = ranked[attempt];
+
+        // A multiplier sharing a factor with N would make kN degenerate for
+        // SIQS. It is nevertheless a valid direct factorization opportunity;
+        // consume it here instead of constructing an invalid factor base.
+        Integer multiplier_integer(multiplier);
+        Integer shared_factor = core::gcd(N, multiplier_integer);
+        if (shared_factor > Integer(1) && shared_factor < N) {
+            SIQSResult direct;
+            direct.factor1 = std::move(shared_factor);
+            direct.factor2 = N / direct.factor1;
+            direct.time_seconds = elapsed();
+            direct.relations_found = 0;
+            direct.polynomials_used = 0;
+            direct.resolved_sieve_workers = 0;
+            direct.shadow_proof_observe_record_committed = shadow_proof_observe_record_committed;
+            if (verbose) {
+                std::fprintf(stderr,
+                             "[SIQS] multiplier k=%u shares a factor with N; direct factor\n",
+                             multiplier);
+            }
+            return direct;
+        }
+
+        if (verbose) {
+            std::fprintf(stderr, "[SIQS] multiplier attempt %zu/%zu: k=%u, remaining=%.3fs\n",
+                         attempt + 1, ranked.size(), multiplier, remaining);
+        }
+
+        const SIQSShadowProofMode attempt_mode =
+            attempt == 0 ? shadow_proof_mode : SIQSShadowProofMode::off;
+        bool attempt_observe_record_committed = false;
+        bool attempt_prefer_returned = false;
+        auto result = siqs_factor_detail::factor_once(
+            N, remaining, verbose, multiplier, attempt_mode, &attempt_observe_record_committed,
+            &attempt_prefer_returned, deadline, zero_budget_probe);
+        shadow_proof_observe_record_committed |= attempt_observe_record_committed;
+        if (result) {
+            result->shadow_proof_observe_record_committed = shadow_proof_observe_record_committed;
+            // Prefer candidates carry the single pre-emit wall sample. All
+            // ordinary/retry results report total portfolio elapsed time.
+            if (!(attempt == 0 && attempt_prefer_returned))
+                result->time_seconds = elapsed();
+            return result;
+        }
     }
     return std::nullopt;
 }
