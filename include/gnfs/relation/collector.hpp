@@ -1430,6 +1430,8 @@ public:
     /// relations_ 误判成一次成功但零行的 merge。
     /// Pool 模式 (W6 T4): this 和 other 都支持 — pool/std::vector source 都能读;
     /// destination 写到 this 当前的容器 (pool or std::vector or OOC writer)。
+    /// If a destination callback mutates the source during dispatch, merge()
+    /// fails closed with std::logic_error after the already committed prefix.
     size_t merge(const RelationCollector& other) {
         if (this == &other)
             return 0; // Self-merge: UB with std::mutex
