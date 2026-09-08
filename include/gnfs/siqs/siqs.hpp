@@ -845,6 +845,31 @@ inline void saturating_sieve_add(uint8_t& score, uint8_t logp) noexcept {
 /// sieve_buf: caller-owned buffer (avoids reallocation per polynomial)
 /// @param lp_bound_sq  Upper bound for 2LP cofactors (set to 0 to disable 2LP)
 /// @param shadow_two_lp_capture  Independent supplemental 2LP sink; never stops sieving
+inline void validate_sieve_polynomial_inputs(const SIQSPoly& poly, const std::vector<FBPrime>& fb,
+                                             uint32_t sieve_half,
+                                             const std::vector<uint8_t>& exp_buf) {
+    if (sieve_half == 0)
+        throw std::invalid_argument("SIQS sieve half-width must be positive");
+    if (sieve_half > std::numeric_limits<uint32_t>::max() / 2u)
+        throw std::overflow_error("SIQS sieve width exceeds uint32_t index domain");
+    if (fb.size() < 2)
+        throw std::invalid_argument("SIQS factor base has no usable primes");
+    if (fb.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
+        throw std::overflow_error("SIQS factor base index exceeds uint32_t domain");
+    if (poly.solns.size() < fb.size())
+        throw std::invalid_argument("SIQS polynomial solution table is shorter than factor base");
+    if (exp_buf.size() < fb.size())
+        throw std::invalid_argument("SIQS exponent workspace is shorter than factor base");
+    for (size_t i = 1; i < fb.size(); ++i) {
+        if (fb[i].p < 2)
+            throw std::invalid_argument("SIQS factor base contains a non-prime domain value");
+    }
+    for (uint32_t index : poly.a_indices) {
+        if (index == 0 || static_cast<size_t>(index) >= fb.size())
+            throw std::invalid_argument("SIQS A-factor index is outside the factor base");
+    }
+}
+
 inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::vector<FBPrime>& fb,
                              uint32_t sieve_half, uint8_t threshold, uint32_t small_cutoff,
                              uint64_t lp_bound, uint64_t lp_bound_sq,
@@ -856,8 +881,9 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
         return;
     }
 
+    validate_sieve_polynomial_inputs(poly, fb, sieve_half, exp_buf);
     uint32_t M = sieve_half;
-    uint32_t sieve_size = 2 * M;
+    const size_t sieve_size = static_cast<size_t>(M) * 2;
 
     // Reuse caller's buffer
     sieve_buf.resize(sieve_size);
@@ -884,20 +910,20 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                 continue;
             uint8_t logp = fb[i].logp;
             if (s1 == s2) {
-                for (uint32_t pos = s1; pos < sieve_size; pos += p)
-                    saturating_sieve_add(sieve[pos], logp);
+                for (uint64_t pos = s1; pos < sieve_size; pos += p)
+                    saturating_sieve_add(sieve[static_cast<size_t>(pos)], logp);
             } else {
-                uint32_t pos1 = s1, pos2 = s2;
+                uint64_t pos1 = s1, pos2 = s2;
                 if (pos1 > pos2)
                     std::swap(pos1, pos2);
                 while (pos2 < sieve_size) {
-                    saturating_sieve_add(sieve[pos1], logp);
-                    saturating_sieve_add(sieve[pos2], logp);
+                    saturating_sieve_add(sieve[static_cast<size_t>(pos1)], logp);
+                    saturating_sieve_add(sieve[static_cast<size_t>(pos2)], logp);
                     pos1 += p;
                     pos2 += p;
                 }
                 if (pos1 < sieve_size)
-                    saturating_sieve_add(sieve[pos1], logp);
+                    saturating_sieve_add(sieve[static_cast<size_t>(pos1)], logp);
             }
         }
     } else {
@@ -914,20 +940,20 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
                 continue;
             uint8_t logp = fb[i].logp;
             if (s1 == s2) {
-                for (uint32_t pos = s1; pos < sieve_size; pos += p)
-                    saturating_sieve_add(sieve[pos], logp);
+                for (uint64_t pos = s1; pos < sieve_size; pos += p)
+                    saturating_sieve_add(sieve[static_cast<size_t>(pos)], logp);
             } else {
-                uint32_t pos1 = s1, pos2 = s2;
+                uint64_t pos1 = s1, pos2 = s2;
                 if (pos1 > pos2)
                     std::swap(pos1, pos2);
                 while (pos2 < sieve_size) {
-                    saturating_sieve_add(sieve[pos1], logp);
-                    saturating_sieve_add(sieve[pos2], logp);
+                    saturating_sieve_add(sieve[static_cast<size_t>(pos1)], logp);
+                    saturating_sieve_add(sieve[static_cast<size_t>(pos2)], logp);
                     pos1 += p;
                     pos2 += p;
                 }
                 if (pos1 < sieve_size)
-                    saturating_sieve_add(sieve[pos1], logp);
+                    saturating_sieve_add(sieve[static_cast<size_t>(pos1)], logp);
             }
         }
     }
@@ -946,7 +972,7 @@ inline void sieve_polynomial(const SIQSPoly& poly, const Integer& N, const std::
     std::vector<uint32_t> touched_buf;
     touched_buf.reserve(fb.size());
 
-    for (uint32_t cand_pos = 0; cand_pos < sieve_size; cand_pos++) {
+    for (size_t cand_pos = 0; cand_pos < sieve_size; cand_pos++) {
         if (sieve[cand_pos] < threshold)
             continue;
 
