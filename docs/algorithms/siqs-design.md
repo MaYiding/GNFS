@@ -48,6 +48,12 @@ plus an optional one- or two-large-prime check.
 Smooth and partial relations feed a GF(2) matrix whose left null space supplies
 congruences `X² ≡ Y² (mod N)`, after which `gcd(X ± Y, N)` recovers a factor.
 
+`merge_partials` applies greedy 1LP pair and 2LP cycle reductions in rounds. The
+round budget is derived from the initial partial-relation pool size. Every
+successful round consumes at least one active pool entry, so this remains a
+finite bound while allowing LP components deeper than the former fixed
+10-round limit to converge.
+
 ## Key Components
 
 | Component | Header | Role |

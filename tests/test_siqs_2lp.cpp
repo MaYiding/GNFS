@@ -184,6 +184,40 @@ void test_merge_partials_rejects_non_semiprime_splitter_output() {
     CHECK(merge_partials(input, 1, false).empty());
 }
 
+void test_merge_partials_converges_beyond_legacy_round_cap() {
+    // A 2LP cycle with 2^11 edges needs an eleventh merge round when each
+    // round pairs the currently visible edges. The old fixed ten-round cap
+    // returned no usable relation for this valid finite graph.
+    constexpr uint64_t first_large_prime = 1'000'003;
+    for (const size_t edge_count : {size_t{1024}, size_t{2048}}) {
+        std::vector<uint64_t> large_primes;
+        large_primes.reserve(edge_count);
+        for (uint64_t candidate = first_large_prime; large_primes.size() < edge_count;
+             ++candidate) {
+            if (gnfs::util::is_prime_u64(candidate)) {
+                large_primes.push_back(candidate);
+            }
+        }
+
+        std::vector<SIQSRelation> input;
+        input.reserve(edge_count);
+        for (size_t index = 0; index < edge_count; ++index) {
+            SIQSRelation relation;
+            relation.value = Integer(1);
+            relation.large_prime = large_primes[index];
+            relation.large_prime2 = large_primes[(index + 1) % edge_count];
+            input.push_back(std::move(relation));
+        }
+
+        const auto full = merge_partials(input, 1, false);
+        CHECK(full.size() == 1);
+        if (full.size() == 1) {
+            CHECK(full.front().large_prime == 0);
+            CHECK(full.front().large_prime2 == 0);
+            CHECK(full.front().merge_lps.size() == edge_count);
+        }
+    }
+}
 void test_residual_classification_is_exact_and_deterministic() {
     CHECK(!classify_siqs_residual(0, 100, 10'000).has_value());
     CHECK(!classify_siqs_residual(1, 100, 10'000).has_value());
@@ -867,6 +901,7 @@ int main() {
     test_merge_partials_materializes_two_lp_square();
     test_merge_partials_materializes_unresolved_two_lp_square();
     test_merge_partials_rejects_non_semiprime_splitter_output();
+    test_merge_partials_converges_beyond_legacy_round_cap();
     test_residual_classification_is_exact_and_deterministic();
     test_nonnegative_mpz_to_uint64_checked();
     test_shadow_sink_factory_exceptions_roll_back_for_retry();
