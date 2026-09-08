@@ -72,9 +72,11 @@
 //   * On `get` hit: `splice` the hit node to `list.begin()` (front = MRU).
 //   * On `put` of existing key: update value AND `splice` node to front.
 //   * On `put` of new key + cache not full: `push_front` + insert iter.
-//   * On `put` of new key + cache full: evict `list.back()` (LRU node) —
-//     erase its hash-map entry first to keep the map / list in sync —
-//     then `push_front` new node.
+//   * On `put` of a new key, the list node is linked before the hash-map
+//     index is emplaced. If map allocation fails, the new list node is
+//     removed before the exception escapes, preserving the previous cache.
+//     When full, eviction is deferred until the new index is established,
+//     so a failed insertion does not lose the previous LRU entry.
 //
 // Thread safety:
 //   * All public methods take an internal `std::mutex`. Concurrent get/put
@@ -263,8 +265,9 @@ public:
     ///
     /// On existing key: overwrites value AND promotes to MRU.
     /// On new key + cache not full: insert at front (MRU).
-    /// On new key + cache full: evict LRU (`order_.back()`) first, then
-    /// insert at front.
+    /// On new key + cache full: establish the new list/map entry first, then
+    /// evict the previous LRU node. If list or map allocation throws, the
+    /// cache is left unchanged and the exception propagates to the caller.
     ///
     /// Disabled cache (capacity_ == 0) is a no-op.
     void put(uint64_t cofactor, uint32_t B, uint32_t lp_bound, const Value& result) {
@@ -279,17 +282,34 @@ public:
             order_.splice(order_.begin(), order_, it->second);
             return;
         }
-        // New key. Evict if at capacity.
-        if (order_.size() >= capacity_) {
-            // Evict LRU (back of list).
+        // Insert the new entry at the front (MRU) before evicting. This keeps
+        // the old cache intact if either allocation below fails.
+        const bool was_full = order_.size() >= capacity_;
+        order_.emplace_front(key, result);
+        try {
+            const auto [map_it, inserted] = entries_.emplace(key, order_.begin());
+            if (!inserted) {
+                // The key was already present despite the lookup above. This
+                // cannot happen while holding the mutex, but remove the
+                // speculative node rather than leaving duplicate list state.
+                order_.pop_front();
+                return;
+            }
+            (void)map_it;
+        } catch (...) {
+            // `unordered_map::emplace` has no effect when it throws. Remove
+            // exactly the node created above so map/list state is unchanged.
+            order_.pop_front();
+            throw;
+        }
+
+        if (was_full) {
+            // The new map entry is live before we remove the previous LRU,
+            // so the map and list remain synchronized throughout eviction.
             const Key& lru_key = order_.back().first;
-            // Erase hash-map entry FIRST (uses reference to lru_key).
             entries_.erase(lru_key);
             order_.pop_back();
         }
-        // Insert new entry at front (MRU).
-        order_.emplace_front(key, result);
-        entries_[key] = order_.begin();
     }
 
     /// Current number of cached entries.

@@ -12,6 +12,7 @@
 //   * Different (B, lp) under same cofactor = independent cache slots
 //   * Repeated put on same key updates value + promotes MRU
 //   * size() and capacity() accessors
+//   * Repeated full-cache evictions preserve consistency, then clear/reuse
 //   * shared_cofactor_result_cache singleton: multiple calls return same
 //     instance (address comparison)
 //   * Thread safety: 4 threads × 100 mixed get/put, no crash, no data
@@ -419,6 +420,47 @@ static void test_size_capacity_accessors() {
     std::cout << "  capacity bound enforced: PASS" << std::endl;
 }
 
+// --------------------------------------------------------------------
+// Repeated full-cache insertions preserve the map/list relationship.
+// --------------------------------------------------------------------
+
+static void test_repeated_evictions_preserve_consistency() {
+    std::cout << "Testing repeated full-cache evictions and reuse..." << std::endl;
+    CofactorResultCache cache(2);
+
+    for (uint64_t key = 0; key < 256; ++key) {
+        cache.put(key, 100, 1000, make_classification(CofactorClass::Prime, key, key + 1, key + 2));
+        assert(cache.size() == (key == 0 ? 1U : 2U));
+
+        auto newest = cache.get(key, 100, 1000);
+        assert(newest.has_value());
+        assert(newest->factor1 == key);
+
+        if (key > 0) {
+            auto previous = cache.get(key - 1, 100, 1000);
+            assert(previous.has_value());
+            assert(previous->factor1 == key - 1);
+            // Restore the expected MRU -> LRU order (key, key - 1) after the
+            // validation reads so the next insertion exercises the same path.
+            newest = cache.get(key, 100, 1000);
+            assert(newest.has_value());
+        }
+
+        if (key > 1) {
+            auto evicted = cache.get(key - 2, 100, 1000);
+            assert(!evicted.has_value());
+        }
+    }
+
+    cache.clear();
+    assert(cache.size() == 0);
+    cache.put(900, 100, 1000, make_classification(CofactorClass::Smooth));
+    assert(cache.size() == 1);
+    assert(cache.get(900, 100, 1000).has_value());
+
+    std::cout << "  256 full-cache evictions + clear/reuse: PASS" << std::endl;
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Process-singleton: multiple calls return same instance
 // ────────────────────────────────────────────────────────────────────
@@ -450,7 +492,9 @@ static void test_shared_singleton_same_instance() {
 
 static void test_thread_safety_4x100_mixed() {
     std::cout << "Testing thread safety 4 threads x 100 mixed get/put..." << std::endl;
-    CofactorResultCache cache(500);
+    // Keep the capacity below the key range so concurrent puts exercise the
+    // full-cache insertion and eviction path as well as ordinary lookups.
+    CofactorResultCache cache(32);
 
     constexpr int kThreads = 4;
     constexpr int kIters = 100;
@@ -492,6 +536,7 @@ static void test_thread_safety_4x100_mixed() {
     const int total_get_ops = hits.load() + misses.load();
     assert(total_get_ops >= 0);
     assert(total_get_ops <= kThreads * kIters);
+    assert(cache.size() <= 32);
 
     std::cout << "  4 threads x 100 ops: PASS (hits=" << hits.load() << ", misses=" << misses.load()
               << ", no crash)" << std::endl;
@@ -580,6 +625,7 @@ int main() {
     test_same_cofactor_different_B_lp_independent();
     test_repeated_put_updates_and_promotes();
     test_size_capacity_accessors();
+    test_repeated_evictions_preserve_consistency();
     test_shared_singleton_same_instance();
     test_thread_safety_4x100_mixed();
     test_16_key_mixed_hash_sweep();
