@@ -8,6 +8,7 @@
 #include <gnfs/siqs/two_large_prime_graph.hpp>
 #include <gnfs/siqs/two_large_prime_materializer.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -98,13 +99,15 @@ public:
         return result;
     }
 
-    /// Copy the captured relations in deterministic worker ordinal order.
+    /// Copy the captured relations in canonical field order.
     ///
     /// This is the sole composition boundary. It does not inspect completion
     /// timing and it does not mutate any sink, so a caller can independently
-    /// retain per-worker snapshots for evidence. A snapshot/vector mismatch
-    /// indicates that a worker published an invalid partial state and throws
-    /// rather than returning an ambiguous corpus.
+    /// retain per-worker snapshots for evidence. Canonical sorting makes the
+    /// resulting raw corpus independent of worker partitioning and local
+    /// completion order. A snapshot/vector mismatch indicates that a worker
+    /// published an invalid partial state and throws rather than returning an
+    /// ambiguous corpus.
     [[nodiscard]] std::vector<SIQSRelation> compose_relations() const {
         size_t total = 0;
         for (const auto& sink : sinks_) {
@@ -113,10 +116,13 @@ public:
                 throw std::logic_error(
                     "SIQS shadow 2LP sink snapshot does not match captured vector");
             }
-            if (sink->stop_reason() == SIQSLiveSieveCaptureStopReason::invalid_limits ||
+            if (sink->capture_failed() ||
+                sink->stop_reason() == SIQSLiveSieveCaptureStopReason::invalid_limits ||
                 sink->stop_reason() == SIQSLiveSieveCaptureStopReason::invalid_relation_kind ||
                 sink->stop_reason() == SIQSLiveSieveCaptureStopReason::invalid_state ||
-                sink->stop_reason() == SIQSLiveSieveCaptureStopReason::size_overflow) {
+                sink->stop_reason() == SIQSLiveSieveCaptureStopReason::size_overflow ||
+                sink->stop_reason() == SIQSLiveSieveCaptureStopReason::relation_limit ||
+                sink->stop_reason() == SIQSLiveSieveCaptureStopReason::payload_limit) {
                 throw std::logic_error("SIQS shadow 2LP worker sink failed closed");
             }
             if (sink->relations().size() > std::numeric_limits<size_t>::max() - total) {
@@ -132,10 +138,38 @@ public:
                 result.push_back(relation);
             }
         }
+        std::stable_sort(result.begin(), result.end(), canonical_relation_less);
         return result;
     }
 
 private:
+    [[nodiscard]] static bool canonical_relation_less(const SIQSRelation& lhs,
+                                                      const SIQSRelation& rhs) {
+        const int value_order = lhs.value.compare(rhs.value);
+        if (value_order != 0) {
+            return value_order < 0;
+        }
+        if (lhs.negative != rhs.negative) {
+            return !lhs.negative;
+        }
+        if (lhs.large_prime != rhs.large_prime) {
+            return lhs.large_prime < rhs.large_prime;
+        }
+        if (lhs.large_prime2 != rhs.large_prime2) {
+            return lhs.large_prime2 < rhs.large_prime2;
+        }
+        if (lhs.exponents != rhs.exponents) {
+            return std::lexicographical_compare(lhs.exponents.begin(), lhs.exponents.end(),
+                                                rhs.exponents.begin(), rhs.exponents.end());
+        }
+        if (lhs.fb_indices != rhs.fb_indices) {
+            return std::lexicographical_compare(lhs.fb_indices.begin(), lhs.fb_indices.end(),
+                                                rhs.fb_indices.begin(), rhs.fb_indices.end());
+        }
+        return std::lexicographical_compare(lhs.merge_lps.begin(), lhs.merge_lps.end(),
+                                            rhs.merge_lps.begin(), rhs.merge_lps.end());
+    }
+
     std::vector<std::unique_ptr<SIQSShadowTwoLargePrimeCaptureSink>> sinks_;
 };
 
@@ -230,15 +264,32 @@ graph_status(TwoLargePrimeCycleBasisStatus status) noexcept {
     return SIQSTwoLargePrimeParallelCaptureStatus::graph_failure;
 }
 
+[[nodiscard]] inline bool
+adapter_graph_alignment_is_valid(const PreparedTwoLargePrimeCorpus& corpus) noexcept {
+    if (corpus.edges.size() != corpus.sources.size()) {
+        return false;
+    }
+    for (size_t index = 0; index < corpus.edges.size(); ++index) {
+        const TwoLargePrimeEdge& edge = corpus.edges[index];
+        const TwoLargePrimeCycleSource& source = corpus.sources[index];
+        if (edge.relation_index != index || source.relation_index != index || source.p != edge.p ||
+            source.q != edge.q) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace two_large_prime_parallel_capture_detail
 
 /// Prepare and materialize all deterministic cycles from per-worker captures.
 ///
 /// The operation is explicitly proof-side: it does not call `merge_partials`
-/// and it has no effect on production `factor()`. Relation caps are allowed to
-/// stop an individual sink because bounded capture is still a valid
-/// observation; invalid sink states, adapter configuration, graph limits, and
-/// checked materialization failures invalidate the complete result.
+/// and it has no effect on production `factor()`. A relation or payload cap on
+/// any worker makes the aggregate incomplete and therefore invalid; otherwise
+/// changing worker topology could change which records survive. Invalid sink
+/// states, adapter configuration, graph limits, and checked materialization
+/// failures invalidate the complete result.
 template <class Splitter>
 [[nodiscard]] SIQSTwoLargePrimeParallelCaptureResult
 materialize_siqs_two_large_prime_worker_capture(
@@ -248,6 +299,13 @@ materialize_siqs_two_large_prime_worker_capture(
     if (workers.worker_count() == 0 || factor_base_size == 0 || large_prime_bound < 2) {
         return two_large_prime_parallel_capture_detail::failure(
             SIQSTwoLargePrimeParallelCaptureStatus::invalid_options);
+    }
+    // Validate the arithmetic domain before graph construction.  A forest (or
+    // an empty capture) has no cycle materialization call through which the
+    // generic materializer could otherwise reject an invalid modulus.
+    if (!modulus.is_positive() || modulus.is_one()) {
+        return two_large_prime_parallel_capture_detail::failure(
+            SIQSTwoLargePrimeParallelCaptureStatus::materialization_failure);
     }
 
     try {
@@ -277,6 +335,12 @@ materialize_siqs_two_large_prime_worker_capture(
                 SIQSTwoLargePrimeParallelCaptureStatus::invalid_options);
         }
         capture.corpus = std::move(*prepared);
+
+        if (!two_large_prime_parallel_capture_detail::adapter_graph_alignment_is_valid(
+                capture.corpus)) {
+            return two_large_prime_parallel_capture_detail::failure(
+                SIQSTwoLargePrimeParallelCaptureStatus::graph_failure);
+        }
 
         auto graph_result = build_two_large_prime_cycle_basis(capture.corpus.edges, graph_limits);
         if (!graph_result.is_valid() || !graph_result.basis()) {
