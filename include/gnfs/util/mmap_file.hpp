@@ -103,15 +103,23 @@ public:
         return file_ != INVALID_HANDLE_VALUE;
     }
 
+    /// Read a typed value at byte offset.
+    ///
+    /// Throws std::out_of_range when the complete value is not mapped. The
+    /// subtraction-based check avoids wrapping `offset + sizeof(T)`.
     template <typename T> [[nodiscard]] T read_at(size_t offset) const {
-        assert(offset + sizeof(T) <= size_);
+        if (offset > size_ || sizeof(T) > size_ - offset) {
+            throw std::out_of_range("MmapFile::read_at offset out of range");
+        }
         T val;
         std::memcpy(&val, data_ + offset, sizeof(T));
         return val;
     }
 
     template <typename T> [[nodiscard]] const T* ptr_at(size_t offset) const {
-        assert(offset <= size_);
+        if (offset > size_) {
+            throw std::out_of_range("MmapFile::ptr_at offset out of range");
+        }
         return reinterpret_cast<const T*>(data_ + offset);
     }
 
@@ -316,9 +324,14 @@ public:
         return fd_ >= 0;
     }
 
-    /// Read a typed value at byte offset. No bounds check in release.
+    /// Read a typed value at byte offset.
+    ///
+    /// Throws std::out_of_range when the complete value is not mapped. The
+    /// subtraction-based check avoids wrapping `offset + sizeof(T)`.
     template <typename T> [[nodiscard]] T read_at(size_t offset) const {
-        assert(offset + sizeof(T) <= size_);
+        if (offset > size_ || sizeof(T) > size_ - offset) {
+            throw std::out_of_range("MmapFile::read_at offset out of range");
+        }
         T val;
         std::memcpy(&val, data_ + offset, sizeof(T));
         return val;
@@ -326,7 +339,9 @@ public:
 
     /// Get a pointer to a contiguous array of T at byte offset.
     template <typename T> [[nodiscard]] const T* ptr_at(size_t offset) const {
-        assert(offset <= size_);
+        if (offset > size_) {
+            throw std::out_of_range("MmapFile::ptr_at offset out of range");
+        }
         return reinterpret_cast<const T*>(data_ + offset);
     }
 
