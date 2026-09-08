@@ -20,48 +20,55 @@
 //
 // The build wires this test into the linalg test set (ctest LinalgSpmvSimd).
 
-#include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
-#include <gnfs/linalg/detail/spmv_simd.hpp>
 #include <gnfs/linalg/detail/spmv_kernels.hpp>
+#include <gnfs/linalg/detail/spmv_simd.hpp>
+#include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/util/thread_pool.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
+using gnfs::linalg::BlockVector;
 using gnfs::linalg::CSRMatrix;
 using gnfs::linalg::SparseMatrix;
-using gnfs::linalg::BlockVector;
 
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, msg); \
-        tests_failed++; \
-        return; \
-    } \
-} while (0)
+#define TEST_ASSERT(cond, msg)                                                                     \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, msg);                             \
+            tests_failed++;                                                                        \
+            return;                                                                                \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_PASS(name) do { \
-    std::printf("  PASS: %s\n", name); \
-    tests_passed++; \
-} while (0)
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::printf("  PASS: %s\n", name);                                                         \
+        tests_passed++;                                                                            \
+    } while (0)
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 static SparseMatrix make_random_matrix(std::size_t rows, std::size_t cols,
-                                       std::size_t avg_nnz_per_row,
-                                       std::uint64_t seed) {
+                                       std::size_t avg_nnz_per_row, std::uint64_t seed) {
     SparseMatrix mat(rows, cols);
-    if (cols == 0) return mat;
+    if (cols == 0)
+        return mat;
     std::mt19937_64 rng(seed);
     std::uniform_int_distribution<std::uint32_t> col_dist(0, static_cast<std::uint32_t>(cols - 1));
     std::uniform_int_distribution<int> nnz_dist(
@@ -93,7 +100,8 @@ static BlockVector scalar_forward(const CSRMatrix& m, const BlockVector& x) {
         std::uint64_t acc = 0;
         const std::uint32_t* p = m.row_begin(i);
         const std::uint32_t* e = m.row_end(i);
-        for (; p < e; ++p) acc ^= x.data[*p];
+        for (; p < e; ++p)
+            acc ^= x.data[*p];
         y.data[i] = acc;
     }
     return y;
@@ -103,10 +111,12 @@ static BlockVector scalar_transpose(const CSRMatrix& m, const BlockVector& x) {
     BlockVector y(m.num_cols());
     for (std::size_t i = 0; i < m.num_rows(); ++i) {
         std::uint64_t xi = x.data[i];
-        if (xi == 0) continue;
+        if (xi == 0)
+            continue;
         const std::uint32_t* p = m.row_begin(i);
         const std::uint32_t* e = m.row_end(i);
-        for (; p < e; ++p) y.data[*p] ^= xi;
+        for (; p < e; ++p)
+            y.data[*p] ^= xi;
     }
     return y;
 }
@@ -114,32 +124,31 @@ static BlockVector scalar_transpose(const CSRMatrix& m, const BlockVector& x) {
 // SIMD wrappers — call the stand-alone kernels exposed by spmv_simd.hpp.
 static BlockVector simd_forward(const CSRMatrix& m, const BlockVector& x) {
     BlockVector y(m.num_rows());
-    gnfs::linalg::detail::simd::spmv_forward_simd(
-        m.num_rows(), m.num_cols(),
-        m.row_offsets().data(), m.col_indices().data(),
-        x.data.data(), y.data.data());
+    gnfs::linalg::detail::simd::spmv_forward_simd(m.num_rows(), m.num_cols(),
+                                                  m.row_offsets().data(), m.col_indices().data(),
+                                                  x.data.data(), y.data.data());
     return y;
 }
 
 static BlockVector simd_transpose(const CSRMatrix& m, const BlockVector& x) {
     BlockVector y(m.num_cols());
-    gnfs::linalg::detail::simd::spmv_transpose_simd(
-        m.num_rows(), m.num_cols(),
-        m.row_offsets().data(), m.col_indices().data(),
-        x.data.data(), y.data.data());
+    gnfs::linalg::detail::simd::spmv_transpose_simd(m.num_rows(), m.num_cols(),
+                                                    m.row_offsets().data(), m.col_indices().data(),
+                                                    x.data.data(), y.data.data());
     return y;
 }
 
 static bool vectors_equal(const BlockVector& a, const BlockVector& b) {
-    if (a.length != b.length) return false;
+    if (a.length != b.length)
+        return false;
     for (std::size_t i = 0; i < a.length; ++i) {
-        if (a.data[i] != b.data[i]) return false;
+        if (a.data[i] != b.data[i])
+            return false;
     }
     return true;
 }
 
-static void compare_both(const SparseMatrix& sp, const BlockVector& x,
-                         const char* label) {
+static void compare_both(const SparseMatrix& sp, const BlockVector& x, const char* label) {
     CSRMatrix csr(sp);
 
     // Forward kernel.
@@ -147,15 +156,13 @@ static void compare_both(const SparseMatrix& sp, const BlockVector& x,
         BlockVector cpu_y = scalar_forward(csr, x);
         BlockVector simd_y = simd_forward(csr, x);
         if (!vectors_equal(cpu_y, simd_y)) {
-            std::fprintf(stderr,
-                "  forward mismatch [%s] rows=%zu cols=%zu\n",
-                label, sp.num_rows(), sp.num_cols());
+            std::fprintf(stderr, "  forward mismatch [%s] rows=%zu cols=%zu\n", label,
+                         sp.num_rows(), sp.num_cols());
             for (std::size_t i = 0; i < cpu_y.length; ++i) {
                 if (cpu_y.data[i] != simd_y.data[i]) {
-                    std::fprintf(stderr,
-                        "    row %zu: cpu=%016llx simd=%016llx\n",
-                        i, static_cast<unsigned long long>(cpu_y.data[i]),
-                        static_cast<unsigned long long>(simd_y.data[i]));
+                    std::fprintf(stderr, "    row %zu: cpu=%016llx simd=%016llx\n", i,
+                                 static_cast<unsigned long long>(cpu_y.data[i]),
+                                 static_cast<unsigned long long>(simd_y.data[i]));
                     break;
                 }
             }
@@ -168,19 +175,18 @@ static void compare_both(const SparseMatrix& sp, const BlockVector& x,
     {
         BlockVector xt(sp.num_rows());
         std::mt19937_64 rng(0xdeadbeefULL ^ static_cast<std::uint64_t>(sp.num_rows()));
-        for (std::size_t i = 0; i < xt.length; ++i) xt.data[i] = rng();
+        for (std::size_t i = 0; i < xt.length; ++i)
+            xt.data[i] = rng();
         BlockVector cpu_y = scalar_transpose(csr, xt);
         BlockVector simd_y = simd_transpose(csr, xt);
         if (!vectors_equal(cpu_y, simd_y)) {
-            std::fprintf(stderr,
-                "  transpose mismatch [%s] rows=%zu cols=%zu\n",
-                label, sp.num_rows(), sp.num_cols());
+            std::fprintf(stderr, "  transpose mismatch [%s] rows=%zu cols=%zu\n", label,
+                         sp.num_rows(), sp.num_cols());
             for (std::size_t i = 0; i < cpu_y.length; ++i) {
                 if (cpu_y.data[i] != simd_y.data[i]) {
-                    std::fprintf(stderr,
-                        "    col %zu: cpu=%016llx simd=%016llx\n",
-                        i, static_cast<unsigned long long>(cpu_y.data[i]),
-                        static_cast<unsigned long long>(simd_y.data[i]));
+                    std::fprintf(stderr, "    col %zu: cpu=%016llx simd=%016llx\n", i,
+                                 static_cast<unsigned long long>(cpu_y.data[i]),
+                                 static_cast<unsigned long long>(simd_y.data[i]));
                     break;
                 }
             }
@@ -253,12 +259,13 @@ static void test_max_density() {
 // boundary conditions across batch-aligned and batch+1 widths.
 static void test_single_row_widths() {
     std::printf("[6] single row, varying widths\n");
-    for (std::size_t w : {std::size_t{0}, std::size_t{1}, std::size_t{2}, std::size_t{3},
-                         std::size_t{4}, std::size_t{5}, std::size_t{7}, std::size_t{8},
-                         std::size_t{9}, std::size_t{15}, std::size_t{16}, std::size_t{17},
-                         std::size_t{31}, std::size_t{32}, std::size_t{33}}) {
+    for (std::size_t w :
+         {std::size_t{0}, std::size_t{1}, std::size_t{2}, std::size_t{3}, std::size_t{4},
+          std::size_t{5}, std::size_t{7}, std::size_t{8}, std::size_t{9}, std::size_t{15},
+          std::size_t{16}, std::size_t{17}, std::size_t{31}, std::size_t{32}, std::size_t{33}}) {
         SparseMatrix mat(1, w + 1);
-        for (std::uint32_t c = 0; c < w; ++c) mat.set(0, c);
+        for (std::uint32_t c = 0; c < w; ++c)
+            mat.set(0, c);
         BlockVector x = make_random_vector(w + 1, 0x1000ULL + w);
         char label[64];
         std::snprintf(label, sizeof(label), "single row width=%zu", w);
@@ -273,7 +280,8 @@ static void test_single_column() {
     std::printf("[7] single column\n");
     SparseMatrix mat(100, 1);
     for (std::size_t r = 0; r < 100; ++r) {
-        if (r % 2 == 0) mat.set(r, 0);
+        if (r % 2 == 0)
+            mat.set(r, 0);
     }
     BlockVector x = make_random_vector(1, 0x2000ULL);
     compare_both(mat, x, "single column");
@@ -340,8 +348,7 @@ static void test_dispatcher_integration() {
     gnfs::util::ThreadPool pool(2);
     gnfs::linalg::detail::spmv_forward(csr, x, y_dispatch, pool);
     gnfs::linalg::detail::simd::spmv_forward_simd(
-        csr.num_rows(), csr.num_cols(),
-        csr.row_offsets().data(), csr.col_indices().data(),
+        csr.num_rows(), csr.num_cols(), csr.row_offsets().data(), csr.col_indices().data(),
         x.data.data(), y_simd.data.data());
     TEST_ASSERT(vectors_equal(y_dispatch, y_simd),
                 "dispatcher forward result diverges from SIMD helper");
@@ -351,8 +358,7 @@ static void test_dispatcher_integration() {
     BlockVector y_simd_t(2500);
     gnfs::linalg::detail::spmv_transpose(csr, xt, y_dispatch_t, pool);
     gnfs::linalg::detail::simd::spmv_transpose_simd(
-        csr.num_rows(), csr.num_cols(),
-        csr.row_offsets().data(), csr.col_indices().data(),
+        csr.num_rows(), csr.num_cols(), csr.row_offsets().data(), csr.col_indices().data(),
         xt.data.data(), y_simd_t.data.data());
     TEST_ASSERT(vectors_equal(y_dispatch_t, y_simd_t),
                 "dispatcher transpose result diverges from SIMD helper");
@@ -370,17 +376,14 @@ static void test_repeated_calls() {
     BlockVector x = make_random_vector(500, 0x9000ULL);
     BlockVector y1(600);
     gnfs::linalg::detail::simd::spmv_transpose_simd(
-        csr.num_rows(), csr.num_cols(),
-        csr.row_offsets().data(), csr.col_indices().data(),
+        csr.num_rows(), csr.num_cols(), csr.row_offsets().data(), csr.col_indices().data(),
         x.data.data(), y1.data.data());
     for (int rep = 0; rep < 4; ++rep) {
         BlockVector y2(600);
         gnfs::linalg::detail::simd::spmv_transpose_simd(
-            csr.num_rows(), csr.num_cols(),
-            csr.row_offsets().data(), csr.col_indices().data(),
+            csr.num_rows(), csr.num_cols(), csr.row_offsets().data(), csr.col_indices().data(),
             x.data.data(), y2.data.data());
-        TEST_ASSERT(vectors_equal(y1, y2),
-                    "repeated transpose call returns different result");
+        TEST_ASSERT(vectors_equal(y1, y2), "repeated transpose call returns different result");
     }
     TEST_PASS("repeated calls (scratch hygiene)");
 }
@@ -392,7 +395,7 @@ static void test_repeated_calls() {
 static void test_batch_boundaries() {
     std::printf("[12] batch-size boundaries\n");
     for (std::size_t w : {std::size_t{2}, std::size_t{3}, std::size_t{4}, std::size_t{6},
-                         std::size_t{8}, std::size_t{12}, std::size_t{16}, std::size_t{20}}) {
+                          std::size_t{8}, std::size_t{12}, std::size_t{16}, std::size_t{20}}) {
         SparseMatrix mat(8, w + 4);
         for (std::size_t r = 0; r < 8; ++r) {
             for (std::uint32_t c = 0; c < static_cast<std::uint32_t>(w); ++c) {
@@ -414,7 +417,7 @@ static void test_zero_input() {
     std::printf("[13] zero input vector\n");
     SparseMatrix mat = make_random_matrix(100, 100, 8, 0xb000ULL);
     CSRMatrix csr(mat);
-    BlockVector x(100);  // zeroed by ctor
+    BlockVector x(100); // zeroed by ctor
 
     BlockVector y_simd = simd_forward(csr, x);
     for (std::size_t i = 0; i < y_simd.length; ++i) {
@@ -427,6 +430,163 @@ static void test_zero_input() {
     TEST_PASS("zero input vector");
 }
 
+// Dispatcher boundaries must remain fail-closed in Release builds. The
+// kernels intentionally rely on validated CSR column indices in their hot
+// loops, so malformed vector shapes must be rejected before any worker starts.
+static void test_dispatch_contracts() {
+    std::printf("[14] dispatcher vector contracts\n");
+    SparseMatrix mat(3, 4);
+    mat.set(0, 0);
+    mat.set(1, 1);
+    mat.set(2, 3);
+    CSRMatrix csr(mat);
+    gnfs::util::ThreadPool pool(2);
+
+    BlockVector valid_input(4);
+    BlockVector valid_forward_output(3);
+
+    BlockVector short_input(3);
+    bool caught = false;
+    try {
+        gnfs::linalg::detail::spmv_forward(csr, short_input, valid_forward_output, pool);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "forward rejects input dimension mismatch");
+
+    BlockVector short_forward_output(2);
+    caught = false;
+    try {
+        gnfs::linalg::detail::spmv_forward(csr, valid_input, short_forward_output, pool);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "forward rejects output dimension mismatch");
+
+    BlockVector malformed_input;
+    malformed_input.length = 4;
+    caught = false;
+    try {
+        gnfs::linalg::detail::spmv_forward(csr, malformed_input, valid_forward_output, pool);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "forward rejects input length beyond storage");
+
+    BlockVector transpose_input(2);
+    BlockVector valid_transpose_output(4);
+    caught = false;
+    try {
+        gnfs::linalg::detail::spmv_transpose(csr, transpose_input, valid_transpose_output, pool);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "transpose rejects input dimension mismatch");
+
+    BlockVector malformed_output;
+    malformed_output.length = 4;
+    caught = false;
+    try {
+        gnfs::linalg::detail::spmv_transpose(csr, valid_forward_output, malformed_output, pool);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "transpose rejects output length beyond storage");
+
+    TEST_PASS("dispatcher vector contracts remain fail-closed");
+}
+
+// MatrixView used to verify that transpose drains all submitted workers before
+// rethrowing an accessor failure from the first worker. The second row waits
+// until the test releases it, making an early return observable.
+class ThrowingMatrixView {
+public:
+    ThrowingMatrixView(std::atomic<bool>& tail_started, std::atomic<bool>& allow_tail,
+                       std::atomic<bool>& tail_finished)
+        : tail_started_(tail_started), allow_tail_(allow_tail), tail_finished_(tail_finished) {}
+
+    [[nodiscard]] std::size_t num_rows() const noexcept {
+        return 2;
+    }
+    [[nodiscard]] std::size_t num_cols() const noexcept {
+        return 1;
+    }
+    [[nodiscard]] std::size_t nnz() const noexcept {
+        return 1;
+    }
+
+    [[nodiscard]] const std::uint32_t* row_begin(std::size_t i) const {
+        if (i == 0)
+            throw std::runtime_error("intentional MatrixView worker failure");
+        return columns_;
+    }
+
+    [[nodiscard]] const std::uint32_t* row_end(std::size_t i) const {
+        if (i == 0)
+            throw std::runtime_error("intentional MatrixView worker failure");
+        tail_started_.store(true, std::memory_order_release);
+        while (!allow_tail_.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        tail_finished_.store(true, std::memory_order_release);
+        return columns_ + 1;
+    }
+
+    [[nodiscard]] std::size_t row_nnz(std::size_t i) const noexcept {
+        return i < num_rows() ? (i == 0 ? 0 : 1) : 0;
+    }
+
+private:
+    std::atomic<bool>& tail_started_;
+    std::atomic<bool>& allow_tail_;
+    std::atomic<bool>& tail_finished_;
+    std::uint32_t columns_[1] = {0};
+};
+
+static void test_dispatch_worker_exception_drain() {
+    std::printf("[15] dispatcher worker exception drain\n");
+    std::atomic<bool> tail_started{false};
+    std::atomic<bool> allow_tail{false};
+    std::atomic<bool> tail_finished{false};
+    ThrowingMatrixView matrix(tail_started, allow_tail, tail_finished);
+    BlockVector x(2);
+    x.data[0] = 1;
+    x.data[1] = 1;
+    BlockVector y(1);
+    gnfs::util::ThreadPool pool(2);
+
+    bool caught = false;
+    std::string error_message;
+    auto invocation = std::async(std::launch::async, [&] {
+        try {
+            gnfs::linalg::detail::spmv_transpose(matrix, x, y, pool);
+        } catch (const std::runtime_error& error) {
+            caught = true;
+            error_message = error.what();
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!tail_started.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+
+    // Always release the worker before checking assertions so a failed test
+    // cannot strand the async invocation or its ThreadPool task.
+    allow_tail.store(true, std::memory_order_release);
+    invocation.wait();
+    const bool returned_after_drain = tail_finished.load(std::memory_order_acquire);
+    invocation.get();
+
+    TEST_ASSERT(tail_started.load(std::memory_order_acquire),
+                "second worker must start before transpose reports failure");
+    TEST_ASSERT(returned_after_drain, "transpose must drain the second worker before rethrow");
+    TEST_ASSERT(caught, "transpose must rethrow the worker exception");
+    TEST_ASSERT(error_message == "intentional MatrixView worker failure",
+                "transpose must preserve the first worker exception");
+    TEST_PASS("dispatcher worker exception drain");
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -434,10 +594,8 @@ static void test_zero_input() {
 int main() {
     std::printf("=== test_spmv_simd ===\n");
     namespace simd = gnfs::linalg::detail::simd;
-    std::printf("compile-time SIMD available: %s\n",
-                simd::is_simd_available() ? "yes" : "no");
-    std::printf("runtime use_simd: %s\n",
-                simd::use_simd_runtime() ? "yes" : "no");
+    std::printf("compile-time SIMD available: %s\n", simd::is_simd_available() ? "yes" : "no");
+    std::printf("runtime use_simd: %s\n", simd::use_simd_runtime() ? "yes" : "no");
     const char* env = std::getenv("GNFS_SPMV_SIMD");
     std::printf("GNFS_SPMV_SIMD = %s\n", env ? env : "(unset)");
 
@@ -454,6 +612,8 @@ int main() {
     test_repeated_calls();
     test_batch_boundaries();
     test_zero_input();
+    test_dispatch_contracts();
+    test_dispatch_worker_exception_drain();
 
     std::printf("\n=== Summary ===\n");
     std::printf("  passed: %d\n", tests_passed);
