@@ -300,6 +300,56 @@ bool test_config_builder() {
     if (!zero_thread_budget_rejected) {
         return false;
     }
+
+    for (const auto& invalid : {
+             std::pair<const char*, uint32_t>{"degree", 0},
+             std::pair<const char*, uint32_t>{"rational_bound", 0},
+             std::pair<const char*, uint32_t>{"algebraic_bound", 0},
+         }) {
+        bool rejected = false;
+        try {
+            if (std::string_view(invalid.first) == "degree") {
+                (void)Config::auto_detect().set_degree(invalid.second);
+            } else if (std::string_view(invalid.first) == "rational_bound") {
+                (void)Config::auto_detect().set_rational_bound(invalid.second);
+            } else {
+                (void)Config::auto_detect().set_algebraic_bound(invalid.second);
+            }
+        } catch (const std::out_of_range&) {
+            rejected = true;
+        }
+        if (!rejected) {
+            return false;
+        }
+    }
+
+    bool zero_lp_rejected = false;
+    try {
+        (void)Config::auto_detect().set_large_prime_bound(0);
+    } catch (const std::out_of_range&) {
+        zero_lp_rejected = true;
+    }
+    if (!zero_lp_rejected) {
+        return false;
+    }
+
+    for (const int32_t invalid_dimension : {0, -1}) {
+        bool width_rejected = false;
+        try {
+            (void)Config::auto_detect().set_sieve_width(invalid_dimension);
+        } catch (const std::out_of_range&) {
+            width_rejected = true;
+        }
+        bool height_rejected = false;
+        try {
+            (void)Config::auto_detect().set_sieve_height(invalid_dimension);
+        } catch (const std::out_of_range&) {
+            height_rejected = true;
+        }
+        if (!width_rejected || !height_rejected) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -333,6 +383,13 @@ bool test_config_merge() {
         return false;
     }
     assert(*merged.verbose == true); // overridden
+
+    Config false_override;
+    false_override.verbose = false;
+    const auto merged_false = merged.merge(false_override);
+    if (!merged_false.verbose.has_value() || *merged_false.verbose) {
+        return false;
+    }
     return true;
 }
 
@@ -455,7 +512,7 @@ bool test_config_from_file_integer_boundaries() {
         ofs << "rational_bound = 4294967295\n";
         ofs << "algebraic_bound = 4294967295\n";
         ofs << "large_prime_bound = 18446744073709551615\n";
-        ofs << "sieve_width = -2147483648\n";
+        ofs << "sieve_width = 2147483647\n";
         ofs << "sieve_height = 2147483647\n";
     }
 
@@ -465,7 +522,7 @@ bool test_config_from_file_integer_boundaries() {
            cfg.rational_bound == std::numeric_limits<uint32_t>::max() &&
            cfg.algebraic_bound == std::numeric_limits<uint32_t>::max() &&
            cfg.large_prime_bound == std::numeric_limits<uint64_t>::max() &&
-           cfg.sieve_width == std::numeric_limits<int32_t>::min() &&
+           cfg.sieve_width == std::numeric_limits<int32_t>::max() &&
            cfg.sieve_height == std::numeric_limits<int32_t>::max();
 }
 
@@ -508,12 +565,16 @@ bool test_config_from_file_invalid() {
     invalid_cases_passed &= write_and_expect_throw("degree = -0\n", "signed zero degree");
     invalid_cases_passed &=
         write_and_expect_throw("degree = 4junk\n", "trailing degree characters");
+    invalid_cases_passed &= write_and_expect_throw("degree = 0\n", "zero degree");
     invalid_cases_passed &=
         write_and_expect_throw("rational_bound = -1\n", "negative rational bound");
+    invalid_cases_passed &= write_and_expect_throw("rational_bound = 0\n", "zero rational bound");
     invalid_cases_passed &=
         write_and_expect_throw("algebraic_bound = 4junk\n", "trailing algebraic bound characters");
+    invalid_cases_passed &= write_and_expect_throw("algebraic_bound = 0\n", "zero algebraic bound");
     invalid_cases_passed &=
         write_and_expect_throw("large_prime_bound = 8junk\n", "trailing large-prime characters");
+    invalid_cases_passed &= write_and_expect_throw("large_prime_bound = 0\n", "zero large-prime bound");
     invalid_cases_passed &=
         write_and_expect_throw("large_prime_bound = -1\n", "negative large-prime bound");
     invalid_cases_passed &=
@@ -522,8 +583,12 @@ bool test_config_from_file_invalid() {
                                                    "uint64 large-prime overflow");
     invalid_cases_passed &=
         write_and_expect_throw("sieve_width = 2147483648\n", "int32 sieve width overflow");
+    invalid_cases_passed &= write_and_expect_throw("sieve_width = 0\n", "zero sieve width");
+    invalid_cases_passed &= write_and_expect_throw("sieve_width = -1\n", "negative sieve width");
     invalid_cases_passed &=
         write_and_expect_throw("sieve_height = -2147483649\n", "int32 sieve height overflow");
+    invalid_cases_passed &= write_and_expect_throw("sieve_height = 0\n", "zero sieve height");
+    invalid_cases_passed &= write_and_expect_throw("sieve_height = -1\n", "negative sieve height");
     invalid_cases_passed &= write_and_expect_throw("max_special_q = 0\n", "zero max_special_q");
     invalid_cases_passed &=
         write_and_expect_throw("max_special_q = 4294967296\n", "overflow max_special_q");
@@ -665,6 +730,57 @@ bool test_config_to_string() {
         return false;
     }
     return true;
+}
+
+bool test_config_apply_to_rejects_invalid_ranges() {
+    const Integer n("1000036000099");
+    const auto expect_rejected = [&n](Config cfg) {
+        try {
+            (void)cfg.apply_to(n);
+        } catch (const std::out_of_range&) {
+            return true;
+        }
+        return false;
+    };
+
+    Config zero_degree;
+    zero_degree.degree = 0;
+    if (!expect_rejected(zero_degree)) {
+        return false;
+    }
+    Config zero_rational;
+    zero_rational.rational_bound = 0;
+    if (!expect_rejected(zero_rational)) {
+        return false;
+    }
+    Config zero_algebraic;
+    zero_algebraic.algebraic_bound = 0;
+    if (!expect_rejected(zero_algebraic)) {
+        return false;
+    }
+    Config zero_large_prime;
+    zero_large_prime.large_prime_bound = 0;
+    if (!expect_rejected(zero_large_prime)) {
+        return false;
+    }
+    for (const int32_t invalid_dimension : {0, -1}) {
+        Config invalid_width;
+        invalid_width.sieve_width = invalid_dimension;
+        if (!expect_rejected(invalid_width)) {
+            return false;
+        }
+        Config invalid_height;
+        invalid_height.sieve_height = invalid_dimension;
+        if (!expect_rejected(invalid_height)) {
+            return false;
+        }
+    }
+
+    Config valid;
+    valid.sieve_width = std::numeric_limits<int32_t>::max();
+    valid.sieve_height = std::numeric_limits<int32_t>::max();
+    const auto params = valid.apply_to(n);
+    return params.sieve_i_min < params.sieve_i_max && params.sieve_j_min < params.sieve_j_max;
 }
 
 // ============================================================
