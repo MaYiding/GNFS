@@ -308,6 +308,17 @@ bool Integer::operator==(int64_t rhs) const {
     return mpz_cmp(value_, rhs_int.value_) == 0;
 }
 
+bool Integer::operator==(uint64_t rhs) const {
+    // GMP's mpz_cmp_ui takes unsigned long. On LLP64 targets that is only
+    // 32 bits, so construct an exact temporary instead of truncating rhs.
+    if constexpr (sizeof(unsigned long) >= sizeof(uint64_t)) {
+        return mpz_cmp_ui(value_, static_cast<unsigned long>(rhs)) == 0;
+    } else {
+        Integer rhs_int(rhs);
+        return mpz_cmp(value_, rhs_int.value_) == 0;
+    }
+}
+
 bool Integer::operator!=(const Integer& other) const {
     return mpz_cmp(value_, other.value_) != 0;
 }
