@@ -1024,6 +1024,56 @@ struct OOCSinkLeaseArtifacts {
     }
 };
 
+void test_merge_respects_max_relations() {
+    std::cout << "Testing merge max_relations guard (vector/pool/OOC)..." << std::endl;
+
+    for (const bool use_pool : {false, true}) {
+        CollectorConfig destination_config;
+        destination_config.check_duplicates = true;
+        destination_config.max_relations = 2;
+        destination_config.use_pool = use_pool;
+        destination_config.pool_initial_bytes = 256;
+        RelationCollector destination(destination_config);
+
+        RelationCollector source;
+        CHECK(destination.add(Relation(1, 2)));
+        CHECK(source.add(Relation(3, 4)));
+        CHECK(source.add(Relation(5, 6)));
+
+        // Only one source row may be admitted: the destination cap applies to
+        // merge() just as it does to add().
+        CHECK(destination.merge(source) == 1);
+        CHECK(destination.size() == 2);
+        CHECK(destination.stats().total_relations == 2);
+        CHECK(destination.stats().duplicates_rejected == 0);
+        CHECK(!destination.add(Relation(7, 8)));
+        CHECK(destination.size() == 2);
+    }
+
+    const auto path = make_tmp_ooc_path("merge_max_relations");
+    OOCArtifacts cleanup(path);
+    CollectorConfig destination_config;
+    destination_config.check_duplicates = true;
+    destination_config.max_relations = 2;
+    destination_config.ooc_enabled = true;
+    destination_config.ooc_base_path = path;
+    RelationCollector destination(destination_config);
+
+    RelationCollector source;
+    CHECK(destination.add(Relation(1, 2)));
+    CHECK(source.add(Relation(3, 4)));
+    CHECK(source.add(Relation(5, 6)));
+    CHECK(destination.merge(source) == 1);
+    CHECK(destination.size() == 2);
+    CHECK(destination.stats().total_relations == 2);
+    CHECK(destination.stats().duplicates_rejected == 0);
+    CHECK(destination.snapshot_relations().size() == 2);
+    CHECK(!destination.add(Relation(7, 8)));
+    CHECK(destination.snapshot_relations().size() == 2);
+
+    std::cout << "  Merge max_relations guard: PASS" << std::endl;
+}
+
 static std::vector<char> read_file_bytes(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     CHECK(static_cast<bool>(input));
@@ -3299,6 +3349,7 @@ int main() {
     std::cout << "\n=== OOC mode tests (BACKLOG #11c) ===" << std::endl;
     test_ooc_basic_add();
     test_ooc_duplicate_rejection();
+    test_merge_respects_max_relations();
     test_ooc_n_divisibility();
     test_ooc_partial_relations();
     test_ooc_concurrent_add();
