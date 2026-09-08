@@ -1129,7 +1129,7 @@ static void check_merge_callback_contract(const char* mode, const CollectorConfi
     std::vector<ABPair> callbacks;
     destination.set_callback([&](const Relation& relation) {
         // merge() must release both collector mutexes before dispatch.
-        CHECK(destination.size() == 3);
+        CHECK(destination.size() == callbacks.size() + 2);
         CHECK(destination.stats().total_relations == destination.size());
         CHECK(source.size() == 4);
         callbacks.push_back(relation.ab());
@@ -1169,6 +1169,74 @@ void test_merge_callback_contract() {
     ooc_config.ooc_enabled = true;
     ooc_config.ooc_base_path = ooc_path;
     check_merge_callback_contract("ooc", ooc_config);
+}
+
+void test_merge_callback_exception_preserves_prefix() {
+    std::cout << "Testing merge callback exception prefix semantics..." << std::endl;
+
+    CollectorConfig config;
+    config.check_duplicates = true;
+    RelationCollector destination(config);
+    RelationCollector source(config);
+    CHECK(destination.add(Relation(1, 2)));
+    CHECK(source.add(Relation(3, 4)));
+    CHECK(source.add(Relation(5, 6)));
+
+    size_t callback_count = 0;
+    destination.set_callback([&](const Relation&) {
+        ++callback_count;
+        throw std::runtime_error("merge callback failure");
+    });
+
+    bool threw = false;
+    try {
+        (void)destination.merge(source);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(callback_count == 1);
+    CHECK(destination.size() == 2);
+    CHECK(destination.stats().total_relations == 2);
+
+    std::cout << "  Merge callback exception prefix: PASS" << std::endl;
+}
+
+void test_merge_callback_rejects_source_mutation() {
+    std::cout << "Testing merge callback source mutation rejection..." << std::endl;
+
+    for (const bool clear_source : {false, true}) {
+        CollectorConfig config;
+        config.check_duplicates = true;
+        RelationCollector destination(config);
+        RelationCollector source(config);
+        CHECK(destination.add(Relation(1, 2)));
+        CHECK(source.add(Relation(3, 4)));
+        CHECK(source.add(Relation(5, 6)));
+
+        size_t callback_count = 0;
+        destination.set_callback([&](const Relation&) {
+            ++callback_count;
+            if (clear_source)
+                source.clear();
+            else
+                CHECK(source.add(Relation(7, 8)));
+        });
+
+        bool threw = false;
+        try {
+            (void)destination.merge(source);
+        } catch (const std::logic_error&) {
+            threw = true;
+        }
+        CHECK(threw);
+        CHECK(callback_count == 1);
+        CHECK(destination.size() == 2);
+        CHECK(destination.stats().total_relations == 2);
+        CHECK(source.size() == (clear_source ? 0 : 3));
+    }
+
+    std::cout << "  Merge callback source mutation rejection: PASS" << std::endl;
 }
 
 /// Best-effort cleanup for the private directory reserved by RelationSink.
@@ -3459,6 +3527,8 @@ int main() {
     test_callback();
     test_callback_no_deadlock();
     test_merge_callback_contract();
+    test_merge_callback_exception_preserves_prefix();
+    test_merge_callback_rejects_source_mutation();
     test_n_divisibility_rejection();
 
     std::cout << "\n=== OOC mode tests (BACKLOG #11c) ===" << std::endl;
