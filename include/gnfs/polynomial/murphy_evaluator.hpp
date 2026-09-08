@@ -557,11 +557,34 @@ private:
         // Precompute skewness powers (was: 3 × std::pow per (i,j) pair)
         uint32_t max_deg = std::max(d_f, d_g);
         constexpr uint32_t MAX_DEG_STACK = 16; // GNFS degree ≤ 6,余量到 16
-        assert(max_deg <= MAX_DEG_STACK && "Murphy compute_e_score_log: degree too high");
-        std::array<double, MAX_DEG_STACK + 1> skew_pow{};
+        // Keep the common GNFS degree range allocation-free, but do not rely on
+        // assert() to make the public evaluator safe for higher-degree inputs.
+        // In Release, indexing the fixed arrays with max_deg > 16 used to be
+        // stack-buffer-overflow. Allocate one reusable set of power buffers for
+        // the uncommon high-degree case instead.
+        std::array<double, MAX_DEG_STACK + 1> skew_pow_stack{};
+        std::vector<double> skew_pow_dynamic;
+        double* skew_pow = skew_pow_stack.data();
+        if (max_deg > MAX_DEG_STACK) {
+            skew_pow_dynamic.resize(static_cast<size_t>(max_deg) + 1);
+            skew_pow = skew_pow_dynamic.data();
+        }
         skew_pow[0] = 1.0;
         for (uint32_t j = 1; j <= max_deg; ++j)
             skew_pow[j] = skew_pow[j - 1] * skewness;
+
+        std::array<double, MAX_DEG_STACK + 1> ct_pow_stack{};
+        std::array<double, MAX_DEG_STACK + 1> st_pow_stack{};
+        std::vector<double> ct_pow_dynamic;
+        std::vector<double> st_pow_dynamic;
+        double* ct_pow = ct_pow_stack.data();
+        double* st_pow = st_pow_stack.data();
+        if (max_deg > MAX_DEG_STACK) {
+            ct_pow_dynamic.resize(static_cast<size_t>(max_deg) + 1);
+            st_pow_dynamic.resize(static_cast<size_t>(max_deg) + 1);
+            ct_pow = ct_pow_dynamic.data();
+            st_pow = st_pow_dynamic.data();
+        }
 
         for (uint32_t i = 0; i < num_points; ++i) {
             // Midpoint rule: θ = π(i + 0.5) / N
@@ -570,8 +593,8 @@ private:
             double ct = std::cos(theta);
             double st = std::sin(theta);
 
-            // Precompute cos/sin powers for this angle — 栈分配,零堆压力
-            std::array<double, MAX_DEG_STACK + 1> ct_pow{}, st_pow{};
+            // Precompute cos/sin powers for this angle. The buffers are reused
+            // across samples; high-degree inputs use the dynamic fallback above.
             ct_pow[0] = st_pow[0] = 1.0;
             for (uint32_t j = 1; j <= max_deg; ++j) {
                 ct_pow[j] = ct_pow[j - 1] * ct;

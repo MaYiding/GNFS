@@ -187,6 +187,36 @@ void test_score_consistency() {
     std::cout << "  PASSED" << std::endl;
 }
 
+/// Regression: Murphy scoring must remain defined for polynomials above the
+/// fixed-size stack fast path. Release builds used to index those arrays past
+/// the end because the only guard was an assert(max_deg <= 16).
+void test_high_degree_score_uses_dynamic_powers() {
+    std::cout << "Testing high-degree Murphy score uses dynamic power buffers..." << std::endl;
+
+    MurphyParams params;
+    params.alpha_bound = 100;
+    params.sample_points = 32;
+    params.smoothness_bound = 1000000;
+    MurphyEvaluator evaluator(params);
+
+    std::vector<Integer> f_coeffs(18);
+    f_coeffs[0] = Integer(1000000000LL);
+    f_coeffs[17] = Integer(1);
+    IntPolynomial f(std::move(f_coeffs));
+
+    std::vector<Integer> g_coeffs;
+    g_coeffs.emplace_back(-1);
+    g_coeffs.emplace_back(1);
+    IntPolynomial g(std::move(g_coeffs));
+
+    const MurphyScore score = evaluator.compute(f, g, Integer(1009), 1.0);
+    GNFS_TEST_CHECK(std::isfinite(score.log_e_score));
+    GNFS_TEST_CHECK(std::isfinite(score.e_score));
+    GNFS_TEST_CHECK(score.log_e_score < -0.1 && score.log_e_score > -0.3);
+    std::cout << "  degree 17 score: " << score.log_e_score << std::endl;
+    std::cout << "  PASSED" << std::endl;
+}
+
 /// 测试 skewness 优化
 void test_skewness_optimization() {
     std::cout << "Testing skewness optimization..." << std::endl;
@@ -371,6 +401,7 @@ int main() {
     test_alpha_golden_values();
     test_alpha_computation();
     test_score_consistency();
+    test_high_degree_score_uses_dynamic_powers();
     test_skewness_optimization();
     test_quick_compare();
     test_concurrent_evaluation();
