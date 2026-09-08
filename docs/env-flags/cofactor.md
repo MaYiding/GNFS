@@ -608,6 +608,9 @@ parallel). N=1 (默认) 走 sequential per-curve 循环, 不创建 ThreadPool,
 零开销保留原行为. N>=2 时把 K 条曲线 dispatch 到大小为 min(N, K) 的
 ThreadPool, 曲线之间靠 future 同步收口.
 
+解析接受前导空白和数字前缀（兼容既有 `atoi` 调用方）；空值、非数字和非正值
+回退为 1，超过整数宽度或运行时上限的正值钳制到 `2 * hardware_concurrency`。
+
 ```bash
 GNFS_ECM_STAGE2_PARALLEL=1 ./gnfs <N>    # default sequential, zero overhead
 GNFS_ECM_STAGE2_PARALLEL=4 ./gnfs <N>    # 4 outer workers for Stage 2 BSGS
@@ -657,6 +660,9 @@ scalar-multiplication `k * Q`) 在多条曲线之间相互独立 (embarrassingly
 parallel). N=1 (默认) 走 sequential per-curve 循环, 不创建 ThreadPool,
 零开销保留原行为. N>=2 时把 K 条曲线 dispatch 到大小为 min(N, K) 的
 ThreadPool, 曲线之间靠 future 同步收口.
+
+解析接受前导空白和数字前缀（兼容既有 `atoi` 调用方）；空值、非数字和非正值
+回退为 1，超过整数宽度或运行时上限的正值钳制到 `2 * hardware_concurrency`。
 
 ```bash
 GNFS_ECM_STAGE1_PARALLEL_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
