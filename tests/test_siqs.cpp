@@ -259,6 +259,25 @@ void test_init_poly_handles_large_a_factor_count() {
     std::printf("  init_poly large A-factor boundary (17 factors): PASS\n");
 }
 
+void test_siqs_rejects_tiny_inputs_without_sieving() {
+    const auto trivial = factor(Integer("2"), 1, false);
+    require_test(!trivial.has_value(), "SIQS accepted the trivial prime 2");
+
+    const auto negative = factor(Integer("-1"), 1, false);
+    require_test(!negative.has_value(), "SIQS accepted a negative input");
+
+    const auto tiny_odd = factor(Integer("9"), 1, false);
+    require_test(!tiny_odd.has_value(), "SIQS sieved an out-of-scope tiny odd input");
+
+    const auto even_composite = factor(Integer("14"), 1, false);
+    require_test(even_composite.has_value(), "SIQS did not fast-path an even composite");
+    if (even_composite) {
+        require_test(even_composite->factor1 * even_composite->factor2 == Integer("14"),
+                     "SIQS even fast path returned invalid factors");
+    }
+    std::printf("  siqs tiny-input guards: PASS\n");
+}
+
 void test_siqs_small() {
     std::string default_stderr;
     const auto default_result = factor_143_with_shadow_mode(nullptr, default_stderr);
@@ -520,6 +539,7 @@ int main() {
     test_tonelli_shanks();
     test_factor_base();
     test_init_poly_handles_large_a_factor_count();
+    test_siqs_rejects_tiny_inputs_without_sieving();
     test_split_cofactor_edge();
 
     printf("\n--- Factorization tests ---\n");

@@ -20,6 +20,7 @@
 #include <gnfs/siqs/shadow_proof_observe.hpp>
 #include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/siqs/shadow_two_large_prime_capture.hpp>
+#include <gnfs/siqs/two_large_prime.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
 
@@ -32,11 +33,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <optional>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -456,6 +459,19 @@ struct SIQSPoly {
 inline void choose_A(const Integer& N, uint32_t M, uint32_t num_factors,
                      const std::vector<FBPrime>& fb, std::mt19937& rng,
                      std::vector<uint32_t>& a_indices, Integer& A) {
+    if (M == 0) {
+        throw std::invalid_argument("SIQS sieve half-width must be positive");
+    }
+    if (num_factors == 0) {
+        throw std::invalid_argument("SIQS A-factor count must be positive");
+    }
+    if (fb.size() <= 1) {
+        throw std::invalid_argument("SIQS factor base has no usable primes");
+    }
+    if (static_cast<size_t>(num_factors) > fb.size() - 1) {
+        throw std::invalid_argument("SIQS A-factor count exceeds factor base size");
+    }
+
     // Target A value: target_a = sqrt(2N) / M
     Integer two_n;
     mpz_mul_2exp(two_n.get_mpz(), N.get_mpz(), 1); // 2*N via bit shift
@@ -483,8 +499,9 @@ inline void choose_A(const Integer& N, uint32_t M, uint32_t num_factors,
 
     // Pick num_factors primes around center, with some randomness
     a_indices.clear();
-    size_t range_start = (center > num_factors * 2) ? center - num_factors * 2 : 1;
-    size_t range_end = std::min(center + num_factors * 2, fb.size() - 1);
+    const size_t factor_window = static_cast<size_t>(num_factors) * 2;
+    size_t range_start = (center > factor_window) ? center - factor_window : 1;
+    size_t range_end = std::min(center + factor_window, fb.size() - 1);
 
     // Generate candidate indices in range
     std::vector<size_t> candidates;
@@ -493,6 +510,22 @@ inline void choose_A(const Integer& N, uint32_t M, uint32_t num_factors,
         if (fb[i].p > 2) { // skip p=2 for A (simplifies self-init)
             candidates.push_back(i);
         }
+    }
+
+    // A target near the lower edge of the factor base can leave the local
+    // window with too few odd primes. Fall back to the complete base before
+    // failing closed; returning fewer factors would make the Gray-code shift
+    // in factor() underflow.
+    if (candidates.size() < num_factors) {
+        candidates.clear();
+        for (size_t i = 1; i < fb.size(); i++) {
+            if (fb[i].p > 2) {
+                candidates.push_back(i);
+            }
+        }
+    }
+    if (candidates.size() < num_factors) {
+        throw std::invalid_argument("SIQS factor base has too few odd primes for A");
     }
 
     // Shuffle and pick
@@ -1192,12 +1225,27 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
         }
         // Factor unfactored 2LP cofactors
         if (rel.large_prime2 == 1) {
-            auto [p1, p2] = split_cofactor_64(rel.large_prime);
-            if (p1 > 0 && p2 > 0) {
-                rel.large_prime = p1;
-                rel.large_prime2 = p2;
+            const uint64_t cofactor = rel.large_prime;
+            const auto candidate = split_cofactor_64(cofactor);
+            const auto factors = normalize_two_large_prime(
+                cofactor, std::numeric_limits<uint64_t>::max(), candidate);
+            if (factors) {
+                rel.large_prime = factors->p;
+                rel.large_prime2 = factors->q;
                 factored_2lp++;
                 raw_2lp++;
+
+                // The unresolved sentinel can normalize to (p,p) for a
+                // square cofactor. Treat it like a pre-split self-loop: the
+                // p^2 residual contributes one p to Y and must never enter
+                // the graph as an edge from p back to itself.
+                if (rel.large_prime == rel.large_prime2) {
+                    rel.merge_lps.push_back(rel.large_prime);
+                    rel.large_prime = 0;
+                    rel.large_prime2 = 0;
+                    full.push_back(std::move(rel));
+                    continue;
+                }
             } else {
                 failed_2lp++;
                 continue; // can't use this relation
@@ -1206,6 +1254,22 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
             raw_1lp++;
         } else {
             raw_2lp++;
+
+            // A pre-split (p,p) relation represents a p^2 residual. It is
+            // already a complete relation: materialize p exactly once in the
+            // merge history instead of feeding the same edge to the graph,
+            // which would square the relation value and duplicate p.
+            if (rel.large_prime == rel.large_prime2) {
+                if (!is_valid_one_large_prime(rel.large_prime)) {
+                    failed_2lp++;
+                    continue;
+                }
+                rel.merge_lps.push_back(rel.large_prime);
+                rel.large_prime = 0;
+                rel.large_prime2 = 0;
+                full.push_back(std::move(rel));
+                continue;
+            }
         }
         pool.push_back(std::move(rel));
     }
@@ -1669,6 +1733,28 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     const SIQSShadowProofMode shadow_proof_mode =
         parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
 
+    // SIQS is a medium-size composite factorer. Reject non-positive and
+    // tiny odd inputs before parameter selection; handle even composites
+    // directly so an empty/degenerate A-factor set cannot reach the Gray-code
+    // shift below. The trivial N=2/3 cases have no non-trivial factor.
+    if (mpz_cmp_ui(N.get_mpz(), 4) < 0) {
+        return std::nullopt;
+    }
+    if (mpz_even_p(N.get_mpz())) {
+        SIQSResult result;
+        result.factor1 = int64_t(2);
+        mpz_fdiv_q_2exp(result.factor2.get_mpz(), N.get_mpz(), 1);
+        result.time_seconds = 0.0;
+        result.relations_found = 0;
+        result.polynomials_used = 0;
+        result.resolved_sieve_workers = 0;
+        result.shadow_proof_observe_record_committed = false;
+        return result;
+    }
+    if (mpz_cmp_ui(N.get_mpz(), 15) < 0) {
+        return std::nullopt;
+    }
+
     auto start = std::chrono::steady_clock::now();
     auto elapsed = [&]() {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -1694,6 +1780,18 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     // Build factor base for kN (not N)
     auto fb = build_factor_base(kN, params.fb_size);
     size_t fb_size = fb.size();
+
+    size_t odd_factor_base_primes = 0;
+    for (size_t i = 1; i < fb.size(); i++) {
+        odd_factor_base_primes += static_cast<size_t>(fb[i].p > 2);
+    }
+    if (fb.size() <= 1 || params.num_a_factors == 0 ||
+        odd_factor_base_primes < params.num_a_factors) {
+        if (verbose) {
+            fprintf(stderr, "[SIQS] Factor base has insufficient odd primes for A; giving up\n");
+        }
+        return std::nullopt;
+    }
 
     if (verbose) {
         fprintf(stderr, "[SIQS] Factor base built: %zu primes (%.3fs)\n", fb_size, elapsed());
