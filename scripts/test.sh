@@ -7426,8 +7426,18 @@ do_module() {
     for mod in "${modules[@]}"; do
         local tests="${MODULE_TESTS[$mod]:-}"
         if [[ -z "$tests" ]]; then
-            log_warn "未知模块: ${mod}"
+            # A typo must never look like a successful empty selection. Keep
+            # the invalid request in the global report so callers and CI see
+            # a non-zero result even when the main dispatcher preserves the
+            # summary path after do_module returns.
+            log_fail "未知模块: ${mod}"
             log_info "可用模块: ${(k)MODULE_TESTS}"
+            (( module_fail += 1 ))
+            (( TOTAL_TESTS += 1 ))
+            (( FAILED_TESTS += 1 ))
+            # Keep user-provided module text out of JSON so quotes or control
+            # characters cannot corrupt the runner report.
+            REPORT_ENTRIES+=("{\"name\":\"module_selection\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"unknown_module\"}")
             continue
         fi
 
