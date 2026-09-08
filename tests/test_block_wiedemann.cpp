@@ -172,6 +172,67 @@ void test_dense_64x128_is_zero() {
     TEST_PASS("DenseGF2_64x128 is_zero");
 }
 
+void test_block_vector_contracts() {
+    using gnfs::linalg::BlockVector;
+    using gnfs::linalg::DenseGF2_64x64;
+    using gnfs::linalg::inner_product_64x64;
+    using gnfs::linalg::mksol_accumulate;
+
+    BlockVector a(2), b(2);
+    a.data[0] = 1ULL;
+    b.data[0] = 2ULL;
+    a.xor_with(b);
+    TEST_ASSERT(a.data[0] == 3ULL, "BlockVector xor_with preserves valid operation");
+    TEST_ASSERT(a.extract_column(0)[0], "BlockVector extracts lane zero");
+
+    bool caught = false;
+    try {
+        (void)a.extract_column(64);
+    } catch (const std::out_of_range&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "BlockVector rejects lane index 64");
+
+    BlockVector short_vector(1);
+    caught = false;
+    try {
+        a.xor_with(short_vector);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "BlockVector rejects xor dimension mismatch");
+
+    BlockVector malformed;
+    malformed.length = 1;
+    caught = false;
+    try {
+        (void)malformed.is_zero();
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "BlockVector rejects length beyond storage");
+
+    caught = false;
+    try {
+        (void)inner_product_64x64(a, short_vector);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "inner_product_64x64 rejects dimension mismatch");
+
+    DenseGF2_64x64 identity;
+    identity.set_identity();
+    caught = false;
+    try {
+        mksol_accumulate(a, identity, short_vector);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "mksol_accumulate rejects dimension mismatch");
+
+    TEST_PASS("BlockVector storage, dimension, and lane contracts");
+}
+
 void test_mksol_accumulate_identity() {
     // V · I = V
     using gnfs::linalg::BlockVector;
@@ -900,6 +961,7 @@ int main() {
     test_dense_64x128_swap_cols();
     test_dense_64x128_xor_with();
     test_dense_64x128_is_zero();
+    test_block_vector_contracts();
     test_dense_64x128_extract_halves();
 
     // P2 Stage A.2 — mksol_accumulate primitive (Phase 3)
