@@ -4,10 +4,12 @@
 //
 // Design (POSIX fork/waitpid, no MPI, single-machine):
 //   Master splits the Special-Q index range into N contiguous chunks.
-//   For each chunk, the master reserves an exact private artifact lease, then
-//   fork()s a worker child process. The child runs the sieve over its assigned
-//   [start, end) SQ-index range, writes relations inside that lease, finalizes
-//   the V3 pair, and durably publishes cleanup ownership before _exit().
+//   For each non-empty chunk, the master reserves an exact private artifact
+//   lease, then fork()s a worker child process. The child runs the sieve over
+//   its assigned [start, end) SQ-index range, writes relations inside that
+//   lease, finalizes the V3 pair, and durably publishes cleanup ownership
+//   before _exit(). Empty chunks reconcile any stale private lease and do not
+//   fork.
 //
 //   Master waitpid()s for all workers. An optional per-attempt watchdog can
 //   terminate a hung child (TERM/KILL) before that wait completes. Any worker
