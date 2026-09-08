@@ -10,17 +10,17 @@ namespace gnfs::linalg {
 
 /// 高斯消元结果
 struct GaussianResult {
-    size_t rank = 0;                      // 矩阵的秩
-    std::vector<size_t> pivot_cols;       // 主元列
-    std::vector<size_t> free_cols;        // 自由变量列
-    std::vector<BitVector> null_space;    // 零空间基向量
+    size_t rank = 0;                   // 矩阵的秩
+    std::vector<size_t> pivot_cols;    // 主元列
+    std::vector<size_t> free_cols;     // 自由变量列
+    std::vector<BitVector> null_space; // 零空间基向量
 };
 
 /// 高斯消元配置
 struct GaussianConfig {
-    bool compute_null_space = true;   // 是否计算零空间
-    size_t max_null_vectors = 64;     // 最大零空间向量数
-    bool verbose = false;             // 详细输出
+    bool compute_null_space = true; // 是否计算零空间
+    size_t max_null_vectors = 64;   // 最大零空间向量数
+    bool verbose = false;           // 详细输出
 };
 
 /// GaussianEliminator - GF(2) 上的高斯消元
@@ -29,8 +29,7 @@ class GaussianEliminator {
 public:
     using Config = GaussianConfig;
 
-    explicit GaussianEliminator(const Config& config = Config{})
-        : config_(config) {}
+    explicit GaussianEliminator(const Config& config = Config{}) : config_(config) {}
 
     /// 对矩阵进行高斯消元
     /// 注意：会修改输入矩阵！
@@ -121,9 +120,8 @@ private:
     Config config_;
 
     /// 在指定列中找主元（从 start_row 开始）
-    [[nodiscard]] size_t find_pivot(const SparseMatrix& matrix,
-                                     size_t col,
-                                     size_t start_row) const {
+    [[nodiscard]] size_t find_pivot(const SparseMatrix& matrix, size_t col,
+                                    size_t start_row) const {
 
         // 策略：选择该列非零且行重量最小的行作为主元
         // 这可以减少后续的填充
@@ -150,8 +148,7 @@ private:
     ///   pivot_row[j] 方程: pivot_col[j] = M[j, fc_i] (其他 fc 贡献为 0)
     /// 所以 null[pivot_col[j]] = M[pivot_row=j, fc_i]。
     /// 复杂度 O(rank·num_null) — 比原版 O(rank·free²) 快一个量级。
-    void build_null_space(GaussianResult& result,
-                          const SparseMatrix& matrix) const {
+    void build_null_space(GaussianResult& result, const SparseMatrix& matrix) const {
 
         size_t num_cols = matrix.num_cols();
         size_t num_null = std::min(result.free_cols.size(), config_.max_null_vectors);
