@@ -277,6 +277,35 @@ void test_number_field_power() {
     std::cout << "  NumberField power: PASSED" << std::endl;
 }
 
+// Negative exponents are outside the public power API.  They must be rejected
+// instead of being shifted toward zero and silently treated as a small positive
+// exponent by GMP's truncating right shift.
+void test_number_field_negative_power_contract() {
+    std::cout << "Testing NumberField negative power contract..." << std::endl;
+
+    std::vector<Integer> coeffs = {Integer(-2), Integer(0), Integer(1)};
+    NumberField nf(PolynomialContext(Integer(1000000007), std::move(coeffs), Integer(1000)));
+    const auto alpha = nf.alpha();
+
+    bool rejected = false;
+    try {
+        (void)nf.power(alpha, Integer(-1));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    GNFS_TEST_CHECK(rejected);
+
+    rejected = false;
+    try {
+        (void)nf.power_mod_n(alpha, Integer(-1));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    GNFS_TEST_CHECK(rejected);
+
+    std::cout << "  Negative NumberField powers rejected: PASSED" << std::endl;
+}
+
 // Test evaluate_at_m
 void test_evaluate_at_m() {
     std::cout << "Testing evaluate_at_m..." << std::endl;
@@ -995,6 +1024,7 @@ int main() {
     test_number_field();
     test_number_field_multiply();
     test_number_field_power();
+    test_number_field_negative_power_contract();
     test_uint64_b_portability_boundaries();
     test_rational_sqrt_uint64_b_portability();
     test_evaluate_at_m();

@@ -298,6 +298,9 @@ public:
     [[nodiscard]] NumberFieldElement power(const NumberFieldElement& base,
                                            const Integer& exp) const {
 
+        if (exp.is_negative()) {
+            throw std::invalid_argument("NumberField::power requires a non-negative exponent");
+        }
         if (exp.is_zero()) {
             return one();
         }
@@ -322,6 +325,10 @@ public:
     [[nodiscard]] NumberFieldElement power_mod_n(const NumberFieldElement& base,
                                                  const Integer& exp) const {
 
+        if (exp.is_negative()) {
+            throw std::invalid_argument("NumberField::power_mod_n requires a non-negative "
+                                        "exponent");
+        }
         if (exp.is_zero()) {
             return one();
         }
