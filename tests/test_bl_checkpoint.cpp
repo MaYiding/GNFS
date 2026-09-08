@@ -21,6 +21,15 @@
 #include <unistd.h>
 #endif
 
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define GNFS_TEST_UNDER_ASAN 1
+#endif
+#endif
+#if !defined(GNFS_TEST_UNDER_ASAN) && defined(__SANITIZE_ADDRESS__)
+#define GNFS_TEST_UNDER_ASAN 1
+#endif
+
 using gnfs::linalg::BlockLanczosCheckpoint;
 
 // Helper: temp file path that does not collide between cases
@@ -586,6 +595,15 @@ void test_allocation_failure_returns_nullopt() {
     std::cout << "Testing allocation failure handling... SKIP (requires Linux RLIMIT_AS)"
               << std::endl;
 #else
+#if defined(GNFS_TEST_UNDER_ASAN)
+    // ASAN terminates oversized throwing operator new in its allocator before
+    // libstdc++ can raise std::bad_alloc. The portable pre-allocation guard
+    // above remains active; this resource-limit probe is meaningful only in an
+    // unsanitized process where the loader can observe the C++ exception.
+    std::cout << "Testing allocation failure handling... SKIP (ASAN allocator)"
+              << std::endl;
+    return;
+#endif
     std::cout << "Testing allocation failure handling..." << std::endl;
     const auto require = [](bool condition, const char* message) {
         if (!condition) {
