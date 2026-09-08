@@ -431,19 +431,7 @@ struct GNFSParams {
         // Read this per call. A process may run multiple Pipeline instances
         // with different experiment environments, and a function-local static
         // would silently retain the first instance's multiplier.
-        const double target_mult = []() noexcept {
-            const char* env = std::getenv("GNFS_SIEVE_TARGET_MULT");
-            if (!env)
-                return 1.0;
-            errno = 0;
-            char* end = nullptr;
-            const double v = std::strtod(env, &end);
-            if (errno == ERANGE || end == env || *end != '\0' || !std::isfinite(v) || v < 0.1 ||
-                v > 100.0) {
-                return 1.0;
-            }
-            return v;
-        }();
+        const double target_mult = target_multiplier_from_env();
 
         const size_t base_target = raw_relation_target_unscaled(matrix_columns);
         return util::size_from_nonnegative_double_floor(static_cast<double>(base_target) *
@@ -451,6 +439,56 @@ struct GNFSParams {
     }
 
 private:
+    /// Parse GNFS_SIEVE_TARGET_MULT using an ASCII-only decimal grammar.
+    [[nodiscard]] static double target_multiplier_from_env() noexcept {
+        const char* env = std::getenv("GNFS_SIEVE_TARGET_MULT");
+        if (!env || *env == '\0')
+            return 1.0;
+
+        const char* cursor = env;
+        if (*cursor == '+' || *cursor == '-')
+            ++cursor;
+
+        bool has_digit = false;
+        while (*cursor >= '0' && *cursor <= '9') {
+            has_digit = true;
+            ++cursor;
+        }
+        if (*cursor == '.') {
+            ++cursor;
+            while (*cursor >= '0' && *cursor <= '9') {
+                has_digit = true;
+                ++cursor;
+            }
+        }
+        if (!has_digit)
+            return 1.0;
+
+        if (*cursor == 'e' || *cursor == 'E') {
+            ++cursor;
+            if (*cursor == '+' || *cursor == '-')
+                ++cursor;
+            bool exponent_digit = false;
+            while (*cursor >= '0' && *cursor <= '9') {
+                exponent_digit = true;
+                ++cursor;
+            }
+            if (!exponent_digit)
+                return 1.0;
+        }
+        if (*cursor != '\0')
+            return 1.0;
+
+        errno = 0;
+        char* end = nullptr;
+        const double value = std::strtod(env, &end);
+        if (errno == ERANGE || end == env || *end != '\0' || !std::isfinite(value) || value < 0.1 ||
+            value > 100.0) {
+            return 1.0;
+        }
+        return value;
+    }
+
     /// Calculate the size-aware target without applying experiment-only ENV
     /// scaling. This keeps derived limits such as max_special_q stable.
     [[nodiscard]] size_t raw_relation_target_unscaled(size_t matrix_columns) const {
