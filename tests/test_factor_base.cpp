@@ -53,6 +53,10 @@ void test_prime_sieve() {
 
 void test_zero_bounds() {
     std::cout << "Testing zero factor-base bounds..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    };
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
@@ -68,6 +72,33 @@ void test_zero_bounds() {
     assert(fb.rational_count() == 0);
     assert(fb.algebraic_count() == 0);
     assert(fb.sieve_algebraic_count() == 0);
+
+    // An explicit zero sieve prefix must remain zero when the factor base
+    // contains only special-Q algebraic entries. This used to be confused
+    // with the default "all entries" sentinel.
+    opts.special_q_bound = 100;
+    // Use f(x)=x so every prime in the special-Q range has a known root;
+    // this keeps the regression independent of the selected test polynomial.
+    std::vector<Integer> root_coeffs;
+    root_coeffs.emplace_back(static_cast<int64_t>(0));
+    root_coeffs.emplace_back(static_cast<int64_t>(1));
+    PolynomialContext root_ctx(Integer(static_cast<int64_t>(101)), std::move(root_coeffs),
+                               Integer(static_cast<int64_t>(2)));
+    auto special_q_only = FactorBaseBuilder::build(root_ctx, opts);
+    require(special_q_only.algebraic_count() > 0,
+            "special-Q-only factor base unexpectedly has no algebraic entries");
+    require(special_q_only.sieve_algebraic_count() == 0,
+            "special-Q-only factor base exposed SQ entries as sieve entries");
+
+    // The explicit-zero state must survive the stream serialization format.
+    std::stringstream serialized;
+    special_q_only.save(serialized);
+    serialized.seekg(0);
+    auto restored = FactorBase::load(serialized);
+    require(restored.algebraic_count() == special_q_only.algebraic_count(),
+            "FactorBase serialization changed algebraic entry count");
+    require(restored.sieve_algebraic_count() == 0,
+            "FactorBase serialization lost explicit empty sieve prefix");
 
     std::cout << "  Zero factor-base bounds: PASS" << std::endl;
 }
