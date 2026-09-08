@@ -574,7 +574,8 @@ bool test_config_from_file_invalid() {
     invalid_cases_passed &= write_and_expect_throw("algebraic_bound = 0\n", "zero algebraic bound");
     invalid_cases_passed &=
         write_and_expect_throw("large_prime_bound = 8junk\n", "trailing large-prime characters");
-    invalid_cases_passed &= write_and_expect_throw("large_prime_bound = 0\n", "zero large-prime bound");
+    invalid_cases_passed &=
+        write_and_expect_throw("large_prime_bound = 0\n", "zero large-prime bound");
     invalid_cases_passed &=
         write_and_expect_throw("large_prime_bound = -1\n", "negative large-prime bound");
     invalid_cases_passed &=
@@ -613,7 +614,8 @@ bool test_config_from_file_invalid() {
         return false;
     }
     invalid_cases_passed &= write_and_expect_throw("output_file =\n", "empty output file");
-    invalid_cases_passed &= write_and_expect_throw("output_format = yaml\n", "unknown output format");
+    invalid_cases_passed &=
+        write_and_expect_throw("output_format = yaml\n", "unknown output format");
 
     // Valid: empty + comment + blank lines should not throw
     {
@@ -1058,6 +1060,34 @@ bool test_factorize_completely_prime_input() {
     return result.success && result.factorization_complete && result.factors_prime &&
            result.stats.method_used == FactorizationMethod::TrialDivision &&
            result.factors.size() == 1 && result.factors[0].compare(Integer(127)) == 0;
+}
+
+bool test_factorize_completely_validates_config_for_prime_fast_path() {
+    Config invalid;
+    invalid.degree = 0;
+
+    try {
+        (void)factorize_completely(Integer(127), invalid);
+    } catch (const std::out_of_range& error) {
+        return std::string_view(error.what()).starts_with("Config: degree");
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+bool test_factorize_completely_validates_config_for_nonpositive_fast_path() {
+    Config invalid;
+    invalid.max_special_q = 0;
+
+    try {
+        (void)factorize_completely(Integer(1), invalid);
+    } catch (const std::out_of_range& error) {
+        return std::string_view(error.what()).starts_with("Config: max_special_q");
+    } catch (...) {
+        return false;
+    }
+    return false;
 }
 
 bool test_factorize_completely_perfect_power() {
@@ -4227,6 +4257,8 @@ int main() {
     TEST(factorize_prime_input);
     TEST(factorize_completely_multiprime);
     TEST(factorize_completely_prime_input);
+    TEST(factorize_completely_validates_config_for_prime_fast_path);
+    TEST(factorize_completely_validates_config_for_nonpositive_fast_path);
     TEST(factorize_completely_perfect_power);
 
     std::cout << "\nPipeline tests:\n";

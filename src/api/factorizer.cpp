@@ -155,6 +155,12 @@ FactorResult factorize_completely(const Integer& n, const Config& config) {
 
 FactorResult factorize_completely(const Integer& n, const Config& config,
                                   ProgressCallback progress_cb, LogCallback log_cb) {
+    // Validate configuration even when the complete-factorization path can
+    // answer immediately for a prime or non-positive input. This keeps the
+    // configuration consumption contract consistent with factorize(), whose
+    // Pipeline construction performs the same validation before its fast path.
+    (void)config.apply_to(n);
+
     FactorResult final_result;
     final_result.n = n;
     final_result.stats.n_bits = n.bit_length();
