@@ -5,6 +5,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -18,6 +19,20 @@ using factor_base::FactorBase;
 using linalg::BitVector;
 
 namespace detail {
+
+/// Compute a modular power without narrowing a full-width exponent on LLP64.
+/// GMP's mpz_powm_ui takes unsigned long, which is 32 bits on Windows while
+/// uint64_t remains 64 bits. Keep the UI fast path where it is lossless and
+/// use the arbitrary-precision API otherwise.
+inline void powm_u64(mpz_t result, const mpz_t base, uint64_t exponent, const mpz_t mod) {
+    if constexpr (std::numeric_limits<unsigned long>::digits >=
+                  std::numeric_limits<uint64_t>::digits) {
+        mpz_powm_ui(result, base, static_cast<unsigned long>(exponent), mod);
+    } else {
+        const Integer exponent_value(exponent);
+        mpz_powm(result, base, exponent_value.get_mpz(), mod);
+    }
+}
 
 /// Subtract m*b without narrowing a full-width relation parameter on LLP64.
 inline void subtract_m_times_b(Integer& value, const Integer& m, uint64_t b) {
@@ -142,7 +157,7 @@ public:
         Integer sqrt_value(1);
 
         // hoist p_int + contribution — 每个 dep 数千次迭代复用 buffer
-        // mpz_powm_ui takes unsigned long exponent directly — no half_exp_int needed
+        // powm_u64 keeps the exponent wide without giving up the LP64 fast path.
         Integer p_int, contribution;
 
         // 因子基素数贡献
@@ -153,9 +168,9 @@ public:
             uint32_t p = rational_primes[idx].p;
             uint64_t half_exp = exp / 2;
 
-            // p^half_exp mod n — mpz_powm_ui (exp passed as unsigned long directly)
+            // p^half_exp mod n — preserve the full uint64_t exponent on LLP64.
             p_int = uint64_t(p);
-            mpz_powm_ui(contribution.get_mpz(), p_int.get_mpz(), half_exp, n.get_mpz());
+            detail::powm_u64(contribution.get_mpz(), p_int.get_mpz(), half_exp, n.get_mpz());
 
             sqrt_value *= contribution;
             sqrt_value %= n;
@@ -169,7 +184,7 @@ public:
             uint64_t half_exp = exp / 2;
 
             p_int = uint64_t(p);
-            mpz_powm_ui(contribution.get_mpz(), p_int.get_mpz(), half_exp, n.get_mpz());
+            detail::powm_u64(contribution.get_mpz(), p_int.get_mpz(), half_exp, n.get_mpz());
 
             sqrt_value *= contribution;
             sqrt_value %= n;
@@ -255,7 +270,8 @@ public:
                                                         const Integer& n) {
 
         Integer result(1);
-        // hoist p + contribution; mpz_powm_ui accepts ul exp directly (no e Integer)
+        // Hoist p + contribution; detail::powm_u64 keeps the UI fast path on
+        // LP64 and avoids truncation on LLP64.
         Integer p, contribution;
 
         for (size_t i = 0; i < exponents.size() && i < primes.size(); ++i) {
@@ -266,7 +282,7 @@ public:
             uint64_t half_exp = exponents[i] / 2;
 
             p = uint64_t(primes[i]);
-            mpz_powm_ui(contribution.get_mpz(), p.get_mpz(), half_exp, n.get_mpz());
+            detail::powm_u64(contribution.get_mpz(), p.get_mpz(), half_exp, n.get_mpz());
 
             result *= contribution;
             result %= n;
