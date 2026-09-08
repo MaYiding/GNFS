@@ -1123,6 +1123,17 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
     const bool large_primes_enabled = params_.large_prime_bound > params_.algebraic_bound;
     auto distributed_config = sieve::parse_distributed_sieve_env();
     const size_t distributed_workers = distributed_config.num_workers;
+    // A distributed wave is currently a one-shot transaction.  It does not
+    // emit the paired sieve checkpoints required by GNFS_RESUME or its legacy
+    // GNFS_SIEVE_RESUME alias.  Do not silently fall back to the local route:
+    // that would make a requested process topology disappear while leaving
+    // the caller believing that the resumable distributed path was active.
+    if (distributed_workers > 0 && resume_enabled) {
+        throw std::invalid_argument(
+            "GNFS_DISTRIBUTED_SIEVE_WORKERS cannot be combined with GNFS_RESUME or "
+            "GNFS_SIEVE_RESUME; distributed sieve is one-shot and does not support checkpoint "
+            "resume");
+    }
     if (distributed_workers > 0) {
         distributed_config.base_path =
             relation::relation_corpus_detail::freeze_ooc_path(distributed_config.base_path);

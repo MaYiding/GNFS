@@ -172,6 +172,25 @@ RSS 采样策略为 `first_max_candidates`。Pipeline 只在当前批次候选�
 但仍保留全部 `SieveResult`。`after_cofactor` 在 candidate workers、chunk scratch
 和 worker-local `Cofactorizer` 析构后采样，此时输入与归并前输出仍在内存。
 
+## Distributed Sieve Route (`GNFS_DISTRIBUTED_SIEVE_WORKERS`)
+
+`GNFS_DISTRIBUTED_SIEVE_WORKERS=N` 启用 POSIX 多进程 distributed sieve，`N` 的合法范围
+为 `[1, 64]`。`GNFS_DISTRIBUTED_SIEVE_BASE_PATH` 指定 worker 私有 OOC 命名空间，
+`GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER` 限制每个 worker 的 special-Q 数量，未设置时由
+Pipeline 按 `max_special_q` 均分。`GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL=1` 仅供测试覆盖
+小于 30 位的尺寸门槛。
+
+该 route 当前是一次性 wave：worker 结果在父进程中完成校验、归并和清理，随后交给既有
+过滤合并阶段。它不写 `GNFS_RESUME` / `GNFS_SIEVE_RESUME` 所需的 paired sieve checkpoint。
+因此，只要 `GNFS_DISTRIBUTED_SIEVE_WORKERS` 为正且任一 resume 变量非空，Pipeline 会在
+preflight 抛出 `std::invalid_argument`。异常发生在 progress/log callback、checkpoint
+读写和 worker artifact 创建之前，不会静默改走本地 route。需要 checkpoint 恢复时应将
+`GNFS_DISTRIBUTED_SIEVE_WORKERS` 设为 `0`。
+
+当前 production route 尚未接入 durable WaveStore 的跨 master 崩溃接管；master 中断会使
+整轮 wave 失效，下一次运行重新计算全部 chunk。相关接管和缺失 chunk 语义由
+`test_distributed_sieve_resume` 的 source-private contract 覆盖。
+
 ## Distributed worker watchdog (`GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS`)
 
 `DistributedSieveConfig::worker_timeout_ms` 和
