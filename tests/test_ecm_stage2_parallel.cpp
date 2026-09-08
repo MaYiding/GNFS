@@ -319,6 +319,22 @@ void test_env_parsing() {
         std::abort();
     }
 
+    // Positive values above INT_MAX must still clamp, rather than wrapping
+    // through atoi() and silently selecting sequential mode.
+    apply_env("2147483648");
+    if (ecm_stage2_parallel_threads() != cap) {
+        std::cerr << "\n  ERROR: INT_MAX+1 did not clamp to " << cap << std::endl;
+        std::abort();
+    }
+
+    // strtoull overflow is also a high positive value and must fail closed to
+    // the same runtime cap.
+    apply_env("184467440737095516160");
+    if (ecm_stage2_parallel_threads() != cap) {
+        std::cerr << "\n  ERROR: overflowing value did not clamp to " << cap << std::endl;
+        std::abort();
+    }
+
     // Restore default for subsequent tests.
     apply_env(nullptr);
 

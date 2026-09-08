@@ -86,7 +86,6 @@ inline std::size_t parse_ecm_stage2_parallel_env() noexcept {
     if (env == nullptr || env[0] == '\0') {
         return 1; // default sequential
     }
-
     const char* first = env;
     while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
         ++first;
