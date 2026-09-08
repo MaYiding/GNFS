@@ -93,6 +93,7 @@ jobs:
           python3 scripts/check_distributed_sieve_policy.py --self-test
           python3 scripts/check_harness.py
           bash tests/test_harness_hooks.sh
+          zsh tests/test_changed_mode_base.sh
 
       - name: Check stdout ownership
         run: |

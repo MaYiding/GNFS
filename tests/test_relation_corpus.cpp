@@ -220,7 +220,7 @@ OOCSnapshotDescriptor write_finalized_store(const std::string& base_path,
         (void)writer.write(relation);
     }
     const auto descriptor = writer.finalize();
-    CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+    CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
     CHECK(descriptor.data_end >= OOCRelationWriter::DATA_HEADER_BYTES);
     return descriptor;
 }
@@ -232,7 +232,7 @@ make_finalized_writer(const std::string& base_path, const std::vector<Relation>&
         (void)writer->write(relation);
     }
     const auto descriptor = writer->finalize();
-    CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+    CHECK(descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
     CHECK(descriptor.count == relations.size());
     return writer;
 }

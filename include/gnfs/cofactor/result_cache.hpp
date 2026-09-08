@@ -92,7 +92,7 @@
 //                          tens of MB depending on value padding)
 //     - N == 0 / unset     → cache disabled (default, zero overhead)
 //     - Negative / non-numeric / empty / leading whitespace → 0
-//     - Partial-parse: "12abc" → 12 (std::stoi accepts numeric prefix).
+//     - Partial-parse: "12abc" → 12 (strtoull accepts numeric prefix).
 //       Documented; users should pass clean integer values.
 //
 // Process-singleton storage strategy:
@@ -107,6 +107,7 @@
 #include "smooth_check.hpp"
 
 #include <atomic>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -152,9 +153,8 @@ struct CofactorCacheKeyHash {
         //   ^ (B << 32) (B occupies top 32 bits)
         //   ^ (lp << 16) (lp occupies bits 16..47)
         // Then splitmix64 mix.
-        uint64_t z = k.cofactor
-                   ^ (static_cast<uint64_t>(k.B) << 32)
-                   ^ (static_cast<uint64_t>(k.lp) << 16);
+        uint64_t z =
+            k.cofactor ^ (static_cast<uint64_t>(k.B) << 32) ^ (static_cast<uint64_t>(k.lp) << 16);
         z += 0x9E3779B97F4A7C15ULL;
         z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
         z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
@@ -166,7 +166,7 @@ struct CofactorCacheKeyHash {
 /// Cached parse result for GNFS_COFACTOR_RESULT_CACHE_SIZE.
 struct ResultCacheSizeEnvCache {
     std::once_flag once;
-    std::size_t value = 0;  // 0 = disabled (default)
+    std::size_t value = 0; // 0 = disabled (default)
 };
 
 inline ResultCacheSizeEnvCache& result_cache_size_env_cache() noexcept {
@@ -181,31 +181,44 @@ inline ResultCacheSizeEnvCache& result_cache_size_env_cache() noexcept {
 ///     whitespace → 0
 ///   * N in [1, 1048576]  → N
 ///   * N > 1048576        → 1048576 (clamped)
-///   * Partial-parse: "12abc" → 12 (std::stoi accepts numeric prefix).
+///   * Partial-parse: "12abc" → 12 (strtoull accepts numeric prefix).
 ///     Documented behavior; users should pass clean values.
 [[nodiscard]] inline std::size_t parse_result_cache_size_env() noexcept {
     const char* env = std::getenv("GNFS_COFACTOR_RESULT_CACHE_SIZE");
     if (env == nullptr || env[0] == '\0') {
         return 0;
     }
-    // Reject leading whitespace explicitly. std::stoi otherwise silently
-    // skips leading whitespace via std::strtol.
+    // Reject leading whitespace explicitly. strtoull otherwise silently skips
+    // leading whitespace.
     if (env[0] == ' ' || env[0] == '\t' || env[0] == '\n' || env[0] == '\r') {
         return 0;
     }
-    int parsed = 0;
-    try {
-        parsed = std::stoi(env);
-    } catch (...) {
-        return 0;  // out of int range or no leading digits
+    // Reject a leading minus explicitly: strtoull accepts it and would
+    // otherwise turn a negative value into a large unsigned result.
+    if (env[0] == '-') {
+        return 0;
     }
-    if (parsed <= 0) return 0;
-    constexpr int kMaxCacheCapacity = 1 << 20;  // 1,048,576
-    if (parsed > kMaxCacheCapacity) parsed = kMaxCacheCapacity;
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(env, &end, 10);
+    if (end == env) {
+        return 0; // no leading digits
+    }
+
+    constexpr std::size_t kMaxCacheCapacity = 1ULL << 20; // 1,048,576
+    // A numeric value beyond the conversion type's range is still above our
+    // much smaller cache cap, so saturate instead of disabling the cache.
+    if (errno == ERANGE || parsed > kMaxCacheCapacity) {
+        return kMaxCacheCapacity;
+    }
+    if (parsed == 0) {
+        return 0;
+    }
     return static_cast<std::size_t>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Thread-safe LRU cache mapping cofactor query key -> CofactorClassification.
 ///
@@ -218,8 +231,7 @@ public:
     using Key = detail::CofactorCacheKey;
     using Value = CofactorClassification;
 
-    explicit CofactorResultCache(std::size_t capacity)
-        : capacity_(capacity), entries_(), order_() {
+    explicit CofactorResultCache(std::size_t capacity) : capacity_(capacity), entries_(), order_() {
         if (capacity_ > 0) {
             // Reserve buckets to avoid frequent rehashes during the warm-up
             // phase. The unordered_map default starts with very few buckets.
@@ -231,9 +243,9 @@ public:
     /// on hit (and promotes the entry to MRU), or `std::nullopt` on miss.
     ///
     /// Disabled cache (capacity_ == 0) always returns nullopt.
-    [[nodiscard]] std::optional<Value> get(
-            uint64_t cofactor, uint32_t B, uint32_t lp_bound) {
-        if (capacity_ == 0) return std::nullopt;
+    [[nodiscard]] std::optional<Value> get(uint64_t cofactor, uint32_t B, uint32_t lp_bound) {
+        if (capacity_ == 0)
+            return std::nullopt;
         std::lock_guard<std::mutex> guard(mutex_);
         const Key key{cofactor, B, lp_bound};
         auto it = entries_.find(key);
@@ -255,9 +267,9 @@ public:
     /// insert at front.
     ///
     /// Disabled cache (capacity_ == 0) is a no-op.
-    void put(uint64_t cofactor, uint32_t B, uint32_t lp_bound,
-             const Value& result) {
-        if (capacity_ == 0) return;
+    void put(uint64_t cofactor, uint32_t B, uint32_t lp_bound, const Value& result) {
+        if (capacity_ == 0)
+            return;
         std::lock_guard<std::mutex> guard(mutex_);
         const Key key{cofactor, B, lp_bound};
         auto it = entries_.find(key);
@@ -322,9 +334,7 @@ private:
 /// hot path.
 [[nodiscard]] inline std::size_t cofactor_result_cache_size() noexcept {
     auto& cache = detail::result_cache_size_env_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_result_cache_size_env();
-    });
+    std::call_once(cache.once, [&cache]() { cache.value = detail::parse_result_cache_size_env(); });
     return cache.value;
 }
 
@@ -341,8 +351,7 @@ private:
 /// returns the freshly parsed value without re-invoking the once_flag
 /// initializer.
 inline void cofactor_result_cache_reset_env_cache_for_testing() noexcept {
-    detail::result_cache_size_env_cache().value =
-        detail::parse_result_cache_size_env();
+    detail::result_cache_size_env_cache().value = detail::parse_result_cache_size_env();
 }
 
 /// Process-singleton accessor for the shared cofactor result cache.
@@ -365,18 +374,17 @@ inline CofactorResultCache& shared_cofactor_result_cache() {
     return cache;
 }
 
-}  // namespace gnfs::cofactor
+} // namespace gnfs::cofactor
 
 // std::hash specialization for cache key (used inside detail::
 // CofactorCacheKeyHash for compositional cleanliness, but exposed here so
 // users wanting unordered_map<CofactorCacheKey, ...> can compose without
 // importing the detail functor).
 namespace std {
-template <>
-struct hash<gnfs::cofactor::detail::CofactorCacheKey> {
-    [[nodiscard]] std::size_t operator()(
-            const gnfs::cofactor::detail::CofactorCacheKey& k) const noexcept {
+template <> struct hash<gnfs::cofactor::detail::CofactorCacheKey> {
+    [[nodiscard]] std::size_t
+    operator()(const gnfs::cofactor::detail::CofactorCacheKey& k) const noexcept {
         return gnfs::cofactor::detail::CofactorCacheKeyHash{}(k);
     }
 };
-}  // namespace std
+} // namespace std

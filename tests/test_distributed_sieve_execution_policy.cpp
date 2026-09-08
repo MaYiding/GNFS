@@ -1387,7 +1387,7 @@ void test_bound_work_derives_every_small_runtime_input() {
     CHECK(bound.max_consumption_attempts == 62);
     CHECK(bound.semantic_versions.relation_serialization_version == 1);
     CHECK(bound.semantic_versions.ooc_format_version ==
-          gnfs::relation::OOCRelationStoreFormat::FORMAT_VERSION_V3);
+          gnfs::relation::OOCRelationStoreFormat::FORMAT_VERSION_V4);
     CHECK(bound.semantic_versions.merge_policy_version == 1);
     CHECK(same_canonical_policy(bound.frozen_policy.canonical, frozen.canonical));
 }

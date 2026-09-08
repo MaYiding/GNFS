@@ -657,7 +657,7 @@ run_borrowed_ooc_case(size_t raw_row_count, uint64_t generation, const std::stri
         // resumes the collector before it exposes this owning output result.
         auto& result = run.first;
         source_descriptor = run.second;
-        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
         CHECK(source_descriptor.store_id != 0);
         CHECK(source_descriptor.generation != 0);
         CHECK(source_descriptor.count == source.rows_written);
@@ -763,7 +763,7 @@ void run_scale(size_t raw_row_count, uint64_t generation) {
         const auto raw_scope = raw_corpus.ooc_artifact_scope();
         CHECK(raw_scope.has_value());
         CHECK(raw_scope->base_path == std::filesystem::weakly_canonical(input_base).string());
-        CHECK(raw_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(raw_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
         CHECK(raw_scope->descriptor.store_id == previous_descriptor.store_id);
         CHECK(raw_scope->descriptor.generation > previous_descriptor.generation);
         CHECK(raw_scope->descriptor.count == previous_descriptor.count);
@@ -1050,7 +1050,7 @@ void run_dense_stage_case(uint32_t workers) {
 
         auto& result = run.first;
         source_descriptor = run.second;
-        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
         CHECK(source_descriptor.store_id != 0);
         CHECK(source_descriptor.generation != 0);
         CHECK(source_descriptor.count == DENSE_STAGE_ROWS);
@@ -1066,7 +1066,7 @@ void run_dense_stage_case(uint32_t workers) {
         CHECK(output_scope.has_value());
         CHECK(output_scope->base_path ==
               std::filesystem::weakly_canonical(private_sink_base(output_base)).string());
-        CHECK(output_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(output_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
         CHECK(output_scope->descriptor.count == DENSE_STAGE_CORE_ROWS);
 
         telemetry_record = telemetry.snapshot();
@@ -1083,7 +1083,7 @@ void run_dense_stage_case(uint32_t workers) {
         const auto raw_scope = raw_corpus.ooc_artifact_scope();
         CHECK(raw_scope.has_value());
         CHECK(raw_scope->base_path == std::filesystem::weakly_canonical(input_base).string());
-        CHECK(raw_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(raw_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
         CHECK(raw_scope->descriptor.store_id == source_descriptor.store_id);
         CHECK(raw_scope->descriptor.generation > source_descriptor.generation);
         CHECK(raw_scope->descriptor.count == source_descriptor.count);
@@ -1129,7 +1129,7 @@ void run_rss_case(size_t raw_row_count, uint32_t workers) {
 
         auto& result = run.first;
         source_descriptor = run.second;
-        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(source_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
         CHECK(source_descriptor.store_id != 0);
         CHECK(source_descriptor.generation != 0);
         CHECK(source_descriptor.count == source.rows_written);
@@ -1148,7 +1148,7 @@ void run_rss_case(size_t raw_row_count, uint32_t workers) {
         CHECK(output_scope.has_value());
         CHECK(output_scope->base_path ==
               std::filesystem::weakly_canonical(private_sink_base(output_base)).string());
-        CHECK(output_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(output_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
         CHECK(output_scope->descriptor.count == output_rows);
     }
     CHECK(private_sink_absent(output_base));
@@ -1168,7 +1168,7 @@ void run_rss_case(size_t raw_row_count, uint32_t workers) {
         const auto raw_scope = raw_corpus.ooc_artifact_scope();
         CHECK(raw_scope.has_value());
         CHECK(raw_scope->base_path == std::filesystem::weakly_canonical(input_base).string());
-        CHECK(raw_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+        CHECK(raw_scope->descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
         CHECK(raw_scope->descriptor.store_id == source_descriptor.store_id);
         CHECK(raw_scope->descriptor.generation > source_descriptor.generation);
         CHECK(raw_scope->descriptor.count == source_descriptor.count);

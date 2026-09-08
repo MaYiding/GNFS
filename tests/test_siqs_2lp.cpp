@@ -308,6 +308,39 @@ void test_sieve_polynomial_rejects_invalid_contracts() {
         [&] { invoke(invalid_a_index, valid_factor_base, 1, exponent_buffer); }));
 }
 
+void test_partial_merge_materializes_repeated_prime_self_loop_once() {
+    const auto check_self_loop = [](uint64_t large_prime, uint64_t large_prime2) {
+        SIQSRelation relation;
+        relation.value = Integer(11);
+        relation.fb_indices = {1};
+        relation.exponents = {0, 2};
+        relation.large_prime = large_prime;
+        relation.large_prime2 = large_prime2;
+        relation.negative = false;
+
+        std::vector<SIQSRelation> input;
+        input.push_back(std::move(relation));
+        const auto full = merge_partials(input, 2, false);
+        CHECK(full.size() == 1);
+        if (full.size() != 1) {
+            return;
+        }
+
+        const SIQSRelation& materialized = full.front();
+        CHECK(materialized.value == Integer(11));
+        CHECK(materialized.large_prime == 0);
+        CHECK(materialized.large_prime2 == 0);
+        CHECK(materialized.merge_lps == std::vector<uint64_t>{11});
+        CHECK(materialized.exponents == std::vector<uint8_t>({0, 2}));
+        CHECK(materialized.fb_indices == std::vector<uint32_t>{1});
+    };
+
+    // Raw capture sentinel: split_cofactor_64(11²) must become one cycle.
+    check_self_loop(121, 1);
+    // Already-normalized input must follow the same path.
+    check_self_loop(11, 11);
+}
+
 void test_residual_classification_is_exact_and_deterministic() {
     CHECK(!classify_siqs_residual(0, 100, 10'000).has_value());
     CHECK(!classify_siqs_residual(1, 100, 10'000).has_value());
@@ -1058,6 +1091,7 @@ int main() {
     test_merge_partials_converges_beyond_legacy_round_cap();
     test_partial_merge_rejects_exponent_overflow();
     test_sieve_polynomial_rejects_invalid_contracts();
+    test_partial_merge_materializes_repeated_prime_self_loop_once();
     test_residual_classification_is_exact_and_deterministic();
     test_nonnegative_mpz_to_uint64_checked();
     test_shadow_sink_factory_exceptions_roll_back_for_retry();
