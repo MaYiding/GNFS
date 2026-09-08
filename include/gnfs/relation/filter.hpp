@@ -761,17 +761,17 @@ public:
 
 /// 计算矩阵所需的关系数量
 /// 需要 关系数 > 因子基大小 + 大素数数量
+///
+/// The estimate is a public size_t boundary: relation and LP counts can be
+/// independently representable while their sum, the excess scaling, or the
+/// final strict-excess increment is not.  Saturate each step so callers never
+/// observe a wrapped target or an out-of-range floating-point conversion.
 [[nodiscard]] inline size_t required_relations(size_t factor_base_size, size_t unique_large_primes,
                                                double excess_factor = 1.05) {
-    // Relation targets feed adaptive sieve stop conditions, so a wrapped
-    // column count or an out-of-range floating-point cast can stop collection
-    // before it starts. Keep every intermediate bounded and retain the
-    // historical minimum target of one relation for invalid/non-positive
-    // estimates.
-    const size_t columns = util::saturating_size_add(factor_base_size, unique_large_primes);
-    const double estimate = static_cast<double>(columns) * excess_factor;
-    const size_t scaled = util::size_from_nonnegative_double_floor(estimate);
-    return util::saturating_size_add(scaled, 1);
+    const size_t columns = effective_column_count(factor_base_size, unique_large_primes);
+    const size_t scaled =
+        util::size_from_nonnegative_double_floor(static_cast<double>(columns) * excess_factor);
+    return util::saturating_size_add(scaled, size_t{1});
 }
 
 /// 检查是否有足够的关系

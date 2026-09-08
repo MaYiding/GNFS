@@ -46,6 +46,30 @@ struct CheckedKrylovFileSize {
     krylov_native_file_offset_t native_size;
 };
 
+inline void validate_krylov_entry_index(std::uint64_t index, std::uint64_t length,
+                                        const char* operation) {
+    if (index >= length) {
+        throw std::out_of_range(std::string("KrylovSequenceMmap::") + operation +
+                                ": entry index out of range");
+    }
+}
+
+template <typename T>
+inline void validate_krylov_typed_entry(std::uint64_t index, std::uint64_t length,
+                                        std::uint64_t entry_size, const std::uint8_t* body,
+                                        const char* operation) {
+    validate_krylov_entry_index(index, length, operation);
+    if (sizeof(T) != entry_size) {
+        throw std::invalid_argument(std::string("KrylovSequenceMmap::") + operation +
+                                    ": entry type size mismatch");
+    }
+    const auto address = reinterpret_cast<std::uintptr_t>(body + index * entry_size);
+    if (address % alignof(T) != 0) {
+        throw std::invalid_argument(std::string("KrylovSequenceMmap::") + operation +
+                                    ": entry type alignment is incompatible with mapping");
+    }
+}
+
 [[nodiscard]] inline std::filesystem::path krylov_native_path_from_string(const std::string& path) {
 #ifdef _WIN32
     std::u8string utf8;
@@ -239,25 +263,23 @@ public:
         return path_;
     }
 
-    template <typename T> [[nodiscard]] T* at(uint64_t k) noexcept {
-        assert(k < L_);
-        assert(sizeof(T) == entry_size_);
+    template <typename T> [[nodiscard]] T* at(uint64_t k) {
+        detail::validate_krylov_typed_entry<T>(k, L_, entry_size_, body_, "at");
         return reinterpret_cast<T*>(body_ + k * entry_size_);
     }
 
-    template <typename T> [[nodiscard]] const T* at(uint64_t k) const noexcept {
-        assert(k < L_);
-        assert(sizeof(T) == entry_size_);
+    template <typename T> [[nodiscard]] const T* at(uint64_t k) const {
+        detail::validate_krylov_typed_entry<T>(k, L_, entry_size_, body_, "at");
         return reinterpret_cast<const T*>(body_ + k * entry_size_);
     }
 
-    [[nodiscard]] uint8_t* raw_at(uint64_t k) noexcept {
-        assert(k < L_);
+    [[nodiscard]] uint8_t* raw_at(uint64_t k) {
+        detail::validate_krylov_entry_index(k, L_, "raw_at");
         return body_ + k * entry_size_;
     }
 
-    [[nodiscard]] const uint8_t* raw_at(uint64_t k) const noexcept {
-        assert(k < L_);
+    [[nodiscard]] const uint8_t* raw_at(uint64_t k) const {
+        detail::validate_krylov_entry_index(k, L_, "raw_at");
         return body_ + k * entry_size_;
     }
 
@@ -482,29 +504,27 @@ public:
         return path_;
     }
 
-    /// Get a typed pointer to entry k. Caller is responsible for sizeof(T)
-    /// matching entry_size_ (asserted in Debug).
-    template <typename T> [[nodiscard]] T* at(uint64_t k) noexcept {
-        assert(k < L_);
-        assert(sizeof(T) == entry_size_);
+    /// Get a typed pointer to entry k. Index, size, and alignment contracts are
+    /// checked in every build before returning a pointer.
+    template <typename T> [[nodiscard]] T* at(uint64_t k) {
+        detail::validate_krylov_typed_entry<T>(k, L_, entry_size_, body_, "at");
         return reinterpret_cast<T*>(body_ + k * entry_size_);
     }
 
-    template <typename T> [[nodiscard]] const T* at(uint64_t k) const noexcept {
-        assert(k < L_);
-        assert(sizeof(T) == entry_size_);
+    template <typename T> [[nodiscard]] const T* at(uint64_t k) const {
+        detail::validate_krylov_typed_entry<T>(k, L_, entry_size_, body_, "at");
         return reinterpret_cast<const T*>(body_ + k * entry_size_);
     }
 
     /// Raw byte access (useful for non-POD types or variable-size entries
     /// where caller manages serialization).
-    [[nodiscard]] uint8_t* raw_at(uint64_t k) noexcept {
-        assert(k < L_);
+    [[nodiscard]] uint8_t* raw_at(uint64_t k) {
+        detail::validate_krylov_entry_index(k, L_, "raw_at");
         return body_ + k * entry_size_;
     }
 
-    [[nodiscard]] const uint8_t* raw_at(uint64_t k) const noexcept {
-        assert(k < L_);
+    [[nodiscard]] const uint8_t* raw_at(uint64_t k) const {
+        detail::validate_krylov_entry_index(k, L_, "raw_at");
         return body_ + k * entry_size_;
     }
 

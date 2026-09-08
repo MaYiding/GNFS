@@ -98,6 +98,12 @@ public:
     [[nodiscard]] bool try_capture(uint64_t expected_cofactor,
                                    SIQSLiveSieveRelationPayloadShape shape,
                                    RelationFactory&& relation_factory) {
+        // A stopped sink is terminal and idempotent.  Check this before
+        // validating caller payload so post-stop retries cannot throw merely
+        // because their stale cofactor no longer matches the old bound.
+        if (stopped()) {
+            return false;
+        }
         if (expected_cofactor <= 1 || expected_cofactor > cofactor_bound_) {
             throw std::invalid_argument("SIQS shadow 2LP expected cofactor is out of bounds");
         }
