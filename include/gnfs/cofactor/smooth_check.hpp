@@ -282,6 +282,8 @@ struct CofactorClassification {
 /// @param max_iterations 最大函数求值次数（跨所有 c 值的总限额）
 /// @return 找到的因子，如果失败返回 1
 [[nodiscard]] inline uint64_t pollard_rho(uint64_t n, size_t max_iterations = 100000) {
+    if (n < 2)
+        return 1;
     if (n % 2 == 0)
         return 2;
     if (n % 3 == 0)
