@@ -14,8 +14,10 @@
 #include <gnfs/core/integer.hpp>
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 
 using gnfs::cofactor::classify_cofactor;
@@ -23,6 +25,7 @@ using gnfs::cofactor::CofactorClass;
 using gnfs::cofactor::CofactorClassification;
 using gnfs::cofactor::is_probable_prime_u64;
 using gnfs::cofactor::quick_cofactor_check;
+using gnfs::cofactor::survival_stats;
 using gnfs::cofactor::try_classify_three_lp;
 using gnfs::core::Integer;
 
@@ -61,9 +64,26 @@ void test_3lp_accepted() {
                   "c must be ≤ B^3");
 
     Integer c_int(static_cast<unsigned long long>(c));
-    auto cls = classify_cofactor(c_int, B2, /*allow_3lp=*/true);
+    // Keep the predictor active for this first classification so the RAII
+    // telemetry path is exercised on a successful uint64 3LP return.  A
+    // deliberately broad smoothness bound makes the predictor pass without
+    // changing the classification contract under test.
+    setenv("GNFS_SURVIVAL_FILTER", "1", 1);
+    setenv("GNFS_SURVIVAL_THRESHOLD", "1e-12", 1);
+    survival_stats().reset();
+    const auto smooth_before =
+        survival_stats().predictor_passes_then_smooth.load(std::memory_order_relaxed);
+    const auto failed_before =
+        survival_stats().predictor_passes_then_failed.load(std::memory_order_relaxed);
+    auto cls = classify_cofactor(c_int, B2, /*allow_3lp=*/true, UINT64_C(1) << 60);
     CHECK(cls.type == CofactorClass::ThreeLP,
           "expected ThreeLP, got " << static_cast<int>(cls.type));
+    CHECK(survival_stats().predictor_passes_then_smooth.load(std::memory_order_relaxed) ==
+              smooth_before + 1,
+          "successful 3LP predictor pass must record pass_smooth");
+    CHECK(survival_stats().predictor_passes_then_failed.load(std::memory_order_relaxed) ==
+              failed_before,
+          "successful 3LP predictor pass must not record pass_failed");
     if (cls.type == CofactorClass::ThreeLP) {
         // Factors should be sorted.
         CHECK(cls.factor1 <= cls.factor2 && cls.factor2 <= cls.factor3,
@@ -258,9 +278,20 @@ void test_big_integer_3lp() {
     CHECK(c <= Integer(static_cast<unsigned long long>(B)) * Integer(B) * Integer(B),
           "big 3LP product must be at or below B^3");
 
-    const auto cls = classify_cofactor(c, B, /*allow_3lp=*/true);
+    survival_stats().reset();
+    const auto smooth_before =
+        survival_stats().predictor_passes_then_smooth.load(std::memory_order_relaxed);
+    const auto failed_before =
+        survival_stats().predictor_passes_then_failed.load(std::memory_order_relaxed);
+    const auto cls = classify_cofactor(c, B, /*allow_3lp=*/true, UINT64_C(1) << 60);
     CHECK(cls.type == CofactorClass::ThreeLP,
           "arbitrary-precision 3LP classified as " << static_cast<int>(cls.type));
+    CHECK(survival_stats().predictor_passes_then_smooth.load(std::memory_order_relaxed) ==
+              smooth_before + 1,
+          "arbitrary-precision 3LP predictor pass must record pass_smooth");
+    CHECK(survival_stats().predictor_passes_then_failed.load(std::memory_order_relaxed) ==
+              failed_before,
+          "arbitrary-precision 3LP predictor pass must not record pass_failed");
     if (cls.type == CofactorClass::ThreeLP) {
         CHECK(cls.factor1 == p && cls.factor2 == q && cls.factor3 == r,
               "arbitrary-precision factors changed: " << cls.factor1 << " " << cls.factor2 << " "

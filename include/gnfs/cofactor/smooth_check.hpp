@@ -831,7 +831,11 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
                 // 注意: c 也可能是 prime in (B, B²-something) — 实际不可能, 因 c > B²
                 // 所以一定是合数
                 if (auto three = try_classify_three_lp(c, large_prime_bound)) {
-                    return *three;
+                    // Keep the local result in sync before PassRecorder runs
+                    // on scope exit; returning the temporary directly would
+                    // misclassify a successful 3LP predictor pass as failed.
+                    result = *three;
+                    return result;
                 }
                 // 3LP 分解失败 → Composite (caller 决定是否接受)
                 result.type = CofactorClass::Composite;
@@ -1011,7 +1015,10 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
             };
             if (auto three =
                     try_classify_three_lp_integer_impl(cofactor, large_prime_bound, find_factor)) {
-                return *three;
+                // See the uint64 path above: PassRecorder observes `result`
+                // during destruction, so preserve the successful class.
+                result = *three;
+                return result;
             }
             result.type = CofactorClass::Composite;
             return result;
@@ -1134,6 +1141,12 @@ classify_cofactor_seeded_v1(const Integer& cofactor, uint64_t large_prime_bound,
 /// @return true 如果值得进一步检查
 [[nodiscard]] inline bool quick_cofactor_check(const Integer& cofactor, uint64_t large_prime_bound,
                                                bool allow_2lp = true, bool allow_3lp = false) {
+
+    // A cofactor is an absolute residual.  Negative values are malformed and
+    // must not pass the range comparisons below (negative <= B would otherwise
+    // look like a valid 1LP candidate in the arbitrary-precision path).
+    if (cofactor.is_negative())
+        return false;
 
     if (cofactor.fits_uint64()) {
         uint64_t c = cofactor.to_uint64();
