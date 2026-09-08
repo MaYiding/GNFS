@@ -19,7 +19,7 @@
 // Force assert() to remain live even under -DNDEBUG so Release builds do
 // not silently strip verification.
 #ifdef NDEBUG
-#  undef NDEBUG
+#undef NDEBUG
 #endif
 
 #include "gnfs/linalg/progress_telemetry.hpp"
@@ -43,20 +43,28 @@ using namespace gnfs::linalg;
 class StderrCapture {
 public:
     StderrCapture() : prev_(std::cerr.rdbuf(buf_.rdbuf())) {}
-    ~StderrCapture() { std::cerr.rdbuf(prev_); }
+    ~StderrCapture() {
+        std::cerr.rdbuf(prev_);
+    }
     StderrCapture(const StderrCapture&) = delete;
     StderrCapture& operator=(const StderrCapture&) = delete;
-    [[nodiscard]] std::string str() const { return buf_.str(); }
-    void clear() { buf_.str(std::string{}); buf_.clear(); }
+    [[nodiscard]] std::string str() const {
+        return buf_.str();
+    }
+    void clear() {
+        buf_.str(std::string{});
+        buf_.clear();
+    }
+
 private:
     std::stringstream buf_;
     std::streambuf* prev_;
 };
 
 // Count occurrences of `needle` in `haystack`.
-static std::size_t count_occurrences(const std::string& haystack,
-                                     const std::string& needle) {
-    if (needle.empty()) return 0;
+static std::size_t count_occurrences(const std::string& haystack, const std::string& needle) {
+    if (needle.empty())
+        return 0;
     std::size_t count = 0;
     std::size_t pos = 0;
     while ((pos = haystack.find(needle, pos)) != std::string::npos) {
@@ -118,7 +126,9 @@ static void test_env_garbage_disabled() {
 static void test_env_numeric_prefix_documented() {
     // Documented behavior: std::strtol accepts a numeric prefix.
     // "12abc" -> 12. This matches W11 T3 (mpz_powm_parallel) semantics.
-    std::cout << "Testing GNFS_LINALG_PROGRESS_INTERVAL=\"12abc\" => 12 (documented prefix-parse)..." << std::endl;
+    std::cout
+        << "Testing GNFS_LINALG_PROGRESS_INTERVAL=\"12abc\" => 12 (documented prefix-parse)..."
+        << std::endl;
     set_env_interval("12abc");
     assert(linalg_progress_interval() == 12);
     assert(linalg_progress_enabled() == true);
@@ -163,7 +173,8 @@ static void test_disabled_dtor_no_output() {
         StderrCapture cap;
         {
             IterationProgressLogger lg("Phase", 10);
-            for (std::int64_t i = 0; i < 10; ++i) lg.tick(i);
+            for (std::int64_t i = 0; i < 10; ++i)
+                lg.tick(i);
             // dtor runs at scope exit without explicit finish()
         }
         const std::string out = cap.str();
@@ -194,10 +205,11 @@ static void test_enabled_first_tick_and_interval() {
     set_env_interval(nullptr);
 
     const std::string out = cap.str();
-    const std::size_t progress_lines = count_occurrences(out, "[linalg_progress] phase=TestPhase iter=");
+    const std::size_t progress_lines =
+        count_occurrences(out, "[linalg_progress] phase=TestPhase iter=");
     const std::size_t done_lines = count_occurrences(out, "[linalg_progress] phase=TestPhase DONE");
-    std::cout << "  captured: " << progress_lines << " progress + "
-              << done_lines << " done line(s)" << std::endl;
+    std::cout << "  captured: " << progress_lines << " progress + " << done_lines << " done line(s)"
+              << std::endl;
     // First tick (iter=0) + ticks 10, 20, 30, 40, 50, 60, 70, 80, 90 = 10 lines
     assert(progress_lines == 10);
     assert(done_lines == 1);
@@ -212,8 +224,8 @@ static void test_enabled_finish_emits_done() {
     StderrCapture cap;
     {
         IterationProgressLogger lg("F", 50);
-        lg.tick(0);   // First tick: fires
-        lg.tick(25);  // Mid: fires (delta 25 >= 5)
+        lg.tick(0);  // First tick: fires
+        lg.tick(25); // Mid: fires (delta 25 >= 5)
         lg.finish();
     }
     set_env_interval(nullptr);
@@ -232,8 +244,8 @@ static void test_enabled_finish_idempotent() {
         IterationProgressLogger lg("Idempotent", 5);
         lg.tick(0);
         lg.finish();
-        lg.finish();  // second call: no-op
-        lg.tick(1);   // after finish: no-op
+        lg.finish(); // second call: no-op
+        lg.tick(1);  // after finish: no-op
     }
     set_env_interval(nullptr);
     const std::string out = cap.str();
@@ -318,7 +330,7 @@ static void test_iter_above_total_clamped() {
     StderrCapture cap;
     {
         IterationProgressLogger lg("Above", 100);
-        lg.tick(200);  // > total => clamps to 100
+        lg.tick(200); // > total => clamps to 100
         lg.finish();
     }
     set_env_interval(nullptr);
@@ -335,7 +347,7 @@ static void test_negative_iter_clamped() {
     StderrCapture cap;
     {
         IterationProgressLogger lg("NegIter", 10);
-        lg.tick(-5);  // clamp to 0
+        lg.tick(-5); // clamp to 0
         lg.finish();
     }
     set_env_interval(nullptr);
@@ -351,7 +363,7 @@ static void test_zero_rate_prints_question() {
     StderrCapture cap;
     {
         IterationProgressLogger lg("ZeroRate", 100);
-        lg.tick(0);  // First tick: iter=0 => compute_rate returns 0.0 => "?"
+        lg.tick(0); // First tick: iter=0 => compute_rate returns 0.0 => "?"
         // Note: subsequent ticks DO have nonzero iter, so they may or may
         // not show "?" depending on elapsed time. We only assert here on
         // the iter=0 case where the rate is guaranteed to be 0.0 by
@@ -366,6 +378,30 @@ static void test_zero_rate_prints_question() {
     assert(out.find("nan") == std::string::npos);
     assert(out.find("inf") == std::string::npos);
     std::cout << "  rate underflow: PASS (rate=? not NaN/inf)" << std::endl;
+}
+
+static void test_extreme_rate_saturates_before_formatting() {
+    std::cout << "Testing extreme rate formatting saturates without integer UB..." << std::endl;
+    set_env_interval("1");
+    StderrCapture cap;
+    {
+        IterationProgressLogger lg("ExtremeRate", INT64_MAX);
+        // Ensure elapsed_s is positive while keeping the rate far above the
+        // formatter's long-long-scaled range.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        lg.tick(INT64_MAX);
+        lg.finish();
+    }
+    set_env_interval(nullptr);
+
+    const std::string out = cap.str();
+    assert(out.find("rate=922337203685477580.7/s") != std::string::npos);
+    assert(out.find("avg_rate=922337203685477580.7/s") != std::string::npos);
+    assert(out.find("nan") == std::string::npos);
+    assert(out.find("NaN") == std::string::npos);
+    assert(out.find("inf") == std::string::npos);
+    assert(out.find("Inf") == std::string::npos);
+    std::cout << "  extreme rate: PASS (finite saturated output)" << std::endl;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -466,6 +502,7 @@ int main() {
     test_iter_above_total_clamped();
     test_negative_iter_clamped();
     test_zero_rate_prints_question();
+    test_extreme_rate_saturates_before_formatting();
 
     std::cout << "\n--- Move semantics ---" << std::endl;
     test_move_construct_no_double_emit();
