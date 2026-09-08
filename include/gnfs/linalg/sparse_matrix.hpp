@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "../util/bit_intrin.hpp"
@@ -365,28 +366,34 @@ public:
 
     /// 设置位
     void set(size_t idx) {
+        check_index(idx, "BitVector::set");
         bits_[idx / 64] |= (1ULL << (idx % 64));
     }
 
     /// 清除位
     void clear(size_t idx) {
+        check_index(idx, "BitVector::clear");
         bits_[idx / 64] &= ~(1ULL << (idx % 64));
     }
 
     /// 翻转位
     void flip(size_t idx) {
+        check_index(idx, "BitVector::flip");
         bits_[idx / 64] ^= (1ULL << (idx % 64));
     }
 
     /// 测试位
-    [[nodiscard]] bool test(size_t idx) const noexcept {
+    [[nodiscard]] bool test(size_t idx) const {
+        check_index(idx, "BitVector::test");
         return (bits_[idx / 64] >> (idx % 64)) & 1;
     }
 
-    /// XOR 操作 (取两者长度的较小值，防止越界)
+    /// XOR 操作
     void xor_with(const BitVector& other) {
-        size_t len = std::min(bits_.size(), other.bits_.size());
-        for (size_t i = 0; i < len; ++i) {
+        if (size_ != other.size_) {
+            throw std::invalid_argument("BitVector::xor_with: logical sizes must match");
+        }
+        for (size_t i = 0; i < bits_.size(); ++i) {
             bits_[i] ^= other.bits_[i];
         }
     }
@@ -451,6 +458,12 @@ private:
             throw std::length_error("BitVector size is too large");
         }
         return (size + padding) / 64;
+    }
+
+    void check_index(size_t idx, const char* operation) const {
+        if (idx >= size_) {
+            throw std::out_of_range(std::string(operation) + ": bit index out of range");
+        }
     }
 
     std::vector<uint64_t> bits_;
