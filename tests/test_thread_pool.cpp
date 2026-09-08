@@ -332,6 +332,8 @@ void test_parallel_for_stealing_size_max_tail() {
     GNFS_TEST_CHECK(unexpected.load(std::memory_order_relaxed) == 0);
 
     std::cout << "  parallel_for_stealing SIZE_MAX tail: PASS" << std::endl;
+}
+
 void test_parallel_for_index_size_max_range() {
     std::cout << "Testing parallel_for_index SIZE_MAX range..." << std::endl;
 
