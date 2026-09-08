@@ -577,6 +577,7 @@ public:
                 throw;
             }
             update_stats(lp_count);
+            ++mutation_epoch_;
         }
 
         // Invoke callback outside the lock — safe for callback to call
@@ -1231,6 +1232,7 @@ public:
             pool_->reset();
             relations_pmr_ = std::make_unique<std::pmr::vector<Relation>>(pool_->upstream());
         }
+        ++mutation_epoch_;
     }
 
     /// 刷新输出文件
@@ -1414,6 +1416,7 @@ public:
             }
             seen_.swap(staged_seen);
             stats_ = staged_stats;
+            ++mutation_epoch_;
             return true;
         } catch (...) {
             return false;
@@ -1427,10 +1430,17 @@ public:
     /// relations_ 误判成一次成功但零行的 merge。
     /// Pool 模式 (W6 T4): this 和 other 都支持 — pool/std::vector source 都能读;
     /// destination 写到 this 当前的容器 (pool or std::vector or OOC writer)。
+    /// If a destination callback mutates the source during dispatch, merge()
+    /// fails closed with std::logic_error after the already committed prefix.
     size_t merge(const RelationCollector& other) {
         if (this == &other)
             return 0; // Self-merge: UB with std::mutex
-        std::scoped_lock lock(mutex_, other.mutex_);
+        NewRelationCallback callback;
+        std::optional<Relation> callback_relation;
+        std::unique_lock<std::mutex> destination_lock(mutex_, std::defer_lock);
+        std::unique_lock<std::mutex> source_lock(other.mutex_, std::defer_lock);
+        std::lock(destination_lock, source_lock);
+
         require_appendable_ooc_owner("merge");
         if (ooc_writer_ && ooc_writer_->state() != OOCWriterState::Open) {
             throw std::logic_error("RelationCollector::merge: OOC writer is not appendable");
@@ -1438,6 +1448,13 @@ public:
         if (other.config_.ooc_enabled) {
             throw std::logic_error("RelationCollector::merge: OOC source is unsupported");
         }
+
+        callback = callback_;
+        const bool source_uses_pool = other.relations_pmr_ != nullptr;
+        const size_t source_count =
+            source_uses_pool ? other.relations_pmr_->size() : other.relations_.size();
+        const auto* source_pool_identity = other.relations_pmr_.get();
+        const uint64_t source_epoch = other.mutation_epoch_;
 
         // Source iteration: pmr vector 优先 (pool mode), 否则 std::vector.
         // 通过 lambda 统一两个路径,避免代码重复.
@@ -1449,6 +1466,7 @@ public:
                 return false;
             }
 
+            callback_relation.reset();
             Relation copy = src_rel;
 
             int kind = validate_with_kind(copy);
@@ -1476,6 +1494,8 @@ public:
             }
 
             try {
+                if (callback)
+                    callback_relation = copy;
                 if (ooc_writer_) {
                     ooc_writer_->write(copy);
                     accepted_sequence_.append(copy);
@@ -1491,19 +1511,45 @@ public:
                 throw;
             }
             update_stats(lp_count);
+            ++mutation_epoch_;
             return true;
         };
 
+        auto dispatch_callback = [&]() {
+            if (!callback_relation)
+                return;
+            Relation accepted = std::move(*callback_relation);
+            callback_relation.reset();
+            destination_lock.unlock();
+            source_lock.unlock();
+            callback(accepted);
+            std::lock(destination_lock, source_lock);
+
+            // Source rows are processed by stable indices. A callback may
+            // inspect the source, but changing its size or storage mode would
+            // invalidate the merge's fixed input snapshot.
+            if (other.mutation_epoch_ != source_epoch ||
+                other.relations_pmr_.get() != source_pool_identity ||
+                (source_uses_pool ? other.relations_pmr_->size() : other.relations_.size()) !=
+                    source_count) {
+                throw std::logic_error("RelationCollector::merge: source mutated during callback");
+            }
+        };
+
         size_t added = 0;
-        if (other.relations_pmr_) {
-            for (const auto& rel : *other.relations_pmr_) {
-                if (merge_one(rel))
+        if (source_uses_pool) {
+            for (size_t index = 0; index < source_count; ++index) {
+                if (merge_one((*other.relations_pmr_)[index])) {
                     ++added;
+                    dispatch_callback();
+                }
             }
         } else {
-            for (const auto& rel : other.relations_) {
-                if (merge_one(rel))
+            for (size_t index = 0; index < source_count; ++index) {
+                if (merge_one(other.relations_[index])) {
                     ++added;
+                    dispatch_callback();
+                }
             }
         }
 
@@ -1523,6 +1569,7 @@ private:
     std::vector<Relation> relations_; // OOC/Pool 禁用时持有; 其他模式为空
     std::unordered_set<ABPair, ABPairHash> seen_;
     CollectorStats stats_;
+    uint64_t mutation_epoch_ = 0;
     mutable std::mutex mutex_;
 
     std::ofstream output_stream_;
