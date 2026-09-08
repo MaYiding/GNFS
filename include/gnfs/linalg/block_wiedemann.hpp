@@ -204,6 +204,8 @@ public:
     ///
     /// For small matrices (<5000), delegates to Gaussian elimination.
     /// For large matrices, runs the three-phase BW algorithm.
+    /// A `max_deps` value of zero is a no-op and returns immediately without
+    /// allocating solver state or launching worker threads.
     ///
     /// **Thin matrix path (BACKLOG #80, 2026-05-17)**: When m < n (thin),
     /// routes to `block_wiedemann_thin_solve`, which operates on
@@ -231,6 +233,7 @@ public:
     /// in-memory CSRMatrix (default) and mmap-backed MmapCSRMatrix
     /// (selected by ENV GNFS_LINALG_MMAP). Both delegate to the same
     /// templated impl (in block_wiedemann.cpp) parameterised on MatrixView.
+    /// A `max_deps` value of zero returns immediately without touching the view.
     std::vector<std::vector<bool>> find_dependencies_view(const CSRMatrix& matrix,
                                                           size_t max_deps = 64);
     std::vector<std::vector<bool>> find_dependencies_view(const MmapCSRMatrix& matrix,

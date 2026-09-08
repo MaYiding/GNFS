@@ -67,6 +67,29 @@ private:
     bool armed_ = true;
 };
 
+// A worker launch can fail before the stream vector is fully populated (for
+// example when the process hits its thread quota).  Joining already-created
+// workers during stack unwinding keeps their captures alive and prevents the
+// vector destructor from calling std::terminate on joinable threads.
+class ThreadJoinGuard final {
+public:
+    explicit ThreadJoinGuard(std::vector<std::thread>& workers) noexcept : workers_(workers) {}
+
+    ThreadJoinGuard(const ThreadJoinGuard&) = delete;
+    ThreadJoinGuard& operator=(const ThreadJoinGuard&) = delete;
+
+    ~ThreadJoinGuard() noexcept {
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+
+private:
+    std::vector<std::thread>& workers_;
+};
+
 constexpr uint32_t kMaxBwStreams = 16;
 
 inline uint32_t bw_num_streams() noexcept {
@@ -369,6 +392,12 @@ LFSRPolynomial scalar_berlekamp_massey(const std::vector<uint8_t>& s) {
 
 std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(const SparseMatrix& matrix,
                                                                  size_t max_deps) {
+
+    // A zero dependency budget is an explicit no-op.  Check it before the
+    // size-based dispatch so large matrices do not allocate Gaussian state or
+    // launch Krylov worker streams that can never contribute a result.
+    if (max_deps == 0)
+        return {};
 
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
@@ -1290,6 +1319,11 @@ template <MatrixView MV>
 static std::vector<std::vector<bool>> find_dependencies_view_impl(const MV& matrix,
                                                                   size_t max_deps) {
 
+    // Keep the view overload's zero-budget contract identical to the owning
+    // SparseMatrix API and avoid creating any per-stream pools.
+    if (max_deps == 0)
+        return {};
+
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
     if (m == 0 || n == 0)
@@ -1331,10 +1365,11 @@ static std::vector<std::vector<bool>> find_dependencies_view_impl(const MV& matr
 
     for (uint64_t base_seed : base_seeds) {
         std::vector<std::vector<std::vector<bool>>> per_stream(num_streams);
-        std::vector<std::thread> workers;
-        workers.reserve(num_streams);
         std::exception_ptr first_exception;
         std::mutex exception_mutex;
+        std::vector<std::thread> workers;
+        workers.reserve(num_streams);
+        ThreadJoinGuard join_guard(workers);
 
         for (uint32_t s = 0; s < num_streams; ++s) {
             const uint64_t seed = bw_stream_seed(base_seed, s);
