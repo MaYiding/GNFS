@@ -19,10 +19,12 @@
 namespace {
 
 using gnfs::core::Integer;
+using gnfs::siqs::can_merge_exponents;
 using gnfs::siqs::choose_A;
 using gnfs::siqs::classify_siqs_residual;
 using gnfs::siqs::FBPrime;
 using gnfs::siqs::merge_partials;
+using gnfs::siqs::merge_two;
 using gnfs::siqs::nonnegative_mpz_to_uint64_checked;
 using gnfs::siqs::normalize_two_large_prime;
 using gnfs::siqs::sieve_polynomial;
@@ -217,6 +219,41 @@ void test_merge_partials_converges_beyond_legacy_round_cap() {
             CHECK(full.front().merge_lps.size() == edge_count);
         }
     }
+}
+
+void test_partial_merge_rejects_exponent_overflow() {
+    SIQSRelation first;
+    first.value = Integer(3);
+    first.exponents = {0, 200};
+    first.large_prime = 1009;
+
+    SIQSRelation second;
+    second.value = Integer(5);
+    second.exponents = {0, 100};
+    second.large_prime = 1009;
+
+    CHECK(!can_merge_exponents(first, second, 2));
+
+    bool overflow_seen = false;
+    try {
+        (void)merge_two(first, second, 2);
+    } catch (const std::overflow_error&) {
+        overflow_seen = true;
+    }
+    CHECK(overflow_seen);
+
+    SIQSRelation boundary = second;
+    boundary.exponents[1] = 55;
+    CHECK(can_merge_exponents(first, boundary, 2));
+    const SIQSRelation merged = merge_two(first, boundary, 2);
+    CHECK(merged.exponents.size() == 2);
+    if (merged.exponents.size() == 2) {
+        CHECK(merged.exponents[1] == std::numeric_limits<uint8_t>::max());
+    }
+
+    std::vector<SIQSRelation> input{first, second};
+    const auto full = merge_partials(input, 2, false);
+    CHECK(full.empty());
 }
 void test_residual_classification_is_exact_and_deterministic() {
     CHECK(!classify_siqs_residual(0, 100, 10'000).has_value());
@@ -966,6 +1003,7 @@ int main() {
     test_merge_partials_materializes_unresolved_two_lp_square();
     test_merge_partials_rejects_non_semiprime_splitter_output();
     test_merge_partials_converges_beyond_legacy_round_cap();
+    test_partial_merge_rejects_exponent_overflow();
     test_residual_classification_is_exact_and_deterministic();
     test_nonnegative_mpz_to_uint64_checked();
     test_shadow_sink_factory_exceptions_roll_back_for_retry();
