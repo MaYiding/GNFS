@@ -47,7 +47,9 @@ struct SIQSShadowTwoLargePrimeCaptureSnapshot {
 /// reservation and leaves both the retained relation count and vector
 /// unchanged. Construction reserves the complete configured relation capacity,
 /// and SIQSRelation's nothrow move keeps append within that strong exception
-/// boundary.
+/// boundary. A failed attempt is remembered separately from the admission stop
+/// state: standalone callers may retry, while a parallel worker-set composer
+/// can reject a corpus that had an exception and therefore may be incomplete.
 class SIQSShadowTwoLargePrimeCaptureSink final {
 public:
     explicit SIQSShadowTwoLargePrimeCaptureSink(SIQSShadowTwoLargePrimeCaptureConfig config)
@@ -67,6 +69,15 @@ public:
 
     [[nodiscard]] bool stopped() const noexcept {
         return admission_.stopped();
+    }
+
+    /// Whether any capture attempt threw after this sink was constructed.
+    ///
+    /// This flag does not stop the sink and is intentionally sticky. It is an
+    /// audit signal for a joining/composition layer, which must read it only
+    /// after the owning worker has joined.
+    [[nodiscard]] bool capture_failed() const noexcept {
+        return capture_failed_;
     }
 
     [[nodiscard]] SIQSLiveSieveCaptureStopReason stop_reason() const noexcept {
@@ -105,6 +116,7 @@ public:
             return false;
         }
         if (expected_cofactor <= 1 || expected_cofactor > cofactor_bound_) {
+            capture_failed_ = true;
             throw std::invalid_argument("SIQS shadow 2LP expected cofactor is out of bounds");
         }
         if (!admission_.try_reserve_relation(SIQSLiveSieveRelationKind::two_lp_candidate, shape)) {
@@ -121,11 +133,13 @@ public:
             }
             relations_.push_back(std::move(relation));
         } catch (...) {
+            capture_failed_ = true;
             (void)admission_.cancel_reserved_relation();
             throw;
         }
 
         if (!admission_.commit_reserved_relation()) {
+            capture_failed_ = true;
             relations_.pop_back();
             (void)admission_.cancel_reserved_relation();
             throw std::logic_error("SIQS shadow 2LP capture commit lost its reservation");
@@ -164,6 +178,7 @@ private:
     uint64_t cofactor_bound_ = 0;
     SIQSLiveSieveCaptureController admission_;
     std::vector<SIQSRelation> relations_;
+    bool capture_failed_ = false;
 };
 
 } // namespace gnfs::siqs
