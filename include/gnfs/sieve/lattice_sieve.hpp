@@ -1605,12 +1605,14 @@ private:
         // sieve_array_.size() / 100 is conservative; over-reserve worst case fine.
         candidates.reserve(sieve_array_.size() / 100);
 
-        uint16_t threshold = params_.combined_threshold();
-        // effective_threshold = init_val - threshold (if init too low, no valid candidates)
+        const uint16_t threshold = params_.combined_threshold();
+        // Keep every I <= T pass fail-closed, including T == 0. Without this
+        // guard, the clamped effective threshold would admit every cell and
+        // flood downstream stages when the initial estimate is unavailable.
         if (last_init_val_ <= threshold) {
-            return {}; // Log estimate too small — all positions would pass, return empty
+            return {};
         }
-        uint16_t eff_thresh = static_cast<uint16_t>(last_init_val_ - threshold);
+        const uint16_t eff_thresh = static_cast<uint16_t>(last_init_val_ - threshold);
 
         auto process_hit = [&](size_t idx) {
             auto [i, j] = region_.index_to_ij(idx);
