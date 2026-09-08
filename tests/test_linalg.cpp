@@ -466,6 +466,35 @@ void test_matrix_builder() {
     std::cout << "  MatrixBuilder: PASSED" << std::endl;
 }
 
+// Regression: sign-column evaluation must preserve uint64_t b on LLP64.
+void test_matrix_builder_sign_wide_b() {
+    std::cout << "Testing MatrixBuilder sign column with wide b..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.include_class_group = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    factor_base::FactorBase fb;
+    std::vector<Integer> coeffs = {Integer(-1), Integer(1)};
+    PolynomialContext ctx(Integer(143), std::move(coeffs), Integer(2), 1.0);
+
+    const uint64_t wide_b = UINT64_C(1) << 34;
+    std::vector<core::Relation> relations;
+    relations.emplace_back(0, wide_b);
+    relations.emplace_back(0, 1);
+
+    const auto result = builder.build_with_qc(relations, fb, ctx);
+    GNFS_TEST_CHECK(result.mapping.has_sign_column);
+    GNFS_TEST_CHECK(result.matrix.row(0).test(static_cast<uint32_t>(result.mapping.sign_column)));
+    GNFS_TEST_CHECK(result.matrix.row(1).test(static_cast<uint32_t>(result.mapping.sign_column)));
+
+    std::cout << "  Wide b sign column: PASSED" << std::endl;
+}
+
 // Test dependency finding
 void test_find_dependencies() {
     std::cout << "Testing find_dependencies..." << std::endl;
@@ -1585,6 +1614,7 @@ int main() {
     test_gaussian_simple();
     test_gaussian_larger();
     test_matrix_builder();
+    test_matrix_builder_sign_wide_b();
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();
