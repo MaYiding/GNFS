@@ -32,6 +32,21 @@ using core::PolynomialContext;
 using core::Relation;
 using factor_base::FactorBase;
 
+namespace detail {
+
+/// Subtract m*b without narrowing a full-width relation parameter on LLP64.
+inline void subtract_m_times_b(Integer& value, const Integer& m, uint64_t b) {
+    if (b <= std::numeric_limits<unsigned long>::max()) {
+        mpz_submul_ui(value.get_mpz(), m.get_mpz(), static_cast<unsigned long>(b));
+        return;
+    }
+
+    const Integer b_value(b);
+    mpz_submul(value.get_mpz(), m.get_mpz(), b_value.get_mpz());
+}
+
+} // namespace detail
+
 /// 代数侧素理想键 (p, r)——区分同一素数上方的不同素理想
 struct PrimeIdealKey {
     uint64_t p; // 素数
@@ -992,7 +1007,7 @@ private:
             Integer v;
             auto is_neg = [&](int64_t ai, uint64_t bi) {
                 v = ai; // mpz_set_si direct
-                mpz_submul_ui(v.get_mpz(), ctx.m().get_mpz(), static_cast<unsigned long>(bi));
+                detail::subtract_m_times_b(v, ctx.m(), bi);
                 return v.is_negative();
             };
 
