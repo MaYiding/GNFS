@@ -2,7 +2,9 @@
 
 #include <gnfs/siqs/siqs.hpp>
 #include <gnfs/siqs/two_large_prime.hpp>
+#include <gnfs/siqs/two_large_prime_parallel_capture.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -12,6 +14,7 @@
 #include <optional>
 #include <random>
 #include <stdexcept>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -23,6 +26,8 @@ using gnfs::siqs::can_merge_exponents;
 using gnfs::siqs::choose_A;
 using gnfs::siqs::classify_siqs_residual;
 using gnfs::siqs::FBPrime;
+using gnfs::siqs::materialize_siqs_two_large_prime_worker_capture;
+using gnfs::siqs::MaterializedTwoLargePrimeCycle;
 using gnfs::siqs::merge_partials;
 using gnfs::siqs::merge_two;
 using gnfs::siqs::nonnegative_mpz_to_uint64_checked;
@@ -31,12 +36,18 @@ using gnfs::siqs::sieve_polynomial;
 using gnfs::siqs::SIQSLiveSieveCaptureController;
 using gnfs::siqs::SIQSLiveSieveCaptureStopReason;
 using gnfs::siqs::SIQSLiveSieveRelationKind;
+using gnfs::siqs::SIQSLiveSieveRelationPayloadShape;
 using gnfs::siqs::SIQSPoly;
 using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::SIQSShadowTwoLargePrimeCaptureConfig;
 using gnfs::siqs::SIQSShadowTwoLargePrimeCaptureSink;
 using gnfs::siqs::SIQSShadowTwoLargePrimeCaptureSnapshot;
+using gnfs::siqs::SIQSShadowTwoLargePrimeCaptureWorkerSet;
+using gnfs::siqs::SIQSShadowTwoLargePrimeCaptureWorkerSetConfig;
+using gnfs::siqs::SIQSTwoLargePrimeParallelCapture;
+using gnfs::siqs::SIQSTwoLargePrimeParallelCaptureStatus;
 using gnfs::siqs::split_cofactor_64;
+using gnfs::siqs::TwoLargePrimeCycleBasisLimits;
 using gnfs::siqs::TwoLargePrimeFactors;
 
 static_assert(
@@ -525,6 +536,187 @@ collect_native_relations_with_seven(const char* cofactor_text,
     relation.large_prime2 = 1;
     relation.negative = false;
     return relation;
+}
+
+[[nodiscard]] SIQSRelation make_parallel_capture_relation(uint64_t cofactor, uint64_t value) {
+    SIQSRelation relation = make_raw_two_lp_relation(cofactor);
+    relation.value = Integer(value);
+    relation.exponents = {0, 1};
+    relation.fb_indices = {1};
+    return relation;
+}
+
+[[nodiscard]] SIQSShadowTwoLargePrimeCaptureWorkerSet
+make_parallel_capture_workers(size_t worker_count) {
+    SIQSShadowTwoLargePrimeCaptureWorkerSet workers(SIQSShadowTwoLargePrimeCaptureWorkerSetConfig{
+        worker_count,
+        SIQSShadowTwoLargePrimeCaptureConfig{100, {8, 1024}},
+    });
+
+    constexpr std::array<std::pair<uint64_t, uint64_t>, 3> relations{{
+        {15, 2},
+        {21, 3},
+        {35, 5},
+    }};
+    constexpr SIQSLiveSieveRelationPayloadShape payload{1, 2, 1, 0};
+    std::vector<uint8_t> captured(relations.size(), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(worker_count);
+    for (size_t worker = 0; worker < worker_count; ++worker) {
+        auto* sink = &workers.worker_sink(worker);
+        threads.emplace_back([sink, worker, &captured, &relations, payload, worker_count] {
+            for (size_t index = worker; index < relations.size(); index += worker_count) {
+                const auto [cofactor, value] = relations[index];
+                captured[index] =
+                    static_cast<uint8_t>(sink->try_capture(cofactor, payload, [cofactor, value] {
+                        return make_parallel_capture_relation(cofactor, value);
+                    }));
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    for (const uint8_t did_capture : captured) {
+        CHECK(did_capture != 0);
+    }
+    const auto snapshots = workers.snapshots();
+    CHECK(snapshots.size() == worker_count);
+    for (size_t worker = 0; worker < worker_count && worker < snapshots.size(); ++worker) {
+        const size_t expected_count =
+            worker < relations.size()
+                ? (relations.size() - worker + worker_count - 1) / worker_count
+                : 0;
+        CHECK(snapshots[worker].captured_relations == expected_count);
+    }
+    return workers;
+}
+
+[[nodiscard]] bool same_materialized_cycle(const MaterializedTwoLargePrimeCycle& lhs,
+                                           const MaterializedTwoLargePrimeCycle& rhs) {
+    return lhs.value_modulus == rhs.value_modulus && lhs.negative == rhs.negative &&
+           lhs.factor_base_exponents == rhs.factor_base_exponents &&
+           lhs.large_prime_square_roots == rhs.large_prime_square_roots &&
+           lhs.relation_indices == rhs.relation_indices;
+}
+
+void check_parallel_capture_equal(const SIQSTwoLargePrimeParallelCapture& expected,
+                                  const SIQSTwoLargePrimeParallelCapture& actual) {
+    CHECK(expected.corpus.stats == actual.corpus.stats);
+    CHECK(expected.corpus.edges == actual.corpus.edges);
+    CHECK(expected.corpus.sources.size() == actual.corpus.sources.size());
+    if (expected.corpus.sources.size() == actual.corpus.sources.size()) {
+        for (size_t index = 0; index < expected.corpus.sources.size(); ++index) {
+            const auto& lhs = expected.corpus.sources[index];
+            const auto& rhs = actual.corpus.sources[index];
+            CHECK(lhs.relation_index == rhs.relation_index);
+            CHECK(lhs.value == rhs.value);
+            CHECK(lhs.negative == rhs.negative);
+            CHECK(lhs.factor_base_exponents == rhs.factor_base_exponents);
+            CHECK(lhs.p == rhs.p);
+            CHECK(lhs.q == rhs.q);
+        }
+    }
+    CHECK(expected.basis.vertex_count == actual.basis.vertex_count);
+    CHECK(expected.basis.edge_count == actual.basis.edge_count);
+    CHECK(expected.basis.component_count == actual.basis.component_count);
+    CHECK(expected.basis.total_cycle_incidences == actual.basis.total_cycle_incidences);
+    CHECK(expected.basis.max_cycle_length == actual.basis.max_cycle_length);
+    CHECK(expected.basis.cycles == actual.basis.cycles);
+    CHECK(expected.materialized_cycles.size() == actual.materialized_cycles.size());
+    if (expected.materialized_cycles.size() == actual.materialized_cycles.size()) {
+        for (size_t index = 0; index < expected.materialized_cycles.size(); ++index) {
+            CHECK(same_materialized_cycle(expected.materialized_cycles[index],
+                                          actual.materialized_cycles[index]));
+        }
+    }
+}
+
+void test_parallel_capture_worker_order_and_cycle_determinism() {
+    const auto materialize = [](size_t worker_count) {
+        auto workers = make_parallel_capture_workers(worker_count);
+        return materialize_siqs_two_large_prime_worker_capture(
+            workers, 2, 100, Integer(97), TwoLargePrimeCycleBasisLimits{16, 16, 64},
+            split_cofactor_64);
+    };
+
+    auto one_worker = materialize(1);
+    auto two_workers = materialize(2);
+    auto four_workers = materialize(4);
+    CHECK(one_worker.status == SIQSTwoLargePrimeParallelCaptureStatus::valid);
+    CHECK(two_workers.status == SIQSTwoLargePrimeParallelCaptureStatus::valid);
+    CHECK(four_workers.status == SIQSTwoLargePrimeParallelCaptureStatus::valid);
+    CHECK(one_worker.is_valid() && two_workers.is_valid() && four_workers.is_valid());
+    if (one_worker.is_valid() && two_workers.is_valid() && four_workers.is_valid()) {
+        check_parallel_capture_equal(*one_worker.capture, *two_workers.capture);
+        check_parallel_capture_equal(*one_worker.capture, *four_workers.capture);
+        CHECK(one_worker.capture->raw_relations.size() == 3);
+        CHECK(two_workers.capture->raw_relations.size() == 3);
+        CHECK(four_workers.capture->raw_relations.size() == 3);
+        CHECK(two_workers.capture->raw_relations[0].large_prime == 15);
+        CHECK(two_workers.capture->raw_relations[1].large_prime == 35);
+        CHECK(two_workers.capture->raw_relations[2].large_prime == 21);
+    }
+}
+
+void test_parallel_capture_fail_closed_and_bounded_stop_is_valid() {
+    CHECK(throws_as<std::invalid_argument>([] {
+        SIQSShadowTwoLargePrimeCaptureWorkerSet workers(
+            SIQSShadowTwoLargePrimeCaptureWorkerSetConfig{
+                0, SIQSShadowTwoLargePrimeCaptureConfig{100, {8, 1024}}});
+        (void)workers;
+    }));
+
+    auto workers = make_parallel_capture_workers(2);
+    CHECK(throws_as<std::out_of_range>([&] { (void)workers.worker_sink(2); }));
+
+    auto edge_limited = materialize_siqs_two_large_prime_worker_capture(
+        workers, 2, 100, Integer(97), TwoLargePrimeCycleBasisLimits{2, 16, 64}, split_cofactor_64);
+    CHECK(edge_limited.status == SIQSTwoLargePrimeParallelCaptureStatus::graph_edge_limit);
+    CHECK(!edge_limited.capture.has_value());
+
+    auto invalid_modulus = materialize_siqs_two_large_prime_worker_capture(
+        workers, 2, 100, Integer(1), TwoLargePrimeCycleBasisLimits{16, 16, 64}, split_cofactor_64);
+    CHECK(invalid_modulus.status ==
+          SIQSTwoLargePrimeParallelCaptureStatus::materialization_failure);
+    CHECK(!invalid_modulus.capture.has_value());
+
+    auto splitter_failure = materialize_siqs_two_large_prime_worker_capture(
+        workers, 2, 100, Integer(97), TwoLargePrimeCycleBasisLimits{16, 16, 64},
+        [](uint64_t) -> std::pair<uint64_t, uint64_t> {
+            throw std::runtime_error("injected 2LP splitter failure");
+        });
+    CHECK(splitter_failure.status ==
+          SIQSTwoLargePrimeParallelCaptureStatus::materialization_failure);
+    CHECK(!splitter_failure.capture.has_value());
+
+    auto splitter_logic_failure = materialize_siqs_two_large_prime_worker_capture(
+        workers, 2, 100, Integer(97), TwoLargePrimeCycleBasisLimits{16, 16, 64},
+        [](uint64_t) -> std::pair<uint64_t, uint64_t> {
+            throw std::logic_error("injected 2LP splitter logic failure");
+        });
+    CHECK(splitter_logic_failure.status ==
+          SIQSTwoLargePrimeParallelCaptureStatus::materialization_failure);
+    CHECK(!splitter_logic_failure.capture.has_value());
+
+    SIQSShadowTwoLargePrimeCaptureWorkerSet stopped(SIQSShadowTwoLargePrimeCaptureWorkerSetConfig{
+        1, SIQSShadowTwoLargePrimeCaptureConfig{100, {0, 1024}}});
+    auto invalid_sink = materialize_siqs_two_large_prime_worker_capture(
+        stopped, 2, 100, Integer(97), TwoLargePrimeCycleBasisLimits{16, 16, 64}, split_cofactor_64);
+    CHECK(invalid_sink.status == SIQSTwoLargePrimeParallelCaptureStatus::invalid_worker_capture);
+    CHECK(!invalid_sink.capture.has_value());
+
+    SIQSShadowTwoLargePrimeCaptureWorkerSet capped(SIQSShadowTwoLargePrimeCaptureWorkerSetConfig{
+        1, SIQSShadowTwoLargePrimeCaptureConfig{100, {1, 1024}}});
+    auto& capped_sink = capped.worker_sink(0);
+    constexpr SIQSLiveSieveRelationPayloadShape payload{1, 2, 1, 0};
+    CHECK(
+        capped_sink.try_capture(15, payload, [] { return make_parallel_capture_relation(15, 2); }));
+    CHECK(capped_sink.stop_reason() == SIQSLiveSieveCaptureStopReason::relation_limit);
+    auto bounded = materialize_siqs_two_large_prime_worker_capture(
+        capped, 2, 100, Integer(97), TwoLargePrimeCycleBasisLimits{16, 16, 64}, split_cofactor_64);
+    CHECK(bounded.status == SIQSTwoLargePrimeParallelCaptureStatus::valid);
+    CHECK(bounded.is_valid());
 }
 
 void test_shadow_sink_factory_exceptions_roll_back_for_retry() {
@@ -1111,6 +1303,8 @@ int main() {
     test_native_shadow_capture_honors_exact_cofactor_bound();
     test_shadow_limit_does_not_stop_same_polynomial_legacy_relation();
     test_sieve_score_saturates_without_losing_smooth_relation();
+    test_parallel_capture_worker_order_and_cycle_determinism();
+    test_parallel_capture_fail_closed_and_bounded_stop_is_valid();
 
     std::cout << checks_passed << " checks passed, " << checks_failed << " checks failed\n";
     return checks_failed == 0 ? 0 : 1;

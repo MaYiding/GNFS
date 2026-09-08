@@ -21,6 +21,7 @@
 #include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/siqs/shadow_two_large_prime_capture.hpp>
 #include <gnfs/siqs/two_large_prime.hpp>
+#include <gnfs/siqs/two_large_prime_parallel_capture.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/primes.hpp>
 
