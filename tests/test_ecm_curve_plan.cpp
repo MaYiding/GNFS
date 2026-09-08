@@ -498,7 +498,6 @@ void test_config_resource_boundaries() {
     malformed_context.sigma_pool = {6};
     expect_invalid_argument([&] { (void)ECM::factor_with_batch(composite, malformed_context); });
 }
-
 template <class Function> void run_test(std::string_view name, Function&& function) {
     std::cout << "  " << name << "... " << std::flush;
     std::forward<Function>(function)();
