@@ -600,8 +600,7 @@ void test_allocation_failure_returns_nullopt() {
     // libstdc++ can raise std::bad_alloc. The portable pre-allocation guard
     // above remains active; this resource-limit probe is meaningful only in an
     // unsanitized process where the loader can observe the C++ exception.
-    std::cout << "Testing allocation failure handling... SKIP (ASAN allocator)"
-              << std::endl;
+    std::cout << "Testing allocation failure handling... SKIP (ASAN allocator)" << std::endl;
     return;
 #endif
     std::cout << "Testing allocation failure handling..." << std::endl;
