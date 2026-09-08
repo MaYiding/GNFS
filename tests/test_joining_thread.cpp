@@ -5,6 +5,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <future>
@@ -304,6 +305,8 @@ void test_joined_worker_group_releases_only_after_full_launch() {
 void test_joined_worker_group_partial_launch_failure_starts_no_bodies() {
     constexpr size_t worker_count = 5;
     constexpr size_t failing_ordinal = 2;
+    constexpr auto blocked_body_duration = std::chrono::seconds(2);
+    constexpr auto expected_cancel_limit = std::chrono::milliseconds(500);
     const std::error_code expected_code =
         std::make_error_code(std::errc::resource_unavailable_try_again);
     std::atomic_size_t launched_threads{0};
@@ -313,11 +316,15 @@ void test_joined_worker_group_partial_launch_failure_starts_no_bodies() {
     size_t launch_attempts = 0;
     size_t live_at_catch = std::numeric_limits<size_t>::max();
     bool caught = false;
+    const auto start = std::chrono::steady_clock::now();
 
     try {
         gnfs::util::joined_worker_group_detail::run_joined_worker_group_with_launcher(
             worker_count,
-            [&](size_t) noexcept { body_calls.fetch_add(1, std::memory_order_relaxed); },
+            [&](size_t) noexcept {
+                body_calls.fetch_add(1, std::memory_order_relaxed);
+                std::this_thread::sleep_for(blocked_body_duration);
+            },
             [&](size_t worker_ordinal, auto&& task) -> JoiningThread {
                 ++launch_attempts;
                 if (worker_ordinal == failing_ordinal) {
@@ -341,6 +348,7 @@ void test_joined_worker_group_partial_launch_failure_starts_no_bodies() {
     } catch (...) {
         CHECK(false);
     }
+    const auto elapsed = std::chrono::steady_clock::now() - start;
 
     CHECK(caught);
     CHECK(launch_attempts == failing_ordinal + 1);
@@ -349,6 +357,7 @@ void test_joined_worker_group_partial_launch_failure_starts_no_bodies() {
     CHECK(exited_threads.load(std::memory_order_relaxed) == failing_ordinal);
     CHECK(live_at_catch == 0);
     CHECK(live_threads.load(std::memory_order_relaxed) == 0);
+    CHECK(elapsed < expected_cancel_limit);
 }
 
 void test_joined_worker_group_joins_all_and_rethrows_lowest_ordinal() {
