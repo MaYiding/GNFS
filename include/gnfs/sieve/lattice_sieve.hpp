@@ -191,7 +191,6 @@ inline void apply_log_p_stride_scalar(uint16_t* arr, size_t start, size_t end, s
         if (stride >= end - idx)
             break;
         idx += stride;
-
     }
 }
 
