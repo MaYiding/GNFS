@@ -338,12 +338,23 @@ void test_siqs_multiplier_portfolio_deadline_and_shared_factor_guard() {
     // A ranked multiplier may share a factor with N.  Treat that as a direct
     // factorization opportunity instead of constructing a degenerate kN.
     ScopedEnvironmentVariable shadow_off(SIQS_SHADOW_PROOF_ENV, "0");
-    const auto direct = factor(Integer("303"), 1, false);
+    ScopedStderrCapture direct_capture;
+    const auto direct = factor(Integer("303"), 1, true);
+    const std::string direct_log = direct_capture.finish();
     require_test(direct.has_value(), "shared multiplier factor was not returned");
     require_test(direct->factor1 * direct->factor2 == Integer("303"),
                  "shared multiplier factor result was not a valid factorization");
     require_test(direct->factor1 == Integer("3") || direct->factor2 == Integer("3"),
                  "shared multiplier factor guard returned an unexpected factor");
+    require_test(count_occurrences(direct_log, "route=multiplier_gcd") == 1 &&
+                     direct_log.find("candidate_ordinal=1") != std::string::npos &&
+                     direct_log.find("multiplier=3") != std::string::npos &&
+                     direct_log.find("sieved=false") != std::string::npos &&
+                     direct_log.find("shadow_telemetry=false") != std::string::npos,
+                 "shared multiplier direct route lacked its audit fields");
+    require_test(count_occurrences(direct_log, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 0 &&
+                     count_occurrences(direct_log, SIQS_SHADOW_PROOF_PREFER_DECISION_PREFIX) == 0,
+                 "shared multiplier direct route emitted shadow telemetry");
 
     // An already-expired positive-budget attempt must remain bounded even when
     // its per-attempt remainder is negative. This catches the old sign-based

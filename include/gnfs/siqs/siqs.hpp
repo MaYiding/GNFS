@@ -2475,8 +2475,9 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
             direct.shadow_proof_observe_record_committed = shadow_proof_observe_record_committed;
             if (verbose) {
                 std::fprintf(stderr,
-                             "[SIQS] multiplier k=%u shares a factor with N; direct factor\n",
-                             multiplier);
+                             "[SIQS] multiplier route=multiplier_gcd candidate_ordinal=%zu "
+                             "multiplier=%u sieved=false shadow_telemetry=false\n",
+                             attempt + 1, multiplier);
             }
             return direct;
         }
