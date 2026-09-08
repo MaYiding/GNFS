@@ -403,6 +403,48 @@ void test_lattice_sieve_score_overflow_regression() {
     std::cout << "  Saturating score overflow regression: PASS" << std::endl;
 }
 
+void test_lattice_sieve_zero_threshold_with_zero_initial_log_fails_closed() {
+    std::cout << "Testing zero threshold with zero initial log fail-closed..." << std::endl;
+
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(int64_t{812});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{0});
+    coefficients.emplace_back(int64_t{1});
+
+    // Force estimate_initial_log() through its non-finite guard: converting a
+    // 1000-digit m to double makes the rational estimate infinite.
+    const std::string huge_m(1000, '9');
+    PolynomialContext ctx(Integer(int64_t{77}), std::move(coefficients), Integer(huge_m), 1.0);
+    GNFS_TEST_CHECK(std::isinf(ctx.m().to_double()));
+    const SpecialQ sq{5, 2, 0};
+    const SieveRegion region{-2, 2, 1, 2};
+
+    FactorBaseParams fb_params;
+    fb_params.rational_bound = 5;
+    fb_params.algebraic_bound = 5;
+    FactorBase factor_base(fb_params);
+
+    SieveParams params;
+    params.rational_threshold = 0;
+    params.algebraic_threshold = 0;
+
+    LatticeSieveExecutionConfig config{};
+    config.fallback_thread_count = 1;
+    config.enable_tiny_simd = false;
+    config.enable_bucket_prefetch = false;
+
+    LatticeSieve sieve(ctx, factor_base, params, config);
+    sieve.set_region(region);
+    const auto actual = sieve.sieve_special_q(sq);
+
+    GNFS_TEST_CHECK(actual.sieved_positions == region.size());
+    GNFS_TEST_CHECK(actual.candidates.empty());
+
+    std::cout << "  Zero-threshold zero-initial-log fail-closed regression: PASS (candidates="
+              << actual.candidates.size() << ")" << std::endl;
+}
+
 void test_default_region() {
     std::cout << "Testing default region with skewness..." << std::endl;
 
@@ -1396,6 +1438,7 @@ int main() {
     test_stride_size_t_boundary();
     test_saturating_lattice_score_updates();
     test_lattice_sieve_score_overflow_regression();
+    test_lattice_sieve_zero_threshold_with_zero_initial_log_fails_closed();
     test_default_region();
     test_lattice_sieve_storage_contract();
     test_lattice_sieve_special_q_entry_contract();
