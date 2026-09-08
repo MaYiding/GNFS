@@ -1,8 +1,11 @@
 #include "gnfs/polynomial/poly_checkpoint.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
+#include "support/test_check.hpp"
 
+#include <bit>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -16,15 +19,54 @@ using gnfs::core::PolynomialContext;
 static std::string tmp_ckpt_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "gnfs_test_poly_ckpt_%d_%d_%s",
-                  gnfs::util::process_id(), ++seq, label);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_poly_ckpt_%d_%d_%s", gnfs::util::process_id(), ++seq,
+                  label);
     return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
     std::string path;
-    ~CkptCleanup() { if (!path.empty()) std::remove(path.c_str()); }
+    ~CkptCleanup() {
+        if (!path.empty())
+            std::remove(path.c_str());
+    }
 };
+
+static void write_u32_le(std::ofstream& out, uint32_t value) {
+    const unsigned char bytes[4] = {
+        static_cast<unsigned char>(value & 0xffU),
+        static_cast<unsigned char>((value >> 8U) & 0xffU),
+        static_cast<unsigned char>((value >> 16U) & 0xffU),
+        static_cast<unsigned char>((value >> 24U) & 0xffU),
+    };
+    out.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+}
+
+static void write_u64_le(std::ofstream& out, uint64_t value) {
+    const unsigned char bytes[8] = {
+        static_cast<unsigned char>(value & 0xffULL),
+        static_cast<unsigned char>((value >> 8U) & 0xffULL),
+        static_cast<unsigned char>((value >> 16U) & 0xffULL),
+        static_cast<unsigned char>((value >> 24U) & 0xffULL),
+        static_cast<unsigned char>((value >> 32U) & 0xffULL),
+        static_cast<unsigned char>((value >> 40U) & 0xffULL),
+        static_cast<unsigned char>((value >> 48U) & 0xffULL),
+        static_cast<unsigned char>((value >> 56U) & 0xffULL),
+    };
+    out.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+}
+
+static void write_double_le(std::ofstream& out, double value) {
+    write_u64_le(out, std::bit_cast<uint64_t>(value));
+}
+
+static std::vector<unsigned char> read_bytes(const std::string& path, size_t count) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<unsigned char> bytes(count);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    GNFS_TEST_CHECK(in.gcount() == static_cast<std::streamsize>(bytes.size()));
+    return bytes;
+}
 
 void test_roundtrip_small() {
     std::cout << "Testing roundtrip (small Integers)..." << std::endl;
@@ -168,7 +210,7 @@ void test_load_for_validates_n() {
     // Wrong N → throws
     bool threw = false;
     try {
-        (void) PolyCheckpoint::load_for(path, Integer("999999999998"));
+        (void)PolyCheckpoint::load_for(path, Integer("999999999998"));
     } catch (const std::runtime_error&) {
         threw = true;
     }
@@ -195,6 +237,50 @@ void test_exists_and_valid() {
     std::cout << "  exists_and_valid: PASS" << std::endl;
 }
 
+void test_wire_scalars_are_little_endian() {
+    std::cout << "Testing little-endian scalar wire encoding..." << std::endl;
+    auto path = tmp_ckpt_path("wire_endian");
+    CkptCleanup c{path};
+
+    PolyCheckpoint ck;
+    ck.n = Integer(static_cast<int64_t>(0));
+    ck.m = Integer(static_cast<int64_t>(0));
+    ck.degree = 0x01020304U;
+    ck.skewness = 1.0;
+    ck.murphy_e = 0.0;
+    ck.save(path);
+
+    const auto bytes = read_bytes(path, 56);
+    const unsigned char expected_magic[8] = {0x50, 0x4b, 0x43, 0x50, 0x53, 0x46, 0x4e, 0x47};
+    for (size_t i = 0; i < 8; ++i) {
+        GNFS_TEST_CHECK(bytes[i] == expected_magic[i]);
+    }
+    GNFS_TEST_CHECK(bytes[8] == 1);
+    for (size_t i = 9; i < 16; ++i) {
+        GNFS_TEST_CHECK(bytes[i] == 0);
+    }
+    // Both zero integer fields and coeff_count are encoded as zero.
+    for (size_t i = 16; i < 32; ++i) {
+        GNFS_TEST_CHECK(bytes[i] == 0);
+    }
+    const unsigned char expected_degree[4] = {0x04, 0x03, 0x02, 0x01};
+    for (size_t i = 0; i < 4; ++i) {
+        GNFS_TEST_CHECK(bytes[32 + i] == expected_degree[i]);
+    }
+    for (size_t i = 36; i < 40; ++i) {
+        GNFS_TEST_CHECK(bytes[i] == 0);
+    }
+    // IEEE-754 1.0 is 0x3ff0000000000000 in little-endian order.
+    const unsigned char expected_one[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f};
+    for (size_t i = 0; i < 8; ++i) {
+        GNFS_TEST_CHECK(bytes[40 + i] == expected_one[i]);
+    }
+    for (size_t i = 48; i < 56; ++i) {
+        GNFS_TEST_CHECK(bytes[i] == 0);
+    }
+    std::cout << "  Little-endian scalar encoding: PASS" << std::endl;
+}
+
 void test_incomplete_magic_rejected() {
     std::cout << "Testing INCOMPLETE magic rejected..." << std::endl;
     auto path = tmp_ckpt_path("incomplete");
@@ -202,17 +288,15 @@ void test_incomplete_magic_rejected() {
 
     {
         std::ofstream out(path, std::ios::binary);
-        uint64_t magic = PolyCheckpoint::MAGIC_INCOMPLETE;
-        uint64_t version = PolyCheckpoint::VERSION;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_u64_le(out, PolyCheckpoint::MAGIC_INCOMPLETE);
+        write_u64_le(out, PolyCheckpoint::VERSION);
         // Truncate intentionally (mid-save crash simulation)
     }
 
     assert(!PolyCheckpoint::exists_and_valid(path));
     bool threw = false;
     try {
-        (void) PolyCheckpoint::load(path);
+        (void)PolyCheckpoint::load(path);
     } catch (const std::runtime_error&) {
         threw = true;
     }
@@ -227,14 +311,15 @@ void test_version_mismatch_rejected() {
 
     {
         std::ofstream out(path, std::ios::binary);
-        uint64_t magic = PolyCheckpoint::MAGIC;
-        uint64_t version = 999;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_u64_le(out, PolyCheckpoint::MAGIC);
+        write_u64_le(out, 999);
     }
     bool threw = false;
-    try { (void) PolyCheckpoint::load(path); }
-    catch (const std::runtime_error&) { threw = true; }
+    try {
+        (void)PolyCheckpoint::load(path);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
     assert(threw);
     std::cout << "  Version mismatch: PASS" << std::endl;
 }
@@ -246,28 +331,29 @@ void test_corrupt_coeff_count_rejected() {
 
     {
         std::ofstream out(path, std::ios::binary);
-        uint64_t magic = PolyCheckpoint::MAGIC;
-        uint64_t version = PolyCheckpoint::VERSION;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_u64_le(out, PolyCheckpoint::MAGIC);
+        write_u64_le(out, PolyCheckpoint::VERSION);
 
         // Write N=0
         int32_t sgn = 0;
         uint32_t bc = 0;
-        out.write(reinterpret_cast<const char*>(&sgn), 4);
-        out.write(reinterpret_cast<const char*>(&bc), 4);
+        write_u32_le(out, static_cast<uint32_t>(sgn));
+        write_u32_le(out, bc);
         // Write m=0
-        out.write(reinterpret_cast<const char*>(&sgn), 4);
-        out.write(reinterpret_cast<const char*>(&bc), 4);
+        write_u32_le(out, static_cast<uint32_t>(sgn));
+        write_u32_le(out, bc);
 
         uint32_t degree = 5;
-        out.write(reinterpret_cast<const char*>(&degree), 4);
-        uint32_t coeff_count = 999;  // > 64 cap → corrupt
-        out.write(reinterpret_cast<const char*>(&coeff_count), 4);
+        write_u32_le(out, degree);
+        uint32_t coeff_count = 999; // > 64 cap → corrupt
+        write_u32_le(out, coeff_count);
     }
     bool threw = false;
-    try { (void) PolyCheckpoint::load(path); }
-    catch (const std::runtime_error&) { threw = true; }
+    try {
+        (void)PolyCheckpoint::load(path);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
     assert(threw);
     std::cout << "  Corrupt coeff_count: PASS" << std::endl;
 }
@@ -276,7 +362,9 @@ void test_remove() {
     std::cout << "Testing remove..." << std::endl;
     auto path = tmp_ckpt_path("rm");
     PolyCheckpoint ck;
-    ck.n = Integer("11"); ck.m = Integer("1"); ck.degree = 1;
+    ck.n = Integer("11");
+    ck.m = Integer("1");
+    ck.degree = 1;
     ck.f_coeffs.emplace_back(Integer(static_cast<int64_t>(0)));
     ck.f_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
     ck.save(path);
@@ -290,8 +378,7 @@ void test_load_nonexistent() {
     std::cout << "Testing load nonexistent..." << std::endl;
     bool threw = false;
     try {
-        (void) PolyCheckpoint::load(
-            gnfs::util::temp_path("nonexistent_xyz_gnfs_poly_xx_99999"));
+        (void)PolyCheckpoint::load(gnfs::util::temp_path("nonexistent_xyz_gnfs_poly_xx_99999"));
     } catch (const std::runtime_error&) {
         threw = true;
     }
@@ -309,50 +396,55 @@ void test_allow_incomplete_force() {
     // Manually fabricate a fully-populated body with INCOMPLETE magic
     {
         std::ofstream out(path, std::ios::binary);
-        uint64_t magic = PolyCheckpoint::MAGIC_INCOMPLETE;
-        uint64_t version = PolyCheckpoint::VERSION;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_u64_le(out, PolyCheckpoint::MAGIC_INCOMPLETE);
+        write_u64_le(out, PolyCheckpoint::VERSION);
 
         // N = 7 (positive, 1 byte)
         int32_t sgn = 1;
         uint32_t bc = 1;
         uint8_t byte = 7;
-        out.write(reinterpret_cast<const char*>(&sgn), 4);
-        out.write(reinterpret_cast<const char*>(&bc), 4);
+        write_u32_le(out, static_cast<uint32_t>(sgn));
+        write_u32_le(out, bc);
         out.write(reinterpret_cast<const char*>(&byte), 1);
 
         // m = 3
         byte = 3;
-        out.write(reinterpret_cast<const char*>(&sgn), 4);
-        out.write(reinterpret_cast<const char*>(&bc), 4);
+        write_u32_le(out, static_cast<uint32_t>(sgn));
+        write_u32_le(out, bc);
         out.write(reinterpret_cast<const char*>(&byte), 1);
 
         uint32_t degree = 1;
         uint32_t coeff_count = 2;
-        out.write(reinterpret_cast<const char*>(&degree), 4);
-        out.write(reinterpret_cast<const char*>(&coeff_count), 4);
+        write_u32_le(out, degree);
+        write_u32_le(out, coeff_count);
 
         // coeff 0 = -2 (sgn=-1, 1 byte)
-        sgn = -1; bc = 1; byte = 2;
-        out.write(reinterpret_cast<const char*>(&sgn), 4);
-        out.write(reinterpret_cast<const char*>(&bc), 4);
+        sgn = -1;
+        bc = 1;
+        byte = 2;
+        write_u32_le(out, static_cast<uint32_t>(sgn));
+        write_u32_le(out, bc);
         out.write(reinterpret_cast<const char*>(&byte), 1);
         // coeff 1 = +1
-        sgn = 1; bc = 1; byte = 1;
-        out.write(reinterpret_cast<const char*>(&sgn), 4);
-        out.write(reinterpret_cast<const char*>(&bc), 4);
+        sgn = 1;
+        bc = 1;
+        byte = 1;
+        write_u32_le(out, static_cast<uint32_t>(sgn));
+        write_u32_le(out, bc);
         out.write(reinterpret_cast<const char*>(&byte), 1);
 
         double skew = 1.5, murphy = -10.0;
-        out.write(reinterpret_cast<const char*>(&skew), 8);
-        out.write(reinterpret_cast<const char*>(&murphy), 8);
+        write_double_le(out, skew);
+        write_double_le(out, murphy);
     }
 
     // Strict load throws
     bool threw = false;
-    try { (void) PolyCheckpoint::load(path); }
-    catch (const std::runtime_error&) { threw = true; }
+    try {
+        (void)PolyCheckpoint::load(path);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
     assert(threw);
 
     // Force load succeeds
@@ -374,6 +466,7 @@ int main() {
     test_context_roundtrip();
     test_load_for_validates_n();
     test_exists_and_valid();
+    test_wire_scalars_are_little_endian();
     test_incomplete_magic_rejected();
     test_version_mismatch_rejected();
     test_corrupt_coeff_count_rejected();
