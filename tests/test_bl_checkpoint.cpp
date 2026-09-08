@@ -9,9 +9,26 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
+
+#if defined(__linux__)
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define GNFS_TEST_UNDER_ASAN 1
+#endif
+#endif
+#if !defined(GNFS_TEST_UNDER_ASAN) && defined(__SANITIZE_ADDRESS__)
+#define GNFS_TEST_UNDER_ASAN 1
+#endif
 
 using gnfs::linalg::BlockLanczosCheckpoint;
 
@@ -534,6 +551,163 @@ void test_wpr_mismatch_rejected() {
     std::cout << "  wpr mismatch rejection: PASS" << std::endl;
 }
 
+void test_oversized_payload_rejected_before_allocation() {
+    std::cout << "Testing oversized payload rejection..." << std::endl;
+    auto path = tmp_ckpt_path("oversized_payload");
+    CkptCleanup cleanup{path};
+
+    constexpr uint64_t rows = 1;
+    constexpr uint64_t cols = 1;
+    constexpr uint64_t wpr = BlockLanczosCheckpoint::MAX_AUG_WORDS + 1;
+    constexpr uint64_t pivot_row = 0;
+    constexpr uint64_t cur_col = 1;
+    constexpr uint64_t iteration = 0;
+    constexpr uint64_t header_checksum =
+        BlockLanczosCheckpoint::VERSION_V2 ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
+
+    // The loader rejects the count before checking the payload frame or
+    // allocating a vector, so the fixture needs only its fixed header.
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    assert(out);
+    write_le_u64(out, BlockLanczosCheckpoint::MAGIC);
+    write_le_u64(out, BlockLanczosCheckpoint::VERSION_V2);
+    write_le_u64(out, rows);
+    write_le_u64(out, cols);
+    write_le_u64(out, wpr);
+    write_le_u64(out, pivot_row);
+    write_le_u64(out, cur_col);
+    write_le_u64(out, iteration);
+    write_le_u64(out, header_checksum);
+    write_le_u64(out, wpr);
+    out.close();
+    assert(out);
+
+    const auto loaded = BlockLanczosCheckpoint::load(path);
+    assert(!loaded.has_value());
+    std::cout << "  oversized payload rejected before allocation: PASS" << std::endl;
+}
+
+void test_allocation_failure_returns_nullopt() {
+#if !defined(__linux__)
+    // Linux is the only CI platform where this test can reliably lower
+    // RLIMIT_AS. macOS rejects that limit change, and Windows has no POSIX
+    // equivalent; the portable oversized-count test above still runs there.
+    std::cout << "Testing allocation failure handling... SKIP (requires Linux RLIMIT_AS)"
+              << std::endl;
+#else
+#if defined(GNFS_TEST_UNDER_ASAN)
+    // ASAN terminates oversized throwing operator new in its allocator before
+    // libstdc++ can raise std::bad_alloc. The portable pre-allocation guard
+    // above remains active; this resource-limit probe is meaningful only in an
+    // unsanitized process where the loader can observe the C++ exception.
+    std::cout << "Testing allocation failure handling... SKIP (ASAN allocator)" << std::endl;
+    return;
+#endif
+    std::cout << "Testing allocation failure handling..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            std::cerr << "ERROR: " << message << std::endl;
+            std::abort();
+        }
+    };
+    auto path = tmp_ckpt_path("allocation_failure");
+    CkptCleanup cleanup{path};
+
+    // Construct a wire-valid checkpoint at the 64 GiB packed-payload cap,
+    // without materialising its sparse payload on disk. load() must reject the
+    // allocation in the child and return nullopt rather than terminate.
+    constexpr uint64_t max_aug_words = BlockLanczosCheckpoint::MAX_AUG_WORDS;
+    // The first ten u64 fields (through aug_word_count) occupy 80 bytes;
+    // the trailing body checksum makes the fixed non-payload size 88 bytes.
+    constexpr uint64_t payload_offset = 10ULL * 8ULL;
+    constexpr uint64_t fixed_file_bytes = 11ULL * 8ULL;
+    constexpr uint64_t rows = 1;
+    constexpr uint64_t cols = 1;
+    constexpr uint64_t wpr = max_aug_words;
+    constexpr uint64_t pivot_row = 0;
+    constexpr uint64_t cur_col = 1;
+    constexpr uint64_t iteration = 0;
+    constexpr uint64_t header_checksum =
+        BlockLanczosCheckpoint::VERSION_V2 ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        require(static_cast<bool>(out), "failed to create sparse checkpoint");
+        write_le_u64(out, BlockLanczosCheckpoint::MAGIC);
+        write_le_u64(out, BlockLanczosCheckpoint::VERSION_V2);
+        write_le_u64(out, rows);
+        write_le_u64(out, cols);
+        write_le_u64(out, wpr);
+        write_le_u64(out, pivot_row);
+        write_le_u64(out, cur_col);
+        write_le_u64(out, iteration);
+        write_le_u64(out, header_checksum);
+        write_le_u64(out, max_aug_words);
+
+        // Leave the payload sparse and write only its trailing checksum. The
+        // resulting file size is exactly what load() expects.
+        const uint64_t checksum_offset = payload_offset + max_aug_words * 8ULL;
+        require(checksum_offset + sizeof(uint64_t) == fixed_file_bytes + max_aug_words * 8ULL,
+                "sparse checkpoint checksum offset is inconsistent");
+        require(checksum_offset <=
+                    static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()),
+                "checkpoint offset exceeds streamoff");
+        out.seekp(static_cast<std::streamoff>(checksum_offset));
+        require(static_cast<bool>(out), "failed to seek sparse checkpoint");
+        write_le_u64(out, 0);
+        out.close();
+        require(static_cast<bool>(out), "failed to finalize sparse checkpoint");
+    }
+
+    const pid_t child = ::fork();
+    require(child >= 0, "fork failed");
+    if (child == 0) {
+        // Keep the test deterministic and avoid relying on host overcommit
+        // policy: the 64 GiB vector allocation must fail before payload I/O.
+        // macOS does not consistently enforce RLIMIT_AS for malloc-backed
+        // allocations, so also cap the data segment. The alarm prevents an
+        // unsupported resource limit from turning this instant test into an
+        // unbounded sparse-file scan.
+        constexpr rlim_t resource_cap = static_cast<rlim_t>(2ULL * 1024 * 1024 * 1024);
+        bool resource_limit_applied = false;
+        for (const int resource : {RLIMIT_AS, RLIMIT_DATA}) {
+            struct rlimit limit {};
+            if (::getrlimit(resource, &limit) != 0)
+                continue;
+            if (limit.rlim_cur <= resource_cap) {
+                resource_limit_applied = true;
+                continue;
+            }
+            if (limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > resource_cap) {
+                limit.rlim_cur = resource_cap;
+                if (::setrlimit(resource, &limit) == 0)
+                    resource_limit_applied = true;
+            }
+        }
+        ::alarm(5);
+        if (!resource_limit_applied)
+            ::_exit(3);
+        const auto loaded = BlockLanczosCheckpoint::load(path);
+        ::alarm(0);
+        ::_exit(loaded.has_value() ? 2 : 0);
+    }
+
+    int status = 0;
+    require(::waitpid(child, &status, 0) == child, "waitpid failed");
+    if (WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM) {
+        std::cout << "  allocation failure handling: SKIP (RLIMIT_AS not enforced)" << std::endl;
+        return;
+    }
+    require(WIFEXITED(status), "allocation-failure child terminated by signal");
+    if (WEXITSTATUS(status) == 3) {
+        std::cout << "  allocation failure handling: SKIP (RLIMIT_AS unavailable)" << std::endl;
+        return;
+    }
+    require(WEXITSTATUS(status) == 0, "load did not return nullopt after bad_alloc");
+    std::cout << "  allocation failure returns nullopt: PASS" << std::endl;
+#endif
+}
+
 int main() {
     std::cout << "===== BlockLanczosCheckpoint Tests =====" << std::endl;
 
@@ -554,6 +728,8 @@ int main() {
     test_base_path_env_parser();
     test_overwrite_existing();
     test_wpr_mismatch_rejected();
+    test_oversized_payload_rejected_before_allocation();
+    test_allocation_failure_returns_nullopt();
 
     std::cout << "\n===== All BlockLanczosCheckpoint tests PASSED =====" << std::endl;
     return 0;
