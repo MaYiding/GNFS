@@ -1442,6 +1442,13 @@ public:
         // Source iteration: pmr vector 优先 (pool mode), 否则 std::vector.
         // 通过 lambda 统一两个路径,避免代码重复.
         auto merge_one = [&](const Relation& src_rel) -> bool {
+            // `merge()` is another append path and must honor the same
+            // destination cap as `add()`. Check before validation or dedup so
+            // a full collector has no side effects while a source is drained.
+            if (config_.max_relations > 0 && stats_.total_relations >= config_.max_relations) {
+                return false;
+            }
+
             Relation copy = src_rel;
 
             int kind = validate_with_kind(copy);

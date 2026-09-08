@@ -789,6 +789,33 @@ void test_merge() {
     std::cout << "  Merge: PASS" << std::endl;
 }
 
+void test_merge_respects_max_relations() {
+    std::cout << "Testing merge max_relations guard (vector/pool)..." << std::endl;
+
+    for (const bool use_pool : {false, true}) {
+        CollectorConfig destination_config;
+        destination_config.check_duplicates = true;
+        destination_config.max_relations = 2;
+        destination_config.use_pool = use_pool;
+        destination_config.pool_initial_bytes = 256;
+        RelationCollector destination(destination_config);
+
+        RelationCollector source;
+        CHECK(destination.add(Relation(1, 2)));
+        CHECK(source.add(Relation(3, 4)));
+        CHECK(source.add(Relation(5, 6)));
+
+        CHECK(destination.merge(source) == 1);
+        CHECK(destination.size() == 2);
+        CHECK(destination.stats().total_relations == 2);
+        CHECK(destination.stats().duplicates_rejected == 0);
+        CHECK(!destination.add(Relation(7, 8)));
+        CHECK(destination.size() == 2);
+    }
+
+    std::cout << "  Merge max_relations guard: PASS" << std::endl;
+}
+
 void test_filter_duplicates() {
     std::cout << "Testing filter_duplicates..." << std::endl;
 
@@ -1056,6 +1083,34 @@ struct OOCArtifacts {
         std::remove((base + ".gnfs-ooc-cleanup-v1.lock").c_str());
     }
 };
+
+void test_ooc_merge_respects_max_relations() {
+    std::cout << "Testing OOC merge max_relations guard..." << std::endl;
+
+    const auto path = make_tmp_ooc_path("merge_max_relations");
+    OOCArtifacts cleanup(path);
+    CollectorConfig destination_config;
+    destination_config.check_duplicates = true;
+    destination_config.max_relations = 2;
+    destination_config.ooc_enabled = true;
+    destination_config.ooc_base_path = path;
+    RelationCollector destination(destination_config);
+
+    RelationCollector source;
+    CHECK(destination.add(Relation(1, 2)));
+    CHECK(source.add(Relation(3, 4)));
+    CHECK(source.add(Relation(5, 6)));
+
+    CHECK(destination.merge(source) == 1);
+    CHECK(destination.size() == 2);
+    CHECK(destination.stats().total_relations == 2);
+    CHECK(destination.stats().duplicates_rejected == 0);
+    CHECK(destination.snapshot_relations().size() == 2);
+    CHECK(!destination.add(Relation(7, 8)));
+    CHECK(destination.snapshot_relations().size() == 2);
+
+    std::cout << "  OOC merge max_relations guard: PASS" << std::endl;
+}
 
 /// Best-effort cleanup for the private directory reserved by RelationSink.
 struct OOCSinkLeaseArtifacts {
@@ -3339,6 +3394,7 @@ int main() {
     test_load_respects_max_relations();
     test_concurrent_add();
     test_merge();
+    test_merge_respects_max_relations();
     test_filter_duplicates();
     test_sort_relations();
     test_callback();
@@ -3348,6 +3404,7 @@ int main() {
     std::cout << "\n=== OOC mode tests (BACKLOG #11c) ===" << std::endl;
     test_ooc_basic_add();
     test_ooc_duplicate_rejection();
+    test_ooc_merge_respects_max_relations();
     test_ooc_n_divisibility();
     test_ooc_partial_relations();
     test_ooc_concurrent_add();

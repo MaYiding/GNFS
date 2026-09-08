@@ -746,23 +746,15 @@ public:
         return pairs;
     }
 
-    /// Compute C(count, 2) without overflowing the intermediate product.
-    ///
-    /// A large LP bucket can make the diagnostic pair count exceed size_t even
-    /// when the input relation vector itself is representable. Divide the even
-    /// factor first, then saturate the product and the cross-key accumulation.
     [[nodiscard]] static constexpr size_t saturating_pair_count(size_t count) noexcept {
-        if (count < 2) {
+        if (count < 2)
             return 0;
-        }
-
         size_t lhs = count;
         size_t rhs = count - 1;
-        if ((lhs & size_t{1}) == 0) {
+        if ((lhs & size_t{1}) == 0)
             lhs /= 2;
-        } else {
+        else
             rhs /= 2;
-        }
         return util::saturating_size_product(lhs, rhs);
     }
 };
@@ -771,9 +763,14 @@ public:
 /// 需要 关系数 > 因子基大小 + 大素数数量
 [[nodiscard]] inline size_t required_relations(size_t factor_base_size, size_t unique_large_primes,
                                                double excess_factor = 1.05) {
+    // Relation targets feed adaptive sieve stop conditions, so a wrapped
+    // column count or an out-of-range floating-point cast can stop collection
+    // before it starts. Keep every intermediate bounded and retain the
+    // historical minimum target of one relation for invalid/non-positive
+    // estimates.
     const size_t columns = util::saturating_size_add(factor_base_size, unique_large_primes);
-    const size_t scaled =
-        util::size_from_nonnegative_double_floor(static_cast<double>(columns) * excess_factor);
+    const double estimate = static_cast<double>(columns) * excess_factor;
+    const size_t scaled = util::size_from_nonnegative_double_floor(estimate);
     return util::saturating_size_add(scaled, 1);
 }
 

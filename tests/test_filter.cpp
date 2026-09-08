@@ -312,6 +312,22 @@ void test_required_relations() {
     assert(has_enough_relations(1576, 1000, 500, 1.05));
     assert(!has_enough_relations(1575, 1000, 500, 1.05));
 
+    constexpr size_t max_size = std::numeric_limits<size_t>::max();
+    require_test(required_relations(max_size, 0, 1.0) == max_size,
+                 "maximal column count must not wrap the target to zero");
+    require_test(required_relations(max_size - 1, 2, 1.0) == max_size,
+                 "saturating column addition must preserve the maximal target");
+    require_test(required_relations(max_size / 2, max_size / 2 + 10, 1.0) == max_size,
+                 "overflowing column addition must saturate before scaling");
+    require_test(!has_enough_relations(1, max_size, 0, 1.0),
+                 "saturated targets must not accept a tiny relation count");
+    require_test(required_relations(1000, 500, std::numeric_limits<double>::infinity()) == max_size,
+                 "infinite estimates must saturate instead of invoking an invalid cast");
+    require_test(required_relations(1000, 500, std::numeric_limits<double>::quiet_NaN()) == 1,
+                 "NaN estimates must retain the minimum target");
+    require_test(required_relations(1000, 500, -1.0) == 1,
+                 "negative estimates must retain the minimum target");
+
     std::cout << "  PASS" << std::endl;
 }
 
