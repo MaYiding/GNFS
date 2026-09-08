@@ -9,9 +9,16 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 using gnfs::linalg::BlockLanczosCheckpoint;
 
@@ -534,6 +541,89 @@ void test_wpr_mismatch_rejected() {
     std::cout << "  wpr mismatch rejection: PASS" << std::endl;
 }
 
+void test_allocation_failure_returns_nullopt() {
+#if defined(_WIN32)
+    // The bounded-address-space child used below is POSIX-specific. The
+    // production catch is still compiled and covered by the normal loader
+    // tests on Windows.
+    std::cout << "Testing allocation failure handling... SKIP (Windows)" << std::endl;
+#else
+    std::cout << "Testing allocation failure handling..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            std::cerr << "ERROR: " << message << std::endl;
+            std::abort();
+        }
+    };
+    auto path = tmp_ckpt_path("allocation_failure");
+    CkptCleanup cleanup{path};
+
+    // Construct a wire-valid checkpoint at the 64 GiB packed-payload cap,
+    // without materialising its sparse payload on disk. load() must reject the
+    // allocation in the child and return nullopt rather than terminate.
+    constexpr uint64_t max_aug_words = (64ULL * 1024 * 1024 * 1024) / 8;
+    constexpr uint64_t fixed_file_bytes = 11ULL * 8ULL;
+    constexpr uint64_t rows = 1;
+    constexpr uint64_t cols = 1;
+    constexpr uint64_t wpr = max_aug_words;
+    constexpr uint64_t pivot_row = 0;
+    constexpr uint64_t cur_col = 1;
+    constexpr uint64_t iteration = 0;
+    constexpr uint64_t header_checksum =
+        BlockLanczosCheckpoint::VERSION_V2 ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        require(static_cast<bool>(out), "failed to create sparse checkpoint");
+        write_le_u64(out, BlockLanczosCheckpoint::MAGIC);
+        write_le_u64(out, BlockLanczosCheckpoint::VERSION_V2);
+        write_le_u64(out, rows);
+        write_le_u64(out, cols);
+        write_le_u64(out, wpr);
+        write_le_u64(out, pivot_row);
+        write_le_u64(out, cur_col);
+        write_le_u64(out, iteration);
+        write_le_u64(out, header_checksum);
+        write_le_u64(out, max_aug_words);
+
+        // Leave the payload sparse and write only its trailing checksum. The
+        // resulting file size is exactly what load() expects.
+        const uint64_t checksum_offset = fixed_file_bytes + max_aug_words * 8ULL;
+        require(checksum_offset <=
+                    static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()),
+                "checkpoint offset exceeds streamoff");
+        out.seekp(static_cast<std::streamoff>(checksum_offset));
+        require(static_cast<bool>(out), "failed to seek sparse checkpoint");
+        write_le_u64(out, 0);
+        out.close();
+        require(static_cast<bool>(out), "failed to finalize sparse checkpoint");
+    }
+
+    const pid_t child = ::fork();
+    require(child >= 0, "fork failed");
+    if (child == 0) {
+        // Keep the test deterministic and avoid relying on host overcommit
+        // policy: the 64 GiB vector allocation must fail immediately.
+        struct rlimit limit{};
+        if (::getrlimit(RLIMIT_AS, &limit) == 0) {
+            constexpr rlim_t address_space_cap = static_cast<rlim_t>(512ULL * 1024 * 1024);
+            if (limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > address_space_cap) {
+                limit.rlim_cur = address_space_cap;
+                (void)::setrlimit(RLIMIT_AS, &limit);
+            }
+        }
+        const auto loaded = BlockLanczosCheckpoint::load(path);
+        ::_exit(loaded.has_value() ? 2 : 0);
+    }
+
+    int status = 0;
+    require(::waitpid(child, &status, 0) == child, "waitpid failed");
+    require(WIFEXITED(status), "allocation-failure child terminated by signal");
+    require(WEXITSTATUS(status) == 0, "load did not return nullopt after bad_alloc");
+    std::cout << "  allocation failure returns nullopt: PASS" << std::endl;
+#endif
+}
+
 int main() {
     std::cout << "===== BlockLanczosCheckpoint Tests =====" << std::endl;
 
@@ -554,6 +644,7 @@ int main() {
     test_base_path_env_parser();
     test_overwrite_existing();
     test_wpr_mismatch_rejected();
+    test_allocation_failure_returns_nullopt();
 
     std::cout << "\n===== All BlockLanczosCheckpoint tests PASSED =====" << std::endl;
     return 0;

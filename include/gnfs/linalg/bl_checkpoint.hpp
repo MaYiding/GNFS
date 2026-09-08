@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <new>
 #include <optional>
 #include <string>
 #include <vector>
@@ -130,6 +131,18 @@ struct BlockLanczosCheckpoint {
     /// version mismatch, truncation, checksum mismatch, INCOMPLETE, I/O error).
     /// Caller may distinguish via `exists_and_valid()` if they need a reason.
     static std::optional<BlockLanczosCheckpoint> load(const std::string& path) noexcept {
+        // Checkpoint input is optional recovery data. Keep the noexcept API
+        // fail-closed even when the stream/vector implementation cannot allocate
+        // its bookkeeping or payload buffers.
+        try {
+            return load_impl(path);
+        } catch (const std::bad_alloc&) {
+            return std::nullopt;
+        }
+    }
+
+private:
+    static std::optional<BlockLanczosCheckpoint> load_impl(const std::string& path) {
         std::ifstream in(path, std::ios::binary);
         if (!in)
             return std::nullopt;
@@ -215,6 +228,9 @@ struct BlockLanczosCheckpoint {
         if (file_size != expected_file_size)
             return std::nullopt;
 
+        // The size checks above reject malformed/absurd files, but a
+        // valid-at-the-wire payload can still exceed available memory. The
+        // enclosing catch converts that failure into the documented nullopt.
         ck.aug.resize(static_cast<size_t>(aug_word_count));
         for (uint64_t& word : ck.aug) {
             if (!read_u64(word))
@@ -233,6 +249,7 @@ struct BlockLanczosCheckpoint {
         return ck;
     }
 
+public:
     /// Cheap check: does the file exist with a valid (finalized) magic?
     /// Returns false on I/O failure or INCOMPLETE — never throws.
     static bool exists_and_valid(const std::string& path) noexcept {
