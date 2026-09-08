@@ -210,6 +210,17 @@ void test_env_above_max_clamps() {
     }
     apply_env(nullptr);
     std::cout << " PASS (clamped to " << v << ")\n";
+
+    // Values beyond int/strtoull range must saturate to the same cap instead
+    // of falling back to the default path.
+    apply_env("999999999999999999999999999999");
+    const int huge = fb_roots_threads();
+    if (huge != hw_max) {
+        std::cerr << "\n  ERROR: oversized value expected " << hw_max
+                  << ", got " << huge << std::endl;
+        std::abort();
+    }
+    apply_env(nullptr);
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -55,14 +55,17 @@
 
 #include "../util/thread_pool.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <new>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -98,28 +101,34 @@ inline int parse_fb_roots_threads_env() noexcept {
     if (env == nullptr || env[0] == '\0') {
         return 0;  // default — use hardware_concurrency()
     }
-    int parsed = 0;
-    try {
-        // Use std::stoi to accept a numeric prefix (for example, "12abc"),
-        // while still rejecting values with no numeric prefix. The accepted
-        // prefix behavior is part of the documented environment contract.
-        std::size_t consumed = 0;
-        parsed = std::stoi(env, &consumed);
-        // A zero consumed count indicates that no numeric prefix was found.
-        if (consumed == 0) {
-            return 0;
-        }
-    } catch (...) {
+    // strtoull accepts the documented numeric-prefix behavior (for example,
+    // "12abc") without throwing when a deployment supplies a very large
+    // value. Skip whitespace before rejecting a leading minus so the result
+    // remains consistent with the former std::stoi path.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first)) != 0) {
+        ++first;
+    }
+    if (*first == '-') {
         return 0;
     }
-    if (parsed < 0) {
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(first, &end, 10);
+    if (end == first || parsed == 0) {
         return 0;
     }
-    unsigned int hw = std::thread::hardware_concurrency();
-    int hw_max = static_cast<int>(hw) * 2;
-    if (hw_max <= 0) hw_max = 16;
-    if (parsed > hw_max) parsed = hw_max;
-    return parsed;
+
+    const unsigned int hw_count = std::thread::hardware_concurrency();
+    const uint64_t cap_from_hw = hw_count == 0 ? 16ULL
+                                               : static_cast<uint64_t>(hw_count) * 2ULL;
+    constexpr uint64_t max_int = static_cast<uint64_t>(std::numeric_limits<int>::max());
+    const uint64_t cap = std::min(cap_from_hw, max_int);
+    if (errno == ERANGE || parsed > cap) {
+        return static_cast<int>(cap);
+    }
+    return static_cast<int>(parsed);
 }
 
 }  // namespace detail
