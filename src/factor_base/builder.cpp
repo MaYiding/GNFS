@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace gnfs::factor_base {
@@ -161,10 +162,17 @@ FactorBase FactorBase::load(std::istream& is) {
     uint32_t rat_count = 0;
     read_bytes(&rat_count, sizeof(rat_count), "rational-prime count");
     fb.rational_.clear();
+    std::unordered_set<uint32_t> rational_keys;
     for (size_t i = 0; i < static_cast<size_t>(rat_count); ++i) {
         RationalPrime rp{};
         read_bytes(&rp.p, sizeof(rp.p), "rational-prime value");
         read_bytes(&rp.log_p, sizeof(rp.log_p), "rational-prime log");
+        if (rp.p < 2 || !util::is_prime_u32(rp.p)) {
+            throw std::runtime_error("FactorBase::load: rational-prime value is not prime");
+        }
+        if (!rational_keys.insert(rp.p).second) {
+            throw std::runtime_error("FactorBase::load: duplicate rational-prime value");
+        }
         fb.rational_.push_back(rp);
     }
 
@@ -172,12 +180,26 @@ FactorBase FactorBase::load(std::istream& is) {
     uint32_t alg_count = 0;
     read_bytes(&alg_count, sizeof(alg_count), "algebraic-prime count");
     fb.algebraic_.clear();
+    std::unordered_set<uint64_t> algebraic_keys;
     for (size_t i = 0; i < static_cast<size_t>(alg_count); ++i) {
         AlgebraicPrime ap{};
         read_bytes(&ap.p, sizeof(ap.p), "algebraic-prime value");
         read_bytes(&ap.r, sizeof(ap.r), "algebraic-prime root");
         read_bytes(&ap.log_p, sizeof(ap.log_p), "algebraic-prime log");
         read_bytes(&ap.degree, sizeof(ap.degree), "algebraic-prime degree");
+        if (ap.p < 2 || !util::is_prime_u32(ap.p)) {
+            throw std::runtime_error("FactorBase::load: algebraic-prime value is not prime");
+        }
+        if (ap.r != AlgebraicPrime::PROJECTIVE_ROOT && ap.r >= ap.p) {
+            throw std::runtime_error("FactorBase::load: algebraic-prime root is out of range");
+        }
+        if (ap.degree == 0) {
+            throw std::runtime_error("FactorBase::load: algebraic-prime degree is zero");
+        }
+        const uint64_t key = (static_cast<uint64_t>(ap.p) << 32) | ap.r;
+        if (!algebraic_keys.insert(key).second) {
+            throw std::runtime_error("FactorBase::load: duplicate algebraic-prime key");
+        }
         fb.algebraic_.push_back(ap);
     }
 
