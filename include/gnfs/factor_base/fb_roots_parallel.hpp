@@ -99,7 +99,7 @@ inline FbRootsThreadsCache& fb_roots_threads_cache() noexcept {
 inline int parse_fb_roots_threads_env() noexcept {
     const char* env = std::getenv("GNFS_FB_ROOTS_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 0;  // default — use hardware_concurrency()
+        return 0; // default — use hardware_concurrency()
     }
     // strtoull accepts the documented numeric-prefix behavior (for example,
     // "12abc") without throwing when a deployment supplies a very large
@@ -121,8 +121,7 @@ inline int parse_fb_roots_threads_env() noexcept {
     }
 
     const unsigned int hw_count = std::thread::hardware_concurrency();
-    const uint64_t cap_from_hw = hw_count == 0 ? 16ULL
-                                               : static_cast<uint64_t>(hw_count) * 2ULL;
+    const uint64_t cap_from_hw = hw_count == 0 ? 16ULL : static_cast<uint64_t>(hw_count) * 2ULL;
     constexpr uint64_t max_int = static_cast<uint64_t>(std::numeric_limits<int>::max());
     const uint64_t cap = std::min(cap_from_hw, max_int);
     if (errno == ERANGE || parsed > cap) {
@@ -131,7 +130,7 @@ inline int parse_fb_roots_threads_env() noexcept {
     return static_cast<int>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_FB_ROOTS_THREADS` env into a cached thread count.
 ///
@@ -145,9 +144,7 @@ inline int parse_fb_roots_threads_env() noexcept {
 ///   - >=2: use exactly that many worker threads.
 [[nodiscard]] inline int fb_roots_threads() noexcept {
     auto& cache = detail::fb_roots_threads_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_fb_roots_threads_env();
-    });
+    std::call_once(cache.once, [&cache]() { cache.value = detail::parse_fb_roots_threads_env(); });
     return cache.value;
 }
 
@@ -172,19 +169,21 @@ inline void fb_roots_threads_reset_env_cache_for_testing() noexcept {
 ///   * env >= 2            -> min(env, n) once we know n
 /// The returned value is then bound by `n` so we never spawn more workers
 /// than there are tasks (avoids wasted thread spin-up).
-[[nodiscard]] inline std::size_t
-resolve_fb_roots_threads(std::size_t n) noexcept {
-    if (n == 0) return 0;
+[[nodiscard]] inline std::size_t resolve_fb_roots_threads(std::size_t n) noexcept {
+    if (n == 0)
+        return 0;
     int env = fb_roots_threads();
     std::size_t effective;
     if (env == 0) {
         unsigned int hw = std::thread::hardware_concurrency();
-        if (hw == 0) hw = 4;
+        if (hw == 0)
+            hw = 4;
         effective = static_cast<std::size_t>(hw);
     } else {
         effective = static_cast<std::size_t>(env);
     }
-    if (effective > n) effective = n;
+    if (effective > n)
+        effective = n;
     return effective;
 }
 
@@ -209,11 +208,12 @@ resolve_fb_roots_threads(std::size_t n) noexcept {
 /// pre-sized so concurrent disjoint writes are race-free. Sequential and
 /// parallel paths produce identical output vectors.
 template <typename Result, typename WorkerFn>
-[[nodiscard]] inline std::vector<Result>
-parallel_fb_roots(const std::vector<uint32_t>& primes, WorkerFn worker_fn) {
+[[nodiscard]] inline std::vector<Result> parallel_fb_roots(const std::vector<uint32_t>& primes,
+                                                           WorkerFn worker_fn) {
     const std::size_t n = primes.size();
     std::vector<Result> results;
-    if (n == 0) return results;
+    if (n == 0)
+        return results;
 
     results.resize(n);
 
@@ -241,11 +241,9 @@ parallel_fb_roots(const std::vector<uint32_t>& primes, WorkerFn worker_fn) {
     // parallel_for_index dispatches contiguous chunks to workers; each task
     // writes only `results[i]` for its assigned i. Reads of `primes[i]` are
     // const-ref, and writes to `results[i]` are disjoint per index.
-    pool.parallel_for_index(0, n, [&](std::size_t i) {
-        results[i] = worker_fn(primes[i]);
-    });
+    pool.parallel_for_index(0, n, [&](std::size_t i) { results[i] = worker_fn(primes[i]); });
 
     return results;
 }
 
-}  // namespace gnfs::factor_base
+} // namespace gnfs::factor_base
