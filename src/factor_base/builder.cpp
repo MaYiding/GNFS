@@ -234,10 +234,11 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     // 构建共享的 Eratosthenes 筛,bound = max(rational, algebraic),
     // 避免两个 find_* 在 rational==algebraic(常见配置)下重复构建 12.5 MB。
     uint32_t shared_bound = std::max(opts.rational_bound, opts.algebraic_bound);
-    std::vector<bool> shared_sieve = build_eratosthenes_sieve(shared_bound);
+    std::vector<bool> shared_sieve = build_eratosthenes_sieve(shared_bound, opts.parallel);
 
     find_rational_primes(fb, ctx, opts.rational_bound, opts.log_scale, &shared_sieve);
-    find_algebraic_primes(fb, ctx, opts.algebraic_bound, opts.log_scale, &shared_sieve);
+    find_algebraic_primes(fb, ctx, opts.algebraic_bound, opts.log_scale, opts.parallel,
+                          &shared_sieve);
 
     // 记录筛选用的代数素数数量（≤ algebraic_bound 的部分）
     fb.set_sieve_algebraic_count_explicit(fb.algebraic_count());
@@ -248,7 +249,8 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     // params.hpp 实际把 B 限到 1e9，这层是 future-proof 防御。
     if (opts.special_q_bound > opts.algebraic_bound && opts.algebraic_bound < UINT32_MAX) {
         const uint32_t special_q_min = std::max<uint32_t>(opts.algebraic_bound + 1, 2);
-        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound, opts.log_scale);
+        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound, opts.log_scale,
+                                    opts.parallel);
     }
 
     fb.build_index();
@@ -262,7 +264,7 @@ FactorBase FactorBaseBuilder::build(uint32_t /* rational_bound */, uint32_t /* a
                            "use the static build(ctx, opts) method instead");
 }
 
-std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
+std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound, bool parallel) {
     // ── 分支策略 ──
     // bound < 5e6: 单线程简单筛 (cache 命中率高,线程开销得不偿失)
     // bound ≥ 5e6: 分段并行筛 (按 L2 cache 段分,工作队列调度)
@@ -271,7 +273,7 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound) {
     // 1e8: 单线程 ~5s, 8 线程 ~1.2s。
     constexpr uint32_t PARALLEL_THRESHOLD = 5'000'000;
 
-    if (bound < PARALLEL_THRESHOLD) {
+    if (!parallel || bound < PARALLEL_THRESHOLD) {
         const size_t element_count = sieve_element_count(bound);
         std::vector<bool> is_prime(element_count, true);
         if (bound >= 1)
@@ -401,7 +403,7 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
 }
 
 void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                              uint32_t bound, uint8_t log_scale,
+                                              uint32_t bound, uint8_t log_scale, bool parallel,
                                               const std::vector<bool>* shared_sieve) {
     if (bound < 2)
         return;
@@ -412,7 +414,7 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
     if (shared_sieve != nullptr && shared_sieve->size() > static_cast<size_t>(bound)) {
         sieve_ptr = shared_sieve;
     } else {
-        local_sieve = build_eratosthenes_sieve(bound);
+        local_sieve = build_eratosthenes_sieve(bound, parallel);
         sieve_ptr = &local_sieve;
     }
     const auto& is_prime_sieve = *sieve_ptr;
@@ -441,7 +443,7 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
         uint32_t p, r, log_p;
     };
 
-    size_t n_threads = std::thread::hardware_concurrency();
+    size_t n_threads = parallel ? std::thread::hardware_concurrency() : 1;
     if (n_threads == 0)
         n_threads = 4;
     if (primes.size() < 200)
@@ -706,12 +708,12 @@ sqrt::ModularPoly FactorBaseBuilder::poly_div_mod(const sqrt::ModularPoly& a,
 
 void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const PolynomialContext& ctx,
                                                     uint32_t min_p, uint32_t max_p,
-                                                    uint8_t log_scale) {
+                                                    uint8_t log_scale, bool parallel) {
     if (min_p > max_p || min_p < 2)
         return;
 
     // Step 1: Sieve primes in [min_p, max_p](借公共 helper,统一起 p*p 优化)
-    std::vector<bool> is_prime_sieve = build_eratosthenes_sieve(max_p);
+    std::vector<bool> is_prime_sieve = build_eratosthenes_sieve(max_p, parallel);
 
     // Collect primes in range
     bool fd_fits = ctx.leading_coeff().fits_uint64();
@@ -737,7 +739,7 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
         uint32_t p, r, log_p;
     };
 
-    size_t n_threads = std::thread::hardware_concurrency();
+    size_t n_threads = parallel ? std::thread::hardware_concurrency() : 1;
     if (n_threads == 0)
         n_threads = 4;
     if (primes.size() < 200)
