@@ -280,6 +280,29 @@ inline size_t parse_distributed_sieve_workers_env() noexcept {
     return static_cast<size_t>(value);
 }
 
+/// Parse `GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER`.
+///
+/// The historical parser accepts a numeric prefix (for example, `"2abc"`)
+/// because this setting is an optional tuning hint. Keep that compatibility,
+/// but reject negative values, `strtol` range errors, and values that cannot be
+/// represented by `size_t` before narrowing.
+inline size_t parse_distributed_sieve_sq_per_worker_env() noexcept {
+    const char* env = std::getenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
+    if (env == nullptr || env[0] == '\0')
+        return 0;
+
+    errno = 0;
+    char* end = nullptr;
+    const long value = std::strtol(env, &end, 10);
+    if (end == env || errno == ERANGE || value < 0)
+        return 0;
+
+    if (static_cast<std::uintmax_t>(value) >
+        static_cast<std::uintmax_t>((std::numeric_limits<size_t>::max)()))
+        return 0;
+    return static_cast<size_t>(value);
+}
+
 /// Build a DistributedSieveConfig from environment variables.
 ///   GNFS_DISTRIBUTED_SIEVE_WORKERS=N   (required, 0 = disabled)
 ///   GNFS_DISTRIBUTED_SIEVE_BASE_PATH=  (optional, default temp-dir gnfs_distributed_<pid>)

@@ -696,6 +696,7 @@ void test_wait_status_requires_terminal_child() {
 void test_env_parsing() {
     std::cout << "[test_env_parsing] ... " << std::flush;
 
+    using gnfs::sieve::parse_distributed_sieve_sq_per_worker_env;
     using gnfs::sieve::parse_distributed_sieve_worker_timeout_env;
     using gnfs::sieve::parse_distributed_sieve_workers_env;
 
@@ -720,6 +721,26 @@ void test_env_parsing() {
     with_env("garbage", []() { CHECK(parse_distributed_sieve_workers_env() == 0); });
     // Mixed numeric+garbage: strtol parses leading digits
     with_env("2abc", []() { CHECK(parse_distributed_sieve_workers_env() == 2); });
+
+    auto with_sq_per_worker_env = [](const char* val, auto fn) {
+        if (val == nullptr) {
+            ::unsetenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
+        } else {
+            ::setenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER", val, 1);
+        }
+        fn();
+        ::unsetenv("GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER");
+    };
+
+    with_sq_per_worker_env(nullptr,
+                           []() { CHECK(parse_distributed_sieve_sq_per_worker_env() == 0); });
+    with_sq_per_worker_env("0", []() { CHECK(parse_distributed_sieve_sq_per_worker_env() == 0); });
+    with_sq_per_worker_env("3", []() { CHECK(parse_distributed_sieve_sq_per_worker_env() == 3); });
+    with_sq_per_worker_env("-1", []() { CHECK(parse_distributed_sieve_sq_per_worker_env() == 0); });
+    with_sq_per_worker_env("999999999999999999999999",
+                           []() { CHECK(parse_distributed_sieve_sq_per_worker_env() == 0); });
+    with_sq_per_worker_env("2abc",
+                           []() { CHECK(parse_distributed_sieve_sq_per_worker_env() == 2); });
 
     auto with_timeout_env = [](const char* val, auto fn) {
         if (val == nullptr) {
