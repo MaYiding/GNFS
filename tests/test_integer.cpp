@@ -89,6 +89,38 @@ void test_comparison() {
     std::cout << "  Comparison: PASS" << std::endl;
 }
 
+void test_primitive_comparison_boundaries() {
+    std::cout << "Testing primitive comparison boundaries..." << std::endl;
+
+    const uint64_t two63 = uint64_t{1} << 63;
+    const uint64_t max_value = UINT64_MAX;
+
+    // Values outside int64_t must not be narrowed to a negative operand.
+    Integer max_value_integer(max_value);
+    GNFS_TEST_CHECK(max_value_integer == max_value);
+    GNFS_TEST_CHECK(!(max_value_integer != max_value));
+
+    Integer two63_integer(two63);
+    GNFS_TEST_CHECK(two63_integer == two63);
+    GNFS_TEST_CHECK(two63_integer != max_value);
+    GNFS_TEST_CHECK(!(two63_integer == static_cast<int64_t>(-1)));
+
+    // Keep existing signed and small unsigned literal calls unambiguous.
+    Integer zero(0);
+    GNFS_TEST_CHECK(zero == 0);
+    GNFS_TEST_CHECK(zero == 0u);
+    GNFS_TEST_CHECK(zero != 1);
+    GNFS_TEST_CHECK(zero != 1u);
+
+    // Distinct native-width types are used on LP64 versus LLP64 systems.
+    const unsigned long native_unsigned_long = 42UL;
+    const unsigned long long native_unsigned_long_long = 43ULL;
+    GNFS_TEST_CHECK(Integer(42) == native_unsigned_long);
+    GNFS_TEST_CHECK(Integer(43) == native_unsigned_long_long);
+
+    std::cout << "  Primitive comparison boundaries: PASS" << std::endl;
+}
+
 void test_bit_operations() {
     std::cout << "Testing bit operations..." << std::endl;
 
@@ -560,6 +592,7 @@ int main() {
     test_construction();
     test_arithmetic();
     test_comparison();
+    test_primitive_comparison_boundaries();
     test_bit_operations();
     test_move_semantics();
     test_gcd();
