@@ -809,6 +809,22 @@ int main(int argc, char* argv[]) {
     if (verbose_explicit) {
         final_config.verbose = *verbose_explicit;
     }
+    if (event_stream_enabled && final_config.output_format) {
+        return cli_error(true, "incompatible_options",
+                         "--event-stream cannot be combined with config output_format");
+    }
+    if (event_stream_enabled && final_config.output_file) {
+        return cli_error(true, "incompatible_options",
+                         "--event-stream cannot be combined with config output_file");
+    }
+    // Config-file output is the default layer; explicit CLI flags retain
+    // precedence through the *_explicit guards above.
+    if (!output_format_explicit && final_config.output_format) {
+        output_format = *final_config.output_format;
+    }
+    if (!output_file_explicit && final_config.output_file) {
+        output_file = *final_config.output_file;
+    }
     // Derived `verbose` used elsewhere in this function:
     bool verbose = final_config.verbose.value_or(false);
     (void)verbose;
@@ -901,6 +917,8 @@ int main(int argc, char* argv[]) {
             output = result.to_csv_line(true);
         else if (output_format == "report")
             output = result.to_report();
+        else if (!output_file.empty())
+            output = result.to_text();
         else if (quiet)
             output = result.to_text();
 
