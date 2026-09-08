@@ -98,6 +98,27 @@ struct Config {
         return static_cast<int32_t>(parsed);
     }
 
+    /// Config values are public optionals for backwards compatibility, so
+    /// semantic validation must also run at every consumption boundary.
+    static void require_positive(uint32_t value, std::string_view key) {
+        if (value == 0) {
+            throw std::out_of_range("Config: " + std::string(key) + " must be positive");
+        }
+    }
+
+    static void require_positive(uint64_t value, std::string_view key) {
+        if (value == 0) {
+            throw std::out_of_range("Config: " + std::string(key) + " must be positive");
+        }
+    }
+
+    static void require_positive_dimension(int32_t value, std::string_view key) {
+        if (value <= 0) {
+            throw std::out_of_range("Config: " + std::string(key) +
+                                    " must be in [1, INT32_MAX]");
+        }
+    }
+
     /// Parse the complete set of supported boolean literals.
     static bool parse_bool(std::string_view value, std::string_view key) {
         if (value == "true" || value == "1")
@@ -177,19 +198,31 @@ struct Config {
             // Apply
             if (key == "method")
                 cfg.method = parse_method(val);
-            else if (key == "degree")
-                cfg.degree = parse_uint32(val, key);
-            else if (key == "rational_bound")
-                cfg.rational_bound = parse_uint32(val, key);
-            else if (key == "algebraic_bound")
-                cfg.algebraic_bound = parse_uint32(val, key);
-            else if (key == "large_prime_bound")
-                cfg.large_prime_bound = parse_uint64(val, key);
-            else if (key == "sieve_width")
-                cfg.sieve_width = parse_int32(val, key);
-            else if (key == "sieve_height")
-                cfg.sieve_height = parse_int32(val, key);
-            else if (key == "max_special_q") {
+            else if (key == "degree") {
+                const uint32_t parsed = parse_uint32(val, key);
+                require_positive(parsed, key);
+                cfg.degree = parsed;
+            } else if (key == "rational_bound") {
+                const uint32_t parsed = parse_uint32(val, key);
+                require_positive(parsed, key);
+                cfg.rational_bound = parsed;
+            } else if (key == "algebraic_bound") {
+                const uint32_t parsed = parse_uint32(val, key);
+                require_positive(parsed, key);
+                cfg.algebraic_bound = parsed;
+            } else if (key == "large_prime_bound") {
+                const uint64_t parsed = parse_uint64(val, key);
+                require_positive(parsed, key);
+                cfg.large_prime_bound = parsed;
+            } else if (key == "sieve_width") {
+                const int32_t parsed = parse_int32(val, key);
+                require_positive_dimension(parsed, key);
+                cfg.sieve_width = parsed;
+            } else if (key == "sieve_height") {
+                const int32_t parsed = parse_int32(val, key);
+                require_positive_dimension(parsed, key);
+                cfg.sieve_height = parsed;
+            } else if (key == "max_special_q") {
                 const uint64_t parsed = parse_uint64(val, key);
                 if (parsed == 0 || parsed > std::numeric_limits<uint32_t>::max()) {
                     throw std::out_of_range("Config: max_special_q must be in [1, UINT32_MAX]");
@@ -232,26 +265,32 @@ struct Config {
         return *this;
     }
     Config& set_degree(uint32_t d) {
+        require_positive(d, "degree");
         degree = d;
         return *this;
     }
     Config& set_rational_bound(uint32_t b) {
+        require_positive(b, "rational_bound");
         rational_bound = b;
         return *this;
     }
     Config& set_algebraic_bound(uint32_t b) {
+        require_positive(b, "algebraic_bound");
         algebraic_bound = b;
         return *this;
     }
     Config& set_large_prime_bound(uint64_t b) {
+        require_positive(b, "large_prime_bound");
         large_prime_bound = b;
         return *this;
     }
     Config& set_sieve_width(int32_t w) {
+        require_positive_dimension(w, "sieve_width");
         sieve_width = w;
         return *this;
     }
     Config& set_sieve_height(int32_t h) {
+        require_positive_dimension(h, "sieve_height");
         sieve_height = h;
         return *this;
     }
@@ -295,31 +334,31 @@ struct Config {
     /// Merge two configs: other's values override this's values
     Config merge(const Config& other) const {
         Config result = *this;
-        if (other.method)
+        if (other.method.has_value())
             result.method = other.method;
-        if (other.degree)
+        if (other.degree.has_value())
             result.degree = other.degree;
-        if (other.rational_bound)
+        if (other.rational_bound.has_value())
             result.rational_bound = other.rational_bound;
-        if (other.algebraic_bound)
+        if (other.algebraic_bound.has_value())
             result.algebraic_bound = other.algebraic_bound;
-        if (other.large_prime_bound)
+        if (other.large_prime_bound.has_value())
             result.large_prime_bound = other.large_prime_bound;
-        if (other.sieve_width)
+        if (other.sieve_width.has_value())
             result.sieve_width = other.sieve_width;
-        if (other.sieve_height)
+        if (other.sieve_height.has_value())
             result.sieve_height = other.sieve_height;
-        if (other.max_special_q)
+        if (other.max_special_q.has_value())
             result.max_special_q = other.max_special_q;
-        if (other.max_special_q_batch_workers)
+        if (other.max_special_q_batch_workers.has_value())
             result.max_special_q_batch_workers = other.max_special_q_batch_workers;
-        if (other.max_local_sieve_threads)
+        if (other.max_local_sieve_threads.has_value())
             result.max_local_sieve_threads = other.max_local_sieve_threads;
-        if (other.verbose)
+        if (other.verbose.has_value())
             result.verbose = other.verbose;
-        if (other.output_file)
+        if (other.output_file.has_value())
             result.output_file = other.output_file;
-        if (other.output_format)
+        if (other.output_format.has_value())
             result.output_format = other.output_format;
         return result;
     }
@@ -328,38 +367,48 @@ struct Config {
     core::GNFSParams apply_to(const Integer& n) const {
         auto params = core::GNFSParams::compute(n.bit_length());
 
-        if (degree)
+        if (degree.has_value()) {
+            require_positive(*degree, "degree");
             params.degree = *degree;
-        if (rational_bound)
+        }
+        if (rational_bound.has_value()) {
+            require_positive(*rational_bound, "rational_bound");
             params.rational_bound = *rational_bound;
-        if (algebraic_bound)
+        }
+        if (algebraic_bound.has_value()) {
+            require_positive(*algebraic_bound, "algebraic_bound");
             params.algebraic_bound = *algebraic_bound;
-        if (large_prime_bound)
+        }
+        if (large_prime_bound.has_value()) {
+            require_positive(*large_prime_bound, "large_prime_bound");
             params.large_prime_bound = *large_prime_bound;
-        if (verbose)
+        }
+        if (verbose.has_value())
             params.verbose = *verbose;
 
-        if (sieve_width) {
+        if (sieve_width.has_value()) {
+            require_positive_dimension(*sieve_width, "sieve_width");
             params.sieve_i_min = -(*sieve_width / 2);
             params.sieve_i_max = *sieve_width / 2 - 1;
         }
-        if (sieve_height) {
+        if (sieve_height.has_value()) {
+            require_positive_dimension(*sieve_height, "sieve_height");
             params.sieve_j_min = 1;
             params.sieve_j_max = *sieve_height;
         }
-        if (max_special_q) {
+        if (max_special_q.has_value()) {
             if (*max_special_q == 0 || *max_special_q > std::numeric_limits<uint32_t>::max()) {
                 throw std::out_of_range("Config: max_special_q must be in [1, UINT32_MAX]");
             }
             params.max_special_q = static_cast<uint32_t>(*max_special_q);
         }
-        if (max_special_q_batch_workers) {
+        if (max_special_q_batch_workers.has_value()) {
             if (*max_special_q_batch_workers < 1 || *max_special_q_batch_workers > 4) {
                 throw std::out_of_range("Config: max_special_q_batch_workers must be in [1, 4]");
             }
             params.max_special_q_batch_workers = *max_special_q_batch_workers;
         }
-        if (max_local_sieve_threads) {
+        if (max_local_sieve_threads.has_value()) {
             if (*max_local_sieve_threads == 0) {
                 throw std::out_of_range(
                     "Config: max_local_sieve_threads must be in [1, UINT32_MAX]");
@@ -374,31 +423,31 @@ struct Config {
     [[nodiscard]] std::string to_string() const {
         std::ostringstream os;
         os << "# GNFS Configuration\n";
-        if (method)
+        if (method.has_value())
             os << "method = " << method_tag(*method) << "\n";
-        if (degree)
+        if (degree.has_value())
             os << "degree = " << *degree << "\n";
-        if (rational_bound)
+        if (rational_bound.has_value())
             os << "rational_bound = " << *rational_bound << "\n";
-        if (algebraic_bound)
+        if (algebraic_bound.has_value())
             os << "algebraic_bound = " << *algebraic_bound << "\n";
-        if (large_prime_bound)
+        if (large_prime_bound.has_value())
             os << "large_prime_bound = " << *large_prime_bound << "\n";
-        if (sieve_width)
+        if (sieve_width.has_value())
             os << "sieve_width = " << *sieve_width << "\n";
-        if (sieve_height)
+        if (sieve_height.has_value())
             os << "sieve_height = " << *sieve_height << "\n";
-        if (max_special_q)
+        if (max_special_q.has_value())
             os << "max_special_q = " << *max_special_q << "\n";
-        if (max_special_q_batch_workers)
+        if (max_special_q_batch_workers.has_value())
             os << "max_special_q_batch_workers = " << *max_special_q_batch_workers << "\n";
-        if (max_local_sieve_threads)
+        if (max_local_sieve_threads.has_value())
             os << "max_local_sieve_threads = " << *max_local_sieve_threads << "\n";
-        if (verbose)
+        if (verbose.has_value())
             os << "verbose = " << (*verbose ? "true" : "false") << "\n";
-        if (output_file)
+        if (output_file.has_value())
             os << "output_file = " << *output_file << "\n";
-        if (output_format)
+        if (output_format.has_value())
             os << "output_format = " << *output_format << "\n";
         return os.str();
     }
