@@ -1180,13 +1180,30 @@ void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_p
     info.phase_progress = phase_progress;
     info.elapsed_s = elapsed_s();
     info.message = msg;
-    info.relations_found = stats_.relations_found;
-    info.relations_target = relations_target_;
-    info.special_q_done = stats_.special_q_processed;
-    info.matrix_rows = stats_.matrix_rows;
-    info.matrix_cols = stats_.matrix_cols;
-    info.dependency_index = stats_.dependencies_tried;
-    info.dependencies_total = stats_.dependencies_found;
+    // Progress counters are phase-scoped. Do not leak the last value from a
+    // completed phase into a later event: event-stream consumers rely on
+    // non-applicable counters remaining at their zero/unset defaults.
+    switch (phase) {
+    case Phase::Sieving:
+        info.relations_found = stats_.relations_found;
+        info.relations_target = relations_target_;
+        info.special_q_done = stats_.special_q_processed;
+        break;
+    case Phase::LinearAlgebra:
+        info.matrix_rows = stats_.matrix_rows;
+        info.matrix_cols = stats_.matrix_cols;
+        break;
+    case Phase::SquareRoot:
+        info.dependency_index = stats_.dependencies_tried;
+        info.dependencies_total = stats_.dependencies_found;
+        break;
+    case Phase::PolynomialSelection:
+    case Phase::FactorBase:
+    case Phase::Filtering:
+    case Phase::FactorExtraction:
+    case Phase::Done:
+        break;
+    }
     progress_cb_(info);
 }
 
