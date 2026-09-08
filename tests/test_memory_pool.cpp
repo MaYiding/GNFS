@@ -7,13 +7,14 @@
 //   * std::pmr::vector<int> backed by the pool serves push_back without crash
 //   * Chunk overflow (push beyond initial chunk) still succeeds via upstream
 //   * Many small allocations do not corrupt the pool
-//   * relation_pool_size_bytes() ENV parsing for unset / "0" / positive
+//   * relation_pool_size_bytes() ENV parsing for unset / "0" / positive /
+//     negative / overflowing values
 //   * relation_pool_enabled() agrees with relation_pool_size_bytes() > 0
 
 // Force assert() to remain live even under -DNDEBUG so phase-2 verification
 // is not silently stripped from Release builds.
 #ifdef NDEBUG
-#  undef NDEBUG
+#undef NDEBUG
 #endif
 
 #include "gnfs/util/memory_pool.hpp"
@@ -55,7 +56,8 @@ static void test_reset_releases_and_reallocates() {
     // Allocate enough to commit at least one chunk
     {
         std::pmr::vector<int> v(pool.upstream());
-        for (int i = 0; i < 100; ++i) v.push_back(i);
+        for (int i = 0; i < 100; ++i)
+            v.push_back(i);
         assert(v.size() == 100);
     }
 
@@ -72,9 +74,11 @@ static void test_reset_releases_and_reallocates() {
     // Post-reset, fresh allocations succeed
     {
         std::pmr::vector<int> v(pool.upstream());
-        for (int i = 0; i < 50; ++i) v.push_back(i * 2);
+        for (int i = 0; i < 50; ++i)
+            v.push_back(i * 2);
         assert(v.size() == 50);
-        for (int i = 0; i < 50; ++i) assert(v[static_cast<size_t>(i)] == i * 2);
+        for (int i = 0; i < 50; ++i)
+            assert(v[static_cast<size_t>(i)] == i * 2);
     }
 
     std::cout << "  Reset releases and reallocates: PASS" << std::endl;
@@ -104,7 +108,8 @@ static void test_move_construction() {
     // pool2 still serves allocations
     {
         std::pmr::vector<int> v(pool2.upstream());
-        for (int i = 0; i < 32; ++i) v.push_back(i);
+        for (int i = 0; i < 32; ++i)
+            v.push_back(i);
         assert(v.size() == 32);
     }
 
@@ -112,7 +117,7 @@ static void test_move_construction() {
     RelationPoolResource pool3;
     auto* pool3_orig = pool3.upstream();
     pool3 = std::move(pool2);
-    assert(pool3.upstream() == before);  // adopted pool2's resource
+    assert(pool3.upstream() == before); // adopted pool2's resource
     assert(pool3.upstream() != pool3_orig);
 
     std::cout << "  Move semantics: PASS" << std::endl;
@@ -125,16 +130,20 @@ static void test_pmr_vector_int_basic() {
     std::pmr::vector<int> v(pool.upstream());
 
     // Sequential push_back
-    for (int i = 0; i < 1000; ++i) v.push_back(i);
+    for (int i = 0; i < 1000; ++i)
+        v.push_back(i);
     assert(v.size() == 1000);
-    for (int i = 0; i < 1000; ++i) assert(v[static_cast<size_t>(i)] == i);
+    for (int i = 0; i < 1000; ++i)
+        assert(v[static_cast<size_t>(i)] == i);
 
     // Clear and refill
     v.clear();
     assert(v.empty());
-    for (int i = 0; i < 500; ++i) v.push_back(i * 3);
+    for (int i = 0; i < 500; ++i)
+        v.push_back(i * 3);
     assert(v.size() == 500);
-    for (int i = 0; i < 500; ++i) assert(v[static_cast<size_t>(i)] == i * 3);
+    for (int i = 0; i < 500; ++i)
+        assert(v[static_cast<size_t>(i)] == i * 3);
 
     std::cout << "  pmr vector<int> backed by pool: PASS" << std::endl;
 }
@@ -149,7 +158,8 @@ static void test_chunk_overflow() {
     // Push enough ints to clearly exceed 64-byte initial chunk
     // Each int is 4 bytes; std::pmr::vector also grows geometrically, so we
     // push 10000 ints to ensure multiple overflow allocations.
-    for (int i = 0; i < 10000; ++i) v.push_back(i);
+    for (int i = 0; i < 10000; ++i)
+        v.push_back(i);
     assert(v.size() == 10000);
     // Spot-check the data is intact across chunk boundaries
     assert(v[0] == 0);
@@ -167,7 +177,8 @@ static void test_many_small_objects() {
 
     // Repeated push -- pool should handle without corruption
     constexpr int N = 50000;
-    for (int i = 0; i < N; ++i) v.push_back(i ^ 0x5A5A5A5A);
+    for (int i = 0; i < N; ++i)
+        v.push_back(i ^ 0x5A5A5A5A);
 
     assert(v.size() == N);
     // Verify a few entries
@@ -237,6 +248,35 @@ static void test_env_non_numeric_returns_zero() {
     std::cout << "  ENV non-numeric / empty: PASS" << std::endl;
 }
 
+static void test_env_negative_returns_zero() {
+    std::cout << "Testing GNFS_RELATION_POOL_SIZE negative returns 0..." << std::endl;
+
+    setenv("GNFS_RELATION_POOL_SIZE", "-1", 1);
+    relation_pool_reset_env_cache_for_testing();
+    assert(relation_pool_size_bytes() == 0);
+    assert(!relation_pool_enabled());
+
+    // strtoull accepts whitespace before a sign, so cover that spelling too.
+    setenv("GNFS_RELATION_POOL_SIZE", "  -42", 1);
+    relation_pool_reset_env_cache_for_testing();
+    assert(relation_pool_size_bytes() == 0);
+
+    unsetenv("GNFS_RELATION_POOL_SIZE");
+    std::cout << "  ENV negative: PASS" << std::endl;
+}
+
+static void test_env_overflow_returns_zero() {
+    std::cout << "Testing GNFS_RELATION_POOL_SIZE overflow returns 0..." << std::endl;
+
+    setenv("GNFS_RELATION_POOL_SIZE", "18446744073709551616", 1);
+    relation_pool_reset_env_cache_for_testing();
+    assert(relation_pool_size_bytes() == 0);
+    assert(!relation_pool_enabled());
+
+    unsetenv("GNFS_RELATION_POOL_SIZE");
+    std::cout << "  ENV overflow: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== Memory Pool Tests (W6 T4) ===" << std::endl;
 
@@ -248,12 +288,15 @@ int main() {
     test_chunk_overflow();
     test_many_small_objects();
 
-    // ENV parsing tests (4: unset / =0 / positive / non-numeric)
+    // ENV parsing tests (6: unset / =0 / positive / non-numeric / negative /
+    // overflow)
     std::cout << "\n=== ENV parsing tests ===" << std::endl;
     test_env_unset_returns_zero();
     test_env_zero_returns_zero();
     test_env_positive_returns_value();
     test_env_non_numeric_returns_zero();
+    test_env_negative_returns_zero();
+    test_env_overflow_returns_zero();
 
     std::cout << "\nAll memory pool tests passed!" << std::endl;
     return 0;

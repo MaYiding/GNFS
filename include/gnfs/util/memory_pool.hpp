@@ -28,8 +28,11 @@
 // growth of relations_), so the pool only affects vector-mode collectors.
 
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -53,12 +56,10 @@ class RelationPoolResource {
 public:
     static constexpr std::size_t DEFAULT_INITIAL_CHUNK_BYTES = 4 * 1024 * 1024;
 
-    explicit RelationPoolResource(
-        std::size_t initial_chunk_bytes = DEFAULT_INITIAL_CHUNK_BYTES)
+    explicit RelationPoolResource(std::size_t initial_chunk_bytes = DEFAULT_INITIAL_CHUNK_BYTES)
         : initial_chunk_bytes_(initial_chunk_bytes),
           resource_(std::make_unique<std::pmr::monotonic_buffer_resource>(
-              initial_chunk_bytes,
-              std::pmr::new_delete_resource())) {}
+              initial_chunk_bytes, std::pmr::new_delete_resource())) {}
 
     ~RelationPoolResource() = default;
 
@@ -68,8 +69,7 @@ public:
 
     // Movable: transfer ownership of the underlying resource.
     RelationPoolResource(RelationPoolResource&& other) noexcept
-        : initial_chunk_bytes_(other.initial_chunk_bytes_),
-          resource_(std::move(other.resource_)) {}
+        : initial_chunk_bytes_(other.initial_chunk_bytes_), resource_(std::move(other.resource_)) {}
 
     RelationPoolResource& operator=(RelationPoolResource&& other) noexcept {
         if (this != &other) {
@@ -91,8 +91,7 @@ public:
     /// to reset() become dangling.
     void reset() {
         resource_ = std::make_unique<std::pmr::monotonic_buffer_resource>(
-            initial_chunk_bytes_,
-            std::pmr::new_delete_resource());
+            initial_chunk_bytes_, std::pmr::new_delete_resource());
     }
 
     /// Configured initial chunk size in bytes.
@@ -119,16 +118,30 @@ inline std::atomic<std::size_t>& relation_pool_env_value() {
 
 inline std::size_t parse_relation_pool_env() {
     const char* env = std::getenv("GNFS_RELATION_POOL_SIZE");
-    if (env == nullptr || env[0] == '\0') return 0;
+    if (env == nullptr || env[0] == '\0')
+        return 0;
     // strtoull tolerates leading whitespace; reject negative explicitly.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first)) != 0) {
+        ++first;
+    }
+    if (*first == '-')
+        return 0;
+
+    errno = 0;
     char* end = nullptr;
     unsigned long long parsed = std::strtoull(env, &end, 10);
-    if (end == env) return 0;        // no digits consumed
-    if (parsed == 0ULL) return 0;    // explicit 0 or overflow-to-zero
+    if (end == env)
+        return 0; // no digits consumed
+    if (errno == ERANGE || parsed > (std::numeric_limits<std::size_t>::max)()) {
+        return 0; // overflow cannot produce a usable chunk size
+    }
+    if (parsed == 0ULL)
+        return 0; // explicit 0 or overflow-to-zero
     return static_cast<std::size_t>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read GNFS_RELATION_POOL_SIZE and return the initial chunk size in bytes.
 /// Cached via std::call_once + std::atomic for thread safety.
@@ -140,9 +153,8 @@ inline std::size_t parse_relation_pool_env() {
 /// use the test-only reset helper.
 [[nodiscard]] inline std::size_t relation_pool_size_bytes() {
     std::call_once(detail::relation_pool_env_once_flag(), []() {
-        detail::relation_pool_env_value().store(
-            detail::parse_relation_pool_env(),
-            std::memory_order_release);
+        detail::relation_pool_env_value().store(detail::parse_relation_pool_env(),
+                                                std::memory_order_release);
     });
     return detail::relation_pool_env_value().load(std::memory_order_acquire);
 }
@@ -155,9 +167,8 @@ inline std::size_t parse_relation_pool_env() {
 /// Test-only: re-parse GNFS_RELATION_POOL_SIZE.
 /// NOT thread-safe — call only from single-threaded test setup.
 inline void relation_pool_reset_env_cache_for_testing() {
-    detail::relation_pool_env_value().store(
-        detail::parse_relation_pool_env(),
-        std::memory_order_release);
+    detail::relation_pool_env_value().store(detail::parse_relation_pool_env(),
+                                            std::memory_order_release);
 }
 
-}  // namespace gnfs::util
+} // namespace gnfs::util
