@@ -39,11 +39,13 @@ constexpr uint64_t EXPLICIT_ZERO_SIEVE_COUNT = UINT64_C(1) << 63;
     const double estimate = static_cast<double>(bound) /
                             std::log(static_cast<double>(static_cast<uint64_t>(bound) + 1)) *
                             multiplier;
-    if (!std::isfinite(estimate) || estimate <= 0) {
+    if (!std::isfinite(estimate) || estimate <= 0.0) {
         return 0;
     }
-    if (estimate > static_cast<double>((std::numeric_limits<size_t>::max)())) {
-        throw std::overflow_error("FactorBaseBuilder: prime-count estimate exceeds size_t");
+
+    const size_t max_size = (std::numeric_limits<size_t>::max)();
+    if (estimate >= static_cast<double>(max_size)) {
+        return max_size;
     }
     return static_cast<size_t>(estimate);
 }
@@ -276,8 +278,7 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound, bo
     if (!parallel || bound < PARALLEL_THRESHOLD) {
         const size_t element_count = sieve_element_count(bound);
         std::vector<bool> is_prime(element_count, true);
-        if (bound >= 1)
-            is_prime[0] = false;
+        is_prime[0] = false;
         if (bound >= 1)
             is_prime[1] = false;
 
