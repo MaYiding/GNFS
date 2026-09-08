@@ -1364,6 +1364,8 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                         (status == factor_base::FbCheckpoint::MatchStatus::NMismatch) ? "N mismatch"
                         : (status == factor_base::FbCheckpoint::MatchStatus::DegreeMismatch)
                             ? "degree mismatch"
+                        : (status == factor_base::FbCheckpoint::MatchStatus::ContextMismatch)
+                            ? "context mismatch"
                             : "params mismatch";
                     emit_log(LogLevel::Warn, Phase::FactorBase,
                              std::string("fb checkpoint stale (") + reason + ") — rebuilding");

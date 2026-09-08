@@ -6,6 +6,7 @@
 #include "../util/primes.hpp"
 #include "factor_base.hpp"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -14,7 +15,9 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace gnfs::factor_base {
@@ -32,7 +35,7 @@ using core::RationalPrime;
 ///   - Cantor-Zassenhaus 求根是一次性大批量操作, 无 in-flight state 需保留。
 ///   - 文件 `<base_path>.fb_ckpt`, MAGIC/INCOMPLETE flip 保证 crash safety。
 ///   - 加载时校验 build params (bounds 必须一致) 和 ctx fingerprint
-///     (degree + leading_coeff + N 哈希) 防止用错 FB。
+///     (完整 PolynomialContext fingerprint) 防止用错 FB。
 ///
 /// Binary layout (all fixed-width scalar fields are little-endian):
 ///   u64 magic
@@ -45,7 +48,8 @@ using core::RationalPrime;
 ///   u8  log_scale + 3 pad
 ///   ── Context fingerprint ──
 ///   u32 ctx_degree
-///   i32 sign(N) + u32 lc_bytes + bytes(N)           [fingerprint via raw N]
+///   Integer ctx_N
+///   u64 ctx_fingerprint_lo + u64 ctx_fingerprint_hi [v2 only]
 ///   ── Rational FB ──
 ///   u32 rational_count + [u32 p, u32 log_p] × n
 ///   ── Algebraic FB ──
@@ -55,7 +59,8 @@ using core::RationalPrime;
 struct FbCheckpoint {
     static constexpr uint64_t MAGIC = 0x474E465346434B50ULL;            // 'GNFSFCKP'
     static constexpr uint64_t MAGIC_INCOMPLETE = 0x474E465346434B4EULL; // 'GNFSFCKN'
-    static constexpr uint64_t VERSION = 1;
+    static constexpr uint64_t LEGACY_VERSION = 1;
+    static constexpr uint64_t VERSION = 2;
     // Counts are bounded to uint32_t, so reserve the high bit to distinguish
     // an explicit zero (no sieve entries) from the legacy unset-zero value.
     static constexpr uint64_t EXPLICIT_ZERO_SIEVE_COUNT = UINT64_C(1) << 63;
@@ -67,9 +72,13 @@ struct FbCheckpoint {
     uint64_t large_prime_bound = 0;
     uint8_t log_scale = core::SIEVE_LOG_SCALE;
 
-    // Context fingerprint (cheap hash to detect "wrong N / wrong poly" mistakes)
+    // Context identity. Legacy v1 checkpoints have no complete fingerprint and
+    // are therefore readable but never eligible for automatic resume.
     uint32_t ctx_degree = 0;
     Integer ctx_n; // full N stored for strict equality check
+    uint64_t ctx_fingerprint_lo = 0;
+    uint64_t ctx_fingerprint_hi = 0;
+    bool ctx_fingerprint_present = false;
 
     // FB content
     std::vector<RationalPrime> rational;
@@ -130,6 +139,10 @@ struct FbCheckpoint {
 
         ck.ctx_degree = ctx.degree();
         ck.ctx_n = ctx.n();
+        const auto fingerprint = context_fingerprint(ctx);
+        ck.ctx_fingerprint_lo = fingerprint.first;
+        ck.ctx_fingerprint_hi = fingerprint.second;
+        ck.ctx_fingerprint_present = true;
 
         auto rat = fb.rational();
         ck.rational.assign(rat.begin(), rat.end());
@@ -161,7 +174,7 @@ struct FbCheckpoint {
         }
 
         uint64_t magic = MAGIC_INCOMPLETE;
-        uint64_t version = VERSION;
+        const uint64_t version = ctx_fingerprint_present ? VERSION : LEGACY_VERSION;
         write_u64(out, magic);
         write_u64(out, version);
 
@@ -174,6 +187,10 @@ struct FbCheckpoint {
 
         write_u32(out, ctx_degree);
         write_integer(out, ctx_n);
+        if (version >= VERSION) {
+            write_u64(out, ctx_fingerprint_lo);
+            write_u64(out, ctx_fingerprint_hi);
+        }
 
         uint32_t rat_count = static_cast<uint32_t>(rational.size());
         write_u32(out, rat_count);
@@ -222,9 +239,10 @@ struct FbCheckpoint {
         if (magic != MAGIC && !(allow_incomplete && magic == MAGIC_INCOMPLETE)) {
             throw std::runtime_error("FbCheckpoint::load: invalid magic in " + path);
         }
-        if (version != VERSION) {
+        if (version != LEGACY_VERSION && version != VERSION) {
             throw std::runtime_error("FbCheckpoint::load: version mismatch (got " +
                                      std::to_string(version) + ", expected " +
+                                     std::to_string(LEGACY_VERSION) + " or " +
                                      std::to_string(VERSION) + ")");
         }
 
@@ -238,6 +256,11 @@ struct FbCheckpoint {
 
         ck.ctx_degree = read_u32(in, "context degree");
         read_integer(in, ck.ctx_n);
+        if (version >= VERSION) {
+            ck.ctx_fingerprint_lo = read_u64(in, "context fingerprint low lane");
+            ck.ctx_fingerprint_hi = read_u64(in, "context fingerprint high lane");
+            ck.ctx_fingerprint_present = true;
+        }
 
         const uint32_t rat_count = read_u32(in, "rational count");
         if (rat_count > 100'000'000u) {
@@ -332,6 +355,7 @@ struct FbCheckpoint {
         Ok,
         NMismatch,
         DegreeMismatch,
+        ContextMismatch,
         ParamsMismatch,
     };
 
@@ -344,6 +368,11 @@ struct FbCheckpoint {
             return MatchStatus::NMismatch;
         if (ctx_degree != ctx.degree())
             return MatchStatus::DegreeMismatch;
+        if (!ctx_fingerprint_present)
+            return MatchStatus::ContextMismatch;
+        const auto fingerprint = context_fingerprint(ctx);
+        if (ctx_fingerprint_lo != fingerprint.first || ctx_fingerprint_hi != fingerprint.second)
+            return MatchStatus::ContextMismatch;
         if (rational_bound != want_rational_bound || algebraic_bound != want_algebraic_bound ||
             special_q_bound != want_special_q_bound ||
             large_prime_bound != want_large_prime_bound || log_scale != want_log_scale) {
@@ -353,6 +382,92 @@ struct FbCheckpoint {
     }
 
 private:
+    class StableFingerprint {
+    public:
+        void add_u8(uint8_t value) noexcept {
+            lo_ ^= value;
+            lo_ *= 1099511628211ULL;
+
+            hi_ ^= static_cast<uint64_t>(value) + byte_index_ * 0x9e3779b97f4a7c15ULL;
+            hi_ = std::rotl(hi_, 27);
+            hi_ *= 0x94d049bb133111ebULL;
+            hi_ += 0x2545f4914f6cdd1dULL;
+            ++byte_index_;
+        }
+
+        void add_u32(uint32_t value) noexcept {
+            for (unsigned shift = 0; shift < 32; shift += 8)
+                add_u8(static_cast<uint8_t>((value >> shift) & 0xffU));
+        }
+
+        void add_u64(uint64_t value) noexcept {
+            for (unsigned shift = 0; shift < 64; shift += 8)
+                add_u8(static_cast<uint8_t>((value >> shift) & 0xffULL));
+        }
+
+        void add_string(std::string_view value) noexcept {
+            add_u64(static_cast<uint64_t>(value.size()));
+            for (const char byte : value)
+                add_u8(static_cast<uint8_t>(static_cast<unsigned char>(byte)));
+        }
+
+        void add_field(std::string_view name) noexcept {
+            add_string(name);
+        }
+
+        [[nodiscard]] uint64_t finish_lo() const noexcept {
+            uint64_t value = avalanche(lo_ ^ byte_index_);
+            return value == 0 ? 0x6a09e667f3bcc909ULL : value;
+        }
+
+        [[nodiscard]] uint64_t finish_hi() const noexcept {
+            uint64_t value = avalanche(hi_ ^ std::rotl(byte_index_, 17));
+            return value == 0 ? 0xbb67ae8584caa73bULL : value;
+        }
+
+    private:
+        [[nodiscard]] static uint64_t avalanche(uint64_t value) noexcept {
+            value ^= value >> 30;
+            value *= 0xbf58476d1ce4e5b9ULL;
+            value ^= value >> 27;
+            value *= 0x94d049bb133111ebULL;
+            value ^= value >> 31;
+            return value;
+        }
+
+        uint64_t lo_ = 14695981039346656037ULL;
+        uint64_t hi_ = 0x243f6a8885a308d3ULL;
+        uint64_t byte_index_ = 0;
+    };
+
+    static void add_integer(StableFingerprint& hash, std::string_view field, const Integer& value) {
+        hash.add_field(field);
+        hash.add_string(value.to_string());
+    }
+
+    [[nodiscard]] static std::pair<uint64_t, uint64_t>
+    context_fingerprint(const PolynomialContext& ctx) {
+        StableFingerprint hash;
+        hash.add_field("gnfs.factor-base.context-fingerprint");
+        hash.add_u32(1); // Independent of the checkpoint wire version.
+        add_integer(hash, "n", ctx.n());
+        add_integer(hash, "m", ctx.m());
+        hash.add_field("degree");
+        hash.add_u32(ctx.degree());
+        hash.add_field("coefficients.count");
+        hash.add_u64(static_cast<uint64_t>(ctx.coefficients().size()));
+        for (size_t i = 0; i < ctx.coefficients().size(); ++i) {
+            hash.add_field("coefficient.index");
+            hash.add_u64(static_cast<uint64_t>(i));
+            add_integer(hash, "coefficient.value", ctx.coefficients()[i]);
+        }
+        static_assert(sizeof(double) == sizeof(uint64_t));
+        static_assert(std::numeric_limits<double>::is_iec559);
+        hash.add_field("skewness.bits");
+        hash.add_u64(std::bit_cast<uint64_t>(ctx.skewness()));
+        return {hash.finish_lo(), hash.finish_hi()};
+    }
+
     static void write_u32(std::ofstream& out, uint32_t value) {
         const unsigned char bytes[4] = {
             static_cast<unsigned char>(value & 0xffU),
