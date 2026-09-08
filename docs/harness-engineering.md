@@ -95,6 +95,20 @@ reaping the reserved leader, and Windows cleanup waits until the Job reports
 zero active processes. The direct child is reaped and captured streams reach
 EOF before cleanup is accepted.
 
+### Isolated Build and Report Directory
+
+`scripts/test.sh` uses `${PROJECT_ROOT}/build` for generated build files and
+`test_report.json` by default. Set `GNFS_BUILD_DIR` to an absolute local path
+when a contract test or parallel checkout needs isolated output:
+
+```bash
+GNFS_BUILD_DIR=/tmp/gnfs-harness-check-build ./scripts/test.sh --no-build perf
+```
+
+The override affects only the runner's build and report directory. It does not
+change source paths or the `benchmarks/` output directory. `--no-build` still
+requires the selected test binaries to exist in the overridden directory.
+
 The zsh wrapper installs scoped HUP, INT, and TERM traps before launch, forwards
 the first signal to the supervisor, waits for containment cleanup, restores the
 caller's traps, and then re-delivers the signal. A supervisor cleanup failure
