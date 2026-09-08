@@ -309,9 +309,19 @@ struct FBPrime {
 // Knuth-Schroeppel multiplier selection
 // ================================================================
 
-/// Select optimal multiplier k for N. Returns k such that kN has a dense factor base.
-/// Score = -0.5*log(kN) + Σ_{p small, kN is QR mod p} log(p)/(p-1)
-inline uint32_t select_multiplier(const Integer& N) {
+/// Rank deterministic multiplier candidates for N by the Knuth-Schroeppel score.
+///
+/// A zero limit returns an empty vector. Positive limits require a positive N;
+/// invalid N values throw std::invalid_argument. Limits larger than the fixed
+/// candidate set are clamped to the number of unique candidates. Equal scores
+/// retain the historical candidate order, so the first result is compatible
+/// with select_multiplier().
+inline std::vector<uint32_t> rank_multiplier_candidates(const Integer& N, size_t limit) {
+    if (limit == 0)
+        return {};
+    if (mpz_sgn(N.get_mpz()) <= 0)
+        throw std::invalid_argument("SIQS multiplier ranking requires a positive N");
+
     static const uint32_t candidates[] = {1,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31,
                                           37, 41, 43, 47, 53, 59, 61, 67, 71, 73};
     // Small primes for scoring
@@ -320,8 +330,13 @@ inline uint32_t select_multiplier(const Integer& N) {
         59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131,
         137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199};
 
-    double best_score = -1e30;
-    uint32_t best_k = 1;
+    struct ScoredCandidate {
+        uint32_t multiplier;
+        double score;
+    };
+    const size_t candidate_count = sizeof(candidates) / sizeof(candidates[0]);
+    std::vector<ScoredCandidate> scored;
+    scored.reserve(candidate_count);
 
     for (uint32_t k : candidates) {
         Integer kN;
@@ -361,12 +376,33 @@ inline uint32_t select_multiplier(const Integer& N) {
             }
         }
 
-        if (score > best_score) {
-            best_score = score;
-            best_k = k;
-        }
+        scored.push_back({k, score});
     }
-    return best_k;
+
+    // stable_sort preserves the original candidate order for equal scores,
+    // matching the strict-greater tie behavior of the legacy selector.
+    std::stable_sort(scored.begin(), scored.end(),
+                     [](const ScoredCandidate& lhs, const ScoredCandidate& rhs) {
+                         return lhs.score > rhs.score;
+                     });
+
+    const size_t result_count = std::min(limit, scored.size());
+    std::vector<uint32_t> ranked;
+    ranked.reserve(result_count);
+    for (size_t i = 0; i < result_count; ++i) {
+        const uint32_t multiplier = scored[i].multiplier;
+        if (std::find(ranked.begin(), ranked.end(), multiplier) == ranked.end())
+            ranked.push_back(multiplier);
+    }
+    return ranked;
+}
+
+/// Select the top-ranked multiplier k for N. Returns k such that kN has a
+/// dense factor base. The first ranked candidate is kept as the compatibility
+/// contract for existing callers.
+inline uint32_t select_multiplier(const Integer& N) {
+    const auto ranked = rank_multiplier_candidates(N, 1);
+    return ranked.front();
 }
 
 /// Build factor base: primes p where Legendre(N, p) = 1
