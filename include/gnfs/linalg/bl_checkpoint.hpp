@@ -61,6 +61,8 @@ struct BlockLanczosCheckpoint {
     static constexpr uint64_t VERSION_V2 = 2;
     /// Current on-disk version emitted by save().
     static constexpr uint64_t VERSION = VERSION_V2;
+    /// Maximum packed payload accepted by load() (64 GiB).
+    static constexpr uint64_t MAX_AUG_WORDS = (64ULL * 1024 * 1024 * 1024) / 8;
 
     uint64_t rows = 0;
     uint64_t cols = 0;
@@ -138,6 +140,12 @@ struct BlockLanczosCheckpoint {
             return load_impl(path);
         } catch (const std::bad_alloc&) {
             return std::nullopt;
+        } catch (const std::length_error&) {
+            return std::nullopt;
+        } catch (...) {
+            // Recovery data is optional. Any unexpected parser or stream
+            // exception must fail closed instead of escaping this noexcept API.
+            return std::nullopt;
         }
     }
 
@@ -213,10 +221,12 @@ private:
         }
 
         // Guard against absurd allocations (caps at 64 GiB packed payload).
-        constexpr uint64_t MAX_AUG_WORDS = (64ULL * 1024 * 1024 * 1024) / 8;
         if (aug_word_count > MAX_AUG_WORDS)
             return std::nullopt;
         if (aug_word_count > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+            return std::nullopt;
+        }
+        if (aug_word_count > static_cast<uint64_t>(ck.aug.max_size())) {
             return std::nullopt;
         }
 
