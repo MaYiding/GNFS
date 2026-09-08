@@ -17,6 +17,7 @@
 
 using namespace gnfs::factor_base;
 using gnfs::core::AlgebraicPrime;
+using gnfs::core::FactorBaseParams;
 using gnfs::core::Integer;
 using gnfs::core::PolynomialContext;
 using gnfs::core::RationalPrime;
@@ -65,6 +66,12 @@ static PolynomialContext make_ctx() {
     coeffs.emplace_back(Integer(static_cast<int64_t>(3)));
     coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
     return PolynomialContext(Integer("123456789012345"), std::move(coeffs), Integer("9999"), 1.0);
+}
+
+static FbCheckpoint checkpoint_for_context(const PolynomialContext& ctx) {
+    FactorBaseParams params(100, 100, 10000, 16);
+    FactorBase fb(params);
+    return FbCheckpoint::from_factor_base(fb, ctx, /*special_q=*/200);
 }
 
 void test_roundtrip_small_fb() {
@@ -165,6 +172,9 @@ void test_to_from_factor_base() {
     FactorBase fb2 = loaded.to_factor_base();
     assert(fb2.rational_count() == 2);
     assert(fb2.algebraic_count() == 1);
+    assert(loaded.ctx_fingerprint_present);
+    assert(loaded.ctx_fingerprint_lo == ck2.ctx_fingerprint_lo);
+    assert(loaded.ctx_fingerprint_hi == ck2.ctx_fingerprint_hi);
 
     std::cout << "  FactorBase roundtrip: PASS" << std::endl;
 }
@@ -202,14 +212,7 @@ void test_explicit_zero_sieve_count() {
 void test_matches_ok() {
     std::cout << "Testing matches() Ok..." << std::endl;
     PolynomialContext ctx = make_ctx();
-    FbCheckpoint ck;
-    ck.rational_bound = 100;
-    ck.algebraic_bound = 100;
-    ck.special_q_bound = 200;
-    ck.large_prime_bound = 10000;
-    ck.log_scale = 16;
-    ck.ctx_n = ctx.n();
-    ck.ctx_degree = ctx.degree();
+    FbCheckpoint ck = checkpoint_for_context(ctx);
     auto status = ck.matches(ctx, 100, 100, 200, 10000, 16);
     assert(status == FbCheckpoint::MatchStatus::Ok);
     std::cout << "  matches() Ok: PASS" << std::endl;
@@ -218,14 +221,7 @@ void test_matches_ok() {
 void test_matches_mismatch() {
     std::cout << "Testing matches() mismatches..." << std::endl;
     PolynomialContext ctx = make_ctx();
-    FbCheckpoint ck;
-    ck.rational_bound = 100;
-    ck.algebraic_bound = 100;
-    ck.special_q_bound = 200;
-    ck.large_prime_bound = 10000;
-    ck.log_scale = 16;
-    ck.ctx_n = ctx.n();
-    ck.ctx_degree = ctx.degree();
+    FbCheckpoint ck = checkpoint_for_context(ctx);
 
     // N mismatch
     std::vector<Integer> ccs;
@@ -245,6 +241,38 @@ void test_matches_mismatch() {
     assert(ck.matches(other_deg, 100, 100, 200, 10000, 16) ==
            FbCheckpoint::MatchStatus::DegreeMismatch);
 
+    // Same N + degree, but a different m.
+    std::vector<Integer> same_coeffs;
+    same_coeffs.emplace_back(Integer(static_cast<int64_t>(-5)));
+    same_coeffs.emplace_back(Integer(static_cast<int64_t>(3)));
+    same_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
+    PolynomialContext other_m(Integer(ctx.n()), std::move(same_coeffs), Integer("10000"),
+                              ctx.skewness());
+    assert(other_m.degree() == ctx.degree());
+    assert(ck.matches(other_m, 100, 100, 200, 10000, 16) ==
+           FbCheckpoint::MatchStatus::ContextMismatch);
+
+    // Same N + degree + m, but a different coefficient.
+    std::vector<Integer> other_coeffs;
+    other_coeffs.emplace_back(Integer(static_cast<int64_t>(-4)));
+    other_coeffs.emplace_back(Integer(static_cast<int64_t>(3)));
+    other_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
+    PolynomialContext other_poly(Integer(ctx.n()), std::move(other_coeffs), Integer(ctx.m()),
+                                 ctx.skewness());
+    assert(other_poly.degree() == ctx.degree());
+    assert(ck.matches(other_poly, 100, 100, 200, 10000, 16) ==
+           FbCheckpoint::MatchStatus::ContextMismatch);
+
+    // Same N + degree + m + coefficients, but a different IEEE-754 skewness bit pattern.
+    std::vector<Integer> other_skew_coeffs;
+    other_skew_coeffs.emplace_back(Integer(static_cast<int64_t>(-5)));
+    other_skew_coeffs.emplace_back(Integer(static_cast<int64_t>(3)));
+    other_skew_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
+    PolynomialContext other_skew(Integer(ctx.n()), std::move(other_skew_coeffs), Integer(ctx.m()),
+                                 2.0);
+    assert(ck.matches(other_skew, 100, 100, 200, 10000, 16) ==
+           FbCheckpoint::MatchStatus::ContextMismatch);
+
     // Params mismatch: change rational_bound
     assert(ck.matches(ctx, 101, 100, 200, 10000, 16) == FbCheckpoint::MatchStatus::ParamsMismatch);
     // Params mismatch: change log_scale
@@ -252,6 +280,24 @@ void test_matches_mismatch() {
     // Params mismatch: change large_prime_bound
     assert(ck.matches(ctx, 100, 100, 200, 99999, 16) == FbCheckpoint::MatchStatus::ParamsMismatch);
     std::cout << "  matches() mismatches: PASS" << std::endl;
+}
+
+void test_legacy_v1_is_readable_but_stale() {
+    std::cout << "Testing legacy v1 checkpoint compatibility..." << std::endl;
+    auto path = tmp_ckpt_path("legacy_v1");
+    CkptCleanup c{path};
+
+    PolynomialContext ctx = make_ctx();
+    FbCheckpoint legacy;
+    legacy.ctx_n = ctx.n();
+    legacy.ctx_degree = ctx.degree();
+    legacy.save(path);
+
+    const auto loaded = FbCheckpoint::load(path);
+    assert(!loaded.ctx_fingerprint_present);
+    assert(loaded.matches(ctx, 0, 0, 0, 0, gnfs::core::SIEVE_LOG_SCALE) ==
+           FbCheckpoint::MatchStatus::ContextMismatch);
+    std::cout << "  Legacy v1 readable but stale: PASS" << std::endl;
 }
 
 void test_empty_fb() {
@@ -666,6 +712,7 @@ int main() {
     test_explicit_zero_sieve_count();
     test_matches_ok();
     test_matches_mismatch();
+    test_legacy_v1_is_readable_but_stale();
     test_empty_fb();
     test_sieve_count_invariants();
     test_large_fb();

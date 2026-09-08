@@ -135,7 +135,9 @@ u32 special_q_bound
 u64 large_prime_bound
 u32 log_scale (zero-padded from u8)
 u32 ctx_degree
-Integer ctx_N        (fingerprint)
+Integer ctx_N        (strict equality check)
+u64 ctx_fingerprint_lo
+u64 ctx_fingerprint_hi
 u32 rational_count
 { u32 p, u32 log_p } × rational_count
 u32 algebraic_count
@@ -143,9 +145,17 @@ u32 algebraic_count
 u64 sieve_algebraic_count
 ```
 
-Validation on load checks all build parameters plus the polynomial-context
-fingerprint (N and degree). Any mismatch returns a non-Ok status and forces
-a fresh build.
+Version 2 stores a stable 128-bit polynomial-context fingerprint covering N, m,
+the effective degree, the complete coefficient vector, and the IEEE-754 bit
+pattern of skewness. Validation on load checks all build parameters plus this
+fingerprint. Any mismatch returns a non-Ok status and forces a fresh build.
+
+Version 1 files remain readable for inspection and manual conversion, but they
+do not contain enough context identity to prove safe reuse: `matches()` returns
+`ContextMismatch` even when their N and degree agree. Checkpoints captured by
+`from_factor_base()` are always written as version 2. A manually constructed
+checkpoint without a fingerprint may still be written as version 1 for source
+compatibility with older callers.
 
 ## ENV Surface
 
@@ -193,9 +203,11 @@ are set. Both empty values are ignored.
   and multi-limb Integers, negative / zero coefficients, Context conversion,
   N validation, exists check, INCOMPLETE rejection, version mismatch,
   corrupt counts, remove, force-load, nonexistent.
-- `tests/test_fb_checkpoint.cpp` (9 cases, instant): roundtrip, FactorBase
-  conversion, `matches()` Ok plus four mismatch reasons, empty FB, 10K-prime
-  FB, INCOMPLETE rejection, version mismatch, remove plus nonexistent.
+- `tests/test_fb_checkpoint.cpp` (13 cases, instant): roundtrip, FactorBase
+  conversion, v2 context fingerprint persistence, `matches()` Ok plus N,
+  degree, context, and parameter mismatch reasons, legacy v1 compatibility,
+  empty FB, 10K-prime FB, INCOMPLETE rejection, version mismatch, remove plus
+  nonexistent.
 - `tests/test_full_resume.cpp` (6 cases, slow, 120 s budget): end-to-end via
   `Pipeline` on a 40-bit composite N. Validates fresh-vs-resume wall-time
   delta, alias ENV, no-env default, stale-fb rebuild, wrong-N rejection.
