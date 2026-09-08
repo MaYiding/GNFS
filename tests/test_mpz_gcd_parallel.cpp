@@ -28,12 +28,14 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/util/mpz_gcd_parallel.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <gmp.h>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -161,7 +163,35 @@ void test_env_clamp() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: ENV "garbage" / "" / "-5" / leading-whitespace "  4" / "12abc"
+// Test 5: Positive values above INT_MAX still clamp instead of disabling.
+// ---------------------------------------------------------------------------
+void test_env_wide_positive_clamps() {
+    std::cout << "Test 5: wide positive ENV clamps at hw*2..." << std::flush;
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0)
+        hw = 4;
+    const unsigned long long cap_wide = static_cast<unsigned long long>(hw) * 2ULL;
+    const int cap = static_cast<int>(
+        std::min(cap_wide, static_cast<unsigned long long>(std::numeric_limits<int>::max())));
+
+    apply_env("2147483648");
+    if (mpz_gcd_batch_threads() != cap) {
+        std::cerr << "\n  ERROR: INT_MAX+1 did not clamp to cap=" << cap << std::endl;
+        std::abort();
+    }
+
+    apply_env("999999999999999999999999999999999999999999999");
+    if (mpz_gcd_batch_threads() != cap) {
+        std::cerr << "\n  ERROR: ERANGE input did not clamp to cap=" << cap << std::endl;
+        std::abort();
+    }
+
+    apply_env(nullptr);
+    std::cout << " PASS (cap=" << cap << ")\n";
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: ENV "garbage" / "" / "-5" / leading-whitespace "  4" / "12abc"
 // -> partial-parse rules match W11 T3 / W12 T3 / W13 T5 family semantics
 // (std::atoi accepts a leading numeric prefix; leading whitespace is
 // consumed by atoi and "  4" parses to 4).
@@ -221,10 +251,10 @@ void test_env_non_numeric() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Empty input vectors return cleanly.
+// Test 7: Empty input vectors return cleanly.
 // ---------------------------------------------------------------------------
 void test_empty_inputs() {
-    std::cout << "Test 6: empty inputs return cleanly..." << std::flush;
+    std::cout << "Test 7: empty inputs return cleanly..." << std::flush;
 
     std::vector<Integer> a_values;
     std::vector<Integer> b_values;
@@ -736,6 +766,7 @@ int main() {
     test_env_zero_to_one();
     test_env_four();
     test_env_clamp();
+    test_env_wide_positive_clamps();
     test_env_non_numeric();
     test_empty_inputs();
     test_single_pair_n1();
