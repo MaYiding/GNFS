@@ -28,8 +28,10 @@ pre-route 记录。
 ### Default 与 bit-for-bit 契约
 
 Default 是未设置，即 `off`。未设置和 `0` 都不运行 shadow proof、不做 shadow
-动态分配，也不新增 stderr 输出；它们保留原有 legacy merge、linear algebra 和
-extraction 控制流及 factor/relation 结果语义。现有的 `time_seconds` 是墙钟测量，
+动态分配，也不新增 shadow telemetry；它们保留原有 legacy merge、linear algebra 和
+extraction 控制流及 factor/relation 结果语义。启用 verbose 时，live multiplier portfolio
+仍可产生普通的 attempt/direct-factor 诊断行；这些行不属于 shadow telemetry 契约。现有的
+`time_seconds` 是墙钟测量，
 本身不承诺不同进程或重复运行之间逐位一致。
 
 `observe` 和 `prefer` 都不是零开销模式。shadow proof 位于
@@ -53,6 +55,9 @@ merge、solve 和 extract 路径；`prefer` 的任意 fallback 或普通 emitter
    `GNFS_SIQS_SHADOW_PROOF_PREFER_DECISION_V2`。
 5. `prefer` 只在 finalized decision 是 candidate、预构造结果逐字段匹配且 emitter
    返回 `true` 时 early return；其他情况继续未修改的 legacy corpus。
+
+`polynomials_used` 和普通 factor 结果的计时字段都描述最终返回的 attempt；portfolio
+重试不会把前一 attempt 的计数累加到 winning result。
 
 显式 `observe` 或 `prefer` 即使 `verbose=false` 也尝试写出相应记录。输出属于独立
 的机器可读通道，不受普通 SIQS 诊断日志开关控制。

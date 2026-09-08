@@ -3,6 +3,7 @@
 /// @file shadow_assembly.hpp
 /// @brief Deterministic, parallel assembly of staged SIQS two-large-prime rows.
 
+#include <gnfs/siqs/deadline.hpp>
 #include <gnfs/siqs/post_merge_row.hpp>
 #include <gnfs/siqs/raw_relation_corpus_view.hpp>
 #include <gnfs/siqs/two_large_prime_adapter.hpp>
@@ -743,13 +744,16 @@ reduce_cycle_slot_statuses(std::span<const CycleSlot> slots) noexcept {
 /// invalid configuration, worker exceptions, and breached internal invariants
 /// fail the whole result closed.
 template <class Splitter>
-[[nodiscard]] SIQSShadowAssemblyResult
-assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
-                                  std::span<const uint32_t> factor_base_primes,
-                                  const core::Integer& modulus, uint64_t large_prime_bound,
-                                  const SIQSShadowAssemblyOptions& options,
-                                  const SIQSShadowAssemblyLimits& limits, Splitter&& splitter) {
+[[nodiscard]] SIQSShadowAssemblyResult assemble_siqs_shadow_rows_bounded(
+    SIQSRawRelationCorpusView raw_relations, std::span<const uint32_t> factor_base_primes,
+    const core::Integer& modulus, uint64_t large_prime_bound,
+    const SIQSShadowAssemblyOptions& options, const SIQSShadowAssemblyLimits& limits,
+    Splitter&& splitter, const SIQSDeadline* deadline = nullptr) {
     using namespace shadow_assembly_detail;
+
+    if (siqs_deadline_expired(deadline))
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::exception_failure);
 
     if (!post_merge_row_detail::has_valid_modulus(modulus)) {
         return SIQSShadowAssemblyResultFactory::failure(SIQSShadowAssemblyStatus::invalid_modulus);
@@ -781,7 +785,11 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
     stats.input_relations = raw_relations.size();
 
     std::vector<CanonicalFullSource> full_sources;
+    size_t relation_ordinal = 0;
     for (const SIQSRelation& relation : raw_relations) {
+        if ((relation_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
         if (!is_encoded_full(relation)) {
             continue;
         }
@@ -810,9 +818,9 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
 
     std::optional<PreparedTwoLargePrimeCorpus> partial_corpus;
     try {
-        partial_corpus =
-            prepare_two_large_prime_corpus(raw_relations, factor_base_primes.size(),
-                                           large_prime_bound, std::forward<Splitter>(splitter));
+        partial_corpus = prepare_two_large_prime_corpus(raw_relations, factor_base_primes.size(),
+                                                        large_prime_bound,
+                                                        std::forward<Splitter>(splitter), deadline);
     } catch (const std::bad_alloc&) {
         return SIQSShadowAssemblyResultFactory::failure(
             SIQSShadowAssemblyStatus::resource_exhausted);
@@ -835,6 +843,9 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
             SIQSShadowAssemblyStatus::internal_invariant_failure);
     }
     for (size_t i = 0; i < partial_corpus->sources.size(); ++i) {
+        if ((i & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
         const TwoLargePrimeCycleSource& source = partial_corpus->sources[i];
         const TwoLargePrimeEdge& edge = partial_corpus->edges[i];
         if (edge.relation_index != i || source.p != edge.p || source.q != edge.q) {
@@ -846,7 +857,7 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
     auto basis_result = build_two_large_prime_cycle_basis(
         std::span<const TwoLargePrimeEdge>(partial_corpus->edges.data(),
                                            partial_corpus->edges.size()),
-        limits.graph);
+        limits.graph, deadline);
     const SIQSShadowAssemblyStatus graph_status = assembly_status_for_graph(basis_result.status());
     if (!basis_result.is_valid() || !basis_result.basis()) {
         return SIQSShadowAssemblyResultFactory::failure(
@@ -881,6 +892,9 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
 
     assembly.sources.full_source_ids.reserve(full_sources.size());
     for (size_t i = 0; i < full_sources.size(); ++i) {
+        if ((i & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
         uint64_t source_id = 0;
         if (!size_to_u64(i, source_id)) {
             return SIQSShadowAssemblyResultFactory::failure(
@@ -892,6 +906,9 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
 
     assembly.sources.partial_source_ids.reserve(partial_corpus->sources.size());
     for (size_t i = 0; i < partial_corpus->sources.size(); ++i) {
+        if ((i & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
         uint64_t partial_index = 0;
         if (!size_to_u64(i, partial_index) ||
             partial_index > std::numeric_limits<uint64_t>::max() - full_count) {
@@ -922,6 +939,8 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
     std::vector<CycleSlot> cycle_slots(basis.cycles.size());
     const auto materialize_worker = [&](size_t begin_cycle, size_t end_cycle) noexcept {
         for (size_t cycle_ordinal = begin_cycle; cycle_ordinal < end_cycle; ++cycle_ordinal) {
+            if (siqs_deadline_expired(deadline))
+                return;
             CycleSlot& slot = cycle_slots[cycle_ordinal];
             try {
                 const auto& support = basis.cycles[cycle_ordinal];
@@ -999,6 +1018,10 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
         }
     }
 
+    if (siqs_deadline_expired(deadline))
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::exception_failure);
+
     // Reduce fixed per-cycle outcomes only after every worker has joined.
     // Cycle ordinal, rather than thread scheduling, therefore selects the first
     // terminal failure.
@@ -1009,10 +1032,18 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
 
     std::vector<SIQSShadowRow> rows;
     rows.reserve(maximum_rows);
-    for (CanonicalFullSource& source : full_sources) {
+    for (size_t source_ordinal = 0; source_ordinal < full_sources.size(); ++source_ordinal) {
+        if ((source_ordinal & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
+        CanonicalFullSource& source = full_sources[source_ordinal];
         rows.push_back(SIQSShadowRow{SIQSShadowRowOrigin::raw_full, std::move(source.row)});
     }
-    for (CycleSlot& slot : cycle_slots) {
+    for (size_t cycle_ordinal = 0; cycle_ordinal < cycle_slots.size(); ++cycle_ordinal) {
+        if ((cycle_ordinal & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
+        CycleSlot& slot = cycle_slots[cycle_ordinal];
         if (slot.status == CycleSlotStatus::valid && slot.row) {
             ++stats.valid_cycle_rows;
             rows.push_back(std::move(*slot.row));
@@ -1050,6 +1081,9 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
     for (size_t i = 0; i < rows.size() && selected_full < factor_base_primes.size() &&
                        selected_count < row_capacity;
          ++i) {
+        if ((i & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
         if (rows[i].origin == SIQSShadowRowOrigin::raw_full) {
             selected_mask[i] = 1;
             ++selected_full;
@@ -1057,12 +1091,18 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
         }
     }
     for (size_t i = 0; i < rows.size() && selected_count < row_capacity; ++i) {
+        if ((i & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
         if (rows[i].origin == SIQSShadowRowOrigin::large_prime_cycle) {
             selected_mask[i] = 1;
             ++selected_count;
         }
     }
     for (size_t i = 0; i < rows.size() && selected_count < row_capacity; ++i) {
+        if ((i & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
         if (rows[i].origin == SIQSShadowRowOrigin::raw_full && selected_mask[i] == 0) {
             selected_mask[i] = 1;
             ++selected_full;
@@ -1072,6 +1112,9 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
 
     assembly.rows.reserve(selected_count);
     for (size_t i = 0; i < rows.size(); ++i) {
+        if ((i & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowAssemblyResultFactory::failure(
+                SIQSShadowAssemblyStatus::exception_failure);
         if (selected_mask[i] != 0) {
             assembly.rows.push_back(std::move(rows[i]));
         }
@@ -1095,20 +1138,22 @@ assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView raw_relations,
         return SIQSShadowAssemblyResultFactory::failure(
             SIQSShadowAssemblyStatus::internal_invariant_failure);
     }
+    if (siqs_deadline_expired(deadline))
+        return SIQSShadowAssemblyResultFactory::failure(
+            SIQSShadowAssemblyStatus::exception_failure);
     return SIQSShadowAssemblyResultFactory::success(std::move(assembly));
 }
 
 /// Source-compatible wrapper for one contiguous raw corpus.
 template <class Splitter>
-[[nodiscard]] SIQSShadowAssemblyResult
-assemble_siqs_shadow_rows_bounded(std::span<const SIQSRelation> raw_relations,
-                                  std::span<const uint32_t> factor_base_primes,
-                                  const core::Integer& modulus, uint64_t large_prime_bound,
-                                  const SIQSShadowAssemblyOptions& options,
-                                  const SIQSShadowAssemblyLimits& limits, Splitter&& splitter) {
-    return assemble_siqs_shadow_rows_bounded(SIQSRawRelationCorpusView(raw_relations),
-                                             factor_base_primes, modulus, large_prime_bound,
-                                             options, limits, std::forward<Splitter>(splitter));
+[[nodiscard]] SIQSShadowAssemblyResult assemble_siqs_shadow_rows_bounded(
+    std::span<const SIQSRelation> raw_relations, std::span<const uint32_t> factor_base_primes,
+    const core::Integer& modulus, uint64_t large_prime_bound,
+    const SIQSShadowAssemblyOptions& options, const SIQSShadowAssemblyLimits& limits,
+    Splitter&& splitter, const SIQSDeadline* deadline = nullptr) {
+    return assemble_siqs_shadow_rows_bounded(
+        SIQSRawRelationCorpusView(raw_relations), factor_base_primes, modulus, large_prime_bound,
+        options, limits, std::forward<Splitter>(splitter), deadline);
 }
 
 /// Source-compatible wrapper with the historical unlimited assembly policy.
