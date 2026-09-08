@@ -1,5 +1,7 @@
 #include "distributed_sieve_execution_policy_internal.hpp"
 
+#include <gnfs/sieve/ecore_qos.hpp>
+
 #include <algorithm>
 #include <bit>
 #include <cerrno>
@@ -396,11 +398,8 @@ parse_zero_one_on_off_mode(std::optional<std::string_view> raw) noexcept {
     if (!raw.has_value() || raw->empty() || hardware_concurrency <= 1) {
         return 0;
     }
-    const auto parsed = parse_int32_prefix(*raw);
-    if (!parsed.has_value() || *parsed <= 0) {
-        return 0;
-    }
-    return std::min<std::uint32_t>(static_cast<std::uint32_t>(*parsed), hardware_concurrency - 1U);
+    return static_cast<std::uint32_t>(
+        resolve_ecore_thread_count(static_cast<std::size_t>(hardware_concurrency), *raw));
 }
 
 [[nodiscard]] std::uint32_t parse_stoi_clamped(std::optional<std::string_view> raw,

@@ -670,6 +670,14 @@ void test_lattice_runtime_config_exact_mapping() {
     auto mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
     CHECK(mapped.sieve.fallback_thread_count == 1);
     CHECK(mapped.sieve.ecore_thread_count == 3);
+
+    set_raw(snapshot, Key::sieve_ecore_threads, "2147483648");
+    mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
+    CHECK(mapped.sieve.ecore_thread_count == 7);
+
+    set_raw(snapshot, Key::sieve_ecore_threads, "999999999999999999999999999999999");
+    mapped = map_lattice_runtime_checked(freeze_checked(snapshot));
+    CHECK(mapped.sieve.ecore_thread_count == 7);
     CHECK(!mapped.sieve.enable_tiny_simd);
     CHECK(!mapped.sieve.enable_bucket_prefetch);
 
