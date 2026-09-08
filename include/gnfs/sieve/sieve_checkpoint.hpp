@@ -662,8 +662,9 @@ private:
         if (run_fingerprint_lo == 0 || run_fingerprint_hi == 0) {
             throw std::runtime_error(prefix + "run fingerprints must both be nonzero");
         }
-        if (ooc_format_version != relation::OOCRelationStoreFormat::FORMAT_VERSION_V3) {
-            throw std::runtime_error(prefix + "only paired OOC V3 checkpoints are recoverable");
+        if (ooc_format_version != relation::OOCRelationStoreFormat::FORMAT_VERSION_V3 &&
+            ooc_format_version != relation::OOCRelationStoreFormat::FORMAT_VERSION_V4) {
+            throw std::runtime_error(prefix + "only paired OOC V3/V4 checkpoints are recoverable");
         }
         if (ooc_store_id == 0) {
             throw std::runtime_error(prefix + "ooc_store_id must be nonzero");
@@ -694,7 +695,7 @@ private:
             ((ooc_relation_count == 0) !=
              (ooc_data_end == relation::OOCRelationStoreFormat::DATA_HEADER_BYTES))) {
             throw std::runtime_error(
-                prefix + "OOC V3 empty prefix must end at the physical data header boundary");
+                prefix + "OOC V3/V4 empty prefix must end at the physical data header boundary");
         }
         if (ooc_base_path.empty()) {
             throw std::runtime_error(prefix + "ooc_base_path must not be empty");

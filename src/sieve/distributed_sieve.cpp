@@ -1076,7 +1076,7 @@ std::vector<Relation> run_distributed_sieve_impl(
                 ok = false;
             } else {
                 const gnfs::relation::OOCSnapshotDescriptor expected{
-                    .format_version = gnfs::relation::OOCRelationWriter::FORMAT_VERSION_V3,
+                    .format_version = gnfs::relation::OOCRelationWriter::FORMAT_VERSION_V4,
                     .store_id = report->store_id,
                     .generation = report->generation,
                     .count = report->relation_count,

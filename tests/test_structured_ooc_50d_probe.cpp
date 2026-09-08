@@ -1141,8 +1141,8 @@ void run_probe(const CliOptions& options, ExperimentRecord& record) {
     if (options.strategy == ProbeStrategy::Structured) {
         require(output_scope.has_value(), "finalized OOC result has no artifact scope");
         require(output_scope->descriptor.format_version ==
-                    gnfs::relation::OOCRelationWriter::FORMAT_VERSION_V3,
-                "structured output is not paired OOC V3");
+                    gnfs::relation::OOCRelationWriter::FORMAT_VERSION,
+                "structured output is not paired OOC current format");
         require(output_scope->descriptor.store_id != 0, "structured output store identity is zero");
         require(output_scope->descriptor.count == static_cast<uint64_t>(reduction.size()),
                 "structured output descriptor count differs from reduction size");

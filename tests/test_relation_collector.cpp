@@ -1648,7 +1648,7 @@ void test_ooc_borrowed_prefix_append_and_finalize() {
     CHECK((*first_values)[0] == 1);
     CHECK((*first_values)[1] == 3);
     CHECK((*first_values)[2] == 5);
-    CHECK(first_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION_V3);
+    CHECK(first_descriptor.format_version == OOCRelationWriter::FORMAT_VERSION);
     CHECK(first_descriptor.store_id != 0);
     CHECK(first_descriptor.count == 3);
 
