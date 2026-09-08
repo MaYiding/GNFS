@@ -46,10 +46,12 @@ struct BlockVector {
         std::fill(data.begin(), data.end(), 0);
     }
 
+    /// XOR another block vector in place; both logical vectors must be equal
+    /// in length because their packed entries share the same coordinate space.
     void xor_with(const BlockVector& other) {
         validate_storage();
         other.validate_storage();
-        if (other.length < length) {
+        if (other.length != length) {
             throw std::invalid_argument("BlockVector::xor_with: incompatible lengths");
         }
         for (size_t i = 0; i < length; ++i)
