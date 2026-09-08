@@ -225,6 +225,48 @@ void test_integer_pow_edge_cases() {
     std::cout << "  PASS" << std::endl;
 }
 
+// Native-width integer overloads must remain callable when long/long long do
+// not alias int64_t/uint64_t on the target ABI (macOS versus Linux LP64).
+void test_integer_native_width_overloads() {
+    std::cout << "Testing Integer native-width overloads..." << std::endl;
+
+    const long signed_long = -123L;
+    const unsigned long unsigned_long = 123UL;
+    const long long signed_long_long = -456LL;
+    const unsigned long long unsigned_long_long = 456ULL;
+
+    Integer from_signed_long(signed_long);
+    Integer from_unsigned_long(unsigned_long);
+    Integer from_signed_long_long(signed_long_long);
+    Integer from_unsigned_long_long(unsigned_long_long);
+    assert(from_signed_long.to_int64() == -123);
+    assert(from_unsigned_long.to_uint64() == 123);
+    assert(from_signed_long_long.to_int64() == -456);
+    assert(from_unsigned_long_long.to_uint64() == 456);
+
+    Integer assigned_signed_long;
+    Integer assigned_unsigned_long;
+    Integer assigned_signed_long_long;
+    Integer assigned_unsigned_long_long;
+    assigned_signed_long = signed_long;
+    assigned_unsigned_long = unsigned_long;
+    assigned_signed_long_long = signed_long_long;
+    assigned_unsigned_long_long = unsigned_long_long;
+    assert(assigned_signed_long.to_int64() == -123);
+    assert(assigned_unsigned_long.to_uint64() == 123);
+    assert(assigned_signed_long_long.to_int64() == -456);
+    assert(assigned_unsigned_long_long.to_uint64() == 456);
+
+    Integer assigned_int;
+    Integer assigned_unsigned_int;
+    assigned_int = -789;
+    assigned_unsigned_int = 789u;
+    assert(assigned_int.to_int64() == -789);
+    assert(assigned_unsigned_int.to_uint64() == 789);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 // ─── Integer 加减法 INT64 边界 ────────────────────────────────────────
 
 void test_integer_add_sub_boundary() {
@@ -2438,6 +2480,9 @@ int main() {
 
     // Integer pow/powmod 边界
     test_integer_pow_edge_cases();
+
+    // Integer native-width overloads
+    test_integer_native_width_overloads();
 
     // Integer 加减法 INT64 边界
     test_integer_add_sub_boundary();

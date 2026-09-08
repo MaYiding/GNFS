@@ -15,6 +15,8 @@ namespace gnfs::util {
 /// 超出时自动切换到堆存储
 template <typename T, size_t InlineCapacity> class SmallVector {
     static_assert(InlineCapacity > 0, "InlineCapacity must be positive");
+    static_assert(InlineCapacity <= std::numeric_limits<size_t>::max() / sizeof(T),
+                  "InlineCapacity is too large for the inline storage size");
     // grow() 在异常路径无法回滚 move,要求 T 的 move 构造不抛。
     // 注意:noexcept 默认 move-ctor 包括基本类型、std::string、std::vector、unique_ptr 等。
     static_assert(std::is_nothrow_move_constructible_v<T>,
@@ -114,6 +116,9 @@ public:
     [[nodiscard]] bool is_inline() const noexcept {
         return heap_data_ == nullptr;
     }
+    [[nodiscard]] static constexpr size_t max_size() noexcept {
+        return std::numeric_limits<size_t>::max() / sizeof(T);
+    }
 
     // 元素访问（operator[] 在 Debug 模式下做边界检查）
     [[nodiscard]] T& operator[](size_t i) noexcept {
@@ -184,19 +189,19 @@ public:
 
     // 修改操作
     void push_back(const T& value) {
-        ensure_capacity_for_one_more();
+        ensure_append_capacity();
         new (data() + size_) T(value);
         ++size_;
     }
 
     void push_back(T&& value) {
-        ensure_capacity_for_one_more();
+        ensure_append_capacity();
         new (data() + size_) T(std::move(value));
         ++size_;
     }
 
     template <typename... Args> T& emplace_back(Args&&... args) {
-        ensure_capacity_for_one_more();
+        ensure_append_capacity();
         T* ptr = new (data() + size_) T(std::forward<Args>(args)...);
         ++size_;
         return *ptr;
@@ -266,10 +271,9 @@ private:
 
     void ensure_capacity(size_t required) {
         if (required > capacity_) {
+            check_capacity(required);
             // 至少翻倍增长
-            size_t new_cap = capacity_ > std::numeric_limits<size_t>::max() / 2
-                                 ? std::numeric_limits<size_t>::max()
-                                 : capacity_ * 2;
+            size_t new_cap = capacity_ > max_size() / 2 ? max_size() : capacity_ * 2;
             if (new_cap < required) {
                 new_cap = required;
             }
@@ -277,17 +281,21 @@ private:
         }
     }
 
-    void ensure_capacity_for_one_more() {
-        if (size_ == std::numeric_limits<size_t>::max()) {
-            throw std::length_error("SmallVector size overflow");
+    void ensure_append_capacity() {
+        if (size_ == max_size()) {
+            throw std::length_error("SmallVector size exceeds max_size");
         }
         ensure_capacity(size_ + 1);
     }
 
-    void grow(size_t new_cap) {
-        if (new_cap > std::numeric_limits<size_t>::max() / sizeof(T)) {
-            throw std::length_error("SmallVector capacity exceeds allocation limit");
+    static void check_capacity(size_t capacity) {
+        if (capacity > max_size()) {
+            throw std::length_error("SmallVector capacity exceeds max_size");
         }
+    }
+
+    void grow(size_t new_cap) {
+        check_capacity(new_cap);
         T* new_data = static_cast<T*>(::operator new(sizeof(T) * new_cap));
 
         // 移动旧元素
