@@ -121,9 +121,22 @@ public:
         if (f_coeffs_.empty() || p == 0)
             return 0;
 
-        // mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1] (zero alloc)
-        auto get_coeff_mod_p = [p](const Integer& coeff) -> uint64_t {
-            return static_cast<uint64_t>(mpz_fdiv_ui(coeff.get_mpz(), p));
+        // mpz_fdiv_ui accepts unsigned long, which is only 32 bits on
+        // Windows LLP64. Keep the allocation-free fast path for ordinary
+        // factor-base primes, but use a GMP Integer modulus when p is wider.
+        const bool p_fits_ulong = p <= (std::numeric_limits<unsigned long>::max)();
+        const unsigned long p_ulong = static_cast<unsigned long>(p);
+        Integer p_value;
+        Integer coeff_remainder;
+        if (!p_fits_ulong) {
+            p_value = p;
+        }
+        auto get_coeff_mod_p = [&](const Integer& coeff) -> uint64_t {
+            if (p_fits_ulong) {
+                return static_cast<uint64_t>(mpz_fdiv_ui(coeff.get_mpz(), p_ulong));
+            }
+            mpz_fdiv_r(coeff_remainder.get_mpz(), coeff.get_mpz(), p_value.get_mpz());
+            return coeff_remainder.to_uint64();
         };
 
         uint64_t result = get_coeff_mod_p(f_coeffs_[degree_]);
@@ -131,7 +144,7 @@ public:
         for (int i = static_cast<int>(degree_) - 1; i >= 0; --i) {
             result = gnfs::util::mul_mod_u64(result, x, p);
             uint64_t ci = get_coeff_mod_p(f_coeffs_[static_cast<size_t>(i)]);
-            result = (result + ci) % p;
+            result = gnfs::util::add_mod_u64(result, ci, p);
         }
         return result;
     }
@@ -167,11 +180,24 @@ public:
             b_powers = ws_b_powers_heap.data();
         }
 
+        // GMP's *_ui APIs accept unsigned long, which is only 32 bits on
+        // Windows LLP64.  Keep the full uint64_t operand for wide b values.
+        const bool b_fits_ulong = b <= std::numeric_limits<unsigned long>::max();
+        Integer b_value;
+        if (!b_fits_ulong) {
+            b_value = b;
+        }
+
         Integer result; // return value — must be independent (thread_local can't escape)
         ws_a_power = int64_t(1);
         b_powers[0] = int64_t(1);
         for (uint32_t i = 1; i <= degree_; ++i) {
-            mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(), b);
+            if (b_fits_ulong) {
+                mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(),
+                           static_cast<unsigned long>(b));
+            } else {
+                mpz_mul(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(), b_value.get_mpz());
+            }
         }
 
         // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
@@ -194,17 +220,44 @@ public:
 #if defined(__SIZEOF_INT128__)
         // uint64 快路径: 当 m fits uint64 且结果 fits int64 时避免 GMP
         if (m_.fits_uint64()) {
-            __int128 result = static_cast<__int128>(a) -
-                              static_cast<__int128>(b) * static_cast<__int128>(m_.to_uint64());
-            // int64 range: [-2^63, 2^63)
-            if (result >= INT64_MIN && result <= INT64_MAX) {
-                return Integer(static_cast<int64_t>(result));
+            // Use an unsigned product: uint64_t * uint64_t can exceed the
+            // signed __int128 range, and overflowing that multiplication is
+            // undefined behaviour before the slow path can be selected.
+            const __uint128_t product =
+                static_cast<__uint128_t>(b) * static_cast<__uint128_t>(m_.to_uint64());
+            constexpr __uint128_t int64_min_magnitude = static_cast<__uint128_t>(1) << 63;
+
+            __uint128_t magnitude;
+            if (a >= 0) {
+                const uint64_t a_value = static_cast<uint64_t>(a);
+                if (product <= a_value) {
+                    return Integer(static_cast<int64_t>(a_value - static_cast<uint64_t>(product)));
+                }
+                magnitude = product - a_value;
+            } else {
+                const uint64_t a_magnitude = static_cast<uint64_t>(-(a + 1)) + 1;
+                magnitude = product + a_magnitude;
+            }
+
+            // Negative results are representable through INT64_MIN's
+            // asymmetric magnitude, which is handled without negating it.
+            if (magnitude <= int64_min_magnitude) {
+                if (magnitude == int64_min_magnitude) {
+                    return Integer(std::numeric_limits<int64_t>::min());
+                }
+                return Integer(-static_cast<int64_t>(magnitude));
             }
         }
 #endif
-        // mpz_submul_ui: result -= m_ * b (fused FMS, drops bm temp)
+        // mpz_submul_ui is the fast path when unsigned long can represent b;
+        // use mpz_submul with an Integer operand on Windows LLP64.
         Integer result(a);
-        mpz_submul_ui(result.get_mpz(), m_.get_mpz(), b);
+        if (b <= std::numeric_limits<unsigned long>::max()) {
+            mpz_submul_ui(result.get_mpz(), m_.get_mpz(), static_cast<unsigned long>(b));
+        } else {
+            Integer b_value(b);
+            mpz_submul(result.get_mpz(), m_.get_mpz(), b_value.get_mpz());
+        }
         return result;
     }
 
@@ -213,12 +266,18 @@ public:
     [[nodiscard]] std::pair<uint64_t, bool> rational_value_abs_u64(int64_t a, uint64_t b) const {
 #if defined(__SIZEOF_INT128__)
         if (m_.fits_uint64()) {
-            __int128 val = static_cast<__int128>(a) -
-                           static_cast<__int128>(b) * static_cast<__int128>(m_.to_uint64());
-            if (val < 0)
-                val = -val;
-            if (val <= static_cast<__int128>(UINT64_MAX)) {
-                return {static_cast<uint64_t>(val), true};
+            const __uint128_t product =
+                static_cast<__uint128_t>(b) * static_cast<__uint128_t>(m_.to_uint64());
+            __uint128_t magnitude;
+            if (a >= 0) {
+                const uint64_t a_value = static_cast<uint64_t>(a);
+                magnitude = product >= a_value ? product - a_value : a_value - product;
+            } else {
+                const uint64_t a_magnitude = static_cast<uint64_t>(-(a + 1)) + 1;
+                magnitude = product + a_magnitude;
+            }
+            if (magnitude <= static_cast<__uint128_t>(UINT64_MAX)) {
+                return {static_cast<uint64_t>(magnitude), true};
             }
         }
 #else

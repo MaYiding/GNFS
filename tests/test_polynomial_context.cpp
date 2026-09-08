@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 using namespace gnfs::core;
@@ -189,6 +190,48 @@ void test_n_digits() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_uint64_portability_and_overflow_boundaries() {
+    std::cout << "Testing uint64_t portability and overflow boundaries..." << std::endl;
+
+    // f(x) = x^2 - 1, m = 2, n = 3.  The expected values intentionally use
+    // GMP-backed Integer arithmetic so this also catches truncation of b on
+    // Windows LLP64, where unsigned long is only 32 bits.
+    std::vector<Integer> coeffs = {Integer(-1), Integer(0), Integer(1)};
+    PolynomialContext ctx(Integer(3), std::move(coeffs), Integer(2));
+
+    const uint64_t wide_b = uint64_t{1} << 34;
+    const uint64_t max_b = std::numeric_limits<uint64_t>::max();
+
+    Integer expected_rational = Integer(wide_b) * Integer(2);
+    expected_rational.negate();
+    GNFS_TEST_CHECK(ctx.rational_value(0, wide_b) == expected_rational);
+
+    auto [abs_value, abs_fits] = ctx.rational_value_abs_u64(0, wide_b);
+    GNFS_TEST_CHECK(abs_fits && abs_value == wide_b * 2);
+
+    Integer expected_norm = Integer(max_b) * Integer(max_b);
+    expected_norm.negate();
+    GNFS_TEST_CHECK(ctx.algebraic_norm(0, max_b) == expected_norm);
+
+    Integer expected_max_rational = Integer(max_b) * Integer(2);
+    expected_max_rational.negate();
+    GNFS_TEST_CHECK(ctx.rational_value(0, max_b) == expected_max_rational);
+
+    // A signed __int128 product cannot hold max_b * max_b.  The fast path
+    // must therefore report "does not fit" without invoking signed overflow.
+    auto [abs_max, abs_max_fits] = ctx.rational_value_abs_u64(0, max_b);
+    GNFS_TEST_CHECK(!abs_max_fits && abs_max == 0);
+
+    // Horner addition must remain correct when result + coefficient exceeds
+    // UINT64_MAX before reduction.  f(x) = x + (p - 1) at x = p - 1.
+    const uint64_t modulus = std::numeric_limits<uint64_t>::max() - 58;
+    std::vector<Integer> linear_coeffs = {Integer(modulus - 1), Integer(1)};
+    PolynomialContext linear(Integer(1), std::move(linear_coeffs), Integer(0));
+    GNFS_TEST_CHECK(linear.evaluate_mod(modulus - 1, modulus) == modulus - 2);
+
+    std::cout << "  uint64_t and modular overflow boundaries: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "=== PolynomialContext Unit Tests ===" << std::endl;
 
@@ -205,6 +248,7 @@ int main() {
     test_trailing_zero_removal();
     test_empty_poly_throws();
     test_n_digits();
+    test_uint64_portability_and_overflow_boundaries();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
