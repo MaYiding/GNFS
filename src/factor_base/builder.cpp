@@ -1,4 +1,5 @@
 #include "gnfs/factor_base/builder.hpp"
+#include "gnfs/factor_base/fb_roots_parallel.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 #include "gnfs/util/primes.hpp"
 #include <algorithm>
@@ -374,8 +375,8 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     // 把 B 限到 1e9,这层是 future-proof 防御。
     if (opts.special_q_bound > opts.algebraic_bound && opts.algebraic_bound < UINT32_MAX) {
         const uint32_t special_q_min = std::max<uint32_t>(opts.algebraic_bound + 1, 2);
-        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound,
-                                    opts.log_scale, opts.parallel);
+        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound, opts.log_scale,
+                                    opts.parallel);
     }
 
     fb.build_index();
@@ -527,8 +528,7 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
 }
 
 void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                              uint32_t bound, uint8_t log_scale,
-                                              bool parallel,
+                                              uint32_t bound, uint8_t log_scale, bool parallel,
                                               const std::vector<bool>* shared_sieve) {
     if (bound < 2)
         return;
@@ -563,62 +563,44 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
     }
 
     // Step 2: Parallel root finding
-    // Each thread processes a chunk of primes, collecting (p, r, log_p) entries
+    // Each prime is an independent CZ/root-finding task. Keep one result
+    // vector per input prime so the dispatcher can write disjoint slots while
+    // the final flattening preserves the historical prime order.
     struct AlgEntry {
         uint32_t p, r, log_p;
     };
 
-    size_t n_threads = parallel ? std::thread::hardware_concurrency() : 1;
-    if (n_threads == 0)
-        n_threads = 4;
-    if (primes.size() < 200)
-        n_threads = 1;
-
-    std::vector<std::vector<AlgEntry>> thread_results(n_threads);
-
-    auto worker = [&](size_t tid) {
-        size_t chunk = primes.size() / n_threads;
-        size_t start = tid * chunk;
-        size_t end = (tid == n_threads - 1) ? primes.size() : start + chunk;
-
-        auto& local = thread_results[tid];
-        local.reserve((end - start) * 2); // ~2 entries per prime avg
-
-        for (size_t i = start; i < end; ++i) {
-            uint32_t p = primes[i];
-            auto roots = find_roots_mod_p_unchecked(ctx, p);
-            uint32_t lp = compute_log_prime_precise(p, log_scale);
-
-            for (uint32_t root : roots) {
-                local.push_back({p, root, lp});
-            }
-
-            // Projective root
-            bool has_proj = false;
-            if (fd_fits) {
-                has_proj = (fd_u64 % p == 0);
-            } else {
-                has_proj = mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), p) != 0;
-            }
-            if (has_proj) {
-                local.push_back({p, core::AlgebraicPrime::PROJECTIVE_ROOT, lp});
-            }
+    const auto worker = [&](uint32_t p) {
+        std::vector<AlgEntry> entries;
+        auto roots = find_roots_mod_p_unchecked(ctx, p);
+        const uint32_t lp = compute_log_prime_precise(p, log_scale);
+        entries.reserve(roots.size() + 1);
+        for (uint32_t root : roots) {
+            entries.push_back({p, root, lp});
         }
+
+        // Projective root
+        const bool has_proj = fd_fits ? (fd_u64 % p == 0)
+                                      : (mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), p) != 0);
+        if (has_proj) {
+            entries.push_back({p, core::AlgebraicPrime::PROJECTIVE_ROOT, lp});
+        }
+        return entries;
     };
 
-    if (n_threads <= 1) {
-        worker(0);
+    std::vector<std::vector<AlgEntry>> per_prime;
+    if (parallel && primes.size() >= 200) {
+        per_prime = parallel_fb_roots<std::vector<AlgEntry>>(primes, worker);
     } else {
-        std::vector<std::thread> threads;
-        threads.reserve(n_threads);
-        for (size_t t = 0; t < n_threads; ++t)
-            threads.emplace_back(worker, t);
-        for (auto& t : threads)
-            t.join();
+        per_prime.reserve(primes.size());
+        for (uint32_t p : primes) {
+            per_prime.push_back(worker(p));
+        }
     }
 
-    // Step 3: Merge in prime order (threads process consecutive chunks, already sorted)
-    for (auto& local : thread_results) {
+    // Step 3: Merge in prime order. The per-prime dispatcher guarantees that
+    // result[i] corresponds to primes[i] regardless of worker count.
+    for (auto& local : per_prime) {
         for (auto& e : local) {
             fb.add_algebraic(e.p, e.r, e.log_p, 1);
         }
@@ -859,57 +841,41 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
         primes.push_back(p32);
     }
 
-    // Step 2: Parallel root finding
+    // Step 2: Parallel root finding. See find_algebraic_primes() above for
+    // the per-prime ordering and GNFS_FB_ROOTS_THREADS contract.
     struct AlgEntry {
         uint32_t p, r, log_p;
     };
 
-    size_t n_threads = parallel ? std::thread::hardware_concurrency() : 1;
-    if (n_threads == 0)
-        n_threads = 4;
-    if (primes.size() < 200)
-        n_threads = 1;
-
-    std::vector<std::vector<AlgEntry>> thread_results(n_threads);
-
-    auto worker = [&](size_t tid) {
-        size_t chunk = primes.size() / n_threads;
-        size_t start = tid * chunk;
-        size_t end = (tid == n_threads - 1) ? primes.size() : start + chunk;
-
-        auto& local = thread_results[tid];
-        local.reserve((end - start) * 2);
-
-        for (size_t i = start; i < end; ++i) {
-            uint32_t p = primes[i];
-            auto roots = find_roots_mod_p_unchecked(ctx, p);
-            uint32_t lp = compute_log_prime_precise(p, log_scale);
-
-            for (uint32_t root : roots) {
-                local.push_back({p, root, lp});
-            }
-
-            bool has_proj = fd_fits ? (fd_u64 % p == 0)
-                                    : (mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), p) != 0);
-            if (has_proj) {
-                local.push_back({p, core::AlgebraicPrime::PROJECTIVE_ROOT, lp});
-            }
+    const auto worker = [&](uint32_t p) {
+        std::vector<AlgEntry> entries;
+        auto roots = find_roots_mod_p_unchecked(ctx, p);
+        const uint32_t lp = compute_log_prime_precise(p, log_scale);
+        entries.reserve(roots.size() + 1);
+        for (uint32_t root : roots) {
+            entries.push_back({p, root, lp});
         }
+
+        const bool has_proj = fd_fits ? (fd_u64 % p == 0)
+                                      : (mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), p) != 0);
+        if (has_proj) {
+            entries.push_back({p, core::AlgebraicPrime::PROJECTIVE_ROOT, lp});
+        }
+        return entries;
     };
 
-    if (n_threads <= 1) {
-        worker(0);
+    std::vector<std::vector<AlgEntry>> per_prime;
+    if (parallel && primes.size() >= 200) {
+        per_prime = parallel_fb_roots<std::vector<AlgEntry>>(primes, worker);
     } else {
-        std::vector<std::thread> threads;
-        threads.reserve(n_threads);
-        for (size_t t = 0; t < n_threads; ++t)
-            threads.emplace_back(worker, t);
-        for (auto& t : threads)
-            t.join();
+        per_prime.reserve(primes.size());
+        for (uint32_t p : primes) {
+            per_prime.push_back(worker(p));
+        }
     }
 
-    // Step 3: Merge (thread chunks are consecutive, preserving prime order)
-    for (auto& local : thread_results) {
+    // Step 3: Merge in prime order.
+    for (auto& local : per_prime) {
         for (auto& e : local) {
             fb.add_algebraic(e.p, e.r, e.log_p, 1);
         }

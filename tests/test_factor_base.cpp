@@ -1,4 +1,5 @@
 #include "gnfs/factor_base/builder.hpp"
+#include "gnfs/factor_base/fb_roots_parallel.hpp"
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 #include "support/test_check.hpp"
@@ -19,6 +20,22 @@ using namespace gnfs::core;
 
 // 测试用的半素数: 1000003 * 1000033 = 1000036000099
 const char* test_n = "1000036000099";
+
+static void set_fb_roots_env(const char* value) {
+#if defined(_WIN32)
+    if (value == nullptr) {
+        _putenv_s("GNFS_FB_ROOTS_THREADS", "");
+    } else {
+        _putenv_s("GNFS_FB_ROOTS_THREADS", value);
+    }
+#else
+    if (value == nullptr) {
+        unsetenv("GNFS_FB_ROOTS_THREADS");
+    } else {
+        setenv("GNFS_FB_ROOTS_THREADS", value, 1);
+    }
+#endif
+}
 
 void test_prime_sieve() {
     std::cout << "Testing prime sieve..." << std::endl;
@@ -347,6 +364,74 @@ void test_parallel_build() {
 
     std::cout << "  Parallel build: PASS (seq=" << fb_seq.rational_count()
               << ", par=" << fb_par.rational_count() << " rationals)" << std::endl;
+}
+
+void test_builder_root_worker_cap() {
+    std::cout << "Testing builder GNFS_FB_ROOTS_THREADS integration..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    };
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    require(result.success, "base-m selection failed for worker-cap test");
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options options;
+    options.rational_bound = 4000;
+    options.algebraic_bound = 4000;
+    options.special_q_bound = 10000;
+    options.parallel = true;
+
+    const auto build_with_env = [&](const char* value, bool parallel) {
+        set_fb_roots_env(value);
+        gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
+        options.parallel = parallel;
+        return FactorBaseBuilder::build(ctx, options);
+    };
+
+    // The explicit sequential cap and an explicit multi-worker cap must retain
+    // the same prime/root order as the legacy default path.
+    auto sequential = build_with_env("1", true);
+    auto parallel = build_with_env("4", true);
+    auto default_path = build_with_env(nullptr, true);
+    require(sequential.rational_count() == parallel.rational_count() &&
+                sequential.rational_count() == default_path.rational_count(),
+            "worker cap changed rational-prime count");
+    require(sequential.algebraic_count() == parallel.algebraic_count() &&
+                sequential.algebraic_count() == default_path.algebraic_count(),
+            "worker cap changed algebraic-prime count");
+    for (size_t i = 0; i < sequential.algebraic_count(); ++i) {
+        const auto& expected = sequential.algebraic()[i];
+        require(expected.p == parallel.algebraic()[i].p &&
+                    expected.r == parallel.algebraic()[i].r &&
+                    expected.log_p == parallel.algebraic()[i].log_p &&
+                    expected.degree == parallel.algebraic()[i].degree,
+                "worker cap changed explicit parallel root ordering");
+        require(expected.p == default_path.algebraic()[i].p &&
+                    expected.r == default_path.algebraic()[i].r &&
+                    expected.log_p == default_path.algebraic()[i].log_p &&
+                    expected.degree == default_path.algebraic()[i].degree,
+                "worker cap changed default root ordering");
+    }
+
+    // Options::parallel=false is a stronger C++ caller contract and must not
+    // accidentally spawn a pool just because the environment requests one.
+    auto disabled = build_with_env("4", false);
+    require(disabled.algebraic_count() == sequential.algebraic_count(),
+            "parallel=false changed algebraic-prime count");
+    for (size_t i = 0; i < sequential.algebraic_count(); ++i) {
+        require(disabled.algebraic()[i].p == sequential.algebraic()[i].p &&
+                    disabled.algebraic()[i].r == sequential.algebraic()[i].r &&
+                    disabled.algebraic()[i].log_p == sequential.algebraic()[i].log_p &&
+                    disabled.algebraic()[i].degree == sequential.algebraic()[i].degree,
+                "parallel=false changed root ordering");
+    }
+
+    set_fb_roots_env(nullptr);
+    gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
+    std::cout << "  Builder worker cap: PASS (default, N=1, N=4, parallel=false)" << std::endl;
 }
 
 void test_larger_bound() {
@@ -951,6 +1036,7 @@ int main() {
     test_log_values();
     test_zero_and_one_bounds();
     test_parallel_build();
+    test_builder_root_worker_cap();
     test_larger_bound();
     test_segmented_parallel_sieve();
     test_base_m_irreducibility();

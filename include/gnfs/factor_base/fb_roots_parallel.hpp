@@ -44,10 +44,10 @@
 //   `worker_fn(primes[i])` regardless of thread count, so sequential and
 //   parallel paths produce identical `std::vector<Result>` outputs.
 //
-// Non-goals:
-//   * We do NOT modify `src/factor_base/builder.cpp` — this helper is opt-in
-//     infrastructure for future wire-in. The production CZ loop keeps its
-//     existing `std::thread::hardware_concurrency()` behaviour.
+// Integration boundary:
+//   * `src/factor_base/builder.cpp` uses this dispatcher for both ordinary
+//     algebraic-prime and special-Q range root finding. The default (unset or
+//     zero-valued env) keeps the legacy hardware-concurrency worker count.
 //   * We do NOT change the inner CZ algorithm. Only outer dispatch changes.
 //   * We do NOT impose synchronisation requirements beyond "worker_fn writes
 //     no shared mutable state" — the helper does not own GMP buffers and
