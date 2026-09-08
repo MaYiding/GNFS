@@ -2,8 +2,10 @@
 
 #include "../core/integer.hpp"
 #include "../util/primes.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -49,7 +51,10 @@ public:
     /// Set coefficient
     void set_coeff(size_t i, uint64_t value) {
         if (coeffs_.size() <= i) {
-            coeffs_.resize(i + 1, 0);  // single resize replaces N push_back(0) loop
+            if (i == std::numeric_limits<size_t>::max()) {
+                throw std::length_error("ModularPoly::set_coeff index is too large");
+            }
+            coeffs_.resize(i + 1, 0); // single resize replaces N push_back(0) loop
         }
         coeffs_[i] = value;
         normalize();
@@ -72,13 +77,12 @@ public:
 
     /// Addition mod p
     [[nodiscard]] static ModularPoly add(const ModularPoly& a, const ModularPoly& b, uint64_t p) {
+        validate_modulus(p);
         size_t max_size = std::max(a.coeffs_.size(), b.coeffs_.size());
         std::vector<uint64_t> result(max_size);
 
         for (size_t i = 0; i < max_size; ++i) {
-            uint64_t ai = a.coeff(i), bi = b.coeff(i);
-            // Overflow-safe addition: avoid ai + bi > UINT64_MAX when p >= 2^63
-            result[i] = (ai >= p - bi) ? ai - (p - bi) : ai + bi;
+            result[i] = gnfs::util::add_mod_u64(a.coeff(i), b.coeff(i), p);
         }
 
         return ModularPoly(std::move(result));
@@ -86,12 +90,13 @@ public:
 
     /// Subtraction mod p
     [[nodiscard]] static ModularPoly sub(const ModularPoly& a, const ModularPoly& b, uint64_t p) {
+        validate_modulus(p);
         size_t max_size = std::max(a.coeffs_.size(), b.coeffs_.size());
         std::vector<uint64_t> result(max_size);
 
         for (size_t i = 0; i < max_size; ++i) {
-            uint64_t ai = a.coeff(i);
-            uint64_t bi = b.coeff(i);
+            const uint64_t ai = a.coeff(i) % p;
+            const uint64_t bi = b.coeff(i) % p;
             result[i] = ai >= bi ? ai - bi : p - (bi - ai);
         }
 
@@ -100,6 +105,7 @@ public:
 
     /// Scalar multiplication mod p
     [[nodiscard]] static ModularPoly scalar_mul(const ModularPoly& a, uint64_t c, uint64_t p) {
+        validate_modulus(p);
         std::vector<uint64_t> result(a.coeffs_.size());
 
         for (size_t i = 0; i < a.coeffs_.size(); ++i) {
@@ -110,20 +116,27 @@ public:
     }
 
     /// Polynomial multiplication mod p (no reduction by f)
-    [[nodiscard]] static ModularPoly mul_raw(const ModularPoly& a, const ModularPoly& b, uint64_t p) {
+    [[nodiscard]] static ModularPoly mul_raw(const ModularPoly& a, const ModularPoly& b,
+                                             uint64_t p) {
+        validate_modulus(p);
         if (a.is_zero() || b.is_zero()) {
             return ModularPoly();
         }
 
+        if (b.coeffs_.size() > std::numeric_limits<size_t>::max() - (a.coeffs_.size() - 1)) {
+            throw std::length_error("ModularPoly::mul_raw result is too large");
+        }
         size_t result_size = a.coeffs_.size() + b.coeffs_.size() - 1;
         std::vector<uint64_t> result(result_size, 0);
 
         for (size_t i = 0; i < a.coeffs_.size(); ++i) {
-            if (a.coeffs_[i] == 0) continue;
+            if (a.coeffs_[i] == 0)
+                continue;
             for (size_t j = 0; j < b.coeffs_.size(); ++j) {
-                if (b.coeffs_[j] == 0) continue;
+                if (b.coeffs_[j] == 0)
+                    continue;
                 uint64_t prod = mul_mod(a.coeffs_[i], b.coeffs_[j], p);
-                result[i + j] = (result[i + j] + prod) % p;
+                result[i + j] = gnfs::util::add_mod_u64(result[i + j], prod, p);
             }
         }
 
@@ -132,11 +145,8 @@ public:
 
     /// Polynomial multiplication mod f(x) and mod p
     /// f need not be monic; leading coefficient must be invertible mod p
-    [[nodiscard]] static ModularPoly mul(
-            const ModularPoly& a,
-            const ModularPoly& b,
-            const std::vector<uint64_t>& f,
-            uint64_t p) {
+    [[nodiscard]] static ModularPoly mul(const ModularPoly& a, const ModularPoly& b,
+                                         const std::vector<uint64_t>& f, uint64_t p) {
 
         auto product = mul_raw(a, b, p);
         return reduce(product, f, p);
@@ -144,16 +154,22 @@ public:
 
     /// Reduce polynomial mod f(x) and mod p
     /// Handles both monic and non-monic f via modular inverse of leading coeff
-    [[nodiscard]] static ModularPoly reduce(
-            const ModularPoly& a,
-            const std::vector<uint64_t>& f,
-            uint64_t p) {
+    [[nodiscard]] static ModularPoly reduce(const ModularPoly& a, const std::vector<uint64_t>& f,
+                                            uint64_t p) {
 
-        if (a.coeffs_.size() < f.size()) {
-            return a;
+        validate_modulus(p);
+        if (f.empty()) {
+            throw std::invalid_argument("ModularPoly::reduce requires a modulus polynomial");
+        }
+        if (f.size() - 1 > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            throw std::length_error("ModularPoly::reduce modulus polynomial is too large");
         }
 
-        std::vector<uint64_t> result = a.coeffs_;
+        std::vector<uint64_t> result = normalized_coefficients(a.coeffs_, p);
+        if (result.size() < f.size()) {
+            return ModularPoly(std::move(result));
+        }
+
         int f_deg = static_cast<int>(f.size()) - 1;
 
         // Inverse of leading coefficient: α^d = -(f[0]+...+f[d-1]α^{d-1}) / f[d]
@@ -168,7 +184,8 @@ public:
             uint64_t lead = result.back();
             result.pop_back();
 
-            if (lead == 0) continue;
+            if (lead == 0)
+                continue;
 
             // Scale by inverse of leading coefficient
             uint64_t lead_scaled = mul_mod(lead, f_lead_inv, p);
@@ -196,19 +213,20 @@ public:
     }
 
     /// Power mod f(x) and mod p using binary exponentiation
-    [[nodiscard]] static ModularPoly power(
-            const ModularPoly& base,
-            const Integer& exp,
-            const std::vector<uint64_t>& f,
-            uint64_t p) {
+    [[nodiscard]] static ModularPoly power(const ModularPoly& base, const Integer& exp,
+                                           const std::vector<uint64_t>& f, uint64_t p) {
 
+        validate_modulus(p);
+        if (exp.is_negative()) {
+            throw std::invalid_argument("ModularPoly::power requires a non-negative exponent");
+        }
         if (exp.is_zero()) {
             return ModularPoly(1);
         }
 
         ModularPoly result(1);
-        ModularPoly b = base;
-        Integer e = exp;  // copy ctor
+        ModularPoly b(normalized_coefficients(base.coeffs_, p));
+        Integer e = exp; // copy ctor
 
         while (!e.is_zero()) {
             if (e.is_odd()) {
@@ -222,13 +240,11 @@ public:
     }
 
     /// GCD of two polynomials mod p
-    [[nodiscard]] static ModularPoly gcd(
-            const ModularPoly& a,
-            const ModularPoly& b,
-            uint64_t p) {
+    [[nodiscard]] static ModularPoly gcd(const ModularPoly& a, const ModularPoly& b, uint64_t p) {
 
-        ModularPoly x = a;
-        ModularPoly y = b;
+        validate_modulus(p);
+        ModularPoly x(normalized_coefficients(a.coeffs_, p));
+        ModularPoly y(normalized_coefficients(b.coeffs_, p));
 
         while (!y.is_zero()) {
             auto [q, r] = divmod(x, y, p);
@@ -239,6 +255,9 @@ public:
         // Make monic
         if (!x.is_zero() && x.coeffs_.back() != 1) {
             uint64_t inv = mod_inverse(x.coeffs_.back(), p);
+            if (inv == 0) {
+                throw std::invalid_argument("ModularPoly::gcd non-invertible leading coefficient");
+            }
             x = scalar_mul(x, inv, p);
         }
 
@@ -246,34 +265,45 @@ public:
     }
 
     /// Division with remainder mod p
-    [[nodiscard]] static std::pair<ModularPoly, ModularPoly> divmod(
-            const ModularPoly& a,
-            const ModularPoly& b,
-            uint64_t p) {
+    [[nodiscard]] static std::pair<ModularPoly, ModularPoly>
+    divmod(const ModularPoly& a, const ModularPoly& b, uint64_t p) {
 
-        if (b.is_zero()) {
+        validate_modulus(p);
+        const std::vector<uint64_t> normalized_a = normalized_coefficients(a.coeffs_, p);
+        const std::vector<uint64_t> normalized_b = normalized_coefficients(b.coeffs_, p);
+        if (normalized_b.empty()) {
             throw std::runtime_error("Division by zero polynomial");
         }
 
-        if (a.degree() < b.degree()) {
-            return {ModularPoly(), a};
+        if (normalized_a.size() < normalized_b.size()) {
+            return {ModularPoly(), ModularPoly(normalized_a)};
+        }
+        if (normalized_a.size() - 1 > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            normalized_b.size() - 1 > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            throw std::length_error("ModularPoly::divmod polynomial is too large");
         }
 
-        std::vector<uint64_t> rem = a.coeffs_;
-        std::vector<uint64_t> quot(static_cast<size_t>(a.degree() - b.degree() + 1), 0);
+        const int a_degree = static_cast<int>(normalized_a.size()) - 1;
+        const int b_degree = static_cast<int>(normalized_b.size()) - 1;
+        std::vector<uint64_t> rem = normalized_a;
+        std::vector<uint64_t> quot(static_cast<size_t>(a_degree - b_degree + 1), 0);
 
-        uint64_t b_lead_inv = mod_inverse(b.coeffs_.back(), p);
+        uint64_t b_lead_inv = mod_inverse(normalized_b.back(), p);
+        if (b_lead_inv == 0) {
+            throw std::invalid_argument("ModularPoly::divmod non-invertible leading coefficient");
+        }
 
-        for (int i = a.degree(); i >= b.degree(); --i) {
+        for (int i = a_degree; i >= b_degree; --i) {
             const size_t i_idx = static_cast<size_t>(i);
-            if (rem[i_idx] == 0) continue;
+            if (rem[i_idx] == 0)
+                continue;
 
             uint64_t c = mul_mod(rem[i_idx], b_lead_inv, p);
-            quot[static_cast<size_t>(i - b.degree())] = c;
+            quot[static_cast<size_t>(i - b_degree)] = c;
 
-            for (int j = 0; j <= b.degree(); ++j) {
-                const size_t rem_idx = static_cast<size_t>(i - b.degree() + j);
-                uint64_t term = mul_mod(c, b.coeffs_[static_cast<size_t>(j)], p);
+            for (int j = 0; j <= b_degree; ++j) {
+                const size_t rem_idx = static_cast<size_t>(i - b_degree + j);
+                uint64_t term = mul_mod(c, normalized_b[static_cast<size_t>(j)], p);
                 if (rem[rem_idx] >= term) {
                     rem[rem_idx] -= term;
                 } else {
@@ -286,10 +316,14 @@ public:
     }
 
     /// Compute Frobenius map: a(x) -> a(x^p) mod f(x) mod p
-    [[nodiscard]] static ModularPoly frobenius(
-            const ModularPoly& a,
-            const std::vector<uint64_t>& f,
-            uint64_t p) {
+    [[nodiscard]] static ModularPoly frobenius(const ModularPoly& a, const std::vector<uint64_t>& f,
+                                               uint64_t p) {
+
+        validate_modulus(p);
+        if (f.empty()) {
+            throw std::invalid_argument("ModularPoly::frobenius requires a modulus polynomial");
+        }
+        ModularPoly normalized_a(normalized_coefficients(a.coeffs_, p));
 
         // x^p mod f(x) mod p
         ModularPoly x_to_p;
@@ -297,12 +331,12 @@ public:
         x_to_p = power(x_to_p, Integer(p), f, p);
 
         // Compute a(x^p) by substitution
-        ModularPoly result(a.coeff(0));
+        ModularPoly result(normalized_a.coeff(0));
         ModularPoly x_p_power(1);
 
-        for (int i = 1; i <= a.degree(); ++i) {
+        for (int i = 1; i <= normalized_a.degree(); ++i) {
             x_p_power = mul(x_p_power, x_to_p, f, p);
-            auto term = scalar_mul(x_p_power, a.coeff(static_cast<size_t>(i)), p);
+            auto term = scalar_mul(x_p_power, normalized_a.coeff(static_cast<size_t>(i)), p);
             result = add(result, term, p);
         }
 
@@ -311,30 +345,45 @@ public:
 
     /// Check if polynomial is a square in F_p[x]/f(x)
     /// Uses Euler's criterion: a^((p^d - 1)/2) = 1 iff a is square
-    [[nodiscard]] static bool is_square(
-            const ModularPoly& a,
-            const std::vector<uint64_t>& f,
-            uint64_t p) {
+    [[nodiscard]] static bool is_square(const ModularPoly& a, const std::vector<uint64_t>& f,
+                                        uint64_t p) {
 
-        if (a.is_zero()) return true;
-        if (a.is_one()) return true;
+        validate_modulus(p);
+        if (f.size() < 2) {
+            throw std::invalid_argument(
+                "ModularPoly::is_square requires a positive-degree modulus");
+        }
+        if (f.size() - 1 > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            throw std::length_error("ModularPoly::is_square modulus polynomial is too large");
+        }
+        if (f.back() % p == 0) {
+            throw std::invalid_argument(
+                "ModularPoly::is_square requires an invertible leading coefficient");
+        }
+        ModularPoly normalized_a(normalized_coefficients(a.coeffs_, p));
+        if (normalized_a.is_zero())
+            return true;
+        if (normalized_a.is_one())
+            return true;
 
         // Characteristic 2: Frobenius x→x² is a bijection on F_{2^d}
         // (mult group order 2^d-1 is odd → squaring is an automorphism).
         // Every element is a square.
-        if (p == 2) return true;
+        if (p == 2)
+            return true;
 
         int d = static_cast<int>(f.size()) - 1;
 
         // Compute (p^d - 1) / 2
         Integer pd(1);
+        const Integer p_integer(p);
         for (int i = 0; i < d; ++i) {
-            pd *= static_cast<int64_t>(p);  // mpz_mul_si direct, no tmp
+            pd *= p_integer;
         }
-        pd -= int64_t(1);  // mpz_sub_ui direct
+        pd -= int64_t(1); // mpz_sub_ui direct
         mpz_tdiv_q_2exp(pd.get_mpz(), pd.get_mpz(), 1);
 
-        auto result = power(a, pd, f, p);
+        auto result = power(normalized_a, pd, f, p);
         return result.is_one();
     }
 
@@ -344,11 +393,21 @@ public:
     ///   (2) x^{p^d} ≡ x mod f
     /// Cost: O(d^2 * d * log p) — d steps of modular exponentiation.
     [[nodiscard]] static bool is_irreducible(const std::vector<uint64_t>& f, uint64_t p) {
+        validate_modulus(p);
+        if (f.empty())
+            return false;
+        if (f.size() - 1 > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            throw std::length_error("ModularPoly::is_irreducible polynomial is too large");
+        }
         int d = static_cast<int>(f.size()) - 1;
-        if (d <= 0) return false;
-        // Leading coeff ≡ 0 (mod p) → f degenerates (ramified prime), not irreducible at this degree
-        if (f[static_cast<size_t>(d)] % p == 0) return false;
-        if (d == 1) return true;  // linear polynomials are always irreducible
+        if (d <= 0)
+            return false;
+        // Leading coeff ≡ 0 (mod p) → f degenerates (ramified prime), not irreducible at this
+        // degree
+        if (f[static_cast<size_t>(d)] % p == 0)
+            return false;
+        if (d == 1)
+            return true; // linear polynomials are always irreducible
 
         // Find distinct prime factors of d
         std::vector<int> prime_factors;
@@ -357,19 +416,21 @@ public:
             for (int q = 2; q * q <= temp; ++q) {
                 if (temp % q == 0) {
                     prime_factors.push_back(q);
-                    while (temp % q == 0) temp /= q;
+                    while (temp % q == 0)
+                        temp /= q;
                 }
             }
-            if (temp > 1) prime_factors.push_back(temp);
+            if (temp > 1)
+                prime_factors.push_back(temp);
         }
 
         // Compute x^{p^k} mod f iteratively: x^{p^1}, x^{p^2}, ..., x^{p^d}
         // Each step: x^{p^{k}} = (x^{p^{k-1}})^p mod f
         ModularPoly x_poly;
-        x_poly.set_coeff(1, 1);  // x
+        x_poly.set_coeff(1, 1); // x
 
         std::vector<ModularPoly> x_pow_pk(static_cast<size_t>(d + 1));
-        x_pow_pk[0] = x_poly;  // x^{p^0} = x
+        x_pow_pk[0] = x_poly; // x^{p^0} = x
         const Integer p_int(p);
         for (int k = 1; k <= d; ++k) {
             x_pow_pk[static_cast<size_t>(k)] =
@@ -382,25 +443,41 @@ public:
             int exp = d / q;
             auto diff = sub(x_pow_pk[static_cast<size_t>(exp)], x_poly, p);
             auto g = gcd(diff, f_poly, p);
-            if (g.degree() > 0) return false;
+            if (g.degree() > 0)
+                return false;
         }
 
         // Step 2: x^{p^d} ≡ x mod f
         auto diff_final = sub(x_pow_pk[static_cast<size_t>(d)], x_poly, p);
-        if (!diff_final.is_zero()) return false;
+        if (!diff_final.is_zero())
+            return false;
 
         return true;
     }
 
     /// Tonelli-Shanks square root in F_p[x]/f(x)
     /// Returns sqrt(a) if a is a square, zero polynomial otherwise
-    [[nodiscard]] static ModularPoly sqrt_tonelli_shanks(
-            const ModularPoly& a,
-            const std::vector<uint64_t>& f,
-            uint64_t p) {
+    [[nodiscard]] static ModularPoly
+    sqrt_tonelli_shanks(const ModularPoly& a, const std::vector<uint64_t>& f, uint64_t p) {
 
-        if (a.is_zero()) return ModularPoly();
-        if (a.is_one()) return ModularPoly(1);
+        validate_modulus(p);
+        if (f.size() < 2) {
+            throw std::invalid_argument(
+                "ModularPoly::sqrt_tonelli_shanks requires a positive-degree modulus");
+        }
+        if (f.size() - 1 > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            throw std::length_error(
+                "ModularPoly::sqrt_tonelli_shanks modulus polynomial is too large");
+        }
+        if (f.back() % p == 0) {
+            throw std::invalid_argument(
+                "ModularPoly::sqrt_tonelli_shanks requires an invertible leading coefficient");
+        }
+        ModularPoly normalized_a(normalized_coefficients(a.coeffs_, p));
+        if (normalized_a.is_zero())
+            return ModularPoly();
+        if (normalized_a.is_one())
+            return ModularPoly(1);
 
         int d = static_cast<int>(f.size()) - 1;
 
@@ -409,7 +486,7 @@ public:
         // Proof: (a^{2^{d-1}})² = a^{2^d} = a (by Fermat in F_{2^d}).
         if (p == 2) {
             assert(d >= 1 && "sqrt_tonelli_shanks: f must have degree >= 1");
-            auto result = a;
+            auto result = normalized_a;
             for (int i = 0; i < d - 1; ++i) {
                 result = mul(result, result, f, p);
             }
@@ -417,16 +494,17 @@ public:
         }
 
         // Check if a is a square
-        if (!is_square(a, f, p)) {
-            return ModularPoly();  // Not a square
+        if (!is_square(normalized_a, f, p)) {
+            return ModularPoly(); // Not a square
         }
 
         // Compute q and s where p^d - 1 = q * 2^s
         Integer pd(1);
+        const Integer p_integer(p);
         for (int i = 0; i < d; ++i) {
-            pd *= static_cast<int64_t>(p);
+            pd *= p_integer;
         }
-        Integer q = std::move(pd);  // pd no longer used; swap internals
+        Integer q = std::move(pd); // pd no longer used; swap internals
         q -= int64_t(1);
 
         uint64_t s = 0;
@@ -454,7 +532,10 @@ public:
             // Odd d: search constants (cap at p-1 to avoid the zero-disguise bug)
             for (uint64_t i = 2; i < p; ++i) {
                 z = ModularPoly(i);
-                if (!is_square(z, f, p)) { found_nonsq = true; break; }
+                if (!is_square(z, f, p)) {
+                    found_nonsq = true;
+                    break;
+                }
             }
         }
 
@@ -463,22 +544,25 @@ public:
             // ~50% of F_{p^d}* are non-squares, so expect ~2 trials.
             for (uint64_t c = 0; c < p; ++c) {
                 z = ModularPoly(std::vector<uint64_t>{c, 1});
-                if (!is_square(z, f, p)) { found_nonsq = true; break; }
+                if (!is_square(z, f, p)) {
+                    found_nonsq = true;
+                    break;
+                }
             }
         }
 
         if (!found_nonsq) {
-            return ModularPoly();  // Should not happen for irreducible f
+            return ModularPoly(); // Should not happen for irreducible f
         }
 
         // Initialize: exp_m = (q+1)/2 — mpz_add_ui writes q+1 directly (skip clone)
         Integer exp_m;
         mpz_add_ui(exp_m.get_mpz(), q.get_mpz(), 1);
-        mpz_tdiv_q_2exp(exp_m.get_mpz(), exp_m.get_mpz(), 1);  // (q+1)/2
+        mpz_tdiv_q_2exp(exp_m.get_mpz(), exp_m.get_mpz(), 1); // (q+1)/2
 
         auto c = power(z, q, f, p);
-        auto t = power(a, q, f, p);
-        auto r = power(a, exp_m, f, p);
+        auto t = power(normalized_a, q, f, p);
+        auto r = power(normalized_a, exp_m, f, p);
         uint64_t m = s;
 
         while (!t.is_one()) {
@@ -491,7 +575,7 @@ public:
             }
 
             if (i >= m) {
-                return ModularPoly();  // Shouldn't happen if a is a square
+                return ModularPoly(); // Shouldn't happen if a is a square
             }
 
             // b = c^(2^(m-i-1))
@@ -510,8 +594,8 @@ public:
         auto r_sq = mul(r, r, f, p);
         for (int i = 0; i < d; ++i) {
             const size_t idx = static_cast<size_t>(i);
-            if (r_sq.coeff(idx) % p != a.coeff(idx) % p) {
-                return ModularPoly();  // Verification failed
+            if (r_sq.coeff(idx) % p != normalized_a.coeff(idx)) {
+                return ModularPoly(); // Verification failed
             }
         }
         return r;
@@ -519,6 +603,24 @@ public:
 
 private:
     std::vector<uint64_t> coeffs_;
+
+    static void validate_modulus(uint64_t p) {
+        if (p < 2) {
+            throw std::invalid_argument("ModularPoly requires a modulus >= 2");
+        }
+    }
+
+    [[nodiscard]] static std::vector<uint64_t>
+    normalized_coefficients(const std::vector<uint64_t>& coefficients, uint64_t p) {
+        std::vector<uint64_t> result = coefficients;
+        for (uint64_t& coefficient : result) {
+            coefficient %= p;
+        }
+        while (!result.empty() && result.back() == 0) {
+            result.pop_back();
+        }
+        return result;
+    }
 
     void normalize() {
         while (!coeffs_.empty() && coeffs_.back() == 0) {

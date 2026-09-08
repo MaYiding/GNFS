@@ -2102,7 +2102,63 @@ void test_modular_poly_edge_cases() {
         assert(poly.is_zero());
     }
 
-    std::cout << "  PASS (14 sub-tests)" << std::endl;
+    // Test 15: arithmetic reduces raw coefficients, including near UINT64_MAX moduli
+    {
+        const uint64_t wide_p = std::numeric_limits<uint64_t>::max() - 58;
+        ModularPoly a(std::vector<uint64_t>{wide_p + 1, 1, 1});
+        ModularPoly b(std::vector<uint64_t>{wide_p + 2, wide_p - 1, wide_p - 1});
+        const auto sum = ModularPoly::add(a, b, wide_p);
+        GNFS_TEST_CHECK(sum.coeff(0) == 3);
+
+        const auto product = ModularPoly::mul_raw(
+            ModularPoly(std::vector<uint64_t>{1, 1, 1}),
+            ModularPoly(std::vector<uint64_t>{wide_p - 1, wide_p - 1, wide_p - 1}), wide_p);
+        GNFS_TEST_CHECK(product.coeff(1) == wide_p - 2);
+    }
+
+    // Test 16: invalid moduli and modulus polynomials fail closed
+    {
+        bool caught = false;
+        try {
+            (void)ModularPoly::add(ModularPoly(1), ModularPoly(1), 0);
+        } catch (const std::invalid_argument&) {
+            caught = true;
+        }
+        GNFS_TEST_CHECK(caught);
+
+        caught = false;
+        try {
+            (void)ModularPoly::reduce(ModularPoly(1), {}, p);
+        } catch (const std::invalid_argument&) {
+            caught = true;
+        }
+        GNFS_TEST_CHECK(caught);
+    }
+
+    // Test 17: negative powers are rejected instead of being shifted toward zero
+    {
+        bool caught = false;
+        try {
+            (void)ModularPoly::power(ModularPoly(1), Integer(int64_t(-1)), {1, 1}, p);
+        } catch (const std::invalid_argument&) {
+            caught = true;
+        }
+        GNFS_TEST_CHECK(caught);
+    }
+
+    // Test 18: a size_t wraparound cannot trigger an unbounded resize
+    {
+        ModularPoly poly;
+        bool caught = false;
+        try {
+            poly.set_coeff(std::numeric_limits<size_t>::max(), 1);
+        } catch (const std::length_error&) {
+            caught = true;
+        }
+        GNFS_TEST_CHECK(caught);
+    }
+
+    std::cout << "  PASS (18 sub-tests)" << std::endl;
 }
 
 // ─── LatticeBasis 边界/极端情况 ─────────────────────────────────────────
