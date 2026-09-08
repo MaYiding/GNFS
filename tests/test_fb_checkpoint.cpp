@@ -1,5 +1,6 @@
 #include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/factor_base/fb_checkpoint.hpp"
+#include "gnfs/util/primes.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 #include "support/test_check.hpp"
@@ -311,9 +312,13 @@ void test_large_fb() {
     orig.ctx_n = Integer("12345678901234567890");
     orig.rational.reserve(10000);
     orig.algebraic.reserve(10000);
+    uint32_t p = 2;
     for (uint32_t i = 0; i < 10000; ++i) {
-        orig.rational.emplace_back(2 + i, 16 + (i & 31));
-        orig.algebraic.emplace_back(2 + i, (i * 3 + 7) % (2 + i), 16 + (i & 31), 1);
+        while (!gnfs::util::is_prime_u32(p))
+            ++p;
+        orig.rational.emplace_back(p, 16 + (i & 31));
+        orig.algebraic.emplace_back(p, (i * 3 + 7) % p, 16 + (i & 31), 1);
+        ++p;
     }
     orig.sieve_algebraic_count = 8000;
 
@@ -323,8 +328,8 @@ void test_large_fb() {
     assert(loaded.rational.size() == 10000);
     assert(loaded.algebraic.size() == 10000);
     assert(loaded.sieve_algebraic_count == 8000);
-    assert(loaded.rational[9999].p == 10001);
-    assert(loaded.algebraic[5000].p == 5002);
+    assert(loaded.rational[9999].p == orig.rational[9999].p);
+    assert(loaded.algebraic[5000].p == orig.algebraic[5000].p);
 
     std::cout << "  Large FB: PASS" << std::endl;
 }
@@ -342,7 +347,7 @@ void test_wire_scalars_are_little_endian() {
     ck.log_scale = 0x7e;
     ck.ctx_degree = 0x0e0f1011U;
     ck.ctx_n = Integer(static_cast<int64_t>(-1));
-    ck.algebraic.emplace_back(0x01020304U, 0xa0b0c0d0U, 0x0a0b0c0dU, 0x7f);
+    ck.algebraic.emplace_back(0xa0b0c0d1U, 0xa0b0c0d0U, 0x0a0b0c0dU, 0x7f);
     ck.sieve_algebraic_count = 0x0000000000000001ULL;
     ck.save(path);
 
@@ -390,7 +395,7 @@ void test_wire_scalars_are_little_endian() {
     GNFS_TEST_CHECK(bytes[57] == 1);
     for (size_t i = 58; i < 61; ++i)
         GNFS_TEST_CHECK(bytes[i] == 0);
-    const unsigned char expected_prime[4] = {0x04, 0x03, 0x02, 0x01};
+    const unsigned char expected_prime[4] = {0xd1, 0xc0, 0xb0, 0xa0};
     for (size_t i = 0; i < 4; ++i)
         GNFS_TEST_CHECK(bytes[61 + i] == expected_prime[i]);
     const unsigned char expected_root[4] = {0xd0, 0xc0, 0xb0, 0xa0};
@@ -462,6 +467,155 @@ void test_version_mismatch_rejected() {
     std::cout << "  Version mismatch: PASS" << std::endl;
 }
 
+void test_malformed_entries_rejected() {
+    std::cout << "Testing malformed checkpoint entries rejected..." << std::endl;
+    const auto expect_rejected = [](FbCheckpoint& ck, const char* label) {
+        const auto path = tmp_ckpt_path(label);
+        CkptCleanup cleanup{path};
+        ck.ctx_degree = 1;
+        ck.ctx_n = Integer(static_cast<int64_t>(5));
+        ck.save(path);
+
+        bool threw = false;
+        try {
+            (void)FbCheckpoint::load(path);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        if (!threw)
+            throw std::runtime_error(std::string("malformed checkpoint accepted: ") + label);
+    };
+
+    FbCheckpoint zero_rational;
+    zero_rational.rational.emplace_back(0, 1);
+    expect_rejected(zero_rational, "bad_zero_rational");
+
+    FbCheckpoint composite_rational;
+    composite_rational.rational.emplace_back(9, 1);
+    expect_rejected(composite_rational, "bad_composite_rational");
+
+    FbCheckpoint root_out_of_range;
+    root_out_of_range.algebraic.emplace_back(3, 3, 1, 1);
+    expect_rejected(root_out_of_range, "bad_algebraic_root");
+
+    FbCheckpoint zero_degree;
+    zero_degree.algebraic.emplace_back(3, 1, 1, 0);
+    expect_rejected(zero_degree, "bad_algebraic_degree");
+
+    std::cout << "  Malformed checkpoint entries: PASS" << std::endl;
+}
+
+void test_truncated_payload_rejected_before_allocation() {
+    std::cout << "Testing truncated payload preflight..." << std::endl;
+    const auto patch_u32 = [](const std::string& path, std::streamoff offset, uint32_t value) {
+        std::fstream io(path, std::ios::in | std::ios::out | std::ios::binary);
+        if (!io)
+            throw std::runtime_error("cannot open checkpoint for patching");
+        io.seekp(offset);
+        const unsigned char bytes[4] = {
+            static_cast<unsigned char>(value & 0xffU),
+            static_cast<unsigned char>((value >> 8U) & 0xffU),
+            static_cast<unsigned char>((value >> 16U) & 0xffU),
+            static_cast<unsigned char>((value >> 24U) & 0xffU),
+        };
+        io.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+        if (!io)
+            throw std::runtime_error("cannot patch checkpoint");
+    };
+    const auto patch_u64 = [](const std::string& path, std::streamoff offset, uint64_t value) {
+        std::fstream io(path, std::ios::in | std::ios::out | std::ios::binary);
+        if (!io)
+            throw std::runtime_error("cannot open checkpoint for patching");
+        io.seekp(offset);
+        const unsigned char bytes[8] = {
+            static_cast<unsigned char>(value & 0xffULL),
+            static_cast<unsigned char>((value >> 8U) & 0xffULL),
+            static_cast<unsigned char>((value >> 16U) & 0xffULL),
+            static_cast<unsigned char>((value >> 24U) & 0xffULL),
+            static_cast<unsigned char>((value >> 32U) & 0xffULL),
+            static_cast<unsigned char>((value >> 40U) & 0xffULL),
+            static_cast<unsigned char>((value >> 48U) & 0xffULL),
+            static_cast<unsigned char>((value >> 56U) & 0xffULL),
+        };
+        io.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+        if (!io)
+            throw std::runtime_error("cannot patch checkpoint");
+    };
+    const auto expect_rejected = [](const std::string& path) {
+        bool threw = false;
+        try {
+            (void)FbCheckpoint::load(path);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        if (!threw)
+            throw std::runtime_error("truncated checkpoint was accepted");
+    };
+
+    // With N=5, the rational count starts at byte 53 in the v1 wire format.
+    {
+        const auto path = tmp_ckpt_path("huge_count");
+        CkptCleanup cleanup{path};
+        FbCheckpoint ck;
+        ck.ctx_degree = 1;
+        ck.ctx_n = Integer(static_cast<int64_t>(5));
+        ck.save(path);
+        patch_u32(path, 53, 100'000'000U);
+        expect_rejected(path);
+    }
+
+    // A large integer body must be checked against the file before allocation.
+    {
+        const auto path = tmp_ckpt_path("huge_integer");
+        CkptCleanup cleanup{path};
+        FbCheckpoint ck;
+        ck.ctx_degree = 1;
+        ck.ctx_n = Integer(static_cast<int64_t>(5));
+        ck.save(path);
+        patch_u32(path, 48, 64U * 1024U * 1024U);
+        expect_rejected(path);
+    }
+
+    // A zero sign must not carry a non-zero body length.
+    {
+        const auto path = tmp_ckpt_path("noncanonical_zero");
+        CkptCleanup cleanup{path};
+        FbCheckpoint ck;
+        ck.ctx_degree = 1;
+        ck.ctx_n = Integer(static_cast<int64_t>(5));
+        ck.save(path);
+        patch_u32(path, 44, 0);
+        expect_rejected(path);
+    }
+
+    // The algebraic degree is stored in a padded u32 and must not truncate.
+    {
+        const auto path = tmp_ckpt_path("degree_high_bits");
+        CkptCleanup cleanup{path};
+        FbCheckpoint ck;
+        ck.ctx_degree = 1;
+        ck.ctx_n = Integer(static_cast<int64_t>(5));
+        ck.algebraic.emplace_back(3, 1, 1, 1);
+        ck.save(path);
+        patch_u32(path, 73, 257);
+        expect_rejected(path);
+    }
+
+    // The sieve prefix is a bounded view into the decoded algebraic entries.
+    {
+        const auto path = tmp_ckpt_path("sieve_count_overrun");
+        CkptCleanup cleanup{path};
+        FbCheckpoint ck;
+        ck.ctx_degree = 1;
+        ck.ctx_n = Integer(static_cast<int64_t>(5));
+        ck.save(path);
+        patch_u64(path, 61, 1);
+        expect_rejected(path);
+    }
+
+    std::cout << "  Truncated payload preflight: PASS" << std::endl;
+}
+
 void test_remove_and_nonexistent() {
     std::cout << "Testing remove + nonexistent..." << std::endl;
     auto path = tmp_ckpt_path("rm");
@@ -495,6 +649,8 @@ int main() {
     test_wire_scalars_are_little_endian();
     test_incomplete_magic_rejected();
     test_version_mismatch_rejected();
+    test_malformed_entries_rejected();
+    test_truncated_payload_rejected_before_allocation();
     test_remove_and_nonexistent();
     std::cout << "\n===== All FbCheckpoint tests PASSED =====" << std::endl;
     return 0;
