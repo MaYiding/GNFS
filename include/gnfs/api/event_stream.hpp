@@ -9,6 +9,7 @@
 #include <limits>
 #include <locale>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -33,6 +34,9 @@ inline constexpr int schema_version = 1;
 [[nodiscard]] inline std::string started_event(std::string_view n, size_t n_bits, size_t n_digits,
                                                FactorizationMethod method, std::string_view reason,
                                                bool complete_factorization = false) {
+    if (!is_valid_factorization_method(method)) {
+        throw std::invalid_argument("event_stream::started_event received an invalid method");
+    }
     std::ostringstream os;
     os.imbue(std::locale::classic());
     os << "{\"schema_version\":" << schema_version << ",\"type\":\"started\""
@@ -45,6 +49,9 @@ inline constexpr int schema_version = 1;
 }
 
 [[nodiscard]] inline std::string progress_event(const ProgressInfo& info) {
+    if (!is_valid_phase(info.phase)) {
+        throw std::invalid_argument("event_stream::progress_event received an invalid phase");
+    }
     std::ostringstream os;
     os.imbue(std::locale::classic());
     os << "{\"schema_version\":" << schema_version << ",\"type\":\"progress\""
@@ -72,6 +79,12 @@ inline constexpr int schema_version = 1;
 }
 
 [[nodiscard]] inline std::string log_event(const LogEntry& entry) {
+    if (!is_valid_log_level(entry.level)) {
+        throw std::invalid_argument("event_stream::log_event received an invalid log level");
+    }
+    if (!is_valid_phase(entry.phase)) {
+        throw std::invalid_argument("event_stream::log_event received an invalid phase");
+    }
     std::ostringstream os;
     os.imbue(std::locale::classic());
     os << "{\"schema_version\":" << schema_version << ",\"type\":\"log\""
@@ -83,6 +96,12 @@ inline constexpr int schema_version = 1;
 }
 
 [[nodiscard]] inline std::string result_event(const FactorResult& result) {
+    if (!is_valid_factorization_method(result.stats.method_used)) {
+        throw std::invalid_argument("event_stream::result_event received an invalid method");
+    }
+    if (!is_valid_sieve_stop_reason(result.stats.sieve_stop_reason)) {
+        throw std::invalid_argument("event_stream::result_event received an invalid stop reason");
+    }
     return "{\"schema_version\":" + std::to_string(schema_version) +
            ",\"type\":\"result\",\"result\":" + compact_json(result.to_json()) + "}";
 }
