@@ -262,6 +262,54 @@ void test_mod_inverse() {
     std::cout << "  Mod inverse: PASS" << std::endl;
 }
 
+void test_stride_size_t_boundary() {
+    std::cout << "Testing sieve stride SIZE_MAX boundary..." << std::endl;
+
+    // A one-past increment is not representable for these strides. The
+    // helper must stop after the only in-range write instead of wrapping into
+    // an earlier cell. Keep the arrays tiny so the regression is deterministic
+    // and independent of allocator layout.
+    const size_t max_size = std::numeric_limits<size_t>::max();
+    const std::array<uint16_t, 4> expected_single{{0, 0, 7, 0}};
+    const std::array<uint16_t, 4> expected_first{{0, 11, 0, 0}};
+    for (const size_t stride : {max_size, max_size - 1}) {
+        std::array<uint16_t, 4> scalar{};
+        detail::apply_log_p_stride_scalar(scalar.data(), 2, scalar.size(), stride, 7);
+        GNFS_TEST_CHECK(scalar == expected_single);
+
+        std::array<uint16_t, 4> unrolled{};
+        detail::apply_log_p_stride(unrolled.data(), 2, unrolled.size(), stride, 7, true);
+        GNFS_TEST_CHECK(unrolled == expected_single);
+
+        std::array<uint16_t, 4> guarded{};
+        detail::apply_log_p_stride(guarded.data(), 2, guarded.size(), stride, 7, false);
+        GNFS_TEST_CHECK(guarded == expected_single);
+
+        std::array<uint16_t, 4> scalar_first{};
+        detail::apply_log_p_stride_scalar(scalar_first.data(), 1, scalar_first.size(), stride, 11);
+        GNFS_TEST_CHECK(scalar_first == expected_first);
+
+        std::array<uint16_t, 4> unrolled_first{};
+        detail::apply_log_p_stride(unrolled_first.data(), 1, unrolled_first.size(), stride, 11,
+                                   true);
+        GNFS_TEST_CHECK(unrolled_first == expected_first);
+
+        std::array<uint16_t, 4> guarded_first{};
+        detail::apply_log_p_stride(guarded_first.data(), 1, guarded_first.size(), stride, 11,
+                                   false);
+        GNFS_TEST_CHECK(guarded_first == expected_first);
+    }
+
+    // The ordinary unit stride still takes the unrolled path and must retain
+    // its existing inclusive-start/half-open-end semantics.
+    std::array<uint16_t, 8> normal{};
+    detail::apply_log_p_stride(normal.data(), 1, normal.size() - 1, 1, 3, true);
+    const std::array<uint16_t, 8> expected_normal{{0, 3, 3, 3, 3, 3, 3, 0}};
+    GNFS_TEST_CHECK(normal == expected_normal);
+
+    std::cout << "  Sieve stride SIZE_MAX boundary: PASS" << std::endl;
+}
+
 void test_default_region() {
     std::cout << "Testing default region with skewness..." << std::endl;
 
@@ -1252,6 +1300,7 @@ int main() {
     test_lattice_basis();
     test_sieve_region();
     test_mod_inverse();
+    test_stride_size_t_boundary();
     test_default_region();
     test_lattice_sieve_storage_contract();
     test_lattice_sieve_special_q_entry_contract();
