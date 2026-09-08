@@ -100,13 +100,12 @@ inline int parse_fb_roots_threads_env() noexcept {
     }
     int parsed = 0;
     try {
-        // Use std::stoi to handle leading whitespace and reject pure garbage.
-        // std::atoi would silently return 0 for "garbage", which we want, but
-        // std::stoi also throws std::invalid_argument for "abc" so we get the
-        // same behaviour via the catch block.
+        // Use std::stoi to accept a numeric prefix (for example, "12abc"),
+        // while still rejecting values with no numeric prefix. The accepted
+        // prefix behavior is part of the documented environment contract.
         std::size_t consumed = 0;
         parsed = std::stoi(env, &consumed);
-        // Guard against partial parses like "12abc" — treat as garbage.
+        // A zero consumed count indicates that no numeric prefix was found.
         if (consumed == 0) {
             return 0;
         }
