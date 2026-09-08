@@ -2607,6 +2607,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SchirokaureDeg4 COMMAND test_schirokauer_deg4)
     set_tests_properties(SchirokaureDeg4 PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # FastPoly high-degree convolution regression
+    add_executable(test_schirokauer_fastpoly
+        tests/test_schirokauer_fastpoly.cpp
+    )
+    target_link_libraries(test_schirokauer_fastpoly PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SchirokauerFastPoly COMMAND test_schirokauer_fastpoly)
+    set_tests_properties(SchirokauerFastPoly PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Schirokauer strip-ℓ math regression (instant)
     add_executable(test_schirokauer_strip
         tests/test_schirokauer_strip.cpp
