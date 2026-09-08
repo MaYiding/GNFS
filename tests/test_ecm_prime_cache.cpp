@@ -18,7 +18,7 @@
 // Force assert() to remain live even under -DNDEBUG so Release builds
 // do not silently strip verification.
 #ifdef NDEBUG
-#  undef NDEBUG
+#undef NDEBUG
 #endif
 
 #include "gnfs/cofactor/ecm_prime_cache.hpp"
@@ -88,6 +88,19 @@ static void test_env_33_clamp_to_32() {
     std::cout << "  ENV=33: PASS (clamped to 32)" << std::endl;
 }
 
+static void test_env_huge_value_clamps_to_32() {
+    std::cout << "Testing GNFS_ECM_B1_CACHE_SIZE huge value clamps..." << std::endl;
+    // Values above INT_MAX are still valid positive inputs under the documented
+    // clamp rule; they must not be mistaken for an invalid/disabled setting.
+    for (const char* value : {"2147483648", "999999999999999999999999999"}) {
+        setenv("GNFS_ECM_B1_CACHE_SIZE", value, 1);
+        ecm_b1_cache_reset_env_cache_for_testing();
+        assert(ecm_b1_cache_size() == 32);
+    }
+    assert(ecm_b1_cache_enabled());
+    std::cout << "  huge value clamps to 32: PASS" << std::endl;
+}
+
 static void test_env_garbage_default_off() {
     std::cout << "Testing GNFS_ECM_B1_CACHE_SIZE=garbage => 0..." << std::endl;
     setenv("GNFS_ECM_B1_CACHE_SIZE", "garbage", 1);
@@ -113,8 +126,7 @@ static void test_env_leading_whitespace_off() {
     // Leading whitespace explicitly disabled by strict parser.
     setenv("GNFS_ECM_B1_CACHE_SIZE", "  4", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0 &&
-           "Leading whitespace must be rejected by strict parser");
+    assert(ecm_b1_cache_size() == 0 && "Leading whitespace must be rejected by strict parser");
 
     setenv("GNFS_ECM_B1_CACHE_SIZE", "\t8", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
@@ -381,7 +393,8 @@ static void test_cache_thread_safe_concurrent_lookups() {
             }
         });
     }
-    for (auto& th : threads) th.join();
+    for (auto& th : threads)
+        th.join();
     assert(all_ok.load() && "All concurrent lookups must return correct content");
 
     // Cache size is bounded by capacity (8) regardless of how many unique
@@ -407,16 +420,14 @@ static void test_shared_singleton_thread_safe_first_call() {
     std::vector<EcmB1PrimeCache*> ptrs(kThreads, nullptr);
 
     for (std::size_t t = 0; t < kThreads; ++t) {
-        threads.emplace_back([&, t]() {
-            ptrs[t] = &shared_ecm_b1_cache();
-        });
+        threads.emplace_back([&, t]() { ptrs[t] = &shared_ecm_b1_cache(); });
     }
-    for (auto& th : threads) th.join();
+    for (auto& th : threads)
+        th.join();
 
     // All threads must see the same singleton instance.
     for (std::size_t t = 1; t < kThreads; ++t) {
-        assert(ptrs[t] == ptrs[0] &&
-               "Singleton ref must be identical across threads");
+        assert(ptrs[t] == ptrs[0] && "Singleton ref must be identical across threads");
     }
 
     // Singleton must be usable.
@@ -472,8 +483,8 @@ static void test_perf_hit_vs_miss_B1_10000() {
     auto t_first_start = std::chrono::steady_clock::now();
     (void)cache.get_or_compute(10000);
     auto t_first_end = std::chrono::steady_clock::now();
-    const auto first_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        t_first_end - t_first_start).count();
+    const auto first_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t_first_end - t_first_start).count();
 
     // Repeated hits: same B1, cache hit path.
     auto t_hit_start = std::chrono::steady_clock::now();
@@ -481,8 +492,8 @@ static void test_perf_hit_vs_miss_B1_10000() {
         (void)cache.get_or_compute(10000);
     }
     auto t_hit_end = std::chrono::steady_clock::now();
-    const auto hit_total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        t_hit_end - t_hit_start).count();
+    const auto hit_total_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t_hit_end - t_hit_start).count();
     const auto hit_avg_ns = hit_total_ns / static_cast<long long>(kRepeats);
 
     // Miss (uncached): direct compute on new B1 value each iteration.
@@ -494,18 +505,15 @@ static void test_perf_hit_vs_miss_B1_10000() {
         (void)r;
     }
     auto t_miss_end = std::chrono::steady_clock::now();
-    const auto miss_total_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        t_miss_end - t_miss_start).count();
+    const auto miss_total_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t_miss_end - t_miss_start).count();
     const auto miss_avg_ns = miss_total_ns / static_cast<long long>(kRepeats);
 
     std::cout << "  B1=10000 first insert: " << first_ns << " ns" << std::endl;
-    std::cout << "  Hit avg over " << kRepeats << " runs: "
-              << hit_avg_ns << " ns" << std::endl;
-    std::cout << "  Miss avg over " << kRepeats << " runs: "
-              << miss_avg_ns << " ns" << std::endl;
+    std::cout << "  Hit avg over " << kRepeats << " runs: " << hit_avg_ns << " ns" << std::endl;
+    std::cout << "  Miss avg over " << kRepeats << " runs: " << miss_avg_ns << " ns" << std::endl;
     if (hit_avg_ns > 0) {
-        const double speedup =
-            static_cast<double>(miss_avg_ns) / static_cast<double>(hit_avg_ns);
+        const double speedup = static_cast<double>(miss_avg_ns) / static_cast<double>(hit_avg_ns);
         std::cout << "  Speedup (miss/hit): " << speedup << "x" << std::endl;
     }
     std::cout << "  Perf info: PASS (informational only)" << std::endl;
@@ -542,6 +550,7 @@ int main() {
     test_env_zero_explicit_off();
     test_env_4_enabled();
     test_env_33_clamp_to_32();
+    test_env_huge_value_clamps_to_32();
     test_env_garbage_default_off();
     test_env_leading_whitespace_off();
 
