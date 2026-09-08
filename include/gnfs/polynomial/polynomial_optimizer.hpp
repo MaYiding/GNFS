@@ -272,10 +272,18 @@ public:
                             size_t max_count = 10000) {
 
         std::vector<Integer> result;
+        if (max_count == 0 || bound < 2) {
+            return result;
+        }
         result.reserve(max_count); // exit cap
         result.emplace_back(1);
 
         for (uint32_t p : small_primes) {
+            // Public callers may provide an unvalidated prime list.  A factor
+            // of 0 or 1 would leave `val` unchanged and make the loop below
+            // non-terminating.
+            if (p < 2)
+                continue;
             size_t current_size = result.size();
             for (size_t i = 0; i < current_size && result.size() < max_count; ++i) {
                 Integer val = result[i]; // copy ctor
