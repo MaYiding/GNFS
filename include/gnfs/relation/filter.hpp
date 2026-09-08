@@ -739,11 +739,23 @@ public:
         for (const auto& [key, count] : counts) {
             if (count >= 2) {
                 // n 个关系共享一个大素数可产生 C(n,2) 对
-                pairs += count * (count - 1) / 2;
+                pairs = util::saturating_size_add(pairs, saturating_pair_count(count));
             }
         }
 
         return pairs;
+    }
+
+    [[nodiscard]] static constexpr size_t saturating_pair_count(size_t count) noexcept {
+        if (count < 2)
+            return 0;
+        size_t lhs = count;
+        size_t rhs = count - 1;
+        if ((lhs & size_t{1}) == 0)
+            lhs /= 2;
+        else
+            rhs /= 2;
+        return util::saturating_size_product(lhs, rhs);
     }
 };
 
