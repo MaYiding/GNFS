@@ -2,13 +2,16 @@
 #include "gnfs/factor_base/fb_checkpoint.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
+#include "support/test_check.hpp"
 
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace gnfs::factor_base;
 using gnfs::core::AlgebraicPrime;
@@ -22,6 +25,28 @@ static std::string tmp_ckpt_path(const char* label) {
     std::snprintf(buf, sizeof(buf), "gnfs_test_fb_ckpt_%d_%d_%s", gnfs::util::process_id(), ++seq,
                   label);
     return gnfs::util::temp_path(buf);
+}
+
+static void write_u64_le(std::ofstream& out, uint64_t value) {
+    const unsigned char bytes[8] = {
+        static_cast<unsigned char>(value & 0xffULL),
+        static_cast<unsigned char>((value >> 8U) & 0xffULL),
+        static_cast<unsigned char>((value >> 16U) & 0xffULL),
+        static_cast<unsigned char>((value >> 24U) & 0xffULL),
+        static_cast<unsigned char>((value >> 32U) & 0xffULL),
+        static_cast<unsigned char>((value >> 40U) & 0xffULL),
+        static_cast<unsigned char>((value >> 48U) & 0xffULL),
+        static_cast<unsigned char>((value >> 56U) & 0xffULL),
+    };
+    out.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+}
+
+static std::vector<unsigned char> read_bytes(const std::string& path, size_t count) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<unsigned char> bytes(count);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    GNFS_TEST_CHECK(in.gcount() == static_cast<std::streamsize>(bytes.size()));
+    return bytes;
 }
 
 struct CkptCleanup {
@@ -304,6 +329,96 @@ void test_large_fb() {
     std::cout << "  Large FB: PASS" << std::endl;
 }
 
+void test_wire_scalars_are_little_endian() {
+    std::cout << "Testing little-endian scalar wire encoding..." << std::endl;
+    auto path = tmp_ckpt_path("wire_endian");
+    CkptCleanup c{path};
+
+    FbCheckpoint ck;
+    ck.rational_bound = 0x01020304U;
+    ck.algebraic_bound = 0xa0b0c0d0U;
+    ck.special_q_bound = 0x0a0b0c0dU;
+    ck.large_prime_bound = 0x0102030405060708ULL;
+    ck.log_scale = 0x7e;
+    ck.ctx_degree = 0x0e0f1011U;
+    ck.ctx_n = Integer(static_cast<int64_t>(-1));
+    ck.algebraic.emplace_back(0x01020304U, 0xa0b0c0d0U, 0x0a0b0c0dU, 0x7f);
+    ck.sieve_algebraic_count = 0x0000000000000001ULL;
+    ck.save(path);
+
+    const auto bytes = read_bytes(path, 85);
+    const unsigned char expected_magic[8] = {
+        0x50, 0x4b, 0x43, 0x46, 0x53, 0x46, 0x4e, 0x47,
+    };
+    for (size_t i = 0; i < 8; ++i)
+        GNFS_TEST_CHECK(bytes[i] == expected_magic[i]);
+    GNFS_TEST_CHECK(bytes[8] == 1);
+    for (size_t i = 9; i < 16; ++i)
+        GNFS_TEST_CHECK(bytes[i] == 0);
+
+    const unsigned char expected_rational_bound[4] = {0x04, 0x03, 0x02, 0x01};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[16 + i] == expected_rational_bound[i]);
+    const unsigned char expected_algebraic_bound[4] = {0xd0, 0xc0, 0xb0, 0xa0};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[20 + i] == expected_algebraic_bound[i]);
+    const unsigned char expected_special_q_bound[4] = {0x0d, 0x0c, 0x0b, 0x0a};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[24 + i] == expected_special_q_bound[i]);
+    const unsigned char expected_large_prime_bound[8] = {
+        0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+    };
+    for (size_t i = 0; i < 8; ++i)
+        GNFS_TEST_CHECK(bytes[28 + i] == expected_large_prime_bound[i]);
+    GNFS_TEST_CHECK(bytes[36] == 0x7e);
+    for (size_t i = 37; i < 40; ++i)
+        GNFS_TEST_CHECK(bytes[i] == 0);
+
+    const unsigned char expected_degree[4] = {0x11, 0x10, 0x0f, 0x0e};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[40 + i] == expected_degree[i]);
+    const unsigned char expected_negative_sign[4] = {0xff, 0xff, 0xff, 0xff};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[44 + i] == expected_negative_sign[i]);
+    const unsigned char expected_limb_count[4] = {1, 0, 0, 0};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[48 + i] == expected_limb_count[i]);
+    GNFS_TEST_CHECK(bytes[52] == 1);
+    // The rational count is zero.
+    for (size_t i = 53; i < 57; ++i)
+        GNFS_TEST_CHECK(bytes[i] == 0);
+    GNFS_TEST_CHECK(bytes[57] == 1);
+    for (size_t i = 58; i < 61; ++i)
+        GNFS_TEST_CHECK(bytes[i] == 0);
+    const unsigned char expected_prime[4] = {0x04, 0x03, 0x02, 0x01};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[61 + i] == expected_prime[i]);
+    const unsigned char expected_root[4] = {0xd0, 0xc0, 0xb0, 0xa0};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[65 + i] == expected_root[i]);
+    const unsigned char expected_log[4] = {0x0d, 0x0c, 0x0b, 0x0a};
+    for (size_t i = 0; i < 4; ++i)
+        GNFS_TEST_CHECK(bytes[69 + i] == expected_log[i]);
+    GNFS_TEST_CHECK(bytes[73] == 0x7f);
+    for (size_t i = 74; i < 77; ++i)
+        GNFS_TEST_CHECK(bytes[i] == 0);
+    GNFS_TEST_CHECK(bytes[77] == 1);
+    for (size_t i = 78; i < 85; ++i)
+        GNFS_TEST_CHECK(bytes[i] == 0);
+    GNFS_TEST_CHECK(FbCheckpoint::exists_and_valid(path));
+    const auto loaded = FbCheckpoint::load(path);
+    GNFS_TEST_CHECK(loaded.rational_bound == ck.rational_bound);
+    GNFS_TEST_CHECK(loaded.algebraic_bound == ck.algebraic_bound);
+    GNFS_TEST_CHECK(loaded.special_q_bound == ck.special_q_bound);
+    GNFS_TEST_CHECK(loaded.large_prime_bound == ck.large_prime_bound);
+    GNFS_TEST_CHECK(loaded.ctx_degree == ck.ctx_degree);
+    GNFS_TEST_CHECK(loaded.ctx_n == ck.ctx_n);
+    GNFS_TEST_CHECK(loaded.algebraic.size() == 1);
+    GNFS_TEST_CHECK(loaded.algebraic[0].p == ck.algebraic[0].p);
+    GNFS_TEST_CHECK(loaded.sieve_algebraic_count == ck.sieve_algebraic_count);
+    std::cout << "  Little-endian scalar encoding: PASS" << std::endl;
+}
+
 void test_incomplete_magic_rejected() {
     std::cout << "Testing INCOMPLETE magic rejected..." << std::endl;
     auto path = tmp_ckpt_path("incomplete");
@@ -312,8 +427,8 @@ void test_incomplete_magic_rejected() {
         std::ofstream out(path, std::ios::binary);
         uint64_t magic = FbCheckpoint::MAGIC_INCOMPLETE;
         uint64_t version = FbCheckpoint::VERSION;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_u64_le(out, magic);
+        write_u64_le(out, version);
     }
     assert(!FbCheckpoint::exists_and_valid(path));
     bool threw = false;
@@ -334,8 +449,8 @@ void test_version_mismatch_rejected() {
         std::ofstream out(path, std::ios::binary);
         uint64_t magic = FbCheckpoint::MAGIC;
         uint64_t version = 999;
-        out.write(reinterpret_cast<const char*>(&magic), 8);
-        out.write(reinterpret_cast<const char*>(&version), 8);
+        write_u64_le(out, magic);
+        write_u64_le(out, version);
     }
     bool threw = false;
     try {
@@ -377,6 +492,7 @@ int main() {
     test_empty_fb();
     test_sieve_count_invariants();
     test_large_fb();
+    test_wire_scalars_are_little_endian();
     test_incomplete_magic_rejected();
     test_version_mismatch_rejected();
     test_remove_and_nonexistent();
