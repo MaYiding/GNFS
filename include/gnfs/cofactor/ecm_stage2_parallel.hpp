@@ -47,11 +47,13 @@
 #include "../util/thread_pool.hpp"
 
 #include <atomic>
+#include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <future>
-#include <new>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <span>
 #include <thread>
@@ -82,21 +84,35 @@ inline EcmStage2ParallelCache& ecm_stage2_parallel_cache() noexcept {
 inline std::size_t parse_ecm_stage2_parallel_env() noexcept {
     const char* env = std::getenv("GNFS_ECM_STAGE2_PARALLEL");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
-    int parsed = std::atoi(env);
-    if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
+        ++first;
     }
+    if (*first == '-') {
+        return 1; // invalid / non-positive -> sequential
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(first, &end, 10);
+    if (end == first || parsed == 0) {
+        return 1; // invalid / non-positive -> sequential
+    }
+
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    std::size_t cap = static_cast<std::size_t>(hw) * 2;
-    std::size_t v = static_cast<std::size_t>(parsed);
-    if (v > cap) v = cap;
-    return v;
+    if (hw == 0)
+        hw = 4;
+    const std::size_t cap = static_cast<std::size_t>(hw) * 2;
+    if (errno == ERANGE || parsed > static_cast<unsigned long long>(cap)) {
+        return cap;
+    }
+    return static_cast<std::size_t>(parsed);
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_ECM_STAGE2_PARALLEL` env into a cached thread count.
 ///
@@ -106,9 +122,8 @@ inline std::size_t parse_ecm_stage2_parallel_env() noexcept {
 /// high values clamp to the upper cap.
 [[nodiscard]] inline std::size_t ecm_stage2_parallel_threads() noexcept {
     auto& cache = detail::ecm_stage2_parallel_cache();
-    std::call_once(cache.once, [&cache]() {
-        cache.value = detail::parse_ecm_stage2_parallel_env();
-    });
+    std::call_once(cache.once,
+                   [&cache]() { cache.value = detail::parse_ecm_stage2_parallel_env(); });
     return cache.value;
 }
 
@@ -151,11 +166,12 @@ inline void ecm_stage2_parallel_reset_env_cache_for_testing() noexcept {
 ///   - single curve:            always sequential (no ThreadPool overhead
 ///                              even when threads >= 2)
 template <typename Result, typename Curve, typename Func>
-inline std::vector<std::optional<Result>>
-parallel_stage2_curves(std::span<Curve> curves, Func&& run_stage2) {
+inline std::vector<std::optional<Result>> parallel_stage2_curves(std::span<Curve> curves,
+                                                                 Func&& run_stage2) {
     const std::size_t n = curves.size();
     std::vector<std::optional<Result>> results;
-    if (n == 0) return results;
+    if (n == 0)
+        return results;
 
     results.resize(n);
 
@@ -181,9 +197,8 @@ parallel_stage2_curves(std::span<Curve> curves, Func&& run_stage2) {
         // Each task captures curve index + reference to the curves span
         // and the results vector. Per-curve slots in `results` are
         // disjoint, so concurrent writes to results[i] are race-free.
-        futures.push_back(pool.submit([&curves, &results, &run_stage2, i]() {
-            results[i] = run_stage2(curves[i], i);
-        }));
+        futures.push_back(pool.submit(
+            [&curves, &results, &run_stage2, i]() { results[i] = run_stage2(curves[i], i); }));
     }
 
     // Propagate any task exception to the caller via future::get().
@@ -194,4 +209,4 @@ parallel_stage2_curves(std::span<Curve> curves, Func&& run_stage2) {
     return results;
 }
 
-}  // namespace gnfs::cofactor
+} // namespace gnfs::cofactor
