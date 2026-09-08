@@ -165,6 +165,25 @@ void test_configurable_sieve_width_is_exact() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_sieve_region_matches_runtime_geometry_contract() {
+    std::cout << "Testing sieve region geometry contract..." << std::endl;
+
+    GNFSParams invalid;
+    invalid.sieve_i_min = std::numeric_limits<int32_t>::min();
+    invalid.sieve_i_max = std::numeric_limits<int32_t>::max();
+    invalid.sieve_j_min = 1;
+    invalid.sieve_j_max = std::numeric_limits<int32_t>::max();
+    GNFS_TEST_CHECK(invalid.sieve_region_size() == 0);
+    GNFS_TEST_CHECK(invalid.sieve_memory_bytes() == 0);
+
+    const auto normal = GNFSParams::compute(197);
+    GNFS_TEST_CHECK(normal.sieve_region_size() > 0);
+    GNFS_TEST_CHECK(normal.sieve_region_size() <= SIEVE_MAX_REGION_CELLS);
+    GNFS_TEST_CHECK(normal.sieve_memory_bytes() > 0);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_large_prime_bound() {
     std::cout << "Testing large prime bound..." << std::endl;
 
@@ -258,6 +277,11 @@ void test_target_multiplier_reloads_per_call() {
     const size_t minimum = params.raw_relation_target(columns);
     GNFS_TEST_CHECK(minimum == static_cast<size_t>(static_cast<double>(baseline) * 0.1));
 
+    GNFSParams tiny_target;
+    tiny_target.large_prime_bits = 0;
+    GNFS_TEST_CHECK(tiny_target.raw_relation_target(1) == 1);
+    GNFS_TEST_CHECK(tiny_target.raw_relation_target(0) == 0);
+
     setenv("GNFS_SIEVE_TARGET_MULT", "100.0", 1);
     const size_t maximum = params.raw_relation_target(columns);
     GNFS_TEST_CHECK(maximum == static_cast<size_t>(static_cast<double>(baseline) * 100.0));
@@ -339,8 +363,8 @@ void test_sieve_memory() {
         size_t mem = p.sieve_memory_bytes();
         // Memory = positions × sizeof(uint16_t) = positions × 2
         GNFS_TEST_CHECK(mem == p.sieve_region_size() * sizeof(uint16_t));
-        // Cap: 256M positions × 2 = 512 MB
-        GNFS_TEST_CHECK(mem <= 512ULL * 1024 * 1024);
+        // The shared per-instance allocation cap is expressed in cells.
+        GNFS_TEST_CHECK(mem <= SIEVE_MAX_REGION_CELLS * sizeof(uint16_t));
     }
 
     std::cout << "  PASS" << std::endl;
@@ -420,6 +444,7 @@ int main() {
     test_sieve_area_cap();
     test_sieve_region_geometry();
     test_configurable_sieve_width_is_exact();
+    test_sieve_region_matches_runtime_geometry_contract();
     test_large_prime_bound();
     test_lp_bits_env_override();
     test_target_multiplier_reloads_per_call();

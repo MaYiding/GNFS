@@ -38,9 +38,10 @@ MSVC ARM64 和无宽乘法 intrinsic 的 fallback 必须作出相同的规约与
 SkewLLL 的加权度量仍使用 `double`，不属于该 bit-for-bit 整数算术保证。
 
 `SieveRegion` 的 inclusive width/height 必须为正且各自可表示为 `int32_t`，面积必须
-可表示为 `size_t` 并可由 `vector<uint16_t>` 分配。默认 region 生成器另外把面积限制为
-256 Mi cells。宽度 32768 是 compact row-state 的上界；更宽的合法 region 把全部素数
-路由到 region-bucket 路径，而不是直接拒绝。每次初始或 adaptive sieve pass 之前都会
+可表示为 `size_t`、不超过共享的 `core::SIEVE_MAX_REGION_CELLS`（512 Mi cells，即
+1 GiB `uint16_t` score storage），并可由 `vector<uint16_t>` 分配。默认 region 生成器
+另外把面积限制为 256 Mi cells。宽度 32768 是 compact row-state 的上界；更宽的合法 region
+把全部素数路由到 region-bucket 路径，而不是直接拒绝。每次初始或 adaptive sieve pass 之前都会
 精确检查矩形的四个投影角点；任何 `(a,b)` 超出 `int64_t` 时 fail closed。SkewLLL
 还会在浮点转整数前拒绝不能保持有限 norm/dot/quotient 的 skew；分布式 identity
 仅接受平方在任意 rounding/FTZ 环境中都为 normal finite 的 binary64 指数域。进入
@@ -93,7 +94,8 @@ The value is read on every target calculation. This matters for applications
 that run multiple `Pipeline` instances in one process with different
 experiment environments. The multiplier is applied after the size-aware
 target has been calculated, and the existing saturating `size_t` conversion
-still governs overflow.
+still governs overflow. A positive base target is clamped to at least one
+relation after scaling; an explicit zero-column input remains zero.
 
 ```bash
 GNFS_SIEVE_TARGET_MULT=2 ./gnfs <N>       # double the initial target

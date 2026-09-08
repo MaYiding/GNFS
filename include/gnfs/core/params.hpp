@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../util/safe_math.hpp"
+#include "sieve_limits.hpp"
 #include "types.hpp"
 
 #include <algorithm>
@@ -434,8 +435,13 @@ struct GNFSParams {
         const double target_mult = target_multiplier_from_env();
 
         const size_t base_target = raw_relation_target_unscaled(matrix_columns);
-        return util::size_from_nonnegative_double_floor(static_cast<double>(base_target) *
-                                                        target_mult);
+        const size_t scaled_target = util::size_from_nonnegative_double_floor(
+            static_cast<double>(base_target) * target_mult);
+        // A positive column budget must never turn into a zero stopping target
+        // merely because the experiment multiplier is fractional. Preserve
+        // zero for the explicit zero-column input, which remains a useful
+        // sentinel for callers validating an empty matrix.
+        return base_target != 0 && scaled_target == 0 ? size_t{1} : scaled_target;
     }
 
 private:
@@ -521,7 +527,8 @@ public:
             static_cast<int64_t>(sieve_i_max) - static_cast<int64_t>(sieve_i_min) + 1;
         const int64_t height =
             static_cast<int64_t>(sieve_j_max) - static_cast<int64_t>(sieve_j_min) + 1;
-        if (width <= 0 || height <= 0 ||
+        const int64_t max_dimension = static_cast<int64_t>((std::numeric_limits<int32_t>::max)());
+        if (width <= 0 || height <= 0 || width > max_dimension || height > max_dimension ||
             static_cast<uint64_t>(width) >
                 static_cast<uint64_t>((std::numeric_limits<size_t>::max)()) /
                     static_cast<uint64_t>(height)) {

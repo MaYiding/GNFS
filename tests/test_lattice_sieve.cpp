@@ -463,6 +463,23 @@ void test_lattice_sieve_storage_contract() {
         1,
     });
 
+    // A representable rectangle can still be too large to materialize. The
+    // allocation guard must reject it before vector construction.
+    const SieveRegion oversized_region{
+        -1073741823,
+        1073741823,
+        1,
+        std::numeric_limits<int32_t>::max(),
+    };
+    bool oversized_rejected = false;
+    try {
+        sieve.set_region(oversized_region);
+    } catch (const std::length_error&) {
+        oversized_rejected = true;
+    }
+    GNFS_TEST_CHECK(oversized_rejected);
+    GNFS_TEST_CHECK(sieve.allocated_sieve_bytes() == 0);
+
     SieveRegion large_region;
     large_region.i_min = -1000;
     large_region.i_max = 999;

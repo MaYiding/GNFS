@@ -2,6 +2,7 @@
 
 #include "../core/integer.hpp"
 #include "../core/params.hpp"
+#include "../core/sieve_limits.hpp"
 #include "progress.hpp"
 
 #include <cstddef>
@@ -115,6 +116,22 @@ struct Config {
     static void require_positive_dimension(int32_t value, std::string_view key) {
         if (value <= 0) {
             throw std::out_of_range("Config: " + std::string(key) + " must be in [1, INT32_MAX]");
+        }
+    }
+
+    /// Reject a geometrically valid region that would still request an
+    /// impractical per-sieve allocation. The same limit is enforced again by
+    /// LatticeSieve for callers that bypass Config.
+    static void require_sieve_region_capacity(const core::GNFSParams& params) {
+        const size_t cells = params.sieve_region_size();
+        if (cells == 0) {
+            throw std::out_of_range("Config: sieve region dimensions are not representable");
+        }
+        if (cells > core::SIEVE_MAX_REGION_CELLS) {
+            throw std::out_of_range("Config: sieve region exceeds the per-sieve allocation limit");
+        }
+        if (params.sieve_memory_bytes() == 0) {
+            throw std::out_of_range("Config: sieve region byte size is not representable");
         }
     }
 
@@ -415,6 +432,8 @@ struct Config {
             }
             params.max_local_sieve_threads = *max_local_sieve_threads;
         }
+
+        require_sieve_region_capacity(params);
 
         return params;
     }

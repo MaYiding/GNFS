@@ -778,11 +778,27 @@ bool test_config_apply_to_rejects_invalid_ranges() {
         }
     }
 
+    // The endpoint values remain valid parser inputs, but their combined
+    // region would exceed the materialized sieve allocation contract.
+    Config oversized;
+    oversized.sieve_width = std::numeric_limits<int32_t>::max();
+    oversized.sieve_height = std::numeric_limits<int32_t>::max();
+    bool oversized_rejected = false;
+    try {
+        (void)oversized.apply_to(n);
+    } catch (const std::out_of_range&) {
+        oversized_rejected = true;
+    }
+    if (!oversized_rejected) {
+        return false;
+    }
+
     Config valid;
-    valid.sieve_width = std::numeric_limits<int32_t>::max();
-    valid.sieve_height = std::numeric_limits<int32_t>::max();
+    valid.sieve_width = 32769;
+    valid.sieve_height = 8191;
     const auto params = valid.apply_to(n);
-    return params.sieve_i_min < params.sieve_i_max && params.sieve_j_min < params.sieve_j_max;
+    return params.sieve_i_min < params.sieve_i_max && params.sieve_j_min < params.sieve_j_max &&
+           params.sieve_region_size() <= gnfs::core::SIEVE_MAX_REGION_CELLS;
 }
 
 // ============================================================
