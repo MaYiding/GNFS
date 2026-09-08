@@ -13,6 +13,7 @@
 #include <exception>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -252,6 +253,52 @@ void test_delta_flag_mismatch_rejected() {
     std::cout << "  delta flag mismatch: rejected (PASS)" << std::endl;
 }
 
+void test_wire_header_is_little_endian() {
+    std::cout << "Testing little-endian wire header and portable fixture..." << std::endl;
+
+    // The format is explicitly little-endian, independent of host byte order.
+    // A three-byte literal chunk is small enough to spell out as a fixture.
+    const std::vector<uint8_t> fixture{
+        'K', 'R', 'Y', 'Z', 1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 3,
+    };
+    std::vector<uint8_t> decoded(3, 0);
+    GNFS_TEST_CHECK(KrylovCompressor::decompress_chunk(fixture.data(), fixture.size(),
+                                                       decoded.data(), decoded.size(), 0));
+    GNFS_TEST_CHECK(decoded == std::vector<uint8_t>({1, 2, 3}));
+    GNFS_TEST_CHECK(KrylovCompressor::peek_uncompressed_size(fixture.data(), fixture.size()) == 3);
+
+    const std::vector<uint8_t> source(0x102, 0xA5);
+    const auto encoded = KrylovCompressor::compress_chunk(source.data(), source.size(), 0);
+    GNFS_TEST_CHECK(encoded[0] == 'K');
+    GNFS_TEST_CHECK(encoded[1] == 'R');
+    GNFS_TEST_CHECK(encoded[2] == 'Y');
+    GNFS_TEST_CHECK(encoded[3] == 'Z');
+    GNFS_TEST_CHECK(encoded[8] == 0x02);
+    GNFS_TEST_CHECK(encoded[9] == 0x01);
+    for (size_t i = 10; i < 16; ++i) {
+        GNFS_TEST_CHECK(encoded[i] == 0);
+    }
+
+    std::cout << "  little-endian header: PASS" << std::endl;
+}
+
+void test_null_pointer_contracts() {
+    std::cout << "Testing null pointer contracts..." << std::endl;
+    bool threw = false;
+    try {
+        (void)KrylovCompressor::compress_chunk(nullptr, 1, 0);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    GNFS_TEST_CHECK(threw);
+
+    const std::vector<uint8_t> source{0x11};
+    const auto encoded = KrylovCompressor::compress_chunk(source.data(), source.size(), 0);
+    GNFS_TEST_CHECK(!KrylovCompressor::decompress_chunk(encoded.data(), encoded.size(), nullptr,
+                                                        source.size(), 0));
+    std::cout << "  null pointers: rejected (PASS)" << std::endl;
+}
+
 void test_truncated_payload_rejected() {
     std::cout << "Testing decompress rejects truncated payload..." << std::endl;
     std::vector<uint8_t> src(1024);
@@ -318,6 +365,8 @@ int main() {
         test_invalid_magic_rejected();
         test_size_mismatch_rejected();
         test_delta_flag_mismatch_rejected();
+        test_wire_header_is_little_endian();
+        test_null_pointer_contracts();
         test_truncated_payload_rejected();
         test_repeated_runs();
         test_chunk_sized_block_grid();
