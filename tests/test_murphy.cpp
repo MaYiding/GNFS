@@ -1,12 +1,14 @@
 /// test_murphy.cpp - Murphy E-score 评估器测试
 
-#include "gnfs/polynomial/murphy_evaluator.hpp"
-#include "gnfs/polynomial/int_polynomial.hpp"
 #include "gnfs/core/integer.hpp"
+#include "gnfs/polynomial/int_polynomial.hpp"
+#include "gnfs/polynomial/murphy_evaluator.hpp"
+#include "support/test_check.hpp"
 
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -18,7 +20,7 @@ void test_dickman_rho() {
     std::cout << "Testing Dickman rho function..." << std::endl;
 
     MurphyParams params;
-    params.alpha_bound = 1000;  // 使用较小的界以加速测试
+    params.alpha_bound = 1000; // 使用较小的界以加速测试
     MurphyEvaluator evaluator(params);
 
     // 已知值：
@@ -31,13 +33,33 @@ void test_dickman_rho() {
     std::vector<Integer> coeffs;
     coeffs.push_back(Integer(static_cast<int64_t>(1)));
     coeffs.push_back(Integer(static_cast<int64_t>(0)));
-    coeffs.push_back(Integer(static_cast<int64_t>(1)));  // f(x) = x^2 + 1
+    coeffs.push_back(Integer(static_cast<int64_t>(1))); // f(x) = x^2 + 1
     IntPolynomial f(std::move(coeffs));
 
     // compute_alpha 应该返回一个有限值
     double alpha = evaluator.compute_alpha(f);
     std::cout << "  Alpha for x^2+1: " << alpha << std::endl;
     assert(std::isfinite(alpha));
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+void test_nan_alpha_bound_uses_minimum_valid_bound() {
+    std::cout << "Testing NaN alpha bound handling..." << std::endl;
+
+    MurphyParams params;
+    params.alpha_bound = std::numeric_limits<double>::quiet_NaN();
+    MurphyEvaluator evaluator(params);
+
+    std::vector<Integer> coeffs;
+    coeffs.emplace_back(0);
+    coeffs.emplace_back(1);
+    const IntPolynomial linear(std::move(coeffs));
+
+    const double alpha = evaluator.compute_alpha(linear);
+    const double expected = -0.5 * std::log(2.0);
+    GNFS_TEST_CHECK(std::isfinite(alpha));
+    GNFS_TEST_CHECK(std::abs(alpha - expected) < 1e-12);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -66,8 +88,8 @@ void test_alpha_golden_values() {
         // 黄金值(2026-05-12 实现版本):-2.34813918493
         // tolerance 1e-9 允许小的浮点重排,但锁定算法本身
         const double expected = -2.34813918493;
-        std::cout << "  alpha(x^5-x+1, bound=100) = " << alpha
-                  << " (expected " << expected << ")" << std::endl;
+        std::cout << "  alpha(x^5-x+1, bound=100) = " << alpha << " (expected " << expected << ")"
+                  << std::endl;
         assert(std::abs(alpha - expected) < 1e-9);
     }
 
@@ -82,8 +104,8 @@ void test_alpha_golden_values() {
         IntPolynomial f(std::move(coeffs));
         double alpha = evaluator.compute_alpha(f);
         const double expected = -1.94061743447;
-        std::cout << "  alpha(x^4+1, bound=100) = " << alpha
-                  << " (expected " << expected << ")" << std::endl;
+        std::cout << "  alpha(x^4+1, bound=100) = " << alpha << " (expected " << expected << ")"
+                  << std::endl;
         assert(std::abs(alpha - expected) < 1e-9);
     }
 
@@ -95,17 +117,17 @@ void test_alpha_computation() {
     std::cout << "Testing alpha computation..." << std::endl;
 
     MurphyParams params;
-    params.alpha_bound = 100;  // 小界以加速
+    params.alpha_bound = 100; // 小界以加速
     MurphyEvaluator evaluator(params);
 
     // f(x) = x^5 - 1 在 mod p 下有多个根（对于 p | 5 的情况）
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(static_cast<int64_t>(-1)));  // 常数项
+    coeffs.push_back(Integer(static_cast<int64_t>(-1))); // 常数项
     coeffs.push_back(Integer(static_cast<int64_t>(0)));
     coeffs.push_back(Integer(static_cast<int64_t>(0)));
     coeffs.push_back(Integer(static_cast<int64_t>(0)));
     coeffs.push_back(Integer(static_cast<int64_t>(0)));
-    coeffs.push_back(Integer(static_cast<int64_t>(1)));   // x^5 项
+    coeffs.push_back(Integer(static_cast<int64_t>(1))); // x^5 项
     IntPolynomial f(std::move(coeffs));
 
     double alpha = evaluator.compute_alpha(f);
@@ -121,7 +143,7 @@ void test_score_consistency() {
     std::cout << "Testing score consistency..." << std::endl;
 
     MurphyParams params;
-    params.sample_points = 500;  // 减少采样点以加速
+    params.sample_points = 500; // 减少采样点以加速
     params.alpha_bound = 100;
     MurphyEvaluator evaluator(params);
 
@@ -140,7 +162,7 @@ void test_score_consistency() {
     g_coeffs.push_back(Integer(static_cast<int64_t>(1)));
     IntPolynomial g(std::move(g_coeffs));
 
-    Integer n("1000000007");  // 一个素数
+    Integer n("1000000007"); // 一个素数
 
     // 计算评分两次，结果应该相近（采样有随机性）
     MurphyScore score1 = evaluator.compute(f, g, n, 100.0);
@@ -178,12 +200,12 @@ void test_skewness_optimization() {
     // 创建典型的 GNFS 多项式
     // f(x) = x^5 + 3x^4 - 2x^3 + x^2 - 5x + 1000000
     std::vector<Integer> f_coeffs;
-    f_coeffs.push_back(Integer(1000000));  // c_0
-    f_coeffs.push_back(Integer(-5));        // c_1
-    f_coeffs.push_back(Integer(static_cast<int64_t>(1)));         // c_2
-    f_coeffs.push_back(Integer(-2));        // c_3
-    f_coeffs.push_back(Integer(3));         // c_4
-    f_coeffs.push_back(Integer(static_cast<int64_t>(1)));         // c_5
+    f_coeffs.push_back(Integer(1000000));                 // c_0
+    f_coeffs.push_back(Integer(-5));                      // c_1
+    f_coeffs.push_back(Integer(static_cast<int64_t>(1))); // c_2
+    f_coeffs.push_back(Integer(-2));                      // c_3
+    f_coeffs.push_back(Integer(3));                       // c_4
+    f_coeffs.push_back(Integer(static_cast<int64_t>(1))); // c_5
     IntPolynomial f(std::move(f_coeffs));
 
     // g(x) = x - 100
@@ -267,11 +289,10 @@ void test_concurrent_evaluation() {
     std::vector<std::thread> threads;
 
     for (size_t t = 0; t < NUM_THREADS; ++t) {
-        threads.emplace_back([&, t]() {
-            results[t] = evaluator.compute(f, g, n, 100.0);
-        });
+        threads.emplace_back([&, t]() { results[t] = evaluator.compute(f, g, n, 100.0); });
     }
-    for (auto& th : threads) th.join();
+    for (auto& th : threads)
+        th.join();
 
     // 所有线程应得到完全相同的结果（相同 seed → 相同采样）
     for (size_t t = 1; t < NUM_THREADS; ++t) {
@@ -279,8 +300,8 @@ void test_concurrent_evaluation() {
         assert(results[t].alpha_f == results[0].alpha_f);
     }
 
-    std::cout << "  " << NUM_THREADS << " threads, all scores identical: "
-              << results[0].log_e_score << std::endl;
+    std::cout << "  " << NUM_THREADS << " threads, all scores identical: " << results[0].log_e_score
+              << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -296,7 +317,7 @@ void test_compute_alpha_parallel_equals_sequential() {
     std::cout << "Testing compute_alpha parallel == sequential (BACKLOG #2)..." << std::endl;
 
     MurphyParams params;
-    params.alpha_bound = 10000;  // ~1200 primes, enough to exercise parallel path
+    params.alpha_bound = 10000; // ~1200 primes, enough to exercise parallel path
     params.sample_points = 100;
 
     // f(x) = x^4 + 3x^3 - 2x^2 + 7x - 11 (irreducible, degree 4)
@@ -346,6 +367,7 @@ int main() {
     std::cout << "=== Murphy Evaluator Tests ===" << std::endl << std::endl;
 
     test_dickman_rho();
+    test_nan_alpha_bound_uses_minimum_valid_bound();
     test_alpha_golden_values();
     test_alpha_computation();
     test_score_consistency();
