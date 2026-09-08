@@ -82,6 +82,42 @@ GNFS_SIEVE_ECORE_THREADS=6 ./gnfs <N>  # 最多 6 个 Utility QoS worker
 
 ---
 
+## Adaptive Raw Target Multiplier (`GNFS_SIEVE_TARGET_MULT`)
+
+`GNFS_SIEVE_TARGET_MULT=X` scales the initial raw-relation target returned by
+`GNFSParams::raw_relation_target()`. The default is `1.0`; accepted values are
+finite decimal numbers in `[0.1, 100.0]`. Invalid, non-finite, prefixed, or
+out-of-range values fall back to `1.0`.
+
+The value is read on every target calculation. This matters for applications
+that run multiple `Pipeline` instances in one process with different
+experiment environments. The multiplier is applied after the size-aware
+target has been calculated, and the existing saturating `size_t` conversion
+still governs overflow.
+
+```bash
+GNFS_SIEVE_TARGET_MULT=2 ./gnfs <N>       # double the initial target
+GNFS_SIEVE_TARGET_MULT=0.5 ./gnfs <N>     # halve it, within the accepted range
+unset GNFS_SIEVE_TARGET_MULT              # use the default target
+```
+
+This tuning switch changes only the starting point of the adaptive sieve
+loop. It does not change relation encoding, merge policy, matrix contents, or
+the checkpoint run identity. The geometry helper
+`GNFSParams::sieve_i_bounds_for_width()` also keeps explicitly configured odd
+sieve widths exact; the default even widths retain their historical bounds.
+
+**Integration points**:
+
+- `include/gnfs/core/params.hpp`: strict per-call parser, target scaling, and
+  exact/overflow-safe sieve geometry;
+- `include/gnfs/api/config.hpp`: shared geometry mapping for typed width
+  overrides;
+- `tests/test_params.cpp`: reload, invalid-value, odd-width, and extreme-width
+  contracts.
+
+---
+
 ## Special-Q Local Compute Budget (Config)
 
 `max_special_q_batch_workers` 和 `max_local_sieve_threads` 是本地 production

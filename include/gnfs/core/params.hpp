@@ -4,11 +4,14 @@
 #include "types.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib> // getenv, atoi for GNFS_OVERRIDE_LP_BITS
 #include <limits>
+#include <stdexcept>
+#include <utility>
 
 namespace gnfs::core {
 
@@ -50,7 +53,7 @@ struct GNFSParams {
     uint32_t special_q_max = 5000;
     uint32_t max_special_q = 2000;            // 最大处理的 special-q 数量
     uint32_t max_special_q_batch_workers = 4; // 单个本地 special-q 批次的外层 worker 上限
-    uint32_t max_local_sieve_threads = 0; // 本地筛法计算通道预算 (0 = Pipeline 自动冻结)
+    uint32_t max_local_sieve_threads = 0;     // 本地筛法计算通道预算 (0 = Pipeline 自动冻结)
 
     // === 线性代数 ===
     uint32_t num_qc_primes = 64;  // 二次特征素数数量
@@ -63,6 +66,21 @@ struct GNFSParams {
     // === 进度报告 ===
     uint32_t progress_interval = 50; // 每 N 个 special-q 报告一次
     bool verbose = true;
+
+    /// 根据 N 的位数计算所有参数
+    ///
+    /// The returned i interval uses exactly the requested width. For an odd
+    /// width the interval is centered on zero; for an even width it retains
+    /// the historical half-open symmetry around -0.5 (for example, width 4
+    /// maps to [-2, 1]).
+    [[nodiscard]] static std::pair<int32_t, int32_t> sieve_i_bounds_for_width(int32_t width) {
+        if (width <= 0) {
+            throw std::invalid_argument("GNFSParams: sieve width must be positive");
+        }
+        const int64_t i_min = -static_cast<int64_t>(width / 2);
+        const int64_t i_max = i_min + static_cast<int64_t>(width) - 1;
+        return {static_cast<int32_t>(i_min), static_cast<int32_t>(i_max)};
+    }
 
     /// 根据 N 的位数计算所有参数
     static GNFSParams compute(size_t n_bits) {
@@ -260,8 +278,10 @@ struct GNFSParams {
             sieve_height = 16384; // I=15, 536M positions
         }
 
-        p.sieve_i_min = -static_cast<int32_t>(sieve_width / 2);
-        p.sieve_i_max = static_cast<int32_t>(sieve_width / 2) - 1;
+        const auto [sieve_i_min, sieve_i_max] =
+            sieve_i_bounds_for_width(static_cast<int32_t>(sieve_width));
+        p.sieve_i_min = sieve_i_min;
+        p.sieve_i_max = sieve_i_max;
         p.sieve_j_min = 1;
         p.sieve_j_max = static_cast<int32_t>(sieve_height);
 
@@ -407,12 +427,21 @@ struct GNFSParams {
         // multiplier 适用于最终 target 输出. 用于 50d/60d β plateau 突破:
         // CADO-NFS 50d 标准 target 100M+ raw, 我们 5.9M 不足. X=10-20 可对齐.
         // 默认 1.0 (无 multiplier, 原始策略 unchanged).
-        static const double target_mult = []() {
+        // Read this per call. A process may run multiple Pipeline instances
+        // with different experiment environments, and a function-local static
+        // would silently retain the first instance's multiplier.
+        const double target_mult = []() noexcept {
             const char* env = std::getenv("GNFS_SIEVE_TARGET_MULT");
             if (!env)
                 return 1.0;
-            double v = std::atof(env);
-            return (v >= 0.1 && v <= 100.0) ? v : 1.0;
+            errno = 0;
+            char* end = nullptr;
+            const double v = std::strtod(env, &end);
+            if (errno == ERANGE || end == env || *end != '\0' || !std::isfinite(v) || v < 0.1 ||
+                v > 100.0) {
+                return 1.0;
+            }
+            return v;
         }();
 
         size_t base_target;
@@ -440,13 +469,28 @@ struct GNFSParams {
 
     /// 估算筛区域大小 (位置数)
     [[nodiscard]] size_t sieve_region_size() const {
-        return static_cast<size_t>(sieve_i_max - sieve_i_min + 1) *
-               static_cast<size_t>(sieve_j_max - sieve_j_min + 1);
+        // Widen before subtracting: the public fields are int32_t and callers
+        // can provide the full representable interval.
+        const int64_t width =
+            static_cast<int64_t>(sieve_i_max) - static_cast<int64_t>(sieve_i_min) + 1;
+        const int64_t height =
+            static_cast<int64_t>(sieve_j_max) - static_cast<int64_t>(sieve_j_min) + 1;
+        if (width <= 0 || height <= 0 ||
+            static_cast<uint64_t>(width) >
+                static_cast<uint64_t>((std::numeric_limits<size_t>::max)()) /
+                    static_cast<uint64_t>(height)) {
+            return 0;
+        }
+        return static_cast<size_t>(static_cast<uint64_t>(width) * static_cast<uint64_t>(height));
     }
 
     /// 估算筛区域内存使用 (bytes, uint16_t per position)
     [[nodiscard]] size_t sieve_memory_bytes() const {
-        return sieve_region_size() * sizeof(uint16_t);
+        const size_t area = sieve_region_size();
+        if (area > (std::numeric_limits<size_t>::max)() / sizeof(uint16_t)) {
+            return 0;
+        }
+        return area * sizeof(uint16_t);
     }
 };
 

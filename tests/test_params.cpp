@@ -2,8 +2,11 @@
 #include "gnfs/core/params.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <string>
 
 using namespace gnfs::core;
 
@@ -142,6 +145,26 @@ void test_sieve_region_geometry() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_configurable_sieve_width_is_exact() {
+    std::cout << "Testing exact configurable sieve widths..." << std::endl;
+
+    for (const int32_t width : {1, 2, 3, 5, 4095, std::numeric_limits<int32_t>::max()}) {
+        const auto [i_min, i_max] = GNFSParams::sieve_i_bounds_for_width(width);
+        const int64_t observed = static_cast<int64_t>(i_max) - static_cast<int64_t>(i_min) + 1;
+        assert(observed == width);
+    }
+
+    bool rejected = false;
+    try {
+        (void)GNFSParams::sieve_i_bounds_for_width(0);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    assert(rejected);
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_large_prime_bound() {
     std::cout << "Testing large prime bound..." << std::endl;
 
@@ -193,6 +216,45 @@ void test_lp_bits_env_override() {
     auto cleanup = GNFSParams::compute(197);
     assert(cleanup.large_prime_bits == 26);
 
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_target_multiplier_reloads_per_call() {
+    std::cout << "Testing GNFS_SIEVE_TARGET_MULT reload semantics..." << std::endl;
+
+    std::optional<std::string> previous_value;
+    if (const char* previous = std::getenv("GNFS_SIEVE_TARGET_MULT")) {
+        previous_value = previous;
+    }
+    const auto restore_environment = [&]() noexcept {
+        if (previous_value.has_value()) {
+            (void)setenv("GNFS_SIEVE_TARGET_MULT", previous_value->c_str(), 1);
+        } else {
+            (void)unsetenv("GNFS_SIEVE_TARGET_MULT");
+        }
+    };
+
+    unsetenv("GNFS_SIEVE_TARGET_MULT");
+    const auto params = GNFSParams::compute(80);
+    constexpr size_t columns = 1000;
+    const size_t baseline = params.raw_relation_target(columns);
+    assert(baseline > 0);
+
+    setenv("GNFS_SIEVE_TARGET_MULT", "2", 1);
+    const size_t doubled = params.raw_relation_target(columns);
+    assert(doubled == baseline * 2);
+
+    setenv("GNFS_SIEVE_TARGET_MULT", "3.5", 1);
+    const size_t fractional = params.raw_relation_target(columns);
+    assert(fractional == static_cast<size_t>(static_cast<double>(baseline) * 3.5));
+
+    // Prefixes, non-finite values, and out-of-range values must fall back to 1.
+    for (const char* invalid : {"2x", "nan", "0.01", "101", "1e-9999", "1e9999"}) {
+        setenv("GNFS_SIEVE_TARGET_MULT", invalid, 1);
+        assert(params.raw_relation_target(columns) == baseline);
+    }
+
+    restore_environment();
     std::cout << "  PASS" << std::endl;
 }
 
@@ -341,8 +403,10 @@ int main() {
     test_special_q_above_fb_bound();
     test_sieve_area_cap();
     test_sieve_region_geometry();
+    test_configurable_sieve_width_is_exact();
     test_large_prime_bound();
     test_lp_bits_env_override();
+    test_target_multiplier_reloads_per_call();
     test_threshold_values();
     test_max_special_q();
     test_estimated_relations();

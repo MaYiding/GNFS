@@ -114,8 +114,7 @@ struct Config {
 
     static void require_positive_dimension(int32_t value, std::string_view key) {
         if (value <= 0) {
-            throw std::out_of_range("Config: " + std::string(key) +
-                                    " must be in [1, INT32_MAX]");
+            throw std::out_of_range("Config: " + std::string(key) + " must be in [1, INT32_MAX]");
         }
     }
 
@@ -388,8 +387,9 @@ struct Config {
 
         if (sieve_width.has_value()) {
             require_positive_dimension(*sieve_width, "sieve_width");
-            params.sieve_i_min = -(*sieve_width / 2);
-            params.sieve_i_max = *sieve_width / 2 - 1;
+            const auto [i_min, i_max] = core::GNFSParams::sieve_i_bounds_for_width(*sieve_width);
+            params.sieve_i_min = i_min;
+            params.sieve_i_max = i_max;
         }
         if (sieve_height.has_value()) {
             require_positive_dimension(*sieve_height, "sieve_height");
