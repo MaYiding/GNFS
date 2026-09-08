@@ -144,6 +144,13 @@ public:
     /// 计算 f(x) mod p 的所有根
     /// 使用暴力搜索（小 p）或 Cantor-Zassenhaus（大 p）
     [[nodiscard]] std::vector<uint32_t> roots_mod_p(uint32_t p) const {
+        // Both root-finding paths below operate over the finite field F_p.
+        // Reject degenerate/composite moduli before p-2 exponentiation or the
+        // brute-force path can silently report non-field roots.
+        if (p < 2 || !util::is_prime_u32(p)) {
+            throw std::invalid_argument("IntPolynomial::roots_mod_p requires a prime modulus");
+        }
+
         std::vector<uint32_t> roots;
         roots.reserve(static_cast<size_t>(degree())); // bounded by f degree
 

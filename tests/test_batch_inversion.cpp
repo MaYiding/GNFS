@@ -25,15 +25,16 @@
 #include <gmp.h>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-using gnfs::core::Integer;
-using gnfs::cofactor::BatchInvResult;
 using gnfs::cofactor::batch_mod_inverse;
+using gnfs::cofactor::BatchInvResult;
 using gnfs::cofactor::ecm_batch_inv_enabled;
 using gnfs::cofactor::ecm_batch_inv_reset_env_cache_for_testing;
 using gnfs::cofactor::naive_mod_inverse;
+using gnfs::core::Integer;
 
 namespace {
 
@@ -51,33 +52,30 @@ void apply_env(const char* value) {
 // Helper: assert two BatchInvResult are bit-for-bit identical (same
 // inverses, same found_factor presence and value). On mismatch dumps the
 // offending index and values.
-void assert_same(const BatchInvResult& a,
-                 const BatchInvResult& b,
-                 const char* label) {
+void assert_same(const BatchInvResult& a, const BatchInvResult& b, const char* label) {
     if (a.inverses.size() != b.inverses.size()) {
-        std::cerr << "\n  ERROR (" << label << "): inverses.size() mismatch: "
-                  << a.inverses.size() << " vs " << b.inverses.size()
-                  << std::endl;
+        std::cerr << "\n  ERROR (" << label << "): inverses.size() mismatch: " << a.inverses.size()
+                  << " vs " << b.inverses.size() << std::endl;
         std::abort();
     }
     for (std::size_t i = 0; i < a.inverses.size(); ++i) {
         if (a.inverses[i].compare(b.inverses[i]) != 0) {
             std::cerr << "\n  ERROR (" << label << "): inverses[" << i
-                      << "] mismatch: " << a.inverses[i].to_string()
-                      << " vs " << b.inverses[i].to_string() << std::endl;
+                      << "] mismatch: " << a.inverses[i].to_string() << " vs "
+                      << b.inverses[i].to_string() << std::endl;
             std::abort();
         }
     }
     if (a.found_factor.has_value() != b.found_factor.has_value()) {
-        std::cerr << "\n  ERROR (" << label << "): found_factor presence: "
-                  << a.found_factor.has_value() << " vs "
+        std::cerr << "\n  ERROR (" << label
+                  << "): found_factor presence: " << a.found_factor.has_value() << " vs "
                   << b.found_factor.has_value() << std::endl;
         std::abort();
     }
     if (a.found_factor.has_value()) {
         if (a.found_factor->compare(*b.found_factor) != 0) {
-            std::cerr << "\n  ERROR (" << label << "): found_factor mismatch: "
-                      << a.found_factor->to_string() << " vs "
+            std::cerr << "\n  ERROR (" << label
+                      << "): found_factor mismatch: " << a.found_factor->to_string() << " vs "
                       << b.found_factor->to_string() << std::endl;
             std::abort();
         }
@@ -86,8 +84,7 @@ void assert_same(const BatchInvResult& a,
 
 // Helper: verify (a * a^{-1}) mod n == 1 for every (a, a^{-1}) pair, plus
 // every inverse is reduced into [0, n).
-void verify_inverses(const std::vector<Integer>& values,
-                     const std::vector<Integer>& inverses,
+void verify_inverses(const std::vector<Integer>& values, const std::vector<Integer>& inverses,
                      const Integer& n) {
     assert(values.size() == inverses.size());
     Integer prod;
@@ -95,16 +92,12 @@ void verify_inverses(const std::vector<Integer>& values,
         // 0 <= inv < n
         assert(!inverses[i].is_negative());
         assert(inverses[i].compare(n) < 0);
-        mpz_mul(prod.get_mpz(),
-                values[i].get_mpz(),
-                inverses[i].get_mpz());
+        mpz_mul(prod.get_mpz(), values[i].get_mpz(), inverses[i].get_mpz());
         mpz_mod(prod.get_mpz(), prod.get_mpz(), n.get_mpz());
         if (!prod.is_one()) {
             std::cerr << "\n  ERROR: inverse check failed at i=" << i
-                      << " v=" << values[i].to_string()
-                      << " inv=" << inverses[i].to_string()
-                      << " n=" << n.to_string()
-                      << " v*inv mod n=" << prod.to_string() << std::endl;
+                      << " v=" << values[i].to_string() << " inv=" << inverses[i].to_string()
+                      << " n=" << n.to_string() << " v*inv mod n=" << prod.to_string() << std::endl;
             std::abort();
         }
     }
@@ -113,9 +106,7 @@ void verify_inverses(const std::vector<Integer>& values,
 // Helper: build k coprime-to-n values via a deterministic PRNG. Uses
 // mpz_urandomm fed by a 64-bit seed -> gmp_randstate_t. Skips values
 // whose gcd with n is non-trivial. Requires n > 1.
-std::vector<Integer> random_coprime_values(const Integer& n,
-                                           std::size_t k,
-                                           uint64_t seed) {
+std::vector<Integer> random_coprime_values(const Integer& n, std::size_t k, uint64_t seed) {
     gmp_randstate_t st;
     gmp_randinit_default(st);
     gmp_randseed_ui(st, seed);
@@ -125,9 +116,11 @@ std::vector<Integer> random_coprime_values(const Integer& n,
     Integer v, g;
     while (out.size() < k) {
         mpz_urandomm(v.get_mpz(), st, n.get_mpz());
-        if (v.is_zero()) continue;
+        if (v.is_zero())
+            continue;
         mpz_gcd(g.get_mpz(), v.get_mpz(), n.get_mpz());
-        if (!g.is_one()) continue;
+        if (!g.is_one())
+            continue;
         out.push_back(v.clone());
     }
     gmp_randclear(st);
@@ -237,9 +230,7 @@ void test_single_input() {
 
     // Cross-check against a fresh mpz_invert call.
     Integer expected;
-    int ok = mpz_invert(expected.get_mpz(),
-                        values[0].get_mpz(),
-                        n.get_mpz());
+    int ok = mpz_invert(expected.get_mpz(), values[0].get_mpz(), n.get_mpz());
     assert(ok == 1);
     assert(batch.inverses[0].compare(expected) == 0);
 
@@ -257,7 +248,8 @@ void test_small_batch_parity() {
     std::vector<Integer> values;
     // Deterministic small primes / values, all coprime to 101.
     int64_t vs[] = {2, 7, 23, 47, 99};
-    for (int64_t v : vs) values.push_back(Integer{v});
+    for (int64_t v : vs)
+        values.push_back(Integer{v});
 
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
@@ -298,15 +290,13 @@ void test_medium_batch_parity() {
 // Test 8: Large batch parity (k=100, n ~ 200-bit prime)
 // ───────────────────────────────────────────────────────────────────────────
 void test_large_batch_parity() {
-    std::cout << "Test 8: large batch (k=100, n ~ 200-bit prime)..."
-              << std::flush;
+    std::cout << "Test 8: large batch (k=100, n ~ 200-bit prime)..." << std::flush;
 
     // A 200-bit prime: 2^200 + 235 (verified probable prime). The exact
     // constant is chosen to be a real prime so gcd checks aren't trivial.
     // 2^200 = 1606938044258990275541962092341162602522202993782792835301376.
     // 2^200 + 235 is prime (Miller-Rabin via mpz_probab_prime_p).
-    Integer n("1606938044258990275541962092341162602522202993782792835301611",
-              10);
+    Integer n("1606938044258990275541962092341162602522202993782792835301611", 10);
     assert(n.is_probable_prime(25) != 0);
 
     auto values = random_coprime_values(n, /*k=*/100, /*seed=*/12345);
@@ -327,8 +317,7 @@ void test_large_batch_parity() {
 // Test 9: Found factor — v contains factors of composite n
 // ───────────────────────────────────────────────────────────────────────────
 void test_found_factor() {
-    std::cout << "Test 9: found factor (v_i shares prime with n)..."
-              << std::flush;
+    std::cout << "Test 9: found factor (v_i shares prime with n)..." << std::flush;
 
     // n = 101 * 103 = 10403 (semiprime). Put p1=101 at index 0 and p2=103
     // at index 1; the helper must report the first non-trivial gcd, which
@@ -340,9 +329,9 @@ void test_found_factor() {
     assert(n.to_uint64() == 10403);
 
     std::vector<Integer> values;
-    values.push_back(p1.clone());                  // gcd(101, 10403) = 101
-    values.push_back(p2.clone());                  // gcd(103, 10403) = 103
-    values.push_back(Integer{int64_t{47}});        // gcd(47, 10403) = 1
+    values.push_back(p1.clone());           // gcd(101, 10403) = 101
+    values.push_back(p2.clone());           // gcd(103, 10403) = 103
+    values.push_back(Integer{int64_t{47}}); // gcd(47, 10403) = 1
 
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
@@ -359,13 +348,10 @@ void test_found_factor() {
 
     // Also verify the factor divides n.
     Integer rem;
-    mpz_mod(rem.get_mpz(),
-            n.get_mpz(),
-            batch.found_factor->get_mpz());
+    mpz_mod(rem.get_mpz(), n.get_mpz(), batch.found_factor->get_mpz());
     assert(rem.is_zero());
 
-    std::cout << " PASS (found factor = " << batch.found_factor->to_string()
-              << ")\n";
+    std::cout << " PASS (found factor = " << batch.found_factor->to_string() << ")\n";
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -380,7 +366,7 @@ void test_reset_env_cache() {
 
     // Change env BUT do not reset: cached value sticks.
     setenv("GNFS_ECM_BATCH_INV", "1", 1);
-    assert(ecm_batch_inv_enabled() == false);  // still cached OFF
+    assert(ecm_batch_inv_enabled() == false); // still cached OFF
 
     // Reset cache: next read picks up the new env value.
     ecm_batch_inv_reset_env_cache_for_testing();
@@ -401,9 +387,9 @@ void test_boundary_values() {
 
     Integer n{int64_t{101}};
     std::vector<Integer> values;
-    values.push_back(Integer{int64_t{1}});      // 1^{-1} = 1
-    values.push_back(Integer{int64_t{100}});    // 100^{-1} mod 101 = 100
-    values.push_back(Integer{int64_t{50}});     // some interior value
+    values.push_back(Integer{int64_t{1}});   // 1^{-1} = 1
+    values.push_back(Integer{int64_t{100}}); // 100^{-1} mod 101 = 100
+    values.push_back(Integer{int64_t{50}});  // some interior value
 
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
@@ -430,12 +416,12 @@ void test_unreduced_inputs() {
     // Values purposely >= n; the helper must reduce internally and produce
     // the same result as mpz_invert (which also accepts unreduced inputs).
     std::vector<Integer> values;
-    values.push_back(Integer{int64_t{102}});    // 102 mod 101 == 1
-    values.push_back(Integer{int64_t{303}});    // 303 mod 101 == 0... no!
+    values.push_back(Integer{int64_t{102}}); // 102 mod 101 == 1
+    values.push_back(Integer{int64_t{303}}); // 303 mod 101 == 0... no!
     // 303 = 3 * 101, so gcd(303, 101) = 101 = n, that would trigger
     // failure. Pick something coprime instead:
-    values.back() = Integer{int64_t{305}};      // 305 mod 101 = 305-3*101=2
-    values.push_back(Integer{int64_t{200}});    // 200 mod 101 = 99
+    values.back() = Integer{int64_t{305}};   // 305 mod 101 = 305-3*101=2
+    values.push_back(Integer{int64_t{200}}); // 200 mod 101 = 99
 
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
@@ -449,7 +435,40 @@ void test_unreduced_inputs() {
     std::cout << " PASS\n";
 }
 
-}  // namespace
+// ───────────────────────────────────────────────────────────────────────────
+// Test 13: Invalid modulus — reject zero and negative values before GMP calls
+// ───────────────────────────────────────────────────────────────────────────
+void test_invalid_modulus() {
+    std::cout << "Test 13: invalid modulus (zero/negative)..." << std::flush;
+
+    const std::vector<Integer> values = {Integer{int64_t{2}}};
+    const std::vector<Integer> moduli = {Integer{int64_t{0}}, Integer{int64_t{-7}}};
+    for (const Integer& n : moduli) {
+        bool batch_rejected = false;
+        try {
+            (void)batch_mod_inverse(values, n);
+        } catch (const std::invalid_argument&) {
+            batch_rejected = true;
+        }
+        if (!batch_rejected) {
+            throw std::runtime_error("batch_mod_inverse accepted a non-positive modulus");
+        }
+
+        bool naive_rejected = false;
+        try {
+            (void)naive_mod_inverse(values, n);
+        } catch (const std::invalid_argument&) {
+            naive_rejected = true;
+        }
+        if (!naive_rejected) {
+            throw std::runtime_error("naive_mod_inverse accepted a non-positive modulus");
+        }
+    }
+
+    std::cout << " PASS\n";
+}
+
+} // namespace
 
 int main() {
     std::cout << "=== Batch Modular Inversion Tests ===" << std::endl;
@@ -466,9 +485,8 @@ int main() {
     test_reset_env_cache();
     test_boundary_values();
     test_unreduced_inputs();
+    test_invalid_modulus();
 
-    std::cout << std::endl
-              << "=== All Batch Inversion Tests PASSED ==="
-              << std::endl;
+    std::cout << std::endl << "=== All Batch Inversion Tests PASSED ===" << std::endl;
     return 0;
 }

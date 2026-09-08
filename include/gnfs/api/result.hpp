@@ -36,6 +36,24 @@ enum class SieveStopReason : uint8_t {
     MixedAcrossSplits,
 };
 
+/// Return whether a value is one of the public sieve-stop reason tags.
+[[nodiscard]] constexpr bool is_valid_sieve_stop_reason(SieveStopReason reason) noexcept {
+    switch (reason) {
+    case SieveStopReason::NotStarted:
+    case SieveStopReason::EffectiveColumnExcess:
+    case SieveStopReason::RecoveredFinalizedCorpus:
+    case SieveStopReason::RecoveredTerminalCheckpoint:
+    case SieveStopReason::InsufficientRawRelations:
+    case SieveStopReason::SpecialQBudgetReached:
+    case SieveStopReason::SpecialQRangeExhausted:
+    case SieveStopReason::AdaptiveRoundLimitReached:
+    case SieveStopReason::DistributedWaveComplete:
+    case SieveStopReason::MixedAcrossSplits:
+        return true;
+    }
+    return false;
+}
+
 [[nodiscard]] constexpr std::string_view sieve_stop_reason_name(SieveStopReason reason) noexcept {
     switch (reason) {
     case SieveStopReason::NotStarted:

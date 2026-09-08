@@ -95,6 +95,20 @@ reaping the reserved leader, and Windows cleanup waits until the Job reports
 zero active processes. The direct child is reaped and captured streams reach
 EOF before cleanup is accepted.
 
+### Isolated Build and Report Directory
+
+`scripts/test.sh` uses `${PROJECT_ROOT}/build` for generated build files and
+`test_report.json` by default. Set `GNFS_BUILD_DIR` to an absolute local path
+when a contract test or parallel checkout needs isolated output:
+
+```bash
+GNFS_BUILD_DIR=/tmp/gnfs-harness-check-build ./scripts/test.sh --no-build perf
+```
+
+The override affects only the runner's build and report directory. It does not
+change source paths or the `benchmarks/` output directory. `--no-build` still
+requires the selected test binaries to exist in the overridden directory.
+
 The zsh wrapper installs scoped HUP, INT, and TERM traps before launch, forwards
 the first signal to the supervisor, waits for containment cleanup, restores the
 caller's traps, and then re-delivers the signal. A supervisor cleanup failure
@@ -107,6 +121,13 @@ Strict dual-stream modes retain independent byte streams. Each stream has an
 explicit 16 MiB capture ceiling; exceeding it is a Harness failure. The 50-digit
 campaign keeps its separate, evidence-bound process-group protocol rather than
 routing through this generic wrapper.
+
+### Test Selection Contract
+
+`scripts/test.sh module <name>` treats an unknown module as a failed selection.
+The runner records that invalid request in `test_report.json` and exits non-zero;
+it never reports an empty module selection as successful. This keeps typos in
+local commands and CI jobs from silently skipping the intended test set.
 
 ## Validation
 

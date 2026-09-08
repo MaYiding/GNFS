@@ -159,6 +159,13 @@ void require_pipeline_context(const Integer& pipeline_n, const PolynomialContext
     }
 }
 
+void require_valid_factorization_method(FactorizationMethod method, std::string_view phase) {
+    if (!is_valid_factorization_method(method)) {
+        throw std::invalid_argument(std::string(phase) +
+                                    " received an invalid factorization method");
+    }
+}
+
 } // namespace
 
 void Pipeline::refresh_relation_corpus_checked(relation::RelationCorpus& corpus,
@@ -1011,6 +1018,9 @@ Integer pollard_rho_brent(const Integer& n, size_t max_iters = 1000000) {
 std::pair<FactorizationMethod, std::string>
 Pipeline::select_method(size_t n_bits, size_t n_digits,
                         std::optional<FactorizationMethod> override) {
+    if (override.has_value()) {
+        require_valid_factorization_method(*override, "Pipeline::select_method");
+    }
     // Manual override
     if (override && *override != FactorizationMethod::Auto) {
         return {*override, "user specified"};
@@ -1072,6 +1082,9 @@ Pipeline::select_method(size_t n_bits, size_t n_digits,
 Pipeline::Pipeline(const Integer& n, const Config& config)
     : n_(n), config_(config), params_(config.apply_to(n)),
       start_time_(std::chrono::high_resolution_clock::now()) {
+    if (config_.method.has_value()) {
+        require_valid_factorization_method(*config_.method, "Pipeline::Pipeline");
+    }
     uint32_t hardware_threads = std::thread::hardware_concurrency();
     if (hardware_threads == 0) {
         hardware_threads = 4;

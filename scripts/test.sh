@@ -122,6 +122,9 @@
 #   --timeout N   测试超时秒数 (默认: 300)
 #   --retry N     失败重试次数 (默认: 0)
 #
+# 环境变量:
+#   GNFS_BUILD_DIR=/path       覆盖默认 build 目录 (用于隔离报告/构建产物)
+#
 # ────────────────────────── 示例 ──────────────────────────
 #
 #   ./scripts/test.sh module linalg          # 只跑线性代数测试
@@ -141,7 +144,9 @@ set -eo pipefail
 # ============================================================
 
 PROJECT_ROOT="${0:A:h:h}"
-BUILD_DIR="${PROJECT_ROOT}/build"
+# Keep the default checkout-local build, while allowing isolated callers (for
+# example Harness contract tests) to direct generated reports elsewhere.
+BUILD_DIR="${GNFS_BUILD_DIR:-${PROJECT_ROOT}/build}"
 BENCH_DIR="${PROJECT_ROOT}/benchmarks"
 REPORT_FILE="${BUILD_DIR}/test_report.json"
 TEST_RUNNER_COMMAND="$0"
@@ -7421,8 +7426,18 @@ do_module() {
     for mod in "${modules[@]}"; do
         local tests="${MODULE_TESTS[$mod]:-}"
         if [[ -z "$tests" ]]; then
-            log_warn "未知模块: ${mod}"
+            # A typo must never look like a successful empty selection. Keep
+            # the invalid request in the global report so callers and CI see
+            # a non-zero result even when the main dispatcher preserves the
+            # summary path after do_module returns.
+            log_fail "未知模块: ${mod}"
             log_info "可用模块: ${(k)MODULE_TESTS}"
+            (( module_fail += 1 ))
+            (( TOTAL_TESTS += 1 ))
+            (( FAILED_TESTS += 1 ))
+            # Keep user-provided module text out of JSON so quotes or control
+            # characters cannot corrupt the runner report.
+            REPORT_ENTRIES+=("{\"name\":\"module_selection\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"unknown_module\"}")
             continue
         fi
 
@@ -10007,7 +10022,7 @@ case "$MODE" in
         do_build
         log_header "性能测试 (25-digit)"
         log_warn "预计耗时数分钟..."
-        run_single_test test_25digit
+        run_single_test test_25digit || true
         show_summary
         ;;
 
@@ -10079,7 +10094,7 @@ case "$MODE" in
         log_warn "50-digit 可能需要数小时, 60-digit 可能需要十几小时..."
         local stress_min=${MODE_ARGS[1]:-1}
         local stress_max=${MODE_ARGS[2]:-2}
-        run_single_test test_stress "$stress_min" "$stress_max"
+        run_single_test test_stress "$stress_min" "$stress_max" || true
         show_summary
         ;;
 

@@ -88,6 +88,14 @@ static_assert(sizeof(DenseGF2_64x64_Mock) == 512);
 static_assert(alignof(DenseGF2_64x64_Mock) == alignof(std::uint64_t));
 static_assert(std::is_trivially_copyable_v<DenseGF2_64x64_Mock>);
 
+struct alignas(64) OverAlignedEntry {
+    std::array<std::uint8_t, 64> bytes{};
+};
+
+static_assert(sizeof(OverAlignedEntry) == 64);
+static_assert(alignof(OverAlignedEntry) == 64);
+static_assert(std::is_trivially_copyable_v<OverAlignedEntry>);
+
 bool path_exists(const std::string& path) {
     std::error_code error;
     const bool exists = std::filesystem::exists(native_path(path), error);
@@ -373,6 +381,31 @@ void test_raw_byte_access() {
     std::cout << "  Mutable/const raw byte access: PASS\n";
 }
 
+void test_access_contract() {
+    std::cout << "Testing always-on access bounds and typed layout checks...\n";
+
+    const auto path = unique_path("access_contract");
+    PathCleanup cleanup(path);
+    KrylovSequenceMmap sequence(path, 2, sizeof(std::uint64_t));
+
+    GNFS_TEST_CHECK(sequence.raw_at(0) != nullptr);
+    GNFS_TEST_CHECK(sequence.at<std::uint64_t>(1) != nullptr);
+    GNFS_TEST_CHECK(throws_with_message<std::out_of_range>([&] { (void)sequence.raw_at(2); },
+                                                           "entry index out of range"));
+    GNFS_TEST_CHECK(throws_with_message<std::out_of_range>(
+        [&] { (void)sequence.at<std::uint64_t>(2); }, "entry index out of range"));
+    GNFS_TEST_CHECK(throws_with_message<std::invalid_argument>(
+        [&] { (void)sequence.at<std::uint32_t>(0); }, "entry type size mismatch"));
+
+    const auto aligned_path = unique_path("access_alignment");
+    PathCleanup aligned_cleanup(aligned_path);
+    KrylovSequenceMmap aligned(aligned_path, 1, sizeof(OverAlignedEntry));
+    GNFS_TEST_CHECK(throws_with_message<std::invalid_argument>(
+        [&] { (void)aligned.at<OverAlignedEntry>(0); }, "alignment"));
+
+    std::cout << "  Bounds, type-size, and alignment checks: PASS\n";
+}
+
 void test_utf8_path() {
     std::cout << "Testing UTF-8 path handling...\n";
 
@@ -620,6 +653,7 @@ int main() {
         test_persistent_roundtrip();
         test_validate_header();
         test_raw_byte_access();
+        test_access_contract();
         test_utf8_path();
         test_large_sequence();
         test_invalid_args();

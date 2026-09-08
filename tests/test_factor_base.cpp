@@ -523,6 +523,111 @@ void test_serialization_roundtrip() {
               << ")" << std::endl;
 }
 
+static void append_u32_le(std::stringstream& stream, uint32_t value) {
+    const unsigned char bytes[4] = {
+        static_cast<unsigned char>(value & 0xffU),
+        static_cast<unsigned char>((value >> 8U) & 0xffU),
+        static_cast<unsigned char>((value >> 16U) & 0xffU),
+        static_cast<unsigned char>((value >> 24U) & 0xffU),
+    };
+    stream.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+}
+
+static void append_u64_le(std::stringstream& stream, uint64_t value) {
+    const unsigned char bytes[8] = {
+        static_cast<unsigned char>(value & 0xffU),
+        static_cast<unsigned char>((value >> 8U) & 0xffU),
+        static_cast<unsigned char>((value >> 16U) & 0xffU),
+        static_cast<unsigned char>((value >> 24U) & 0xffU),
+        static_cast<unsigned char>((value >> 32U) & 0xffU),
+        static_cast<unsigned char>((value >> 40U) & 0xffU),
+        static_cast<unsigned char>((value >> 48U) & 0xffU),
+        static_cast<unsigned char>((value >> 56U) & 0xffU),
+    };
+    stream.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+}
+
+void test_little_endian_serialization() {
+    std::cout << "Testing little-endian factor-base serialization..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) {
+            throw std::runtime_error(message);
+        }
+    };
+
+    // Decode a canonical fixture with values whose bytes are intentionally
+    // distinct. A native-endian reader would swap these fields on big-endian
+    // hosts, corrupting bounds and prime metadata.
+    std::stringstream fixture;
+    append_u32_le(fixture, 0x47464246U);
+    append_u32_le(fixture, 1U);
+    append_u32_le(fixture, 0x01020304U);
+    append_u32_le(fixture, 0x05060708U);
+    append_u64_le(fixture, UINT64_C(0x0102030405060708));
+    fixture.put(static_cast<char>(17));
+    append_u64_le(fixture, 1U);
+    append_u32_le(fixture, 1U);
+    append_u32_le(fixture, 7U);
+    append_u32_le(fixture, 0x11121314U);
+    append_u32_le(fixture, 1U);
+    append_u32_le(fixture, 11U);
+    append_u32_le(fixture, 2U);
+    append_u32_le(fixture, 0x15161718U);
+    fixture.put(static_cast<char>(1));
+    fixture.seekg(0);
+
+    auto decoded = FactorBase::load(fixture);
+    require(decoded.params().rational_bound == 0x01020304U,
+            "little-endian rational bound was decoded incorrectly");
+    require(decoded.params().algebraic_bound == 0x05060708U,
+            "little-endian algebraic bound was decoded incorrectly");
+    require(decoded.params().large_prime_bound == UINT64_C(0x0102030405060708),
+            "little-endian large-prime bound was decoded incorrectly");
+    require(decoded.params().log_scale == 17, "little-endian log scale was decoded incorrectly");
+    require(decoded.sieve_algebraic_count() == 1,
+            "little-endian sieve count was decoded incorrectly");
+    require(decoded.rational_count() == 1 && decoded.rational()[0].p == 7U,
+            "little-endian rational prime was decoded incorrectly");
+    require(decoded.rational()[0].log_p == 0x11121314U,
+            "little-endian rational log was decoded incorrectly");
+    require(decoded.algebraic_count() == 1 && decoded.algebraic()[0].p == 11U,
+            "little-endian algebraic prime was decoded incorrectly");
+    require(decoded.algebraic()[0].r == 2U, "little-endian algebraic root was decoded incorrectly");
+    require(decoded.algebraic()[0].log_p == 0x15161718U,
+            "little-endian algebraic log was decoded incorrectly");
+
+    // Saving the same values must emit the canonical byte order regardless of
+    // the host architecture.
+    FactorBaseParams params(0x01020304U, 0x05060708U, UINT64_C(0x0102030405060708), 17);
+    FactorBase source(params);
+    source.add_rational(7U, 0x11121314U);
+    source.add_algebraic(11U, 2U, 0x15161718U, 1U);
+    source.set_sieve_algebraic_count(1);
+    source.build_index();
+    std::stringstream encoded;
+    source.save(encoded);
+    const std::string bytes = encoded.str();
+    require(bytes.size() >= 12, "factor-base serialization output is truncated");
+    require(static_cast<unsigned char>(bytes[0]) == 0x46U,
+            "factor-base magic byte 0 is not little-endian");
+    require(static_cast<unsigned char>(bytes[1]) == 0x42U,
+            "factor-base magic byte 1 is not little-endian");
+    require(static_cast<unsigned char>(bytes[2]) == 0x46U,
+            "factor-base magic byte 2 is not little-endian");
+    require(static_cast<unsigned char>(bytes[3]) == 0x47U,
+            "factor-base magic byte 3 is not little-endian");
+    require(static_cast<unsigned char>(bytes[8]) == 0x04U,
+            "factor-base bound byte 0 is not little-endian");
+    require(static_cast<unsigned char>(bytes[9]) == 0x03U,
+            "factor-base bound byte 1 is not little-endian");
+    require(static_cast<unsigned char>(bytes[10]) == 0x02U,
+            "factor-base bound byte 2 is not little-endian");
+    require(static_cast<unsigned char>(bytes[11]) == 0x01U,
+            "factor-base bound byte 3 is not little-endian");
+
+    std::cout << "  Little-endian serialization: PASS" << std::endl;
+}
+
 void test_serialization_invalid() {
     std::cout << "Testing serialization error handling..." << std::endl;
 
@@ -850,6 +955,7 @@ int main() {
     test_segmented_parallel_sieve();
     test_base_m_irreducibility();
     test_serialization_roundtrip();
+    test_little_endian_serialization();
     test_serialization_invalid();
     test_count_width_guards();
 

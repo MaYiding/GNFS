@@ -349,6 +349,24 @@ void test_required_relations_extreme_inputs() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_required_relations_boundaries() {
+    std::cout << "Testing required_relations boundary arithmetic..." << std::endl;
+
+    constexpr size_t max_size = std::numeric_limits<size_t>::max();
+    require_test(required_relations(max_size, 0, 1.0) == max_size,
+                 "column target must saturate when strict-excess increment overflows");
+    require_test(required_relations(max_size - 1, 1, 1.0) == max_size,
+                 "column addition must saturate before scaling");
+    require_test(required_relations(100, 0, std::numeric_limits<double>::infinity()) == max_size,
+                 "positive infinite scaling must saturate");
+    require_test(required_relations(100, 0, std::numeric_limits<double>::quiet_NaN()) == 1,
+                 "NaN scaling must not reach an undefined integer conversion");
+    require_test(required_relations(100, 0, -1.0) == 1,
+                 "negative scaling must not reach an undefined integer conversion");
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_effective_column_excess_boundaries() {
     std::cout << "Testing effective-column excess boundaries..." << std::endl;
 
@@ -950,6 +968,7 @@ int main() {
     test_separate_relations();
     test_required_relations();
     test_required_relations_extreme_inputs();
+    test_required_relations_boundaries();
     test_effective_column_excess_boundaries();
     test_merger_count();
     test_saturating_pair_count();

@@ -1,7 +1,9 @@
 #include <gnfs/api/event_stream.hpp>
+#include <gnfs/api/pipeline.hpp>
 
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 
 using namespace gnfs::api;
@@ -122,6 +124,90 @@ void test_result_and_error_events() {
           "error event shape");
 }
 
+void test_invalid_enum_values_rejected() {
+    const auto invalid_method = static_cast<FactorizationMethod>(255);
+    bool started_rejected = false;
+    try {
+        (void)event_stream::started_event("143", 8, 3, invalid_method, "invalid");
+    } catch (const std::invalid_argument&) {
+        started_rejected = true;
+    }
+
+    ProgressInfo progress;
+    progress.phase = static_cast<Phase>(255);
+    bool progress_rejected = false;
+    try {
+        (void)event_stream::progress_event(progress);
+    } catch (const std::invalid_argument&) {
+        progress_rejected = true;
+    }
+
+    LogEntry invalid_level{static_cast<LogLevel>(255), Phase::Filtering, 0.0, "invalid"};
+    bool level_rejected = false;
+    try {
+        (void)event_stream::log_event(invalid_level);
+    } catch (const std::invalid_argument&) {
+        level_rejected = true;
+    }
+
+    LogEntry invalid_phase{LogLevel::Info, static_cast<Phase>(255), 0.0, "invalid"};
+    bool phase_rejected = false;
+    try {
+        (void)event_stream::log_event(invalid_phase);
+    } catch (const std::invalid_argument&) {
+        phase_rejected = true;
+    }
+
+    FactorResult invalid_result;
+    invalid_result.stats.method_used = invalid_method;
+    bool result_method_rejected = false;
+    try {
+        (void)event_stream::result_event(invalid_result);
+    } catch (const std::invalid_argument&) {
+        result_method_rejected = true;
+    }
+
+    FactorResult invalid_stop_result;
+    invalid_stop_result.stats.sieve_stop_reason = static_cast<SieveStopReason>(255);
+    bool result_stop_rejected = false;
+    try {
+        (void)event_stream::result_event(invalid_stop_result);
+    } catch (const std::invalid_argument&) {
+        result_stop_rejected = true;
+    }
+
+    check(started_rejected, "started event rejects invalid method");
+    check(progress_rejected, "progress event rejects invalid phase");
+    check(level_rejected, "log event rejects invalid level");
+    check(phase_rejected, "log event rejects invalid phase");
+    check(result_method_rejected, "result event rejects invalid method");
+    check(result_stop_rejected, "result event rejects invalid stop reason");
+}
+
+void test_invalid_pipeline_method_values_rejected() {
+    const auto invalid = static_cast<FactorizationMethod>(255);
+    bool override_rejected = false;
+    try {
+        (void)Pipeline::select_method(40, 12, invalid);
+    } catch (const std::invalid_argument& error) {
+        override_rejected =
+            std::string(error.what()).find("invalid factorization method") != std::string::npos;
+    }
+
+    Config config;
+    config.method = invalid;
+    bool config_rejected = false;
+    try {
+        Pipeline pipeline(gnfs::core::Integer(143), config);
+        (void)pipeline;
+    } catch (const std::invalid_argument&) {
+        config_rejected = true;
+    }
+
+    check(override_rejected, "method selection rejects invalid override");
+    check(config_rejected, "pipeline rejects invalid configured method");
+}
+
 } // namespace
 
 int main() {
@@ -130,6 +216,8 @@ int main() {
     test_started_event();
     test_progress_and_log_events();
     test_result_and_error_events();
+    test_invalid_enum_values_rejected();
+    test_invalid_pipeline_method_values_rejected();
 
     if (failures != 0) {
         std::cerr << failures << " event-stream test(s) failed\n";
