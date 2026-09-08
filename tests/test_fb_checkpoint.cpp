@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -551,6 +552,12 @@ void test_truncated_payload_rejected_before_allocation() {
         if (!threw)
             throw std::runtime_error("truncated checkpoint was accepted");
     };
+    const auto resize_file = [](const std::string& path, std::uintmax_t size) {
+        std::error_code error;
+        std::filesystem::resize_file(path, size, error);
+        if (error)
+            throw std::runtime_error("cannot resize checkpoint: " + error.message());
+    };
 
     // With N=5, the rational count starts at byte 53 in the v1 wire format.
     {
@@ -573,6 +580,22 @@ void test_truncated_payload_rejected_before_allocation() {
         ck.ctx_n = Integer(static_cast<int64_t>(5));
         ck.save(path);
         patch_u32(path, 48, 64U * 1024U * 1024U);
+        expect_rejected(path);
+    }
+
+    // A large integer body ending exactly at EOF must still leave the fixed
+    // rational/algebraic/sieve trailer available before allocation.
+    {
+        const auto path = tmp_ckpt_path("integer_body_at_eof");
+        CkptCleanup cleanup{path};
+        FbCheckpoint ck;
+        ck.ctx_degree = 1;
+        ck.ctx_n = Integer(static_cast<int64_t>(5));
+        ck.save(path);
+        constexpr uint32_t body_bytes = 64U * 1024U * 1024U;
+        constexpr std::uintmax_t integer_body_offset = 52;
+        resize_file(path, integer_body_offset + body_bytes);
+        patch_u32(path, 48, body_bytes);
         expect_rejected(path);
     }
 
