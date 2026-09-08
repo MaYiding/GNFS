@@ -315,6 +315,24 @@ void test_required_relations() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_required_relations_extreme_inputs() {
+    std::cout << "Testing required_relations extreme arithmetic..." << std::endl;
+
+    constexpr size_t max_size = std::numeric_limits<size_t>::max();
+    require_test(required_relations(max_size, 1, 1.0) == max_size,
+                 "saturates factor-base plus large-prime columns");
+    require_test(required_relations(max_size - 1, 1, 1.0) == max_size,
+                 "saturates final relation-count increment");
+    require_test(required_relations(100, 100, -1.0) == 1,
+                 "negative excess maps to the minimum relation count");
+    require_test(required_relations(100, 100, std::numeric_limits<double>::quiet_NaN()) == 1,
+                 "NaN excess maps to the minimum relation count");
+    require_test(required_relations(100, 100, std::numeric_limits<double>::infinity()) == max_size,
+                 "infinite excess saturates to SIZE_MAX");
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_effective_column_excess_boundaries() {
     std::cout << "Testing effective-column excess boundaries..." << std::endl;
 
@@ -900,6 +918,7 @@ int main() {
     test_get_unique_large_primes();
     test_separate_relations();
     test_required_relations();
+    test_required_relations_extreme_inputs();
     test_effective_column_excess_boundaries();
     test_merger_count();
     test_merger_merge();

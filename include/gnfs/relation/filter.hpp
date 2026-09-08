@@ -751,9 +751,10 @@ public:
 /// 需要 关系数 > 因子基大小 + 大素数数量
 [[nodiscard]] inline size_t required_relations(size_t factor_base_size, size_t unique_large_primes,
                                                double excess_factor = 1.05) {
-
-    size_t columns = factor_base_size + unique_large_primes;
-    return static_cast<size_t>(static_cast<double>(columns) * excess_factor) + 1;
+    const size_t columns = util::saturating_size_add(factor_base_size, unique_large_primes);
+    const size_t scaled =
+        util::size_from_nonnegative_double_floor(static_cast<double>(columns) * excess_factor);
+    return util::saturating_size_add(scaled, 1);
 }
 
 /// 检查是否有足够的关系

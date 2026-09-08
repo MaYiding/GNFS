@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <span>
 #include <stdexcept>
@@ -61,8 +62,7 @@ void test_env_unset_defaults_to_one() {
     apply_env(nullptr);
     std::size_t v = filter_merge_threads();
     if (v != 1) {
-        std::cerr << "\n  ERROR: unset env parsed to " << v
-                  << ", expected 1" << std::endl;
+        std::cerr << "\n  ERROR: unset env parsed to " << v << ", expected 1" << std::endl;
         std::abort();
     }
     std::cout << " PASS\n";
@@ -76,8 +76,7 @@ void test_env_explicit_one() {
     apply_env("1");
     std::size_t v = filter_merge_threads();
     if (v != 1) {
-        std::cerr << "\n  ERROR: '1' parsed to " << v
-                  << ", expected 1" << std::endl;
+        std::cerr << "\n  ERROR: '1' parsed to " << v << ", expected 1" << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -90,15 +89,16 @@ void test_env_explicit_one() {
 void test_env_four() {
     std::cout << "Test 3: ENV '4' -> 4..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::size_t cap = static_cast<std::size_t>(hw) * 2;
     std::size_t expect = (4 < cap) ? 4 : cap;
 
     apply_env("4");
     std::size_t v = filter_merge_threads();
     if (v != expect) {
-        std::cerr << "\n  ERROR: '4' parsed to " << v << ", expected "
-                  << expect << " (hw*2 cap = " << cap << ")" << std::endl;
+        std::cerr << "\n  ERROR: '4' parsed to " << v << ", expected " << expect
+                  << " (hw*2 cap = " << cap << ")" << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -141,14 +141,35 @@ void test_env_non_numeric_to_one() {
 void test_env_clamp_at_hw_times_two() {
     std::cout << "Test 5: ENV '9999' clamped at hw*2..." << std::flush;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::size_t cap = static_cast<std::size_t>(hw) * 2;
 
     apply_env("9999");
     std::size_t v = filter_merge_threads();
     if (v != cap) {
-        std::cerr << "\n  ERROR: '9999' parsed to " << v
-                  << ", expected cap=" << cap << std::endl;
+        std::cerr << "\n  ERROR: '9999' parsed to " << v << ", expected cap=" << cap << std::endl;
+        std::abort();
+    }
+    apply_env(nullptr);
+    std::cout << " PASS (cap=" << cap << ")\n";
+}
+
+void test_env_huge_positive_clamps_without_signed_overflow() {
+    std::cout << "Test 6: huge positive ENV clamps without overflow..." << std::flush;
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0)
+        hw = 4;
+    const std::size_t hw_size = static_cast<std::size_t>(hw);
+    const std::size_t cap = hw_size > std::numeric_limits<std::size_t>::max() / 2
+                                ? std::numeric_limits<std::size_t>::max()
+                                : hw_size * 2;
+
+    apply_env("999999999999999999999999999999999999999999999999999999");
+    const std::size_t parsed = filter_merge_threads();
+    if (parsed != cap) {
+        std::cerr << "\n  ERROR: huge positive env parsed to " << parsed << ", expected cap=" << cap
+                  << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -160,23 +181,19 @@ void test_env_clamp_at_hw_times_two() {
 //          vector aligned with input, exactly-once invocation per bucket.
 // ───────────────────────────────────────────────────────────────────────────
 void test_n1_sequential_baseline() {
-    std::cout << "Test 6: N=1 sequential baseline (identity merge)..."
-              << std::flush;
+    std::cout << "Test 6: N=1 sequential baseline (identity merge)..." << std::flush;
     apply_env("1");
 
     // Mock "bucket" type = vector<int>; merge produces sum + size pair encoded
     // into a single uint64_t so we can spot per-bucket mismatches cheaply.
     std::vector<std::vector<int>> buckets = {
-        {1, 2, 3},
-        {10, 20, 30, 40},
-        {},
-        {7},
-        {100, 100, 100, 100, 100},
+        {1, 2, 3}, {10, 20, 30, 40}, {}, {7}, {100, 100, 100, 100, 100},
     };
 
     auto merge_fn = [](const std::vector<int>& bucket) -> uint64_t {
         uint64_t sum = 0;
-        for (int v : bucket) sum += static_cast<uint64_t>(v);
+        for (int v : bucket)
+            sum += static_cast<uint64_t>(v);
         return (sum << 8) | static_cast<uint64_t>(bucket.size());
     };
 
@@ -184,15 +201,15 @@ void test_n1_sequential_baseline() {
         std::span<const std::vector<int>>(buckets), merge_fn);
 
     if (results.size() != buckets.size()) {
-        std::cerr << "\n  ERROR: expected " << buckets.size()
-                  << " results, got " << results.size() << std::endl;
+        std::cerr << "\n  ERROR: expected " << buckets.size() << " results, got " << results.size()
+                  << std::endl;
         std::abort();
     }
     for (std::size_t i = 0; i < buckets.size(); ++i) {
         uint64_t expect = merge_fn(buckets[i]);
         if (results[i] != expect) {
-            std::cerr << "\n  ERROR: idx " << i << " got " << results[i]
-                      << " expected " << expect << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " got " << results[i] << " expected " << expect
+                      << std::endl;
             std::abort();
         }
     }
@@ -206,8 +223,7 @@ void test_n1_sequential_baseline() {
 //          bit-identical assertion across the two paths.
 // ───────────────────────────────────────────────────────────────────────────
 void test_n1_vs_n4_parity() {
-    std::cout << "Test 7: N=1 vs N=4 parity (per-index bit-identical)..."
-              << std::flush;
+    std::cout << "Test 7: N=1 vs N=4 parity (per-index bit-identical)..." << std::flush;
 
     // Build a mid-size set of buckets with varying sizes so multiple pool
     // workers see non-trivial dispatch chunks.
@@ -226,8 +242,7 @@ void test_n1_vs_n4_parity() {
         // Deterministic mixing function: pure of bucket contents.
         uint64_t acc = static_cast<uint64_t>(bucket.size()) * 1099511628211ULL;
         for (int v : bucket) {
-            acc ^= static_cast<uint64_t>(v) + 0x9E3779B97F4A7C15ULL +
-                   (acc << 6) + (acc >> 2);
+            acc ^= static_cast<uint64_t>(v) + 0x9E3779B97F4A7C15ULL + (acc << 6) + (acc >> 2);
         }
         return acc;
     };
@@ -243,14 +258,14 @@ void test_n1_vs_n4_parity() {
     apply_env(nullptr);
 
     if (seq.size() != par.size()) {
-        std::cerr << "\n  ERROR: seq.size()=" << seq.size()
-                  << " par.size()=" << par.size() << std::endl;
+        std::cerr << "\n  ERROR: seq.size()=" << seq.size() << " par.size()=" << par.size()
+                  << std::endl;
         std::abort();
     }
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
-            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i]
-                      << " par=" << par[i] << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i] << " par=" << par[i]
+                      << std::endl;
             std::abort();
         }
     }
@@ -266,7 +281,8 @@ void test_n1_vs_n_hw_parity() {
     std::cout << "Test 8: N=1 vs N=hw_concurrency parity..." << std::flush;
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::string hw_str = std::to_string(hw);
 
     auto merge_fn = [](const std::vector<int>& bucket) -> uint64_t {
@@ -274,8 +290,7 @@ void test_n1_vs_n_hw_parity() {
         uint64_t acc = static_cast<uint64_t>(bucket.size()) | 1ULL;
         for (int v : bucket) {
             for (int k = 0; k < 32; ++k) {
-                acc = acc * 6364136223846793005ULL +
-                      1442695040888963407ULL +
+                acc = acc * 6364136223846793005ULL + 1442695040888963407ULL +
                       static_cast<uint64_t>(v);
                 acc ^= (acc >> 11);
             }
@@ -307,14 +322,13 @@ void test_n1_vs_n_hw_parity() {
     assert(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
-            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i]
-                      << " par=" << par[i] << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i] << " par=" << par[i]
+                      << std::endl;
             std::abort();
         }
     }
 
-    std::cout << " PASS (N=hw=" << hw << ", " << buckets.size()
-              << " per-index identical)\n";
+    std::cout << " PASS (N=hw=" << hw << ", " << buckets.size() << " per-index identical)\n";
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -322,18 +336,15 @@ void test_n1_vs_n_hw_parity() {
 //          without creating a pool or invoking merge_fn.
 // ───────────────────────────────────────────────────────────────────────────
 void test_empty_bucket_list() {
-    std::cout << "Test 9: empty bucket list (no-op both paths)..."
-              << std::flush;
+    std::cout << "Test 9: empty bucket list (no-op both paths)..." << std::flush;
 
     std::vector<int> empty_in;
 
     // Sequential (N=1).
     apply_env("1");
-    auto seq_results = parallel_merge_partials<int, int>(
-        std::span<const int>(empty_in),
-        [](const int&) -> int {
-            std::cerr << "\n  ERROR: should not invoke merge_fn on empty span"
-                      << std::endl;
+    auto seq_results =
+        parallel_merge_partials<int, int>(std::span<const int>(empty_in), [](const int&) -> int {
+            std::cerr << "\n  ERROR: should not invoke merge_fn on empty span" << std::endl;
             std::abort();
             return 0;
         });
@@ -341,11 +352,9 @@ void test_empty_bucket_list() {
 
     // Parallel (N=4).
     apply_env("4");
-    auto par_results = parallel_merge_partials<int, int>(
-        std::span<const int>(empty_in),
-        [](const int&) -> int {
-            std::cerr << "\n  ERROR: should not invoke merge_fn on empty span"
-                      << std::endl;
+    auto par_results =
+        parallel_merge_partials<int, int>(std::span<const int>(empty_in), [](const int&) -> int {
+            std::cerr << "\n  ERROR: should not invoke merge_fn on empty span" << std::endl;
             std::abort();
             return 0;
         });
@@ -360,8 +369,7 @@ void test_empty_bucket_list() {
 //          once invocation, no stall).
 // ───────────────────────────────────────────────────────────────────────────
 void test_single_bucket_no_stall() {
-    std::cout << "Test 10: single bucket N=4 (exactly-once, no stall)..."
-              << std::flush;
+    std::cout << "Test 10: single bucket N=4 (exactly-once, no stall)..." << std::flush;
 
     apply_env("4");
     std::vector<int> single = {42};
@@ -369,29 +377,26 @@ void test_single_bucket_no_stall() {
 
     auto t0 = std::chrono::steady_clock::now();
     auto results = parallel_merge_partials<int, int>(
-        std::span<const int>(single),
-        [&calls](const int& v) -> int {
+        std::span<const int>(single), [&calls](const int& v) -> int {
             calls.fetch_add(1, std::memory_order_relaxed);
             return v * 2;
         });
     auto t1 = std::chrono::steady_clock::now();
-    long long ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
     assert(results.size() == 1);
     assert(results[0] == 84);
     int total_calls = calls.load(std::memory_order_relaxed);
     if (total_calls != 1) {
-        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls
-                  << std::endl;
+        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls << std::endl;
         std::abort();
     }
 
     // Sanity-bound the wall-time: if the helper accidentally spawned a
     // 4-thread pool the spin-up alone would push past this.
     if (ms > 1000) {
-        std::cerr << "\n  WARN: single-bucket dispatch took " << ms
-                  << " ms (expected << 1000 ms)" << std::endl;
+        std::cerr << "\n  WARN: single-bucket dispatch took " << ms << " ms (expected << 1000 ms)"
+                  << std::endl;
         // No abort -- this is a soft signal, sanitizers can be slow.
     }
 
@@ -406,8 +411,7 @@ void test_single_bucket_no_stall() {
 //          dispatch path.
 // ───────────────────────────────────────────────────────────────────────────
 void test_non_trivial_result_type() {
-    std::cout << "Test 11: non-trivial Result type (vector<int>) parity..."
-              << std::flush;
+    std::cout << "Test 11: non-trivial Result type (vector<int>) parity..." << std::flush;
 
     // Each bucket emits its own (size+1)-element vector populated with
     // bucket index + member index, so we can verify per-slot integrity.
@@ -428,7 +432,8 @@ void test_non_trivial_result_type() {
         std::vector<int> out;
         out.reserve(bucket.size() + 1);
         out.push_back(static_cast<int>(bucket.size()));
-        for (int v : bucket) out.push_back(v + 1);
+        for (int v : bucket)
+            out.push_back(v + 1);
         return out;
     };
 
@@ -445,16 +450,15 @@ void test_non_trivial_result_type() {
     assert(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
-            std::cerr << "\n  ERROR: idx " << i
-                      << " seq.size()=" << seq[i].size()
+            std::cerr << "\n  ERROR: idx " << i << " seq.size()=" << seq[i].size()
                       << " par.size()=" << par[i].size() << std::endl;
             std::abort();
         }
         // And cross-check seq[i] against the freshly computed reference.
         auto expect = merge_fn(buckets[i]);
         if (seq[i] != expect) {
-            std::cerr << "\n  ERROR: idx " << i
-                      << " seq does not match merge_fn reference" << std::endl;
+            std::cerr << "\n  ERROR: idx " << i << " seq does not match merge_fn reference"
+                      << std::endl;
             std::abort();
         }
     }
@@ -482,15 +486,13 @@ void test_merge_fn_exception_propagates() {
     apply_env("1");
     bool seq_caught = false;
     try {
-        auto seq = parallel_merge_partials<int, int>(
-            std::span<const int>(buckets), throw_fn);
+        auto seq = parallel_merge_partials<int, int>(std::span<const int>(buckets), throw_fn);
         (void)seq;
     } catch (const std::runtime_error& e) {
         seq_caught = true;
         std::string what = e.what();
         if (what.find("bucket 4 sentinel") == std::string::npos) {
-            std::cerr << "\n  ERROR: seq path unexpected what(): " << what
-                      << std::endl;
+            std::cerr << "\n  ERROR: seq path unexpected what(): " << what << std::endl;
             std::abort();
         }
     }
@@ -504,15 +506,13 @@ void test_merge_fn_exception_propagates() {
     apply_env("4");
     bool par_caught = false;
     try {
-        auto par = parallel_merge_partials<int, int>(
-            std::span<const int>(buckets), throw_fn);
+        auto par = parallel_merge_partials<int, int>(std::span<const int>(buckets), throw_fn);
         (void)par;
     } catch (const std::runtime_error& e) {
         par_caught = true;
         std::string what = e.what();
         if (what.find("bucket 4 sentinel") == std::string::npos) {
-            std::cerr << "\n  ERROR: par path unexpected what(): " << what
-                      << std::endl;
+            std::cerr << "\n  ERROR: par path unexpected what(): " << what << std::endl;
             std::abort();
         }
     }
@@ -525,17 +525,17 @@ void test_merge_fn_exception_propagates() {
     std::cout << " PASS (seq + par both rethrow)\n";
 }
 
-}  // namespace
+} // namespace
 
 int main() {
-    std::cout << "=== Partial Relation Merger Parallel Dispatch Tests ==="
-              << std::endl;
+    std::cout << "=== Partial Relation Merger Parallel Dispatch Tests ===" << std::endl;
 
     test_env_unset_defaults_to_one();
     test_env_explicit_one();
     test_env_four();
     test_env_non_numeric_to_one();
     test_env_clamp_at_hw_times_two();
+    test_env_huge_positive_clamps_without_signed_overflow();
     test_n1_sequential_baseline();
     test_n1_vs_n4_parity();
     test_n1_vs_n_hw_parity();
@@ -544,7 +544,6 @@ int main() {
     test_non_trivial_result_type();
     test_merge_fn_exception_propagates();
 
-    std::cout << std::endl
-              << "=== All Merger Parallel Tests PASSED ===" << std::endl;
+    std::cout << std::endl << "=== All Merger Parallel Tests PASSED ===" << std::endl;
     return 0;
 }
