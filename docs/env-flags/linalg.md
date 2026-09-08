@@ -111,6 +111,9 @@ BW Phase 1+2+3 跑 K 个独立 worker (各自独立 seed + 独立小 ThreadPool,
 bit-for-bit. K>1 时 base seed 每个 retry round 派 K 个 stream 并发, 结果
 按 content 去重合并到 max_deps.
 
+调用方若将 `max_deps` 设为 0, solver 会在读取矩阵和创建 worker 之前立即返回
+空结果；这是一条显式 no-op 契约，不会触发 Krylov、BM 或多流重试。
+
 ```bash
 GNFS_BW_KRYLOV_STREAMS=2 ./gnfs <N>   # 2 streams concurrent
 GNFS_BW_KRYLOV_STREAMS=4 ./gnfs <N>   # 4 streams concurrent

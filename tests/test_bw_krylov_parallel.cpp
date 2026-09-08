@@ -10,6 +10,9 @@
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 
+#include "support/scoped_environment_stderr.hpp"
+#include "support/test_check.hpp"
+
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
@@ -19,6 +22,8 @@
 #include <vector>
 
 using namespace gnfs::linalg;
+using gnfs::tests::support::ScopedEnvironmentVariable;
+using gnfs::tests::support::ScopedStderrCapture;
 
 namespace {
 
@@ -189,6 +194,23 @@ void test_env_clamping() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_zero_dependency_budget_short_circuits() {
+    std::cout << "Testing zero dependency budget short-circuit..." << std::endl;
+
+    // This shape selects the Block Wiedemann route, so a missing guard would
+    // enter all Krylov rounds even though no dependency can be returned.
+    SparseMatrix M(5000, 5000);
+    ScopedEnvironmentVariable streams("GNFS_BW_KRYLOV_STREAMS", "16");
+    ScopedStderrCapture capture;
+    BlockWiedemann bw;
+    const auto deps = bw.find_dependencies(M, 0);
+    const auto trace = capture.finish();
+
+    GNFS_TEST_CHECK(deps.empty());
+    GNFS_TEST_CHECK(trace.empty());
+    std::cout << "  PASS (no Krylov workers launched)" << std::endl;
+}
+
 void test_speedup_measurement() {
     std::cout << "Measuring wall-time K=1 vs K=4 (informational, no assert)..."
               << std::endl;
@@ -223,6 +245,7 @@ int main() {
     test_k2_streams_valid();
     test_k4_streams_valid();
     test_env_clamping();
+    test_zero_dependency_budget_short_circuits();
     test_speedup_measurement();
 
     std::cout << "\n===== All BW Krylov parallel tests PASSED =====" << std::endl;
