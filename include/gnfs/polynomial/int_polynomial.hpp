@@ -264,9 +264,11 @@ public:
 
         // 预计算 t 的幂次 — mpz_mul_si into default-init slot (skips set step)
         std::vector<Integer> t_powers(static_cast<size_t>(d) + 1);
+        // Multiply against one exact GMP integer per call to preserve int64_t width.
         t_powers[0] = int64_t(1); // mpz_set_si on default-init slot
+        const Integer t_integer(t);
         for (uint32_t i = 1; i <= d; ++i) {
-            mpz_mul_si(t_powers[i].get_mpz(), t_powers[i - 1].get_mpz(), t);
+            mpz_mul(t_powers[i].get_mpz(), t_powers[i - 1].get_mpz(), t_integer.get_mpz());
         }
 
         // 二项式系数表(静态初始化,线程安全)。GNFS degree 上限 6,
