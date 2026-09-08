@@ -1322,6 +1322,42 @@ bool test_pipeline_step_by_step() {
     return true;
 }
 
+bool test_progress_counters_are_phase_scoped() {
+    Config cfg;
+    cfg.verbose = false;
+    cfg.set_max_local_sieve_threads(1);
+
+    Pipeline pipeline(Integer(143), cfg);
+    std::vector<ProgressInfo> events;
+    pipeline.set_progress_callback([&](const ProgressInfo& info) { events.push_back(info); });
+
+    const auto ctx = pipeline.select_polynomial();
+    const auto fb = pipeline.build_factor_base(ctx);
+    (void)pipeline.sieve_and_collect(ctx, fb);
+
+    // Filtering runs after sieving on the same Pipeline, so stale sieve
+    // counters would be observable here if emit_progress copied every stat.
+    (void)pipeline.filter({});
+
+    bool saw_sieve = false;
+    bool saw_filter = false;
+    for (const auto& info : events) {
+        if (info.phase == Phase::Sieving) {
+            saw_sieve = saw_sieve || info.relations_target > 0 || info.special_q_done > 0;
+        } else if (info.phase == Phase::Filtering) {
+            saw_filter = true;
+            if (info.relations_found != 0 || info.relations_target != 0 ||
+                info.special_q_done != 0 || info.matrix_rows != 0 || info.matrix_cols != 0 ||
+                info.dependencies_total != 0 ||
+                info.dependency_index != std::numeric_limits<size_t>::max()) {
+                std::cout << "(filter progress leaked counters from another phase) ";
+                return false;
+            }
+        }
+    }
+    return saw_sieve && saw_filter;
+}
+
 bool test_structured_xor_pair_fallback() {
     Integer n(143);
     Config cfg;
@@ -4265,6 +4301,7 @@ int main() {
     TEST(solver_dependency_shape_guard);
     TEST(dependency_xor_pair_guard);
     TEST(pipeline_step_by_step);
+    TEST(progress_counters_are_phase_scoped);
     TEST(structured_xor_pair_fallback);
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
