@@ -3,6 +3,7 @@
 #include "gnfs/linalg/krylov_sequence_compressed.hpp"
 #include "gnfs/linalg/krylov_sequence_mmap.hpp"
 #include "gnfs/util/bit_intrin.hpp"
+#include "gnfs/util/joined_worker_group.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
 #include "gnfs/util/thread_pool.hpp"
@@ -14,12 +15,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -65,29 +64,6 @@ public:
 private:
     std::filesystem::path path_;
     bool armed_ = true;
-};
-
-// A worker launch can fail before the stream vector is fully populated (for
-// example when the process hits its thread quota).  Joining already-created
-// workers during stack unwinding keeps their captures alive and prevents the
-// vector destructor from calling std::terminate on joinable threads.
-class ThreadJoinGuard final {
-public:
-    explicit ThreadJoinGuard(std::vector<std::thread>& workers) noexcept : workers_(workers) {}
-
-    ThreadJoinGuard(const ThreadJoinGuard&) = delete;
-    ThreadJoinGuard& operator=(const ThreadJoinGuard&) = delete;
-
-    ~ThreadJoinGuard() noexcept {
-        for (auto& worker : workers_) {
-            if (worker.joinable()) {
-                worker.join();
-            }
-        }
-    }
-
-private:
-    std::vector<std::thread>& workers_;
 };
 
 constexpr uint32_t kMaxBwStreams = 16;
@@ -1365,34 +1341,17 @@ static std::vector<std::vector<bool>> find_dependencies_view_impl(const MV& matr
 
     for (uint64_t base_seed : base_seeds) {
         std::vector<std::vector<std::vector<bool>>> per_stream(num_streams);
-        std::exception_ptr first_exception;
-        std::mutex exception_mutex;
-        std::vector<std::thread> workers;
-        workers.reserve(num_streams);
-        ThreadJoinGuard join_guard(workers);
-
-        for (uint32_t s = 0; s < num_streams; ++s) {
-            const uint64_t seed = bw_stream_seed(base_seed, s);
-            workers.emplace_back([&, s, seed]() {
-                try {
-                    if (is_thin) {
-                        per_stream[s] =
-                            thin_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
-                    } else {
-                        per_stream[s] =
-                            block_solve_view_impl(matrix, max_deps, seed, pool_size, s + 1);
-                    }
-                } catch (...) {
-                    std::lock_guard<std::mutex> lock(exception_mutex);
-                    if (!first_exception)
-                        first_exception = std::current_exception();
-                }
-            });
-        }
-        for (auto& t : workers)
-            t.join();
-        if (first_exception)
-            std::rethrow_exception(first_exception);
+        gnfs::util::run_joined_worker_group(num_streams, [&](size_t stream) {
+            const uint32_t stream_id = static_cast<uint32_t>(stream);
+            const uint64_t seed = bw_stream_seed(base_seed, stream_id);
+            if (is_thin) {
+                per_stream[stream] =
+                    thin_solve_view_impl(matrix, max_deps, seed, pool_size, stream_id + 1);
+            } else {
+                per_stream[stream] =
+                    block_solve_view_impl(matrix, max_deps, seed, pool_size, stream_id + 1);
+            }
+        });
 
         // Merge + dedupe across streams.
         std::vector<std::vector<bool>> merged;
