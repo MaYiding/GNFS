@@ -822,6 +822,11 @@ void test_compute_alg_lp_root_input_guards() {
     // projective root: b is not divisible by p here, but gcd(b, p) != 1.
     CHECK(Cofactorizer::compute_alg_lp_root(1, 2, 6) == Cofactorizer::INVALID_ROOT);
 
+    // Composite moduli are invalid even when b is invertible. They must not
+    // be accepted as finite roots or as projective roots when p divides b.
+    CHECK(Cofactorizer::compute_alg_lp_root(1, 2, 15) == Cofactorizer::INVALID_ROOT);
+    CHECK(Cofactorizer::compute_alg_lp_root(1, 15, 15) == Cofactorizer::INVALID_ROOT);
+
     std::cout << "  compute_alg_lp_root input guards: PASSED" << std::endl;
 }
 
