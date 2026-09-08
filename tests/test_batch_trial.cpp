@@ -104,6 +104,17 @@ void test_env_parser() {
     setenv("GNFS_COFACTOR_BATCH_SIZE", "abc", 1);
     assert(batch_trial_size_from_env() == 1);
 
+    // Numeric prefixes followed by non-whitespace are invalid. Accepting
+    // these would silently turn a malformed deployment value into opt-in.
+    setenv("GNFS_COFACTOR_BATCH_SIZE", "2junk", 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
+    setenv("GNFS_COFACTOR_BATCH_SIZE", "2 3", 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
+    setenv("GNFS_COFACTOR_BATCH_SIZE", " 2 ", 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 2);
+    setenv("GNFS_COFACTOR_BATCH_SIZE", "184467440737095516160", 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
+
     // Zero / one (treated as disabled)
     setenv("GNFS_COFACTOR_BATCH_SIZE", "0", 1);
     assert(batch_trial_size_from_env() == 1);

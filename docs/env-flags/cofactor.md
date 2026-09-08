@@ -64,6 +64,31 @@ ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
 ---
 
+## Batch Trial Division (GNFS_COFACTOR_BATCH_SIZE)
+
+**ENV `GNFS_COFACTOR_BATCH_SIZE=N`**（默认 `1`，即关闭批量路径）：
+为 batch trial-division caller 提供每批候选数量。`N < 2` 时保持单候选路径；`N` 在
+`[2, 4096]` 时启用对应批大小；更大的可表示整数钳制为 `4096`。
+
+```bash
+unset GNFS_COFACTOR_BATCH_SIZE             # 默认 1，关闭批量路径
+GNFS_COFACTOR_BATCH_SIZE=8 ./gnfs <N>      # 启用 8 个候选一批
+GNFS_COFACTOR_BATCH_SIZE=999999 ./gnfs <N>  # 钳制为 4096
+```
+
+解析器要求整个值是十进制整数（允许首尾空白）。空值、非数字、负值、`0`、`1`、
+尾随非空白字符，以及 `strtoul` 溢出均 fail-closed 为 `1`。例如，`2junk` 不会
+意外启用批量路径。该行为避免部署配置中的拼写错误改变内存占用和吞吐策略。
+
+**实现与验证**：
+
+- `include/gnfs/cofactor/batch_trial.hpp` 中的 `batch_trial_size_from_env()` 使用
+  `errno` 检查溢出，并验证解析终点；
+- `tests/test_batch_trial.cpp` 覆盖尾随字符、首尾空白、负值、溢出和上限钳制；
+- 默认值和解析结果不改变未设置 ENV 时的既有行为。
+
+---
+
 ## Cofactor survival rate predictor (GNFS_SURVIVAL_FILTER + GNFS_SURVIVAL_THRESHOLD)
 
 **ENV `GNFS_SURVIVAL_FILTER={0,1}`** + **`GNFS_SURVIVAL_THRESHOLD=<double>`** (2026-05-21 实施, default OFF):
