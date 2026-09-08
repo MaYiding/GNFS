@@ -604,7 +604,7 @@ void test_allocation_failure_returns_nullopt() {
     if (child == 0) {
         // Keep the test deterministic and avoid relying on host overcommit
         // policy: the 64 GiB vector allocation must fail immediately.
-        struct rlimit limit{};
+        struct rlimit limit {};
         if (::getrlimit(RLIMIT_AS, &limit) == 0) {
             constexpr rlim_t address_space_cap = static_cast<rlim_t>(512ULL * 1024 * 1024);
             if (limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > address_space_cap) {
