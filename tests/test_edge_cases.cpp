@@ -1104,6 +1104,15 @@ void test_quick_cofactor_check_edge_cases() {
         assert(!quick_cofactor_check(two, 0, true));
     }
 
+    // Negative residuals are malformed and must never pass the arbitrary-
+    // precision range checks (negative values compare below every LP bound).
+    {
+        Integer negative_one(int64_t(-1));
+        Integer negative_large("-123456789012345678901234567890");
+        assert(!quick_cofactor_check(negative_one, 1000, true));
+        assert(!quick_cofactor_check(negative_large, 1000, true, true));
+    }
+
     std::cout << "  PASS" << std::endl;
 }
 
