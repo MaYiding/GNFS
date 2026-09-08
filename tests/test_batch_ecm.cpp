@@ -4,6 +4,8 @@
 #include <gnfs/cofactor/ecm.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_check.hpp"
+
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -12,8 +14,8 @@
 #include <string>
 #include <vector>
 
-using gnfs::core::Integer;
 using gnfs::cofactor::ECM;
+using gnfs::core::Integer;
 
 namespace {
 
@@ -27,16 +29,16 @@ struct Case {
 const std::vector<Case>& small_cofactors() {
     // 10–25 digit semiprimes — quick_factor B1=2000 reaches these reliably.
     static const std::vector<Case> cs = {
-        {"15347", 5},                  // 103 * 149
-        {"1234567891", 10},            // prime — quick_factor should return nullopt
-        {"2261419229", 10},            // 47491 * 47659
-        {"6700417", 7},                // prime
-        {"4294967297", 10},            // 641 * 6700417 (F5)
-        {"18446744073709551617", 20},  // 274177 * 67280421310721 (F6)
-        {"100895598169", 12},          // 112303 * 898423
-        {"99492697", 8},               // 9967 * 9982 (close primes)
-        {"982451653", 9},              // 50000-ish prime
-        {"600851475143", 12},          // 71 * 839 * 1471 * 6857
+        {"15347", 5},                 // 103 * 149
+        {"1234567891", 10},           // prime — quick_factor should return nullopt
+        {"2261419229", 10},           // 47491 * 47659
+        {"6700417", 7},               // prime
+        {"4294967297", 10},           // 641 * 6700417 (F5)
+        {"18446744073709551617", 20}, // 274177 * 67280421310721 (F6)
+        {"100895598169", 12},         // 112303 * 898423
+        {"99492697", 8},              // 9967 * 9982 (close primes)
+        {"982451653", 9},             // 50000-ish prime
+        {"600851475143", 12},         // 71 * 839 * 1471 * 6857
     };
     return cs;
 }
@@ -53,10 +55,13 @@ ECM::BatchContext make_quick_batch(uint64_t sigma_seed) {
 
 // Helper: verify factor (if any) divides n and is non-trivial.
 bool valid_factor(const Integer& n, const std::optional<Integer>& factor) {
-    if (!factor) return true;  // nullopt is a valid "no factor found" result
+    if (!factor)
+        return true; // nullopt is a valid "no factor found" result
     const Integer& f = *factor;
-    if (f.is_one()) return false;       // 1 is trivial
-    if (f.compare(n) == 0) return false; // n itself is trivial
+    if (f.is_one())
+        return false; // 1 is trivial
+    if (f.compare(n) == 0)
+        return false; // n itself is trivial
     // Check divisibility: n mod f == 0
     Integer rem;
     mpz_mod(rem.get_mpz(), n.get_mpz(), f.get_mpz());
@@ -65,7 +70,8 @@ bool valid_factor(const Integer& n, const std::optional<Integer>& factor) {
 
 // Helper: pretty-print optional<Integer>
 std::string opt_str(const std::optional<Integer>& f) {
-    if (!f) return "nullopt";
+    if (!f)
+        return "nullopt";
     return f->to_string();
 }
 
@@ -92,13 +98,13 @@ void test_prepare_batch_basic() {
     assert(ctx.prime_powers.size() == ctx.primes_cache.size());
 
     // pk = max p^e <= B1, so e.g. p=2, B1=2000 → pk = 1024 (2^10)
-    assert(ctx.prime_powers[0] == 1024);  // 2^10 = 1024, 2^11 = 2048 > 2000
-    assert(ctx.prime_powers[1] == 729);   // 3^6 = 729,  3^7 = 2187 > 2000
-    assert(ctx.prime_powers[2] == 625);   // 5^4 = 625,  5^5 = 3125 > 2000
+    assert(ctx.prime_powers[0] == 1024); // 2^10 = 1024, 2^11 = 2048 > 2000
+    assert(ctx.prime_powers[1] == 729);  // 3^6 = 729,  3^7 = 2187 > 2000
+    assert(ctx.prime_powers[2] == 625);  // 5^4 = 625,  5^5 = 3125 > 2000
     // Larger primes: pk = p (because p^2 > B1)
     for (size_t i = 0; i < ctx.primes_cache.size(); ++i) {
         uint64_t p = ctx.primes_cache[i];
-        if (p > 44) {  // sqrt(2000) ≈ 44.7
+        if (p > 44) { // sqrt(2000) ≈ 44.7
             assert(ctx.prime_powers[i] == p);
         }
     }
@@ -170,8 +176,8 @@ void test_factor_with_batch_self_consistency() {
         auto r = ECM::factor_with_batch(n, ctx);
         // Either we found nothing (nullopt) or we found a non-trivial divisor
         if (!valid_factor(n, r)) {
-            std::cerr << "FAIL: factor_with_batch returned trivial factor "
-                      << opt_str(r) << " for n=" << c.n << std::endl;
+            std::cerr << "FAIL: factor_with_batch returned trivial factor " << opt_str(r)
+                      << " for n=" << c.n << std::endl;
             assert(false);
         }
     }
@@ -223,10 +229,8 @@ void test_factor_batch_scaling() {
     auto ctx = make_quick_batch(/*sigma_seed=*/33333);
 
     // Generate N=10 cofactors (pure semiprimes from a small prime pair pool)
-    std::vector<uint32_t> small_primes = {
-        101, 103, 107, 109, 113, 127, 131, 137, 139, 149,
-        151, 157, 163, 167, 173, 179, 181, 191, 193, 197
-    };
+    std::vector<uint32_t> small_primes = {101, 103, 107, 109, 113, 127, 131, 137, 139, 149,
+                                          151, 157, 163, 167, 173, 179, 181, 191, 193, 197};
 
     auto build_cofactors = [&](size_t count, uint32_t seed) -> std::vector<Integer> {
         std::vector<Integer> ns;
@@ -256,14 +260,12 @@ void test_factor_batch_scaling() {
         size_t found = 0;
         for (size_t i = 0; i < rs.size(); ++i) {
             assert(valid_factor(ns[i], rs[i]));
-            if (rs[i]) ++found;
+            if (rs[i])
+                ++found;
         }
 
-        std::cout << "  batch_size=" << batch_size
-                  << " found=" << found
-                  << " (" << ms << " ms"
-                  << ", " << (ms / static_cast<double>(batch_size)) << " ms/cofactor)"
-                  << std::endl;
+        std::cout << "  batch_size=" << batch_size << " found=" << found << " (" << ms << " ms"
+                  << ", " << (ms / static_cast<double>(batch_size)) << " ms/cofactor)" << std::endl;
     }
 
     std::cout << "  factor_batch scaling: PASSED" << std::endl;
@@ -290,7 +292,33 @@ void test_empty_batch_context() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 7: primes 1, prime, and small inputs are no-ops (skip cofactors)
+// Test 7: a non-empty context with mismatched Stage 1 arrays is rejected
+// before the Stage 1 loop can index prime_powers out of bounds.
+// ───────────────────────────────────────────────────────────────────────────
+void test_malformed_batch_context() {
+    std::cout << "Testing malformed BatchContext defensive behavior..." << std::endl;
+
+    auto malformed_ctx = make_quick_batch(/*sigma_seed=*/1234);
+    GNFS_TEST_CHECK(!malformed_ctx.primes_cache.empty());
+    GNFS_TEST_CHECK(!malformed_ctx.prime_powers.empty());
+    malformed_ctx.prime_powers.pop_back();
+    GNFS_TEST_CHECK(malformed_ctx.prime_powers.size() != malformed_ctx.primes_cache.size());
+
+    Integer n("15347");
+    GNFS_TEST_CHECK(!ECM::factor_with_batch(n, malformed_ctx).has_value());
+
+    std::vector<Integer> ns = {Integer("15347"), Integer("100895598169")};
+    auto rs = ECM::factor_batch(ns, malformed_ctx);
+    GNFS_TEST_CHECK(rs.size() == ns.size());
+    for (const auto& result : rs) {
+        GNFS_TEST_CHECK(!result.has_value());
+    }
+
+    std::cout << "  malformed BatchContext defensive: PASSED" << std::endl;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Test 8: primes 1, prime, and small inputs are no-ops (skip cofactors)
 // ───────────────────────────────────────────────────────────────────────────
 void test_skip_invalid_inputs() {
     std::cout << "Testing skip n=1 and primes..." << std::endl;
@@ -308,13 +336,13 @@ void test_skip_invalid_inputs() {
     // Mixed batch
     std::vector<Integer> ns = {
         Integer("1"),
-        Integer("1000000007"),  // prime
-        Integer("15347"),       // 103 * 149 (composite)
+        Integer("1000000007"), // prime
+        Integer("15347"),      // 103 * 149 (composite)
     };
     auto rs = ECM::factor_batch(ns, ctx);
     assert(rs.size() == 3);
-    assert(!rs[0].has_value());  // n=1 skipped
-    assert(!rs[1].has_value());  // prime skipped
+    assert(!rs[0].has_value()); // n=1 skipped
+    assert(!rs[1].has_value()); // prime skipped
     if (rs[2]) {
         assert(valid_factor(ns[2], rs[2]));
     }
@@ -323,7 +351,7 @@ void test_skip_invalid_inputs() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Test 8: Compare batch path vs ECM::factor (best-effort: ensures batch is
+// Test 9: Compare batch path vs ECM::factor (best-effort: ensures batch is
 // not strictly worse than per-call factor in success rate for matching curves)
 // ───────────────────────────────────────────────────────────────────────────
 void test_batch_vs_factor_success_parity() {
@@ -341,28 +369,27 @@ void test_batch_vs_factor_success_parity() {
     size_t factor_found = 0;
     for (const auto& c : small_cofactors()) {
         Integer n(c.n);
-        if (ECM::factor_with_batch(n, ctx).has_value()) ++batch_found;
-        if (ECM::factor(n, cfg).has_value())            ++factor_found;
+        if (ECM::factor_with_batch(n, ctx).has_value())
+            ++batch_found;
+        if (ECM::factor(n, cfg).has_value())
+            ++factor_found;
     }
 
     // Both paths should find roughly the same number of composites
     // (allow ±2 slack because random sigma selection differs)
-    long long diff = static_cast<long long>(batch_found)
-                   - static_cast<long long>(factor_found);
+    long long diff = static_cast<long long>(batch_found) - static_cast<long long>(factor_found);
     if (diff < -3 || diff > 3) {
-        std::cerr << "WARN: batch_found=" << batch_found
-                  << " factor_found=" << factor_found
+        std::cerr << "WARN: batch_found=" << batch_found << " factor_found=" << factor_found
                   << " diff=" << diff << std::endl;
     }
     // Don't assert a hard equality (sigma random in factor)
-    std::cout << "  batch_found=" << batch_found
-              << " factor_found=" << factor_found
+    std::cout << "  batch_found=" << batch_found << " factor_found=" << factor_found
               << " (composites in test set)" << std::endl;
 
     std::cout << "  batch vs factor parity: PASSED" << std::endl;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "═════════════════════════════════════════════" << std::endl;
@@ -372,6 +399,7 @@ int main() {
     test_prepare_batch_basic();
     test_prepare_batch_determinism();
     test_empty_batch_context();
+    test_malformed_batch_context();
     test_skip_invalid_inputs();
     test_factor_with_batch_self_consistency();
     test_factor_batch_equivalence_single();
