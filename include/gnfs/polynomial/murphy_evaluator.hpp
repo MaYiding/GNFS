@@ -9,10 +9,12 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -22,6 +24,44 @@
 namespace gnfs::polynomial {
 
 using core::Integer;
+
+namespace detail {
+
+/// Resolve the Murphy alpha worker count from an optional environment value.
+/// Empty/unset values preserve the hardware-concurrency default, while zero,
+/// negative, and non-numeric values preserve the sequential opt-out. Positive
+/// values are bounded so a malformed wide value cannot request an unbounded
+/// ThreadPool allocation.
+[[nodiscard]] inline uint32_t parse_murphy_alpha_threads_env(const char* env,
+                                                             uint32_t hardware_threads) noexcept {
+    if (hardware_threads == 0)
+        hardware_threads = 4;
+
+    const uint64_t cap =
+        std::min<uint64_t>(static_cast<uint64_t>(hardware_threads) * 2U,
+                           static_cast<uint64_t>((std::numeric_limits<uint32_t>::max)()));
+    if (env == nullptr || env[0] == '\0')
+        return hardware_threads;
+
+    const char* first = env;
+    while (*first == ' ' || *first == '\t' || *first == '\n' || *first == '\r' || *first == '\f' ||
+           *first == '\v') {
+        ++first;
+    }
+    if (*first == '-')
+        return 0;
+
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(env, &end, 10);
+    if (end == env || parsed == 0)
+        return 0;
+    if (errno == ERANGE || parsed > cap)
+        return static_cast<uint32_t>(cap);
+    return static_cast<uint32_t>(parsed);
+}
+
+} // namespace detail
 
 /// Murphy E-score 的各个组成部分
 struct MurphyScore {
@@ -305,18 +345,9 @@ private:
     /// Returns nullptr if user set threads=0 (forces sequential).
     [[nodiscard]] gnfs::util::ThreadPool* get_alpha_pool() const {
         std::call_once(pool_init_, [this]() {
-            uint32_t requested = 0;
             const char* env = std::getenv("GNFS_MURPHY_ALPHA_THREADS");
-            if (env && env[0] != '\0') {
-                int val = std::atoi(env);
-                if (val < 0)
-                    val = 0;
-                requested = static_cast<uint32_t>(val);
-            } else {
-                requested = std::thread::hardware_concurrency();
-                if (requested == 0)
-                    requested = 4;
-            }
+            const uint32_t requested =
+                detail::parse_murphy_alpha_threads_env(env, std::thread::hardware_concurrency());
             if (requested == 0) {
                 alpha_pool_ = nullptr;
             } else {
