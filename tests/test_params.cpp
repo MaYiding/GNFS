@@ -235,7 +235,13 @@ void test_target_multiplier_reloads_per_call() {
     };
 
     unsetenv("GNFS_SIEVE_TARGET_MULT");
-    const auto params = GNFSParams::compute(80);
+    const auto params = GNFSParams::compute(197);
+    const uint32_t baseline_max_special_q = params.max_special_q;
+    setenv("GNFS_SIEVE_TARGET_MULT", "100", 1);
+    const auto scaled_params = GNFSParams::compute(197);
+    assert(scaled_params.max_special_q == baseline_max_special_q);
+
+    unsetenv("GNFS_SIEVE_TARGET_MULT");
     constexpr size_t columns = 1000;
     const size_t baseline = params.raw_relation_target(columns);
     assert(baseline > 0);

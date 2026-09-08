@@ -410,7 +410,8 @@ struct GNFSParams {
         double matrix_cols = pi_r + pi_a + target_excess;
 
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
-            return raw_relation_target(util::size_from_nonnegative_double_floor(matrix_cols));
+            return raw_relation_target_unscaled(
+                util::size_from_nonnegative_double_floor(matrix_cols));
         }
         return util::size_from_nonnegative_double_floor(matrix_cols);
     }
@@ -444,29 +445,36 @@ struct GNFSParams {
             return v;
         }();
 
-        size_t base_target;
+        const size_t base_target = raw_relation_target_unscaled(matrix_columns);
+        return util::size_from_nonnegative_double_floor(static_cast<double>(base_target) *
+                                                        target_mult);
+    }
+
+private:
+    /// Calculate the size-aware target without applying experiment-only ENV
+    /// scaling. This keeps derived limits such as max_special_q stable.
+    [[nodiscard]] size_t raw_relation_target_unscaled(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
-            double mc = static_cast<double>(matrix_columns);
+            const double mc = static_cast<double>(matrix_columns);
             // Birthday bound: need ~sqrt(2 × LP_space × needed_usable) raw relations
             // for LP merge to produce enough collisions.
-            double lp_space = static_cast<double>(large_prime_bound);
-            double birthday = std::sqrt(2.0 * lp_space * mc);
+            const double lp_space = static_cast<double>(large_prime_bound);
+            const double birthday = std::sqrt(2.0 * lp_space * mc);
             // Use max(birthday, mc × 2.0) — birthday handles LP-heavy cases,
             // 2.0× handles cases where most relations are full.
             double target = std::max(birthday, mc * 2.0);
             // Cap at mc × 50 to prevent runaway targets for huge LP spaces.
             target = std::min(target, mc * 50.0);
-            base_target = util::size_from_nonnegative_double_floor(target);
-        } else {
-            // No LP: need R/B > 3 to survive singleton filter.
-            // Each FB prime p appears ~R/p times. For p near B, need R/B > 2-3.
-            // With ratio 4×, singleton survival ≈ 60-70%.
-            base_target = util::saturating_size_product(matrix_columns, 4);
+            return util::size_from_nonnegative_double_floor(target);
         }
-        return util::size_from_nonnegative_double_floor(static_cast<double>(base_target) *
-                                                        target_mult);
+
+        // No LP: need R/B > 3 to survive singleton filter.
+        // Each FB prime p appears ~R/p times. For p near B, need R/B > 2-3.
+        // With ratio 4×, singleton survival ≈ 60-70%.
+        return util::saturating_size_product(matrix_columns, 4);
     }
 
+public:
     /// 估算筛区域大小 (位置数)
     [[nodiscard]] size_t sieve_region_size() const {
         // Widen before subtracting: the public fields are int32_t and callers
