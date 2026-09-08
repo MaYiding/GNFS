@@ -102,11 +102,14 @@
 #include "../core/integer.hpp"
 #include "./thread_pool.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <future>
 #include <gmp.h>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <stdexcept>
@@ -145,20 +148,36 @@ inline MpzGcdBatchThreadsCache& mpz_gcd_batch_threads_cache() noexcept {
 inline int parse_mpz_gcd_batch_threads_env() noexcept {
     const char* env = std::getenv("GNFS_MPZ_GCD_BATCH_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
-    int parsed = std::atoi(env);
-    if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+
+    // Parse at unsigned width so a valid positive value above INT_MAX still
+    // reaches the clamp instead of wrapping negative and disabling parallelism.
+    // Keep atoi-compatible leading whitespace and numeric-prefix semantics.
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
+        ++first;
     }
+    if (*first == '-') {
+        return 1; // invalid / non-positive -> sequential
+    }
+
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(env, &end, 10);
+    if (end == env || parsed == 0) {
+        return 1; // invalid / non-positive -> sequential
+    }
+
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    int cap = static_cast<int>(hw) * 2;
-    if (parsed > cap) parsed = cap;
-    return parsed;
+    if (hw == 0)
+        hw = 4;
+    const unsigned long long cap_wide = static_cast<unsigned long long>(hw) * 2ULL;
+    const unsigned long long cap =
+        std::min(cap_wide, static_cast<unsigned long long>(std::numeric_limits<int>::max()));
+    return static_cast<int>(std::min(parsed, cap));
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_MPZ_GCD_BATCH_THREADS` env into a cached thread count.
 ///
