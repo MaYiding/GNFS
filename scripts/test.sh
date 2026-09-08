@@ -45,6 +45,7 @@
 # 智能模式:
 #   ./scripts/test.sh changed             # 根据 git diff 自动选择受影响模块
 #   ./scripts/test.sh changed --deep      # git diff + 含依赖模块的级联测试
+#   ./scripts/test.sh module-map-check    # 校验测试源到模块的注册映射
 #
 # 全量测试:
 #   ./scripts/test.sh full                # 编译 + ctest + E2E + Progressive L1-L2
@@ -481,7 +482,7 @@ ALL_TEST_BINARIES=(
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
     core           "test_integer test_params test_regressions test_edge_cases test_core_types"
-    util           "test_small_vector test_sha256 test_thread_pool test_joining_thread test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_durable_immutable_record test_mmap_file test_native_random_access_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel"
+    util           "test_small_vector test_sha256 test_thread_pool test_joining_thread test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_durable_immutable_record test_mmap_file test_native_random_access_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel test_work_stealing"
     polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
     factor_base    "test_factor_base test_fb_checkpoint test_fb_roots_parallel"
     sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_worker_entry test_distributed_sieve_worker_writer_authority test_distributed_sieve_worker_execution test_distributed_sieve_worker_process test_distributed_sieve_wave_store_windows test_distributed_sieve_work_identity_codec test_distributed_sieve_work_package_codec test_distributed_sieve_worker_cleanup_codec test_distributed_sieve_merge_writer_codec test_distributed_sieve_merge_writer test_distributed_sieve_merge_writer_authority test_distributed_sieve_wave_merge_commit test_distributed_sieve_worker_cleanup_tail test_distributed_sieve_worker_cleanup_authorization_publisher test_distributed_sieve_worker_cleanup_orchestrator test_distributed_sieve_wave_result test_distributed_sieve_worker_work_package_file test_distributed_sieve_execution_policy test_distributed_sieve_seed_v2 test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_edge_cases test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
@@ -1251,6 +1252,7 @@ MODULE_DEPS=(
     cofactor       "relation"
     relation       "linalg api"
     linalg         "sqrt"
+    integration    ""
     sqrt           ""
     siqs           ""
 )
@@ -1267,17 +1269,35 @@ MODULE_DESC=(
     relation       "关系收集与过滤"
     linalg         "线性代数 (GF(2) 矩阵, Block Lanczos)"
     sqrt           "平方根 (Hensel, Couveignes, 代数平方根)"
+    integration    "跨模块集成测试"
     api            "公共 API (factorize, Pipeline, Config)"
     siqs           "Self-Initializing Quadratic Sieve (25-100d)"
 )
 
 # 有序模块列表 (按流水线顺序)
 typeset -a MODULE_ORDER
-MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sqrt siqs api)
+MODULE_ORDER=(core util polynomial factor_base sieve cofactor relation linalg sqrt integration siqs api)
 
 # 文件路径 → 模块映射
 path_to_module() {
     local path="$1"
+    if [[ "$path" == tests/test_*.cpp ]]; then
+        local test_name="${path:t:r}"
+        # test_integration is intentionally listed by several implementation
+        # modules, but changed-mode must choose its dedicated integration tier.
+        if [[ "$test_name" == test_integration ]]; then
+            echo "integration"
+            return
+        fi
+        local candidate module_tests
+        for candidate in "${MODULE_ORDER[@]}"; do
+            module_tests="${MODULE_TESTS[$candidate]:-}"
+            if [[ " $module_tests " == *" $test_name "* ]]; then
+                echo "$candidate"
+                return
+            fi
+        done
+    fi
     case "$path" in
         CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
@@ -1301,6 +1321,35 @@ path_to_module() {
         *sqrt/*)       echo "sqrt" ;;
         *)             echo "" ;;
     esac
+}
+
+# Validate the registered test-to-module contract without building anything.
+do_module_map_check() {
+    local failures=0 module test mapped module_tests
+    local checked=0
+    # Check the complete runner catalog, not only MODULE_TESTS itself. A test
+    # omitted from both the hand-maintained mapping and smoke would otherwise
+    # make this contract validate the same omission twice.
+    for test in "${ALL_TEST_BINARIES[@]}"; do
+        case "${TEST_TIER[$test]:-}" in
+            instant|fast) ;;
+            *) continue ;;
+        esac
+        [[ -f "${PROJECT_ROOT}/tests/${test}.cpp" ]] || continue
+        mapped=$(path_to_module "tests/${test}.cpp")
+        (( checked += 1 ))
+        if [[ -z "$mapped" ]]; then
+            log_fail "测试未映射到模块: tests/${test}.cpp"
+            failures=1
+        elif [[ "$test" == test_integration && "$mapped" != integration ]]; then
+            log_fail "集成测试必须映射到 integration: $mapped"
+            failures=1
+        fi
+    done
+    if (( failures )); then
+        return 1
+    fi
+    log_success "测试模块映射合同通过 (${checked} 个注册测试)"
 }
 
 # ============================================================
@@ -10183,6 +10232,10 @@ case "$MODE" in
 
     list|ls)
         do_list
+        ;;
+
+    module-map-check)
+        do_module_map_check
         ;;
 
     matrix)
