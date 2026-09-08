@@ -279,6 +279,54 @@ void test_save_load() {
     std::cout << "  Save/load: PASS" << std::endl;
 }
 
+static void test_save_rejects_oversized_relation_without_clobbering_target() {
+    std::cout << "Testing save preflight preserves target on serialization rejection..."
+              << std::endl;
+
+    const auto target_file = gnfs::util::temp_path("gnfs_test_collector_save_oversized.bin");
+    std::filesystem::remove(target_file);
+    {
+        std::ofstream target(target_file, std::ios::binary | std::ios::trunc);
+        CHECK(target.good());
+        const std::string original = "existing-save-payload";
+        target.write(original.data(), static_cast<std::streamsize>(original.size()));
+        CHECK(target.good());
+    }
+
+    RelationCollector collector;
+    Relation oversized(71, 73);
+    for (size_t i = 0; i <= Relation::MAX_SERIALIZED_LARGE_PRIMES; ++i)
+        oversized.rational_large_prime.push_back(PrimePower{1000003U + i, 0, 1});
+    CHECK(collector.add(std::move(oversized)));
+
+    bool rejected = false;
+    try {
+        (void)collector.save(target_file);
+    } catch (const std::length_error&) {
+        rejected = true;
+    }
+    CHECK(rejected);
+
+    {
+        std::ifstream saved(target_file, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(saved)),
+                                std::istreambuf_iterator<char>());
+        CHECK(bytes == "existing-save-payload");
+    }
+
+    const auto missing_file =
+        gnfs::util::temp_path("gnfs_test_collector_save_oversized_missing.bin");
+    std::filesystem::remove(missing_file);
+    try {
+        (void)collector.save(missing_file);
+    } catch (const std::length_error&) {
+    }
+    CHECK(!std::filesystem::exists(missing_file));
+
+    std::filesystem::remove(target_file);
+    std::cout << "  Save preflight target preservation: PASS" << std::endl;
+}
+
 static Relation make_load_test_relation(int64_t a, uint64_t b, bool partial) {
     Relation relation(a, b);
     relation.rational_factors.push_back(static_cast<uint32_t>(a > 0 ? a : -a));
@@ -3053,6 +3101,7 @@ int main() {
     test_batch_add();
     test_output_file_open_failure();
     test_save_load();
+    test_save_rejects_oversized_relation_without_clobbering_target();
     test_load_replaces_state_transactionally(false);
     test_load_replaces_state_transactionally(true);
     test_load_rejects_duplicate_ab_pairs(false);
