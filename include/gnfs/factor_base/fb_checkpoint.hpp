@@ -481,6 +481,12 @@ private:
         if (byte_count > (1u << 30)) {
             throw std::runtime_error("FbCheckpoint::read_integer: byte_count too large");
         }
+        constexpr uint64_t minimum_trailer_bytes =
+            sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t);
+        const uint64_t remaining = remaining_bytes(in, "integer body");
+        if (remaining < minimum_trailer_bytes) {
+            throw std::runtime_error("FbCheckpoint::read_integer: truncated body");
+        }
         if (sgn == 0) {
             if (byte_count != 0) {
                 throw std::runtime_error(
@@ -493,7 +499,7 @@ private:
             throw std::runtime_error(
                 "FbCheckpoint::read_integer: non-zero integer has zero byte count");
         }
-        if (static_cast<uint64_t>(byte_count) > remaining_bytes(in, "integer body")) {
+        if (static_cast<uint64_t>(byte_count) > remaining - minimum_trailer_bytes) {
             throw std::runtime_error("FbCheckpoint::read_integer: truncated body");
         }
         std::vector<unsigned char> buf(byte_count);
