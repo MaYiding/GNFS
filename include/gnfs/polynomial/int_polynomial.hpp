@@ -341,11 +341,22 @@ private:
     std::vector<Integer> coeffs_;
 
     // 辅助函数：取系数 mod p — mpz_fdiv_ui returns floor-div remainder ∈ [0, p-1]
-    // regardless of c's sign (handles negative coeffs automatically, zero alloc)
+    // regardless of c's sign; the representable fast path avoids temporaries.
+    // GMP's unsigned long argument is only 32 bits on Windows LLP64, so use
+    // the arbitrary-precision API when a uint64_t modulus does not fit.
     [[nodiscard]] uint64_t coeff_mod(size_t i, uint64_t p) const {
         if (i >= coeffs_.size())
             return 0;
-        return static_cast<uint64_t>(mpz_fdiv_ui(coeffs_[i].get_mpz(), p));
+        const Integer& coeff = coeffs_[i];
+        if (p <= std::numeric_limits<unsigned long>::max()) {
+            return static_cast<uint64_t>(
+                mpz_fdiv_ui(coeff.get_mpz(), static_cast<unsigned long>(p)));
+        }
+
+        const Integer modulus(p);
+        Integer remainder;
+        mpz_fdiv_r(remainder.get_mpz(), coeff.get_mpz(), modulus.get_mpz());
+        return remainder.to_uint64();
     }
 
     // 模加法
