@@ -388,7 +388,64 @@ static void test_repeated_calls() {
     TEST_PASS("repeated calls (scratch hygiene)");
 }
 
-// Test 12 — exactly batch-aligned row width. Both NEON (2-wide) and AVX2
+// Test 12 — the dispatcher must clear only the previous call's touched
+// columns. Use identical dimensions with disjoint column footprints so a
+// stale high-column accumulator is observable on the second call.
+static void test_changed_column_footprint() {
+    std::printf("[12] changed transpose column footprint\n");
+    SparseMatrix first(2, 4096);
+    first.set(0, 4095);
+    first.set(1, 4094);
+    SparseMatrix second(2, 4096);
+    second.set(0, 0);
+    second.set(1, 1);
+
+    CSRMatrix first_csr(first);
+    CSRMatrix second_csr(second);
+    BlockVector x(2);
+    x.data[0] = 0x0123456789abcdefULL;
+    x.data[1] = 0xfedcba9876543210ULL;
+    BlockVector actual(4096);
+    gnfs::util::ThreadPool pool(2);
+
+    gnfs::linalg::detail::spmv_transpose(first_csr, x, actual, pool);
+    gnfs::linalg::detail::spmv_transpose(second_csr, x, actual, pool);
+    BlockVector expected = scalar_transpose(second_csr, x);
+    TEST_ASSERT(vectors_equal(actual, expected),
+                "transpose output must not retain columns from the previous call");
+    TEST_PASS("changed transpose column footprint");
+}
+
+// Test 13 — scratch cleanup must remain valid when a later matrix has fewer
+// columns than the preceding call. The first call leaves high-column values;
+// the second call uses a separate, smaller output and must not inherit them.
+static void test_shrinking_column_count() {
+    std::printf("[13] shrinking transpose column count\n");
+    SparseMatrix wide(2, 4096);
+    wide.set(0, 4095);
+    wide.set(1, 4094);
+    SparseMatrix narrow(2, 8);
+    narrow.set(0, 0);
+    narrow.set(1, 7);
+
+    CSRMatrix wide_csr(wide);
+    CSRMatrix narrow_csr(narrow);
+    BlockVector x(2);
+    x.data[0] = 0x0123456789abcdefULL;
+    x.data[1] = 0xfedcba9876543210ULL;
+    BlockVector wide_output(4096);
+    BlockVector narrow_output(8);
+    gnfs::util::ThreadPool pool(2);
+
+    gnfs::linalg::detail::spmv_transpose(wide_csr, x, wide_output, pool);
+    gnfs::linalg::detail::spmv_transpose(narrow_csr, x, narrow_output, pool);
+    BlockVector expected = scalar_transpose(narrow_csr, x);
+    TEST_ASSERT(vectors_equal(narrow_output, expected),
+                "transpose cleanup must support a smaller later column count");
+    TEST_PASS("shrinking transpose column count");
+}
+
+// Test 14 — exactly batch-aligned row width. Both NEON (2-wide) and AVX2
 // (4-wide) must terminate the batched loop exactly at the row boundary.
 // We construct rows whose width is the LCM of both batch sizes (4) and
 // also rows that are one element more / less.
@@ -409,7 +466,7 @@ static void test_batch_boundaries() {
     }
 }
 
-// Test 13 — zero column values. When x is all-zero, the forward output
+// Test 15 — zero column values. When x is all-zero, the forward output
 // must be all-zero (XOR of zeros) and the transpose output must also be
 // all-zero (no scatter happens, scratch is pre-zeroed). Confirms no
 // accidental writes from the SIMD path.
@@ -610,6 +667,8 @@ int main() {
     test_env_parsing();
     test_dispatcher_integration();
     test_repeated_calls();
+    test_changed_column_footprint();
+    test_shrinking_column_count();
     test_batch_boundaries();
     test_zero_input();
     test_dispatch_contracts();

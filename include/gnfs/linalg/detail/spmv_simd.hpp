@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
   #if __has_include(<arm_neon.h>)
@@ -202,6 +203,54 @@ inline void scatter_xor_row(const std::uint32_t* cols_begin,
     // Scalar residual.
     for (; p < cols_end; ++p) {
         local[*p] ^= xi;
+    }
+}
+
+// Track the first write to each scratch slot so callers can reuse a sparse
+// scratch buffer without clearing every column on every transpose call.
+// `touched_marks` is a per-worker bitset and `touched` owns the list that is
+// cleared before the next call. The vector append intentionally happens
+// before the mark/value update so an allocation failure cannot leave an
+// untracked value in the scratch buffer.
+inline void scatter_xor_slot_tracked(std::uint32_t column, std::uint64_t xi, std::uint64_t* local,
+                                     std::uint64_t* touched_marks,
+                                     std::vector<std::uint32_t>& touched) {
+    const std::size_t mark_word = static_cast<std::size_t>(column >> 6U);
+    const std::uint64_t mark = std::uint64_t{1} << (column & 63U);
+    if ((touched_marks[mark_word] & mark) == 0) {
+        touched.push_back(column);
+        touched_marks[mark_word] |= mark;
+        local[column] = 0;
+    }
+    local[column] ^= xi;
+}
+
+// Tracked counterpart to scatter_xor_row. It keeps the same small compile-
+// time unroll as the normal SIMD helper while lazily initializing each slot.
+inline void scatter_xor_row_tracked(const std::uint32_t* cols_begin, const std::uint32_t* cols_end,
+                                    std::uint64_t xi, std::uint64_t* local,
+                                    std::uint64_t* touched_marks,
+                                    std::vector<std::uint32_t>& touched) {
+    const std::uint32_t* p = cols_begin;
+
+#if defined(GNFS_SPMV_SIMD_AVX2)
+    while (p + 4 <= cols_end) {
+        scatter_xor_slot_tracked(p[0], xi, local, touched_marks, touched);
+        scatter_xor_slot_tracked(p[1], xi, local, touched_marks, touched);
+        scatter_xor_slot_tracked(p[2], xi, local, touched_marks, touched);
+        scatter_xor_slot_tracked(p[3], xi, local, touched_marks, touched);
+        p += 4;
+    }
+#elif defined(GNFS_SPMV_SIMD_NEON)
+    while (p + 2 <= cols_end) {
+        scatter_xor_slot_tracked(p[0], xi, local, touched_marks, touched);
+        scatter_xor_slot_tracked(p[1], xi, local, touched_marks, touched);
+        p += 2;
+    }
+#endif
+
+    for (; p < cols_end; ++p) {
+        scatter_xor_slot_tracked(*p, xi, local, touched_marks, touched);
     }
 }
 

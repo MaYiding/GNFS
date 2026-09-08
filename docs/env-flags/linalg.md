@@ -175,10 +175,14 @@ unset GNFS_SPMV_SIMD              # 同 auto
   `spmv_transpose_simd`
 - `include/gnfs/linalg/detail/spmv_kernels.hpp` — `spmv_forward` /
   `spmv_transpose` tail 走 SIMD helper (prefetch phase 保持 scalar)
-- `tests/test_spmv_simd.cpp` — 13 个测试 (empty / 1x1 / random 100x100 /
+- `spmv_transpose` 对低列覆盖率调用复用 per-worker scratch 的 touched 列表与
+  bitset，避免每次完整清零；从稠密路径切换到 lazy 路径时先完整清零，保持
+  调用之间 bit-for-bit 隔离。该策略是内部实现，不新增 ENV 开关。
+- `tests/test_spmv_simd.cpp` — 15 个测试 (empty / 1x1 / random 100x100 /
   random 10000x10000 / max density / single row 0..33 / single column /
   transpose round-trip / env parsing / dispatcher integration /
-  repeated calls / batch boundaries / zero input). 三种 ENV 都验证
+  repeated calls / changed column footprint / shrinking column count /
+  batch boundaries / zero input). 三种 ENV 都验证
 
 **Default ON (auto)**: 对所有 SpMV 调用方透明启用. zero behavior change
 对 user (除内核 uop 数), bit-for-bit 输出一致.

@@ -15,9 +15,9 @@
 //   (streaming, no L2 retention).
 //
 // * `bw_spmv_transpose` uses a persistent per-thread scratch buffer so
-//   alloc count drops from O(L) to O(1). Templating only the matrix
-//   accessor leaves that optimisation intact — the scratch struct is a
-//   single function-local static, shared by all matrix types.
+//   alloc count drops from O(L) to O(1). Each worker tracks the columns it
+//   touched and clears only those slots before the next call. Templating only
+//   the matrix accessor leaves that optimisation intact.
 //
 // Concept: any type satisfying `MatrixView` works. CSRMatrix and
 // MmapCSRMatrix already satisfy the concept (see matrix_view.hpp).
@@ -110,21 +110,52 @@ inline void spmv_forward(const M& matrix, const BlockVector& x, BlockVector& y,
     });
 }
 
-// Persistent thread-local scratch buffer holder. Cleared (zeroed up to n)
-// on every SpMV call because the transpose kernel XOR-accumulates into
-// per-thread vectors and reduces in a second pass. Each thread writes to
-// its own slot, so no internal synchronisation needed beyond ThreadPool's
-// per-call barrier.
+// Persistent thread-local scratch buffer holder. Each worker owns a dense
+// accumulator but also keeps a bitset and a list of columns touched during
+// the previous call. Clearing that list preserves the reduction contract
+// while avoiding an O(n) write stream when the matrix touches few columns.
+// Each worker writes to its own slot, so no internal synchronisation is
+// needed beyond ThreadPool's per-call barrier.
 struct SpmvLocals {
     std::vector<std::vector<std::uint64_t>> locals;
-    void ensure(std::size_t T, std::size_t n) {
+    std::vector<std::vector<std::uint64_t>> touched_marks;
+    std::vector<std::vector<std::uint32_t>> touched;
+    bool initialized = false;
+    bool last_lazy_clear = false;
+
+    void ensure(std::size_t T, std::size_t n, bool lazy_clear) {
         if (locals.size() < T)
             locals.resize(T);
+        if (touched_marks.size() < T)
+            touched_marks.resize(T);
+        if (touched.size() < T)
+            touched.resize(T);
+
+        const std::size_t mark_words = n / 64 + (n % 64 != 0 ? 1 : 0);
+        const bool full_clear = !lazy_clear || !initialized || !last_lazy_clear;
         for (std::size_t t = 0; t < T; ++t) {
-            if (locals[t].size() < n)
-                locals[t].resize(n);
-            std::fill(locals[t].begin(), locals[t].begin() + static_cast<std::ptrdiff_t>(n), 0);
+            auto& local = locals[t];
+            auto& marks = touched_marks[t];
+            for (const std::uint32_t column : touched[t]) {
+                // Clear the previous call before growing the backing arrays.
+                // The bounds checks keep this cleanup safe even if a caller
+                // changes the scratch sizing policy in the future.
+                if (static_cast<std::size_t>(column) < local.size())
+                    local[column] = 0;
+                const std::size_t mark_word = static_cast<std::size_t>(column >> 6U);
+                if (mark_word < marks.size())
+                    marks[mark_word] &= ~(std::uint64_t{1} << (column & 63U));
+            }
+            touched[t].clear();
+            if (local.size() < n)
+                local.resize(n);
+            if (marks.size() < mark_words)
+                marks.resize(mark_words);
+            if (full_clear)
+                std::fill(local.begin(), local.begin() + static_cast<std::ptrdiff_t>(n), 0);
         }
+        initialized = true;
+        last_lazy_clear = lazy_clear;
     }
 };
 
@@ -154,6 +185,11 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
 
     const std::size_t T = pool.num_threads();
     const std::size_t chunk = (m + T - 1) / T;
+    // Tracking every scatter adds a mark lookup and a branch to the hot loop.
+    // Use it only when the matrix is sparse enough that clearing T dense
+    // scratch vectors would be more expensive. The conservative threshold
+    // keeps the established full-clear path for high-column-coverage inputs.
+    const bool lazy_clear = matrix.nnz() <= n / 4;
 
     // Per-caller-thread scratch (thread_local). Multiple concurrent owner
     // threads (e.g. GNFS_BW_KRYLOV_STREAMS=K workers each with their own
@@ -163,7 +199,7 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
     // capture; pool worker threads access through the captured pointer,
     // not their own TLS.
     thread_local SpmvLocals scratch_tls;
-    scratch_tls.ensure(T, n);
+    scratch_tls.ensure(T, n, lazy_clear);
     SpmvLocals* scratch = &scratch_tls;
 
     std::vector<std::future<void>> futures;
@@ -181,8 +217,11 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
         if (start >= m)
             break;
         T_used = t + 1;
-        futures.push_back(pool.submit([&matrix, &x, scratch, t, start, end_row, simd_on]() {
+        futures.push_back(pool.submit([&matrix, &x, scratch, t, start, end_row, simd_on,
+                                       lazy_clear]() {
             auto& local = scratch->locals[t];
+            auto& touched_marks = scratch->touched_marks[t];
+            auto& touched = scratch->touched[t];
             for (std::size_t i = start; i < end_row; ++i) {
                 const std::uint64_t xi = x.data[i];
                 if (xi == 0)
@@ -197,12 +236,20 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
                 // hint to `local[*(p+AHEAD)]` keeps its meaning.
                 for (; p < p_pref; ++p) {
                     gnfs::util::prefetch_read<0>(&local[*(p + SPMV_PREFETCH_AHEAD)]);
-                    local[*p] ^= xi;
+                    if (lazy_clear) {
+                        simd::scatter_xor_slot_tracked(*p, xi, local.data(), touched_marks.data(),
+                                                       touched);
+                    } else {
+                        local[*p] ^= xi;
+                    }
                 }
                 // Batch the tail through the SIMD scatter helper when the
-                // SIMD path is enabled. The helper takes a raw pointer to
-                // the scratch buffer and unrolls the XOR-store sequence.
-                if (simd_on) {
+                // SIMD path is enabled. The tracked helper is used only in
+                // sparse mode; dense inputs retain the original fast path.
+                if (lazy_clear) {
+                    simd::scatter_xor_row_tracked(p, p_end, xi, local.data(), touched_marks.data(),
+                                                  touched);
+                } else if (simd_on) {
                     simd::scatter_xor_row(p, p_end, xi, local.data());
                 } else {
                     for (; p < p_end; ++p)
