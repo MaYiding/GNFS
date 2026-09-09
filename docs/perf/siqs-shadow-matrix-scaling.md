@@ -1048,11 +1048,14 @@ original canonical rows. A small packed basis removes dependent candidates,
 and the accepted row ordinals are sorted before extraction.
 
 `no_dependencies` means that no required dependency was accepted and no
-malformed candidate or solver exception was observed. A legitimate empty
-nullspace result remains `valid` when the dimension lower bound is zero, but
-only after an explicit full-row-rank proof. `solver_failure` covers malformed
-or parity-invalid candidates, dependent candidates that leave the required
-dependency budget unsatisfied, and solver exceptions.
+malformed candidate or ordinary solver exception was observed. A legitimate
+empty nullspace result remains `valid` when the dimension lower bound is zero,
+but only after an explicit full-row-rank proof. `solver_failure` covers
+malformed or parity-invalid candidates, and any returned candidate set that
+cannot supply the required independent basis, including dependent or
+incomplete output. Ordinary solver exceptions also map to `solver_failure`;
+allocation failures and checked length failures remain `resource_limit` and
+`size_overflow`, respectively.
 That distinction is enforced by an explicit full-row-rank proof. A global
 unique-column certificate can prove full row rank for any admitted shape. If it
 cannot decide, the proof falls back to exact sparse elimination only for at
