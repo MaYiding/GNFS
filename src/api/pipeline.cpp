@@ -60,6 +60,7 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 
 namespace gnfs::api {
 
@@ -75,6 +76,26 @@ bool detail::parse_structured_filter_stage_telemetry(const char* raw_value) {
 }
 
 namespace {
+
+std::atomic<uint64_t> g_linalg_mmap_scratch_nonce{0};
+
+class LinalgMmapScratchCleanup final {
+public:
+    explicit LinalgMmapScratchCleanup(std::string path) : path_(std::move(path)) {}
+
+    LinalgMmapScratchCleanup(const LinalgMmapScratchCleanup&) = delete;
+    LinalgMmapScratchCleanup& operator=(const LinalgMmapScratchCleanup&) = delete;
+
+    ~LinalgMmapScratchCleanup() noexcept {
+        if (!path_.empty()) {
+            std::error_code ignored;
+            (void)std::filesystem::remove(path_, ignored);
+        }
+    }
+
+private:
+    std::string path_;
+};
 
 class FactorStatsRollback final {
 public:
@@ -3193,8 +3214,12 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
             // .csrmat file (v2 layout, uint64_t row_offsets), open it
             // as MmapCSRMatrix, and route through the view-based BW
             // entry point that bypasses SparseMatrix internally.
+            const uint64_t scratch_nonce =
+                g_linalg_mmap_scratch_nonce.fetch_add(1, std::memory_order_relaxed);
             const std::string mmap_path = gnfs::util::temp_path(
-                "gnfs_linalg_" + std::to_string(gnfs::util::process_id()) + ".csrmat");
+                "gnfs_linalg_" + std::to_string(gnfs::util::process_id()) + "_n" +
+                std::to_string(scratch_nonce) + ".csrmat");
+            LinalgMmapScratchCleanup mmap_cleanup(mmap_path);
             char log_buf[512];
             std::snprintf(log_buf, sizeof(log_buf), "[linalg-mmap] policy=%s nnz=%llu path=%s",
                           policy == linalg::MmapPolicy::On ? "on" : "auto",
@@ -3214,9 +3239,6 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                 std::fprintf(stderr, "[linalg-mmap] fallback to in-memory: %s\n", ex.what());
                 dependencies = bw_solver.find_dependencies(sge_red);
             }
-
-            // Best-effort cleanup; ok if already gone.
-            std::remove(mmap_path.c_str());
         } else {
             // Default in-memory path — bit-identical to pre-Phase-5 behaviour.
             dependencies = bw_solver.find_dependencies(sge_red);

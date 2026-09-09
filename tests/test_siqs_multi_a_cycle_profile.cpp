@@ -74,6 +74,7 @@ using gnfs::siqs::SIQSShadowAssemblyOptions;
 using gnfs::siqs::SIQSShadowAssemblyStats;
 using gnfs::siqs::SIQSShadowAssemblyStatus;
 using gnfs::siqs::SIQSShadowMatrixOptions;
+using gnfs::siqs::SIQSShadowMatrixBackend;
 using gnfs::siqs::SIQSShadowMatrixStatus;
 using gnfs::siqs::SIQSShadowRow;
 using gnfs::siqs::solve_siqs_shadow_matrix;
@@ -2533,6 +2534,10 @@ enum class ScaleProofTerminalStatus : uint8_t {
         return "resource_limit";
     case SIQSShadowMatrixStatus::unsupported_backend:
         return "unsupported_backend";
+    case SIQSShadowMatrixStatus::no_dependencies:
+        return "no_dependencies";
+    case SIQSShadowMatrixStatus::solver_failure:
+        return "solver_failure";
     }
     return "unknown";
 }
@@ -2611,7 +2616,7 @@ struct ScaleProofRecord final {
     proof.options = SIQSShadowMatrixOptions{
         SCALE_SOLVER_MAX_DEPENDENCIES,          requested_workers,
         SCALE_SOLVER_PARALLEL_COLUMN_THRESHOLD, SCALE_SOLVER_MAX_DENSE_MATRIX_BYTES,
-        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT,
+        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT, SIQSShadowMatrixBackend::dense_only,
     };
     return proof;
 }

@@ -34,6 +34,7 @@ using gnfs::siqs::SIQSPostMergeFactorResult;
 using gnfs::siqs::SIQSPostMergeFactorStatus;
 using gnfs::siqs::SIQSPostMergeRow;
 using gnfs::siqs::SIQSShadowMatrixOptions;
+using gnfs::siqs::SIQSShadowMatrixBackend;
 using gnfs::siqs::SIQSShadowMatrixResult;
 using gnfs::siqs::SIQSShadowMatrixSolution;
 using gnfs::siqs::SIQSShadowMatrixStatus;
@@ -563,18 +564,20 @@ void test_dense_matrix_resource_gate_precedence() {
         solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, exact_limits),
         SIQSShadowMatrixStatus::valid);
 
-    const SIQSShadowMatrixOptions byte_short{64, 1, 0, *required_bytes - size_t{1}, rows.size()};
+    const SIQSShadowMatrixOptions byte_short{64, 1, 0, *required_bytes - size_t{1}, rows.size(),
+                                             SIQSShadowMatrixBackend::dense_only};
     auto resource_limited =
         solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, byte_short);
     check_matrix_result(resource_limited, SIQSShadowMatrixStatus::resource_limit);
 
-    const SIQSShadowMatrixOptions variable_short{64, 1, 0, *required_bytes, rows.size() - 1};
+    const SIQSShadowMatrixOptions variable_short{64, 1, 0, *required_bytes, rows.size() - 1,
+                                                 SIQSShadowMatrixBackend::dense_only};
     auto unsupported =
         solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, variable_short);
     check_matrix_result(unsupported, SIQSShadowMatrixStatus::unsupported_backend);
 
     const SIQSShadowMatrixOptions both_short{64, 1, 0, *required_bytes - size_t{1},
-                                             rows.size() - 1};
+                                             rows.size() - 1, SIQSShadowMatrixBackend::dense_only};
     check_matrix_result(
         solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, both_short),
         SIQSShadowMatrixStatus::unsupported_backend);
@@ -893,6 +896,19 @@ void test_persistent_pivot_team_failure_and_recovery() {
     }
 }
 
+void test_empty_parallel_pivot_boundary() {
+    using gnfs::siqs::shadow_matrix_detail::eliminate_pivot;
+
+    // A zero threshold must not turn an empty equation range into a
+    // zero-worker parallel division. The helper is an internal benchmark/test
+    // boundary even though the public elimination loop has no pivot to process.
+    std::vector<uint64_t> matrix;
+    SIQSShadowMatrixOptions options;
+    options.elimination_workers = 4;
+    options.parallel_column_threshold = 0;
+    CHECK(eliminate_pivot(matrix, 0, 1, 0, 0, options) == SIQSShadowMatrixStatus::valid);
+}
+
 void test_zero_pivot_matrix_is_valid() {
     const Integer modulus(2);
     const std::vector<uint32_t> factor_base{0, 2, 3, 5, 7};
@@ -960,6 +976,7 @@ int main() {
     test_fixed_matrix_against_brute_force();
     test_packed_word_boundary_dependencies();
     test_persistent_pivot_team_failure_and_recovery();
+    test_empty_parallel_pivot_boundary();
     test_zero_pivot_matrix_is_valid();
     test_empty_matrix_is_valid();
 

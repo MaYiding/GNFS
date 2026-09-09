@@ -4,7 +4,7 @@
 
 This document records the scaling evidence and promotion gates for the staged
 Self-Initializing Quadratic Sieve (SIQS) shadow matrix. It covers the
-deterministic dense solver in
+deterministic dense solver and the bounded direct sparse solver in
 `include/gnfs/siqs/shadow_matrix.hpp`. It does not claim production
 two-large-prime (2LP) yield or authorize automatic promotion of explicit
 `prefer`.
@@ -17,9 +17,11 @@ fully validated and emitted prefer candidate may return early. Its default
 admission envelope is 32768 raw relations, 64MiB of portable logical payload,
 16384 graph edges, 4096 cycles, 262144 total cycle incidences, 4096 row
 candidates, and 4096 pretrim rows. The facade also preserves the solver's
-independent dense byte and variable limits. All limits are inclusive; the next
-object returns a typed fallback instead of allocating beyond the admitted
-envelope.
+independent dense byte and variable limits plus the sparse CSR, nonzero-count,
+and checked workspace limits described below. All limits are inclusive; the
+next object returns a typed fallback instead of allocating beyond the admitted
+envelope. The sparse byte limit currently covers CSR payload only; the separate
+workspace limit covers the complete checked peak estimate for one attempt.
 
 The facade keeps the caller's raw relations intact so the observe seam can
 continue into the current merge and solver. Consequently, its production peak
@@ -44,8 +46,8 @@ The immediate safety decision is:
 1. Validate shared modulus and factor-base context once per solve.
 2. Reject dense shapes that exceed the explicit backend or memory boundary.
 3. Optimize worker lifetime only after the safety boundary is enforced.
-4. Add a direct sparse backend only after it has typed failure and dependency
-   verification contracts.
+4. Keep the direct sparse backend behind checked CSR, nonzero-count, and
+   workspace admission, typed failure, and dependency verification contracts.
 5. Keep production 2LP disabled until bounded live-sieve evidence passes.
 
 ## Measurement Method
@@ -1003,11 +1005,13 @@ The dense shadow solver therefore uses two independent default gates:
 - at most 100000 shadow-row variables;
 - at most 256MiB of packed matrix payload.
 
-An oversized variable dimension requires a different backend and returns
-`unsupported_backend`. A representable dense shape above the byte budget
-returns `resource_limit`. Checked arithmetic failures remain `size_overflow`.
-The five-row 90-digit constructed oracle remains below both limits because its
-packed payload is about 1MiB.
+In `dense_only` mode, an oversized variable dimension returns
+`unsupported_backend`, and a representable dense shape above the byte budget
+returns `resource_limit`. In `automatic` mode, either failed dense admission
+check selects the direct sparse backend. Checked arithmetic failures remain
+`size_overflow` when no alternate admitted representation is available. The
+five-row 90-digit constructed oracle remains below both dense limits because
+its packed payload is about 1MiB.
 
 ## Sparse Backend Boundary
 
@@ -1016,18 +1020,60 @@ shadow path. Its internal policy selects Gaussian elimination when the
 augmented matrix estimate is below 4GiB. The nominal 90-digit augmented shape
 is about 3.94GiB, so that route can still select a multi-gigabyte dense solve.
 
-A future sparse implementation must call a typed Block Wiedemann boundary
-directly and preserve the matrix direction `shadow rows × factor-base columns`.
-Before promotion it must provide:
+The direct implementation instead preserves the matrix direction
+`shadow rows x factor-base columns`, builds one owning compressed sparse row
+(CSR) matrix from the canonical rows, and calls the seeded Block Wiedemann view
+boundary. Matrix `automatic` mode selects this path only after dense admission
+fails; `sparse_only` selects it directly, and `dense_only` preserves the
+dense-only failure contract. This selector is internal to the shadow matrix
+call and does not authorize production shadow routing or `prefer` promotion.
 
-- checked nonzero and compressed sparse row (CSR) storage estimates;
-- typed distinction between no dependency and solver failure;
-- deterministic seed and stream policy, or an explicitly weaker result
-  contract;
-- independent GF(2) null-vector verification against the original rows;
-- sorted, deduplicated dependency ordinals before proof-gated extraction;
-- a direct CSR or memory-mapped builder that avoids two simultaneous sparse
-  copies at 90-digit scale.
+The sparse defaults are:
+
+| Option | Default | Admission or solver contract |
+|---|---:|---|
+| `max_sparse_csr_bytes` | 512MiB | Exact `size_t` row-offset plus `uint32_t` column-index payload |
+| `max_sparse_nonzero_count` | 50000000 | Odd parity entries across all canonical rows |
+| `max_sparse_workspace_bytes` | 2GiB | Checked peak-heap estimate for one sparse solve attempt |
+| `sparse_seed` | 42 | First deterministic Block Wiedemann seed |
+| `sparse_retry_count` | 3 | Total sequential attempts; valid range is 1 through 32 |
+| `max_dependencies` | 64 | Maximum independent dependencies returned to extraction |
+
+Checked arithmetic rejects an unrepresentable CSR shape as `size_overflow`.
+Exceeding any sparse admission limit, or failing a required allocation, returns
+`resource_limit`. The builder records zero rows as exact singleton dependencies
+before invoking Block Wiedemann. Every solver candidate must have the expected
+row width and must independently satisfy the GF(2) parity check against the
+original canonical rows. A small packed basis removes dependent candidates,
+and the accepted row ordinals are sorted before extraction.
+
+`no_dependencies` means that no required dependency was accepted and no
+malformed candidate or solver exception was observed. A legitimate empty
+nullspace result remains `valid` when the dimension lower bound is zero, but
+only after an explicit full-row-rank proof. `solver_failure` covers malformed
+or parity-invalid candidates, dependent candidates that leave the required
+dependency budget unsatisfied, and solver exceptions.
+That distinction is enforced by an explicit full-row-rank proof. A global
+unique-column certificate can prove full row rank for any admitted shape. If it
+cannot decide, the proof falls back to exact sparse elimination only for at
+most `4096` rows, `4096` columns, and `1,000,000` stored entries; larger or
+over-budget shapes return an unavailable proof and cannot preserve an empty
+probabilistic result as `valid`. Dimension-only row excess is not a rank
+certificate.
+
+The default `max_sparse_workspace_bytes` is 2GiB. Its checked peak-heap
+estimate includes the CSR payload, block vectors, Krylov sequence,
+Berlekamp-Massey state, candidate and dependency buffers, verifier parity,
+rank-proof arrays, worker-local transpose scratch, metadata, and optional mmap
+or compressed sequence state. Retries are sequential, so the estimate models
+one attempt's peak while the retry count remains finite. The estimator rejects
+Metal because its process-global cache is not bounded by this policy. The
+`BlockWiedemann::SeededPolicy` passed to the sparse solver is fully explicit:
+it never reads `GNFS_BW_KRYLOV_STREAMS`, `GNFS_BW_KRYLOV_MMAP`,
+`GNFS_BW_KRYLOV_COMPRESS`, or `GNFS_METAL_SPMV`; storage and accelerator
+choices come only from policy fields. The 2GiB estimate and policy isolation
+are implemented, but live cross-size calibration and production promotion
+remain pending.
 
 ## Promotion Gates
 
@@ -1039,7 +1085,13 @@ Before promotion it must provide:
 - [x] Persistent worker lifecycle, deterministic output, typed failure, and
   sanitizer-clean synchronization contracts.
 - [ ] Parallel threshold frozen from live row distributions.
-- [ ] Direct sparse backend with typed failure and verified dependencies.
+- [x] Direct owning-CSR sparse backend with checked CSR/NNZ admission,
+  deterministic seeded retries, typed failure, and verified dependencies.
+- [x] Checked sparse workspace budget covering Block Wiedemann state,
+  verification buffers, dependency storage, rank-proof arrays, and
+  worker-local transpose scratch, with a default 2GiB limit.
+- [x] Rank evidence for valid empty sparse results through the unique-column
+  certificate and restricted exact small-matrix fallback.
 - [x] Transactional per-polynomial relation/payload capture limit before dense
   relation allocation, with typed stop reasons and default-path parity tests.
 - [x] Fixed-plan live-sieve capture across the 50-, 70-, and 90-digit bands,

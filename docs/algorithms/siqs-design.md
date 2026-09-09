@@ -157,7 +157,7 @@ raw-partial adapter with typed rejection reasons, canonical sparse post-merge
 rows, deterministic parallel shadow assembly, and an exact wide-row matrix,
 dependency, and extraction chain are available as isolated, tested boundaries.
 `run_siqs_shadow_proof` composes those boundaries behind a const raw-relation
-span and inclusive relation, payload, graph, row, and dense-matrix limits. It
+span and inclusive relation, payload, graph, row, and matrix-backend limits. It
 returns only typed scalar evidence and an optional verified factor pair; it
 does not retain the raw corpus, graph, rows, or dependencies.
 
@@ -647,9 +647,10 @@ SIQS's `L_N(1/2, 1)`.
   stable shadow-corpus preparation, cycle selection, materialization,
   sparse-wide row conversion, deterministic parallel assembly, packed solving,
   proof-gated factor extraction, a bounded read-only facade, and cross-size
-  evidence are staged. The 256-A Release-only profile supplies live 50-digit
-  factor evidence. The observe telemetry seam and fresh-process probe
-  protocol are wired and a current-tree comparison has exercised the contract.
+  evidence are available as bounded components. The 256-A Release-only profile
+  supplies live 50-digit factor evidence. The observe telemetry seam and
+  fresh-process probe protocol are wired and a current-tree comparison has
+  exercised the contract.
   These samples are calibration-excluded. The eight-fixture outcome-blind
   holdout corpus is sealed with a stable identity digest, but no production
   factor or probe has opened it. The pure typed RSS gate is staged and tested
@@ -664,10 +665,40 @@ SIQS's `L_N(1/2, 1)`.
   V2-audited `prefer` routing is available, but current probe, RSS gate,
   terminal, and V2 records never authorize automatic promotion.
   See [SIQS Live-Sieve Capture Contract](../perf/siqs-live-sieve-capture.md)
-- **The wide sparse shadow backend is not implemented**; the dense solver
-  admits at most 100000 row variables and 256MiB of packed matrix payload,
-  then returns a typed `unsupported_backend` or `resource_limit` result instead
-  of attempting an unsafe allocation
+- **The wide sparse shadow backend is bounded but not production-promoted**;
+  `solve_siqs_shadow_matrix` accepts `automatic`, `dense_only`, and
+  `sparse_only` backends. Automatic mode admits the packed dense solver only
+  when its checked byte and variable limits pass, then selects an owning CSR
+  matrix and a seeded Block Wiedemann solve. This matrix-backend selector does
+  not authorize production shadow routing. Sparse admission checks the
+  exact row-offset and column-index payload and the parity-entry count before
+  allocation. The defaults are `max_sparse_csr_bytes = 512MiB`,
+  `max_sparse_nonzero_count = 50000000`, `sparse_seed = 42`, and
+  `sparse_retry_count = 3`, and `max_sparse_workspace_bytes = 2GiB`; the
+  seeded boundary accepts at most 32 attempts.
+  Zero rows are retained as singleton dependencies, every returned candidate
+  is rechecked against the original wide rows, and dependencies are sorted and
+  deduplicated before extraction. `resource_limit` and `size_overflow` remain
+  typed admission failures; with a positive dependency budget,
+  `no_dependencies` means that no required nullspace vector was returned,
+  while `solver_failure` means that candidates were rejected or the solver
+  failed. The checked peak-heap estimate covers CSR, vectors, Krylov and
+  Berlekamp-Massey state, candidates, dependencies, verification, rank-proof
+  scratch, worker-local transpose storage, and optional out-of-core sequence
+  state. Retries are sequential, so the retry count is bounded without
+  multiplying the peak. Metal is rejected because its process-global cache
+  has no bounded lifetime contract. A complete live cross-size calibration
+  remains a promotion blocker. An empty result is valid only after an explicit
+  full-row-rank proof: a global unique-column certificate handles large
+  shapes, while unresolved shapes are limited to `4096` rows, `4096` columns,
+  and `1,000,000` stored entries for exact sparse elimination. Dimension-only
+  row excess is not a rank proof. The fully explicit
+  `BlockWiedemann::SeededPolicy` selects worker count, storage, and accelerator
+  policy by value and never reads `GNFS_BW_KRYLOV_STREAMS`,
+  `GNFS_BW_KRYLOV_MMAP`, `GNFS_BW_KRYLOV_COMPRESS`, or `GNFS_METAL_SPMV`.
+  The dense solver still admits at most 100000 row variables and 256MiB of
+  packed matrix payload, returning typed `unsupported_backend` or
+  `resource_limit` instead of attempting an unsafe allocation
 - **The shadow parallel threshold is not live-calibrated**; the persistent
   worker team is implemented and sanitizer-clean, but the default remains
   20000 equations until bounded live row distributions justify lowering it

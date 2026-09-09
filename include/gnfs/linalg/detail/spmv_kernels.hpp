@@ -44,6 +44,28 @@ namespace gnfs::linalg::detail {
 
 constexpr std::ptrdiff_t SPMV_PREFETCH_AHEAD = 8;
 
+/// Metal dispatch mode.  `environment` preserves the legacy process-global
+/// opt-in behavior; the other values are explicit and never call
+/// `metal::env_opt_in()` (important for bounded seeded solves).
+enum class SpmvMetalPolicy : std::uint8_t {
+    environment,
+    enabled,
+    disabled,
+};
+
+[[nodiscard]] inline bool should_use_metal(std::size_t num_rows, std::size_t num_cols,
+                                           SpmvMetalPolicy policy) noexcept {
+    switch (policy) {
+    case SpmvMetalPolicy::environment:
+        return metal::should_use(num_rows, num_cols);
+    case SpmvMetalPolicy::enabled:
+        return metal::is_available() && metal::size_above_threshold(num_rows, num_cols);
+    case SpmvMetalPolicy::disabled:
+        return false;
+    }
+    return false;
+}
+
 inline void validate_block_vector_shape(const BlockVector& vector, std::size_t expected,
                                         const char* operation) {
     if (vector.length != expected || vector.data.size() < expected) {
@@ -53,7 +75,8 @@ inline void validate_block_vector_shape(const BlockVector& vector, std::size_t e
 
 template <MatrixView M>
 inline void spmv_forward(const M& matrix, const BlockVector& x, BlockVector& y,
-                         gnfs::util::ThreadPool& pool) {
+                         gnfs::util::ThreadPool& pool,
+                         SpmvMetalPolicy metal_policy = SpmvMetalPolicy::environment) {
     validate_block_vector_shape(x, matrix.num_cols(), "spmv_forward input");
     validate_block_vector_shape(y, matrix.num_rows(), "spmv_forward output");
     // x.length == matrix.num_cols() by contract — CSRMatrix ctor and the
@@ -68,7 +91,7 @@ inline void spmv_forward(const M& matrix, const BlockVector& x, BlockVector& y,
     // through to the CPU kernel on any failure so correctness never
     // depends on the GPU path succeeding.
     if constexpr (std::is_same_v<M, CSRMatrix>) {
-        if (metal::should_use(matrix.num_rows(), matrix.num_cols()) &&
+        if (should_use_metal(matrix.num_rows(), matrix.num_cols(), metal_policy) &&
             matrix.nnz() <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
             bool ok = metal::spmv_forward(matrix.num_rows(), matrix.num_cols(),
                                           matrix.row_offsets_u32(), matrix.col_indices().data(),
@@ -83,12 +106,21 @@ inline void spmv_forward(const M& matrix, const BlockVector& x, BlockVector& y,
     const bool simd_on = simd::use_simd_runtime();
 
     pool.parallel_for_index(0, matrix.num_rows(), [&, simd_on](std::size_t i) {
-        std::uint64_t acc = 0;
+        // Fetch both bounds before consulting row_nnz so MatrixView accessor
+        // failures are still surfaced and drained even for an empty row. No
+        // pointer arithmetic is performed until the non-empty case below.
+        const std::uint32_t* p_begin = matrix.row_begin(i);
         const std::uint32_t* p_end = matrix.row_end(i);
-        const std::uint32_t* p_pref = (p_end - matrix.row_begin(i) > SPMV_PREFETCH_AHEAD)
+        const std::size_t row_nnz = matrix.row_nnz(i);
+        if (row_nnz == 0) {
+            y.data[i] = 0;
+            return;
+        }
+        std::uint64_t acc = 0;
+        const std::uint32_t* p_pref = (row_nnz > SPMV_PREFETCH_AHEAD)
                                           ? p_end - SPMV_PREFETCH_AHEAD
-                                          : matrix.row_begin(i);
-        const std::uint32_t* p = matrix.row_begin(i);
+                                          : p_begin;
+        const std::uint32_t* p = p_begin;
         // Prefetch phase stays scalar — the prefetch hint references one
         // element ahead and the gather is naturally serialised by the
         // hardware load queue. Mixing SIMD here would either drop the
@@ -110,27 +142,63 @@ inline void spmv_forward(const M& matrix, const BlockVector& x, BlockVector& y,
     });
 }
 
-// Persistent thread-local scratch buffer holder. Cleared (zeroed up to n)
-// on every SpMV call because the transpose kernel XOR-accumulates into
-// per-thread vectors and reduces in a second pass. Each thread writes to
-// its own slot, so no internal synchronisation needed beyond ThreadPool's
-// per-call barrier.
+// Persistent thread-local scratch buffer holder. The transpose kernel
+// XOR-accumulates into per-thread vectors and reduces in a second pass. The
+// holder deliberately drops slots and backing allocations when a later call
+// has a different shape; otherwise a previous solve would keep charging
+// memory against a future call that was admitted under its own estimate.
+// Each thread writes to its own slot, so no internal synchronisation is needed
+// beyond ThreadPool's per-call barrier.
 struct SpmvLocals {
     std::vector<std::vector<std::uint64_t>> locals;
     void ensure(std::size_t T, std::size_t n) {
+        if (locals.size() > T) {
+            // Release the outer vector first.  Merely resizing would leave
+            // its capacity (and the unused worker slots) retained in TLS.
+            std::vector<std::vector<std::uint64_t>> released;
+            locals.swap(released);
+        }
         if (locals.size() < T)
             locals.resize(T);
+
+        // Release every stale slot before allocating any replacement. Doing
+        // this as a separate pass avoids a transient old-plus-new peak when a
+        // later solve grows the column dimension on the same owner thread.
+        bool shape_changed = false;
         for (std::size_t t = 0; t < T; ++t) {
-            if (locals[t].size() < n)
+            if (locals[t].size() != n || locals[t].capacity() != n) {
+                shape_changed = true;
+                break;
+            }
+        }
+        if (shape_changed) {
+            for (std::size_t t = 0; t < T; ++t) {
+                std::vector<std::uint64_t> released;
+                locals[t].swap(released);
+            }
+        }
+
+        for (std::size_t t = 0; t < T; ++t) {
+            if (locals[t].size() != n)
                 locals[t].resize(n);
-            std::fill(locals[t].begin(), locals[t].begin() + static_cast<std::ptrdiff_t>(n), 0);
+            std::fill(locals[t].begin(), locals[t].end(), 0);
         }
     }
 };
 
+// Keep one scratch owner per calling thread across all MatrixView
+// specializations. A function-template static would create separate TLS
+// buffers for CSRMatrix and MmapCSRMatrix, allowing their peak allocations to
+// accumulate outside the sparse solver's per-call workspace estimate.
+inline SpmvLocals& transpose_scratch_locals() noexcept {
+    thread_local SpmvLocals scratch_tls;
+    return scratch_tls;
+}
+
 template <MatrixView M>
 inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y,
-                           gnfs::util::ThreadPool& pool) {
+                           gnfs::util::ThreadPool& pool,
+                           SpmvMetalPolicy metal_policy = SpmvMetalPolicy::environment) {
     const std::size_t m = matrix.num_rows();
     const std::size_t n = y.length;
     validate_block_vector_shape(x, m, "spmv_transpose input");
@@ -142,7 +210,7 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
     // spmv_forward: only CSRMatrix, only above threshold, only when
     // GNFS_METAL_SPMV is set, transparent CPU fallback on failure.
     if constexpr (std::is_same_v<M, CSRMatrix>) {
-        if (metal::should_use(matrix.num_rows(), matrix.num_cols()) &&
+        if (should_use_metal(matrix.num_rows(), matrix.num_cols(), metal_policy) &&
             matrix.nnz() <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
             bool ok = metal::spmv_transpose(matrix.num_rows(), matrix.num_cols(),
                                             matrix.row_offsets_u32(), matrix.col_indices().data(),
@@ -153,7 +221,14 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
     }
 
     const std::size_t T = pool.num_threads();
-    const std::size_t chunk = (m + T - 1) / T;
+    if (T == 0) {
+        throw std::runtime_error("spmv_transpose: thread pool has no workers");
+    }
+    // Use quotient/remainder partitioning instead of (m + T - 1) / T. The
+    // latter wraps for a representable row count near SIZE_MAX, even though
+    // each resulting range could otherwise be formed safely.
+    const std::size_t base_rows = m / T;
+    const std::size_t remainder_rows = m % T;
 
     // Per-caller-thread scratch (thread_local). Multiple concurrent owner
     // threads (e.g. GNFS_BW_KRYLOV_STREAMS=K workers each with their own
@@ -162,7 +237,7 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
     // lambdas (static storage duration), so we bind a local pointer for
     // capture; pool worker threads access through the captured pointer,
     // not their own TLS.
-    thread_local SpmvLocals scratch_tls;
+    SpmvLocals& scratch_tls = transpose_scratch_locals();
     scratch_tls.ensure(T, n);
     SpmvLocals* scratch = &scratch_tls;
 
@@ -176,8 +251,8 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
     const bool simd_on = simd::use_simd_runtime();
 
     for (std::size_t t = 0; t < T; ++t) {
-        const std::size_t start = t * chunk;
-        const std::size_t end_row = std::min(start + chunk, m);
+        const std::size_t start = t * base_rows + std::min(t, remainder_rows);
+        const std::size_t end_row = start + base_rows + (t < remainder_rows ? 1 : 0);
         if (start >= m)
             break;
         T_used = t + 1;
@@ -187,11 +262,15 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
                 const std::uint64_t xi = x.data[i];
                 if (xi == 0)
                     continue;
+                const std::uint32_t* p_begin = matrix.row_begin(i);
                 const std::uint32_t* p_end = matrix.row_end(i);
-                const std::uint32_t* p_pref = (p_end - matrix.row_begin(i) > SPMV_PREFETCH_AHEAD)
+                const std::size_t row_nnz = matrix.row_nnz(i);
+                if (row_nnz == 0)
+                    continue;
+                const std::uint32_t* p_pref = (row_nnz > SPMV_PREFETCH_AHEAD)
                                                   ? p_end - SPMV_PREFETCH_AHEAD
-                                                  : matrix.row_begin(i);
-                const std::uint32_t* p = matrix.row_begin(i);
+                                                  : p_begin;
+                const std::uint32_t* p = p_begin;
                 // Prefetch phase stays scalar so the L1 prefetcher
                 // continues to see one access at a time and the prefetch
                 // hint to `local[*(p+AHEAD)]` keeps its meaning.
@@ -239,18 +318,20 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
 // tmp must have length matrix.num_cols(); y must have length matrix.num_rows().
 template <MatrixView M>
 inline void spmv_B(const M& matrix, const BlockVector& x, BlockVector& y, BlockVector& tmp,
-                   gnfs::util::ThreadPool& pool) {
-    spmv_transpose(matrix, x, tmp, pool);
-    spmv_forward(matrix, tmp, y, pool);
+                   gnfs::util::ThreadPool& pool,
+                   SpmvMetalPolicy metal_policy = SpmvMetalPolicy::environment) {
+    spmv_transpose(matrix, x, tmp, pool, metal_policy);
+    spmv_forward(matrix, tmp, y, pool, metal_policy);
 }
 
 // B' = M^T·M (operates on R^n, used by thin-matrix BW path).
 // tmp must have length matrix.num_rows(); y must have length matrix.num_cols().
 template <MatrixView M>
 inline void spmv_B_prime(const M& matrix, const BlockVector& x, BlockVector& y, BlockVector& tmp,
-                         gnfs::util::ThreadPool& pool) {
-    spmv_forward(matrix, x, tmp, pool);
-    spmv_transpose(matrix, tmp, y, pool);
+                         gnfs::util::ThreadPool& pool,
+                         SpmvMetalPolicy metal_policy = SpmvMetalPolicy::environment) {
+    spmv_forward(matrix, x, tmp, pool, metal_policy);
+    spmv_transpose(matrix, tmp, y, pool, metal_policy);
 }
 
 } // namespace gnfs::linalg::detail

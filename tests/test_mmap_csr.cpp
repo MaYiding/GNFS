@@ -4,10 +4,13 @@
 // as the in-memory CSRMatrix.
 
 #include <cstdio>
+#include <cstdint>
 #include <fstream>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/detail/spmv_kernels.hpp>
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/util/thread_pool.hpp>
 #include <gnfs/util/temp_path.hpp>
 #include <iostream>
 #include <limits>
@@ -193,6 +196,45 @@ void test_empty_matrix() {
     TEST_PASS("empty matrix save/load");
 }
 
+void test_zero_nnz_nonempty_shape() {
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_zero_nnz_rows.csrmat"));
+
+    CSRMatrix csr(3, 5, {0, 0, 0, 0}, {});
+    MmapCSRMatrix::save(csr, tmp.path);
+    MmapCSRMatrix mmap(tmp.path);
+
+    TEST_ASSERT(mmap.num_rows() == 3, "3 rows with zero nnz");
+    TEST_ASSERT(mmap.num_cols() == 5, "5 columns with zero nnz");
+    TEST_ASSERT(mmap.nnz() == 0, "zero nnz");
+    for (size_t row = 0; row < mmap.num_rows(); ++row) {
+        TEST_ASSERT(mmap.row_nnz(row) == 0,
+                    "zero-NNZ mmap row has no entries");
+        TEST_ASSERT(mmap.row_begin(row) == mmap.row_end(row),
+                    "zero-NNZ mmap row has an empty pointer range");
+    }
+
+    BlockVector input(5);
+    BlockVector forward(3);
+    BlockVector transpose(5);
+    for (auto& value : forward.data)
+        value = UINT64_MAX;
+    for (auto& value : transpose.data)
+        value = UINT64_MAX;
+
+    gnfs::util::ThreadPool pool(2);
+    gnfs::linalg::detail::spmv_forward(mmap, input, forward, pool,
+                                        gnfs::linalg::detail::SpmvMetalPolicy::disabled);
+    gnfs::linalg::detail::spmv_transpose(mmap, forward, transpose, pool,
+                                         gnfs::linalg::detail::SpmvMetalPolicy::disabled);
+
+    for (auto value : forward.data)
+        TEST_ASSERT(value == 0, "forward SpMV clears zero-NNZ mmap rows");
+    for (auto value : transpose.data)
+        TEST_ASSERT(value == 0, "transpose SpMV clears zero-NNZ mmap columns");
+
+    TEST_PASS("non-empty zero-NNZ mmap shape and SpMV");
+}
+
 void test_single_row() {
     TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_1row.csrmat"));
 
@@ -275,6 +317,7 @@ int main() {
     test_spmv_identical();
     test_large_matrix();
     test_empty_matrix();
+    test_zero_nnz_nonempty_shape();
     test_single_row();
     test_rejects_malformed_files();
 
