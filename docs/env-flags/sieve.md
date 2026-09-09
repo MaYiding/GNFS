@@ -88,7 +88,8 @@ GNFS_SIEVE_ECORE_THREADS=6 ./gnfs <N>  # 最多 6 个 Utility QoS worker
 `GNFS_SIEVE_TARGET_MULT=X` scales the initial raw-relation target returned by
 `GNFSParams::raw_relation_target()`. The default is `1.0`; accepted values are
 finite decimal numbers in `[0.1, 100.0]`. Invalid, non-finite, prefixed, or
-out-of-range values fall back to `1.0`.
+out-of-range values fall back to `1.0`. Parsing uses the invariant C numeric
+locale, so the result is independent of the process `LC_NUMERIC` setting.
 
 The value is read on every target calculation. This matters for applications
 that run multiple `Pipeline` instances in one process with different

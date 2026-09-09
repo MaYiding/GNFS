@@ -11,7 +11,10 @@
 #include <cstdio>
 #include <cstdlib> // getenv, atoi for GNFS_OVERRIDE_LP_BITS
 #include <limits>
+#include <locale.h>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace gnfs::core {
@@ -331,8 +334,9 @@ struct GNFSParams {
             // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 6 安全余量
             // Note: est_rels uses raw_relation_target which may be aggressive (1.5×),
             // so the safety factor here must compensate.
+            const size_t bounded_sq_count = util::saturating_size_product(est_rels, size_t{6});
             uint32_t needed_sq =
-                static_cast<uint32_t>(std::min(static_cast<size_t>(UINT32_MAX), est_rels * 6));
+                static_cast<uint32_t>(std::min(static_cast<size_t>(UINT32_MAX), bounded_sq_count));
             // 下限：按位数平滑设置
             uint32_t min_sq = (p.digits < 15)   ? 2000u
                               : (p.digits < 25) ? 10000u
@@ -445,6 +449,42 @@ struct GNFSParams {
     }
 
 private:
+    /// Parse a floating-point value with the invariant C numeric locale.
+    /// `strtod` follows the process locale, so using it directly would make
+    /// an otherwise valid ASCII value such as `3.5` depend on LC_NUMERIC.
+    [[nodiscard]] static std::optional<double> parse_c_locale_double(const char* text) noexcept {
+        try {
+            const std::string storage(text);
+            char* end = nullptr;
+#if defined(_WIN32)
+            _locale_t c_locale = _create_locale(LC_NUMERIC, "C");
+            if (c_locale == nullptr) {
+                return std::nullopt;
+            }
+            errno = 0;
+            const double value = _strtod_l(storage.c_str(), &end, c_locale);
+            const int parse_errno = errno;
+            _free_locale(c_locale);
+#else
+            locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+            if (c_locale == nullptr) {
+                return std::nullopt;
+            }
+            errno = 0;
+            const double value = strtod_l(storage.c_str(), &end, c_locale);
+            const int parse_errno = errno;
+            freelocale(c_locale);
+#endif
+            if (parse_errno == ERANGE || end == storage.c_str() ||
+                end != storage.c_str() + storage.size() || !std::isfinite(value)) {
+                return std::nullopt;
+            }
+            return value;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
     /// Parse GNFS_SIEVE_TARGET_MULT using an ASCII-only decimal grammar.
     [[nodiscard]] static double target_multiplier_from_env() noexcept {
         const char* env = std::getenv("GNFS_SIEVE_TARGET_MULT");
@@ -485,14 +525,11 @@ private:
         if (*cursor != '\0')
             return 1.0;
 
-        errno = 0;
-        char* end = nullptr;
-        const double value = std::strtod(env, &end);
-        if (errno == ERANGE || end == env || *end != '\0' || !std::isfinite(value) || value < 0.1 ||
-            value > 100.0) {
+        const auto parsed = parse_c_locale_double(env);
+        if (!parsed.has_value() || *parsed < 0.1 || *parsed > 100.0) {
             return 1.0;
         }
-        return value;
+        return *parsed;
     }
 
     /// Calculate the size-aware target without applying experiment-only ENV

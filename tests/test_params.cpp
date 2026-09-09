@@ -2,11 +2,13 @@
 #include "gnfs/core/params.hpp"
 #include "support/test_check.hpp"
 
+#include <clocale>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 
 using namespace gnfs::core;
 
@@ -298,6 +300,62 @@ void test_target_multiplier_reloads_per_call() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_target_multiplier_is_locale_independent() {
+    std::cout << "Testing GNFS_SIEVE_TARGET_MULT locale independence..." << std::endl;
+
+    const char* active_locale = std::setlocale(LC_NUMERIC, nullptr);
+    const std::string previous_locale = active_locale != nullptr ? active_locale : "C";
+    std::optional<std::string> previous_value;
+    if (const char* previous = std::getenv("GNFS_SIEVE_TARGET_MULT")) {
+        previous_value = previous;
+    }
+
+    unsetenv("GNFS_SIEVE_TARGET_MULT");
+    const auto params = GNFSParams::compute(197);
+    constexpr size_t columns = 1000;
+    const size_t baseline = params.raw_relation_target(columns);
+    setenv("GNFS_SIEVE_TARGET_MULT", "3.5", 1);
+
+    // The test is conditional because minimal CI images may not install a
+    // non-C locale. When one is available, its comma decimal separator makes
+    // the process-locale regression deterministic.
+    (void)std::setlocale(LC_NUMERIC, "C");
+#if defined(_WIN32)
+    constexpr const char* locale_candidates[] = {"German_Germany.1252", "French_France.1252"};
+#else
+    constexpr const char* locale_candidates[] = {"de_DE.UTF-8", "de_DE", "fr_FR.UTF-8", "fr_FR"};
+#endif
+    bool comma_locale_found = false;
+    for (const char* candidate : locale_candidates) {
+        if (std::setlocale(LC_NUMERIC, candidate) == nullptr) {
+            continue;
+        }
+        const auto* conventions = std::localeconv();
+        if (conventions != nullptr && conventions->decimal_point != nullptr &&
+            std::string_view(conventions->decimal_point) != ".") {
+            comma_locale_found = true;
+            break;
+        }
+    }
+
+    const size_t observed = params.raw_relation_target(columns);
+    const size_t expected = static_cast<size_t>(static_cast<double>(baseline) * 3.5);
+
+    if (previous_value.has_value()) {
+        (void)setenv("GNFS_SIEVE_TARGET_MULT", previous_value->c_str(), 1);
+    } else {
+        (void)unsetenv("GNFS_SIEVE_TARGET_MULT");
+    }
+    (void)std::setlocale(LC_NUMERIC, previous_locale.c_str());
+
+    if (comma_locale_found) {
+        GNFS_TEST_CHECK(observed == expected);
+    } else {
+        std::cout << "  SKIP (no comma-decimal locale available)" << std::endl;
+    }
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_threshold_values() {
     std::cout << "Testing threshold values..." << std::endl;
 
@@ -448,6 +506,7 @@ int main() {
     test_large_prime_bound();
     test_lp_bits_env_override();
     test_target_multiplier_reloads_per_call();
+    test_target_multiplier_is_locale_independent();
     test_threshold_values();
     test_max_special_q();
     test_estimated_relations();
