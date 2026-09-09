@@ -601,6 +601,14 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
   corpus-scale, while `SourceCorpus`, logical rows, final buckets, and incidence
   history remain vector-backed. The construction test includes a 5,000-row
   synthetic first scale band with 48-bit LP keys.
+- `StructuredIncidenceBuildOptions::max_metadata_entries` is an opt-in,
+  allocation-free preflight cap for the vector-backed metadata cardinality.
+  The estimate counts row slots, row-support entries, distinct bucket slots, and
+  bucket adjacency entries. Before source rows are available, the check uses a
+  conservative upper bound of 32 effective LP keys per row (the two
+  `MAX_SERIALIZED_LARGE_PRIMES` sides); arithmetic overflow and cap rejection
+  are typed `ResourceLimit` errors. The default is unlimited, so this helper
+  does not claim a bounded-memory guarantee or change the experimental profile.
 - The supported ThreadSanitizer lane is available through
   `./scripts/test.sh tsan-relation`. It builds only the ordered parallel-map,
   shared-engine dispatch, parallel-prepare, batch-commit, parallel-driver,
