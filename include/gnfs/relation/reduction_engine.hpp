@@ -498,6 +498,18 @@ public:
             snapshot.corpus.storage_kind() == RelationStorageKind::FinalizedOOC;
         validate_structured_input_storage(config, snapshot.corpus, structured_ooc_input);
 
+        if (config.strategy == ReductionStrategy::Structured &&
+            config.structured->incidence.max_metadata_entries.has_value()) {
+            constexpr size_t max_row_support_entries =
+                static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+            // Reserve no output artifacts until the checked worst-case
+            // incidence metadata bound has admitted this snapshot.
+            preflight_structured_incidence_metadata(
+                estimate_structured_incidence_metadata_upper_bound(snapshot.size(),
+                                                                   max_row_support_entries),
+                config.structured->incidence);
+        }
+
         std::optional<RelationSink> structured_sink;
         if (config.strategy == ReductionStrategy::Structured &&
             !config.structured->output_ooc_base_path.empty()) {

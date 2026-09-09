@@ -240,6 +240,15 @@ void test_metadata_preflight_is_checked_and_typed() {
     }
     CHECK(invalid_cardinality);
 
+    bool empty_rows_with_support_rejected = false;
+    try {
+        (void)estimate_structured_incidence_metadata(0, 1, 1);
+    } catch (const StructuredReductionError& error) {
+        empty_rows_with_support_rejected =
+            error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(empty_rows_with_support_rejected);
+
     bool estimate_overflow = false;
     try {
         (void)estimate_structured_incidence_metadata(std::numeric_limits<size_t>::max(), 1, 1);
