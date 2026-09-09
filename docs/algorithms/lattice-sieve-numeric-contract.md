@@ -80,6 +80,8 @@ The default-region generator applies a tighter policy cap of 256 Mi cells.
 Explicit regions use the shared 512 Mi-cell materialization cap in addition to
 the representation and allocation checks above; this keeps configuration and
 direct `LatticeSieve::set_region()` callers on the same fail-closed boundary.
+The distributed bound-work preflight repeats this cap before worker runtime
+objects or launch-side effects are created.
 
 The compact row-major path stores small-prime state in `int16_t`, making width
 32768 its inclusive upper boundary. A wider valid region routes the complete

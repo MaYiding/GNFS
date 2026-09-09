@@ -115,6 +115,8 @@ sieve widths exact; the default even widths retain their historical bounds.
   exact/overflow-safe sieve geometry;
 - `include/gnfs/api/config.hpp`: shared geometry mapping for typed width
   overrides;
+- `src/sieve/distributed_sieve_bound_work.cpp`: repeat the materialization cap
+  during distributed worker preflight;
 - `tests/test_params.cpp`: reload, invalid-value, odd-width, and extreme-width
   contracts.
 
