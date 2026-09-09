@@ -31,9 +31,10 @@ struct StructuredIncidenceMetadataEstimate final {
 
 /// Compute a checked metadata estimate from known support cardinalities.
 ///
-/// `unique_lp_keys` must not exceed `row_support_entries`. Arithmetic overflow
-/// is reported as a typed `StructuredReductionError(ResourceLimit)` failure;
-/// malformed cardinalities are reported as `StructuredReductionError(InvalidInput)`.
+/// `unique_lp_keys` must not exceed `row_support_entries`, and zero support
+/// entries must have zero unique keys. Arithmetic overflow is reported as a
+/// typed `StructuredReductionError(ResourceLimit)` failure; malformed
+/// cardinalities are reported as `StructuredReductionError(InvalidInput)`.
 [[nodiscard]] StructuredIncidenceMetadataEstimate
 estimate_structured_incidence_metadata(size_t row_count, size_t row_support_entries,
                                        size_t unique_lp_keys);
@@ -54,7 +55,9 @@ estimate_structured_incidence_metadata_upper_bound(size_t row_count,
 /// still scale with the corpus and remain owned by the returned result. This
 /// is a bounded-shard construction contract, not an OOC memory bound. When
 /// `max_metadata_entries` is set, the checked logical estimate must be no
-/// greater than that value before worker or source-row construction begins.
+/// greater than that value before worker construction begins. Source-backed
+/// builders use the persistence upper bound before reading rows; builders that
+/// receive pre-extracted supports use the tighter support-entry upper bound.
 struct StructuredIncidenceBuildOptions final {
     size_t max_rows_per_shard = 4096;
     uint32_t worker_count = 1;
@@ -188,9 +191,10 @@ build_structured_incidence_shards(const SourceCorpus& corpus,
 /// valid large-prime keys and must not exceed twice
 /// `core::Relation::MAX_SERIALIZED_LARGE_PRIMES`. The function validates that
 /// contract before launching worker shards, consumes the row-support vector,
-/// and never reads a relation source. Its payload and execution statistics
-/// match the source-backed builder for the same generation, supports, and
-/// options.
+/// and never reads a relation source. With a metadata cap, admission uses the
+/// support-entry upper bound because the supports are already available. Once
+/// admitted, its payload and execution statistics match the source-backed
+/// builder for the same generation, supports, and options.
 [[nodiscard]] StructuredIncidenceBuildResult
 build_structured_incidence_from_row_supports(uint64_t generation,
                                              std::vector<std::vector<LargePrimeKey>> row_lp_keys,

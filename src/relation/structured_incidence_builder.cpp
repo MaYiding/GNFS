@@ -273,7 +273,9 @@ build_incidence_shards(size_t row_count, const StructuredIncidenceBuildOptions& 
 StructuredIncidenceMetadataEstimate
 estimate_structured_incidence_metadata(size_t row_count, size_t row_support_entries,
                                        size_t unique_lp_keys) {
-    if ((row_count == 0 && row_support_entries != 0) || unique_lp_keys > row_support_entries) {
+    if ((row_count == 0 && row_support_entries != 0) ||
+        ((row_support_entries == 0) != (unique_lp_keys == 0)) ||
+        unique_lp_keys > row_support_entries) {
         throw StructuredReductionError(
             StructuredReductionErrorCode::InvalidInput,
             "structured incidence metadata cardinalities are inconsistent");
@@ -315,6 +317,7 @@ estimate_structured_incidence_metadata_upper_bound(size_t row_count,
 void preflight_structured_incidence_metadata(const StructuredIncidenceMetadataEstimate& estimate,
                                              const StructuredIncidenceBuildOptions& options) {
     if ((estimate.row_slots == 0 && estimate.row_support_entries != 0) ||
+        ((estimate.row_support_entries == 0) != (estimate.bucket_slots == 0)) ||
         estimate.bucket_slots > estimate.bucket_adjacency_entries ||
         estimate.bucket_adjacency_entries != estimate.row_support_entries) {
         throw StructuredReductionError(

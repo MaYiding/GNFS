@@ -606,9 +606,10 @@ Exit gate: every hand-built and randomized case passes the exact dependency-spac
   The estimate counts row slots, row-support entries, distinct bucket slots, and
   bucket adjacency entries. Before source rows are available, the check uses a
   conservative upper bound of 32 effective LP keys per row (the two
-  `MAX_SERIALIZED_LARGE_PRIMES` sides); arithmetic overflow and cap rejection
-  are typed `ResourceLimit` errors. The default is unlimited, so this helper
-  does not claim a bounded-memory guarantee or change the experimental profile.
+  `MAX_SERIALIZED_LARGE_PRIMES` sides); a pre-extracted support vector uses its
+  tighter support-entry upper bound. Arithmetic overflow and cap rejection are
+  typed `ResourceLimit` errors. The default is unlimited, so this helper does
+  not claim a bounded-memory guarantee or change the experimental profile.
 - The supported ThreadSanitizer lane is available through
   `./scripts/test.sh tsan-relation`. It builds only the ordered parallel-map,
   shared-engine dispatch, parallel-prepare, batch-commit, parallel-driver,

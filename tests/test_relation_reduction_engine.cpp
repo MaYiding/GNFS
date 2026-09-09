@@ -2076,6 +2076,24 @@ void test_structured_borrowed_metadata_cap_rejects_before_source_read() {
     CHECK(private_sink_absent(output.base));
 }
 
+void test_structured_owned_metadata_cap_rejects_before_output_reservation() {
+    constexpr uint64_t generation = 720;
+    const auto input = make_shared_primary_corpus();
+    OOCArtifacts output(unique_ooc_base("owned_metadata_cap_output"));
+
+    auto config = structured_config(2, 3);
+    config.structured->output_ooc_base_path = output.base;
+    config.structured->incidence.max_metadata_entries = 97 * input.size() - 1;
+
+    RawRelationSnapshot snapshot(generation, input);
+    CHECK(throws_structured_error(StructuredReductionErrorCode::ResourceLimit, [&] {
+        (void)RelationReductionEngine::reduce(std::move(snapshot), config);
+    }));
+    CHECK(snapshot.corpus.valid());
+    CHECK(snapshot.size() == input.size());
+    CHECK(private_sink_absent(output.base));
+}
+
 void test_structured_borrowed_prepared_token_drop_cleans_working_corpus() {
     constexpr uint64_t generation = 718;
     const auto input = make_shared_primary_corpus();
@@ -2302,6 +2320,7 @@ int main() {
     test_structured_direct_borrowed_resume_failure_cleans_finalized_output();
     test_structured_borrowed_source_contract_rejects_invalid_routes();
     test_structured_borrowed_metadata_cap_rejects_before_source_read();
+    test_structured_owned_metadata_cap_rejects_before_output_reservation();
     test_structured_borrowed_prepared_token_drop_cleans_working_corpus();
     test_structured_borrowed_source_read_failure_rolls_back();
     test_structured_borrowed_output_failure_rolls_back_working_corpus();

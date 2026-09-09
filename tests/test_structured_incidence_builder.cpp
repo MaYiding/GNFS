@@ -240,6 +240,15 @@ void test_metadata_preflight_is_checked_and_typed() {
     }
     CHECK(invalid_cardinality);
 
+    bool nonzero_support_with_no_bucket_rejected = false;
+    try {
+        (void)estimate_structured_incidence_metadata(2, 1, 0);
+    } catch (const StructuredReductionError& error) {
+        nonzero_support_with_no_bucket_rejected =
+            error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(nonzero_support_with_no_bucket_rejected);
+
     bool empty_rows_with_support_rejected = false;
     try {
         (void)estimate_structured_incidence_metadata(0, 1, 1);
@@ -292,6 +301,20 @@ void test_metadata_preflight_is_checked_and_typed() {
         mismatched_adjacency_rejected = error.code() == StructuredReductionErrorCode::InvalidInput;
     }
     CHECK(mismatched_adjacency_rejected);
+
+    auto support_without_bucket = estimate;
+    support_without_bucket.bucket_slots = 0;
+    support_without_bucket.total_entries = support_without_bucket.row_slots +
+                                           support_without_bucket.row_support_entries +
+                                           support_without_bucket.bucket_adjacency_entries;
+    bool support_without_bucket_rejected = false;
+    try {
+        preflight_structured_incidence_metadata(support_without_bucket, options);
+    } catch (const StructuredReductionError& error) {
+        support_without_bucket_rejected =
+            error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(support_without_bucket_rejected);
 }
 
 void test_metadata_cap_rejects_before_incidence_workers() {
@@ -312,6 +335,20 @@ void test_metadata_cap_rejects_before_incidence_workers() {
         resource_limited = error.code() == StructuredReductionErrorCode::ResourceLimit;
     }
     CHECK(resource_limited);
+
+    // Pre-extracted supports can use their tighter support-entry upper bound.
+    // The source-backed route must use the persistence bound before reading
+    // rows, so the same small cap is rejected there.
+    SourceCorpus equivalent_corpus(51'021, {make_relation(7, {key}), make_relation(8, {key})});
+    StructuredIncidenceBuildOptions source_equivalent_options{1, 4};
+    source_equivalent_options.max_metadata_entries = estimate.total_entries;
+    bool source_route_rejected = false;
+    try {
+        (void)build_structured_incidence_shards(equivalent_corpus, source_equivalent_options);
+    } catch (const StructuredReductionError& error) {
+        source_route_rejected = error.code() == StructuredReductionErrorCode::ResourceLimit;
+    }
+    CHECK(source_route_rejected);
 
     StructuredIncidenceBuildOptions empty_options{1, 1};
     empty_options.max_metadata_entries = 0;
