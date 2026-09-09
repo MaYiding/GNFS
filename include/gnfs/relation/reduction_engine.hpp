@@ -657,11 +657,14 @@ public:
         const size_t input_relations = static_cast<size_t>(source.count());
         constexpr size_t max_row_support_entries =
             static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
-        // Reject the conservative metadata bound before the indexed-source
-        // scan can allocate a working corpus or read its first relation.
-        preflight_structured_incidence_metadata(estimate_structured_incidence_metadata_upper_bound(
-                                                    input_relations, max_row_support_entries),
-                                                structured.incidence);
+        if (structured.incidence.max_metadata_entries.has_value()) {
+            // Reject the conservative metadata bound before the indexed-source
+            // scan can allocate a working corpus or read its first relation.
+            preflight_structured_incidence_metadata(
+                estimate_structured_incidence_metadata_upper_bound(input_relations,
+                                                                   max_row_support_entries),
+                structured.incidence);
+        }
         PreparedStructuredOOCInput prepared = prepare_structured_indexed_input(
             generation, source, input_relations, structured.deduplicated_ooc_base_path);
 
@@ -776,12 +779,15 @@ private:
         const size_t input_relations = static_cast<size_t>(source.count());
         constexpr size_t max_row_support_entries =
             static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
-        // The direct route has not read a source row yet. Reject a configured
-        // metadata cap from the checked worst-case cardinality before creating
-        // row supports, fingerprints, AB membership state, or an output sink.
-        preflight_structured_incidence_metadata(estimate_structured_incidence_metadata_upper_bound(
-                                                    input_relations, max_row_support_entries),
-                                                structured.incidence);
+        if (structured.incidence.max_metadata_entries.has_value()) {
+            // The direct route has not read a source row yet. Reject a configured
+            // metadata cap from the checked worst-case cardinality before creating
+            // row supports, fingerprints, AB membership state, or an output sink.
+            preflight_structured_incidence_metadata(
+                estimate_structured_incidence_metadata_upper_bound(input_relations,
+                                                                   max_row_support_entries),
+                structured.incidence);
+        }
         if constexpr (Observe) {
             telemetry->enter_stage(StructuredTelemetryFailureStage::OutputReservation);
         }

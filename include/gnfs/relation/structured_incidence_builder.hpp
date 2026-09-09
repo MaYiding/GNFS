@@ -32,9 +32,8 @@ struct StructuredIncidenceMetadataEstimate final {
 /// Compute a checked metadata estimate from known support cardinalities.
 ///
 /// `unique_lp_keys` must not exceed `row_support_entries`. Arithmetic overflow
-/// and a configured cap are both reported as typed
-/// `StructuredReductionError(ResourceLimit)` failures; malformed cardinalities
-/// are reported as `StructuredReductionError(InvalidInput)`.
+/// is reported as a typed `StructuredReductionError(ResourceLimit)` failure;
+/// malformed cardinalities are reported as `StructuredReductionError(InvalidInput)`.
 [[nodiscard]] StructuredIncidenceMetadataEstimate
 estimate_structured_incidence_metadata(size_t row_count, size_t row_support_entries,
                                        size_t unique_lp_keys);

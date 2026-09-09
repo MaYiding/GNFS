@@ -257,6 +257,32 @@ void test_metadata_preflight_is_checked_and_typed() {
         inconsistent_rejected = error.code() == StructuredReductionErrorCode::InvalidInput;
     }
     CHECK(inconsistent_rejected);
+
+    auto impossible_buckets = estimate;
+    impossible_buckets.bucket_slots = impossible_buckets.bucket_adjacency_entries + 1;
+    impossible_buckets.total_entries =
+        impossible_buckets.row_slots + impossible_buckets.row_support_entries +
+        impossible_buckets.bucket_slots + impossible_buckets.bucket_adjacency_entries;
+    bool impossible_buckets_rejected = false;
+    try {
+        preflight_structured_incidence_metadata(impossible_buckets, options);
+    } catch (const StructuredReductionError& error) {
+        impossible_buckets_rejected = error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(impossible_buckets_rejected);
+
+    auto mismatched_adjacency = estimate;
+    mismatched_adjacency.bucket_adjacency_entries += 1;
+    mismatched_adjacency.total_entries =
+        mismatched_adjacency.row_slots + mismatched_adjacency.row_support_entries +
+        mismatched_adjacency.bucket_slots + mismatched_adjacency.bucket_adjacency_entries;
+    bool mismatched_adjacency_rejected = false;
+    try {
+        preflight_structured_incidence_metadata(mismatched_adjacency, options);
+    } catch (const StructuredReductionError& error) {
+        mismatched_adjacency_rejected = error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(mismatched_adjacency_rejected);
 }
 
 void test_metadata_cap_rejects_before_incidence_workers() {

@@ -314,6 +314,12 @@ estimate_structured_incidence_metadata_upper_bound(size_t row_count,
 
 void preflight_structured_incidence_metadata(const StructuredIncidenceMetadataEstimate& estimate,
                                              const StructuredIncidenceBuildOptions& options) {
+    if (estimate.bucket_slots > estimate.bucket_adjacency_entries ||
+        estimate.bucket_adjacency_entries != estimate.row_support_entries) {
+        throw StructuredReductionError(
+            StructuredReductionErrorCode::InvalidInput,
+            "structured incidence metadata cardinalities are inconsistent");
+    }
     const auto checked_add = [](size_t lhs, size_t rhs) {
         if (rhs > std::numeric_limits<size_t>::max() - lhs) {
             throw StructuredReductionError(StructuredReductionErrorCode::ResourceLimit,
@@ -343,11 +349,13 @@ build_structured_incidence_shards(const SourceCorpus& corpus,
     const uint64_t generation = corpus.generation();
     const size_t row_count = corpus.size();
     validate_build_request(generation, row_count, options);
-    constexpr size_t max_row_support_entries =
-        static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
-    preflight_structured_incidence_metadata(
-        estimate_structured_incidence_metadata_upper_bound(row_count, max_row_support_entries),
-        options);
+    if (options.max_metadata_entries.has_value()) {
+        constexpr size_t max_row_support_entries =
+            static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+        preflight_structured_incidence_metadata(
+            estimate_structured_incidence_metadata_upper_bound(row_count, max_row_support_entries),
+            options);
+    }
 
     std::vector<std::vector<LargePrimeKey>> row_lp_keys(row_count);
     IncidenceAssembly incidence = build_incidence_shards(
@@ -368,20 +376,23 @@ build_structured_incidence_from_row_supports(uint64_t generation,
     validate_build_request(generation, row_count, options);
     validate_row_supports(row_lp_keys);
 
-    size_t support_entries = 0;
-    for (const auto& keys : row_lp_keys) {
-        if (keys.size() > std::numeric_limits<size_t>::max() - support_entries) {
-            throw StructuredReductionError(StructuredReductionErrorCode::ResourceLimit,
-                                           "structured incidence metadata support count overflows");
+    if (options.max_metadata_entries.has_value()) {
+        size_t support_entries = 0;
+        for (const auto& keys : row_lp_keys) {
+            if (keys.size() > std::numeric_limits<size_t>::max() - support_entries) {
+                throw StructuredReductionError(
+                    StructuredReductionErrorCode::ResourceLimit,
+                    "structured incidence metadata support count overflows");
+            }
+            support_entries += keys.size();
         }
-        support_entries += keys.size();
+        // The exact distinct-key count is only known after the bucket assembly. A
+        // support-entry upper bound keeps this preflight allocation-free and
+        // remains conservative for the optional cap.
+        preflight_structured_incidence_metadata(
+            estimate_structured_incidence_metadata(row_count, support_entries, support_entries),
+            options);
     }
-    // The exact distinct-key count is only known after the bucket assembly. A
-    // support-entry upper bound keeps this preflight allocation-free and
-    // remains conservative for the optional cap.
-    preflight_structured_incidence_metadata(
-        estimate_structured_incidence_metadata(row_count, support_entries, support_entries),
-        options);
 
     IncidenceAssembly incidence =
         build_incidence_shards(row_count, options, nullptr,
