@@ -33,8 +33,8 @@ using gnfs::siqs::SIQSPostMergeDependencyStatus;
 using gnfs::siqs::SIQSPostMergeFactorResult;
 using gnfs::siqs::SIQSPostMergeFactorStatus;
 using gnfs::siqs::SIQSPostMergeRow;
-using gnfs::siqs::SIQSShadowMatrixOptions;
 using gnfs::siqs::SIQSShadowMatrixBackend;
+using gnfs::siqs::SIQSShadowMatrixOptions;
 using gnfs::siqs::SIQSShadowMatrixResult;
 using gnfs::siqs::SIQSShadowMatrixSolution;
 using gnfs::siqs::SIQSShadowMatrixStatus;
@@ -564,20 +564,24 @@ void test_dense_matrix_resource_gate_precedence() {
         solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, exact_limits),
         SIQSShadowMatrixStatus::valid);
 
-    const SIQSShadowMatrixOptions byte_short{64, 1, 0, *required_bytes - size_t{1}, rows.size(),
-                                             SIQSShadowMatrixBackend::dense_only};
+    const SIQSShadowMatrixOptions byte_short{
+        64, 1, 0, *required_bytes - size_t{1}, rows.size(), SIQSShadowMatrixBackend::dense_only};
     auto resource_limited =
         solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, byte_short);
     check_matrix_result(resource_limited, SIQSShadowMatrixStatus::resource_limit);
 
-    const SIQSShadowMatrixOptions variable_short{64, 1, 0, *required_bytes, rows.size() - 1,
-                                                 SIQSShadowMatrixBackend::dense_only};
+    const SIQSShadowMatrixOptions variable_short{
+        64, 1, 0, *required_bytes, rows.size() - 1, SIQSShadowMatrixBackend::dense_only};
     auto unsupported =
         solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, variable_short);
     check_matrix_result(unsupported, SIQSShadowMatrixStatus::unsupported_backend);
 
-    const SIQSShadowMatrixOptions both_short{64, 1, 0, *required_bytes - size_t{1},
-                                             rows.size() - 1, SIQSShadowMatrixBackend::dense_only};
+    const SIQSShadowMatrixOptions both_short{64,
+                                             1,
+                                             0,
+                                             *required_bytes - size_t{1},
+                                             rows.size() - 1,
+                                             SIQSShadowMatrixBackend::dense_only};
     check_matrix_result(
         solve_siqs_shadow_matrix(row_span, factor_base_span, oracle_modulus, both_short),
         SIQSShadowMatrixStatus::unsupported_backend);

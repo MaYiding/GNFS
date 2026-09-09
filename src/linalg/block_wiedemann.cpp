@@ -156,31 +156,28 @@ namespace {
 // matrix view so the same call sites work for CSRMatrix (in-memory,
 // default path) and MmapCSRMatrix (out-of-core, Pipeline auto-route).
 template <MatrixView MV>
-inline void bw_spmv_forward(const MV& M, const BlockVector& x, BlockVector& y,
-                            gnfs::util::ThreadPool& pool,
-                            detail::SpmvMetalPolicy metal_policy =
-                                detail::SpmvMetalPolicy::environment) {
+inline void
+bw_spmv_forward(const MV& M, const BlockVector& x, BlockVector& y, gnfs::util::ThreadPool& pool,
+                detail::SpmvMetalPolicy metal_policy = detail::SpmvMetalPolicy::environment) {
     detail::spmv_forward(M, x, y, pool, metal_policy);
 }
 template <MatrixView MV>
-inline void bw_spmv_transpose(const MV& M, const BlockVector& x, BlockVector& y,
-                              gnfs::util::ThreadPool& pool,
-                              detail::SpmvMetalPolicy metal_policy =
-                                  detail::SpmvMetalPolicy::environment) {
+inline void
+bw_spmv_transpose(const MV& M, const BlockVector& x, BlockVector& y, gnfs::util::ThreadPool& pool,
+                  detail::SpmvMetalPolicy metal_policy = detail::SpmvMetalPolicy::environment) {
     detail::spmv_transpose(M, x, y, pool, metal_policy);
 }
 template <MatrixView MV>
 inline void bw_spmv_B(const MV& M, const BlockVector& x, BlockVector& y, BlockVector& tmp,
                       gnfs::util::ThreadPool& pool,
-                      detail::SpmvMetalPolicy metal_policy =
-                          detail::SpmvMetalPolicy::environment) {
+                      detail::SpmvMetalPolicy metal_policy = detail::SpmvMetalPolicy::environment) {
     detail::spmv_B(M, x, y, tmp, pool, metal_policy);
 }
 template <MatrixView MV>
-inline void bw_spmv_B_prime(const MV& M, const BlockVector& x, BlockVector& y, BlockVector& tmp,
-                            gnfs::util::ThreadPool& pool,
-                            detail::SpmvMetalPolicy metal_policy =
-                                detail::SpmvMetalPolicy::environment) {
+inline void
+bw_spmv_B_prime(const MV& M, const BlockVector& x, BlockVector& y, BlockVector& tmp,
+                gnfs::util::ThreadPool& pool,
+                detail::SpmvMetalPolicy metal_policy = detail::SpmvMetalPolicy::environment) {
     detail::spmv_B_prime(M, x, y, tmp, pool, metal_policy);
 }
 
@@ -585,9 +582,8 @@ BlockWiedemann::block_wiedemann_scalar_solve(const SparseMatrix& matrix, size_t 
                       static_cast<unsigned long long>(scratch_nonce));
         seq_mmap_path = gnfs::util::temp_path(path_buf);
         seq_mmap_cleanup = std::make_unique<ScratchFileCleanup>(seq_mmap_path);
-        seq_mmap =
-            std::make_unique<KrylovSequenceMmap>(seq_mmap_path.string(), /*L=*/64,
-                                                 /*entry_size=*/seq_len);
+        seq_mmap = std::make_unique<KrylovSequenceMmap>(seq_mmap_path.string(), /*L=*/64,
+                                                        /*entry_size=*/seq_len);
     } else {
         sequences.assign(64, std::vector<uint8_t>(seq_len, 0));
     }
@@ -847,8 +843,7 @@ static std::vector<std::vector<bool>>
 block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t pool_threads = 0,
                       uint32_t stream_tag = 0,
                       KrylovStoragePolicy storage_policy = KrylovStoragePolicy::environment,
-                      detail::SpmvMetalPolicy metal_policy =
-                          detail::SpmvMetalPolicy::environment) {
+                      detail::SpmvMetalPolicy metal_policy = detail::SpmvMetalPolicy::environment) {
 
     const size_t m = csr.num_rows();
     const size_t n = csr.num_cols();
@@ -927,8 +922,8 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
                       static_cast<unsigned long long>(scratch_nonce));
         mmap_path = gnfs::util::temp_path(path_buf);
         mmap_cleanup = std::make_unique<ScratchFileCleanup>(mmap_path);
-        A_mmap = std::make_unique<KrylovSequenceMmap>(mmap_path.string(), L,
-                                                      sizeof(DenseGF2_64x64));
+        A_mmap =
+            std::make_unique<KrylovSequenceMmap>(mmap_path.string(), L, sizeof(DenseGF2_64x64));
     } else {
         A_seq.resize(L);
     }
@@ -1159,13 +1154,11 @@ BlockWiedemann::block_wiedemann_block_solve(const SparseMatrix& matrix, size_t m
 // matrix view with sorted rows. pool_threads + stream_tag mirror the block
 // variant for multi-stream Krylov parallelisation.
 template <MatrixView MV>
-static std::vector<std::vector<bool>> thin_solve_view_impl(const MV& csr, size_t max_deps,
-                                                           uint64_t seed, uint32_t pool_threads = 0,
-                                                           uint32_t stream_tag = 0,
-                                                           KrylovStoragePolicy storage_policy =
-                                                               KrylovStoragePolicy::environment,
-                                                           detail::SpmvMetalPolicy metal_policy =
-                                                               detail::SpmvMetalPolicy::environment) {
+static std::vector<std::vector<bool>>
+thin_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t pool_threads = 0,
+                     uint32_t stream_tag = 0,
+                     KrylovStoragePolicy storage_policy = KrylovStoragePolicy::environment,
+                     detail::SpmvMetalPolicy metal_policy = detail::SpmvMetalPolicy::environment) {
 
     const size_t m = csr.num_rows();
     const size_t n = csr.num_cols();
@@ -1214,8 +1207,7 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(const MV& csr, size_t
         break;
     }
     std::cerr << "  [BW-thin] Phase 1: Krylov (L=" << L
-              << (use_mmap ? (use_compress ? ", mmap+zip" : ", mmap") : "") << ")..."
-              << std::flush;
+              << (use_mmap ? (use_compress ? ", mmap+zip" : ", mmap") : "") << ")..." << std::flush;
 
     std::vector<DenseGF2_64x64> A_seq;
     std::filesystem::path mmap_path;
@@ -1233,8 +1225,7 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(const MV& csr, size_t
                       static_cast<unsigned long long>(scratch_nonce));
         kryz_path = gnfs::util::temp_directory_path() / std::filesystem::path(path_buf);
         kryz_cleanup = std::make_unique<ScratchFileCleanup>(kryz_path);
-        A_kryz = std::make_unique<KrylovSequenceCompressed>(kryz_path, L,
-                                                              sizeof(DenseGF2_64x64));
+        A_kryz = std::make_unique<KrylovSequenceCompressed>(kryz_path, L, sizeof(DenseGF2_64x64));
     } else if (use_mmap) {
         char path_buf[160];
         const uint64_t scratch_nonce = next_krylov_scratch_nonce();
@@ -1244,8 +1235,8 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(const MV& csr, size_t
                       static_cast<unsigned long long>(scratch_nonce));
         mmap_path = gnfs::util::temp_path(path_buf);
         mmap_cleanup = std::make_unique<ScratchFileCleanup>(mmap_path);
-        A_mmap = std::make_unique<KrylovSequenceMmap>(mmap_path.string(), L,
-                                                      sizeof(DenseGF2_64x64));
+        A_mmap =
+            std::make_unique<KrylovSequenceMmap>(mmap_path.string(), L, sizeof(DenseGF2_64x64));
     } else {
         A_seq.resize(L);
     }
@@ -1293,11 +1284,11 @@ static std::vector<std::vector<bool>> thin_solve_view_impl(const MV& csr, size_t
         std::error_code cleanup_error;
         const bool remains = std::filesystem::exists(kryz_path, cleanup_error);
         if (cleanup_error || remains) {
-            throw std::runtime_error("Block Wiedemann thin: compressed Krylov scratch cleanup failed");
+            throw std::runtime_error(
+                "Block Wiedemann thin: compressed Krylov scratch cleanup failed");
         }
         kryz_cleanup->disarm();
-        std::cerr << "[bw_krylov_compress] copied_entries=" << L << " cleanup=removed"
-                  << std::endl;
+        std::cerr << "[bw_krylov_compress] copied_entries=" << L << " cleanup=removed" << std::endl;
     } else if (use_mmap) {
         A_mmap->msync();
         A_seq.resize(L);
@@ -1565,8 +1556,7 @@ static std::vector<std::vector<bool>> find_dependencies_view_impl(const MV& matr
 template <MatrixView MV>
 static std::vector<std::vector<bool>>
 find_dependencies_view_seeded_impl(const MV& matrix, size_t max_deps, uint64_t seed,
-                                   uint32_t retry_count,
-                                   uint32_t legacy_pool_threads,
+                                   uint32_t retry_count, uint32_t legacy_pool_threads,
                                    const BlockWiedemann::SeededPolicy* explicit_policy) {
     // A zero dependency budget is a strict no-op.  Preserve this contract
     // before validating retry/storage policy or touching the matrix view.
@@ -1599,11 +1589,10 @@ find_dependencies_view_seeded_impl(const MV& matrix, size_t max_deps, uint64_t s
                 "Block Wiedemann seeded view worker count is outside the finite bound");
         }
         pool_threads = policy.pool_threads;
-        storage_policy =
-            policy.use_krylov_compression
-                ? KrylovStoragePolicy::compressed
-                : (policy.use_krylov_mmap ? KrylovStoragePolicy::mmap
-                                          : KrylovStoragePolicy::memory);
+        storage_policy = policy.use_krylov_compression
+                             ? KrylovStoragePolicy::compressed
+                             : (policy.use_krylov_mmap ? KrylovStoragePolicy::mmap
+                                                       : KrylovStoragePolicy::memory);
         metal_policy = policy.allow_metal ? detail::SpmvMetalPolicy::enabled
                                           : detail::SpmvMetalPolicy::disabled;
     }
@@ -1672,15 +1661,17 @@ BlockWiedemann::find_dependencies_view_seeded(const MmapCSRMatrix& matrix, size_
                                               nullptr);
 }
 
-std::vector<std::vector<bool>> BlockWiedemann::find_dependencies_view_seeded(
-    const CSRMatrix& matrix, size_t max_deps, uint64_t seed, uint32_t retry_count,
-    const SeededPolicy& policy) {
+std::vector<std::vector<bool>>
+BlockWiedemann::find_dependencies_view_seeded(const CSRMatrix& matrix, size_t max_deps,
+                                              uint64_t seed, uint32_t retry_count,
+                                              const SeededPolicy& policy) {
     return find_dependencies_view_seeded_impl(matrix, max_deps, seed, retry_count, 0, &policy);
 }
 
-std::vector<std::vector<bool>> BlockWiedemann::find_dependencies_view_seeded(
-    const MmapCSRMatrix& matrix, size_t max_deps, uint64_t seed, uint32_t retry_count,
-    const SeededPolicy& policy) {
+std::vector<std::vector<bool>>
+BlockWiedemann::find_dependencies_view_seeded(const MmapCSRMatrix& matrix, size_t max_deps,
+                                              uint64_t seed, uint32_t retry_count,
+                                              const SeededPolicy& policy) {
     return find_dependencies_view_seeded_impl(matrix, max_deps, seed, retry_count, 0, &policy);
 }
 

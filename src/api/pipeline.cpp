@@ -3216,9 +3216,9 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
             // entry point that bypasses SparseMatrix internally.
             const uint64_t scratch_nonce =
                 g_linalg_mmap_scratch_nonce.fetch_add(1, std::memory_order_relaxed);
-            const std::string mmap_path = gnfs::util::temp_path(
-                "gnfs_linalg_" + std::to_string(gnfs::util::process_id()) + "_n" +
-                std::to_string(scratch_nonce) + ".csrmat");
+            const std::string mmap_path =
+                gnfs::util::temp_path("gnfs_linalg_" + std::to_string(gnfs::util::process_id()) +
+                                      "_n" + std::to_string(scratch_nonce) + ".csrmat");
             LinalgMmapScratchCleanup mmap_cleanup(mmap_path);
             char log_buf[512];
             std::snprintf(log_buf, sizeof(log_buf), "[linalg-mmap] policy=%s nnz=%llu path=%s",

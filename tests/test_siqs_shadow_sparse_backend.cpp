@@ -1,17 +1,17 @@
 // test_siqs_shadow_sparse_backend.cpp - sparse shadow backend boundary contracts
 
+#include <gnfs/core/integer.hpp>
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
-#include <gnfs/core/integer.hpp>
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/shadow_proof_runner.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <future>
@@ -19,8 +19,8 @@
 #include <limits>
 #include <optional>
 #include <random>
-#include <stdexcept>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <type_traits>
@@ -29,18 +29,18 @@
 
 namespace {
 
+using gnfs::core::Integer;
 using gnfs::linalg::BlockWiedemann;
 using gnfs::linalg::CSRMatrix;
-using gnfs::siqs::SIQSShadowMatrixStatus;
-using gnfs::siqs::SIQSShadowMatrixBackend;
-using gnfs::siqs::SIQSShadowMatrixOptions;
-using gnfs::siqs::SIQSShadowRow;
-using gnfs::siqs::SIQSShadowRowOrigin;
 using gnfs::siqs::SIQSFactorPower;
 using gnfs::siqs::SIQSPostMergeRow;
-using gnfs::siqs::solve_siqs_shadow_matrix;
+using gnfs::siqs::SIQSShadowMatrixBackend;
+using gnfs::siqs::SIQSShadowMatrixOptions;
+using gnfs::siqs::SIQSShadowMatrixStatus;
 using gnfs::siqs::SIQSShadowProofFallbackReason;
-using gnfs::core::Integer;
+using gnfs::siqs::SIQSShadowRow;
+using gnfs::siqs::SIQSShadowRowOrigin;
+using gnfs::siqs::solve_siqs_shadow_matrix;
 using std::size_t;
 
 int checks_passed = 0;
@@ -52,7 +52,7 @@ int checks_failed = 0;
             ++checks_passed;                                                                       \
         } else {                                                                                   \
             ++checks_failed;                                                                       \
-            std::cerr << "FAIL: " #condition << " at " << __FILE__ << ':' << __LINE__ << '\n';    \
+            std::cerr << "FAIL: " #condition << " at " << __FILE__ << ':' << __LINE__ << '\n';     \
         }                                                                                          \
     } while (false)
 
@@ -85,8 +85,8 @@ private:
 #ifdef _WIN32
         const int result = _putenv_s(name_.c_str(), value == nullptr ? "" : value);
 #else
-        const int result = value == nullptr ? ::unsetenv(name_.c_str())
-                                             : ::setenv(name_.c_str(), value, 1);
+        const int result =
+            value == nullptr ? ::unsetenv(name_.c_str()) : ::setenv(name_.c_str(), value, 1);
 #endif
         if (result != 0) {
             std::terminate();
@@ -97,11 +97,9 @@ private:
     std::optional<std::string> previous_;
 };
 
-[[nodiscard]] std::vector<std::string>
-capture_bw_scratch_names(const std::string& extension) {
+[[nodiscard]] std::vector<std::string> capture_bw_scratch_names(const std::string& extension) {
     std::vector<std::string> names;
-    const std::string prefix = "gnfs_bw_krylov_" +
-                               std::to_string(gnfs::util::process_id()) + "_";
+    const std::string prefix = "gnfs_bw_krylov_" + std::to_string(gnfs::util::process_id()) + "_";
     std::error_code error;
     std::filesystem::directory_iterator entries(gnfs::util::temp_directory_path(), error);
     if (error) {
@@ -246,9 +244,9 @@ void test_seeded_policy_is_environment_independent() {
     const CSRMatrix matrix = make_seeded_contract_matrix();
     BlockWiedemann solver;
     const BlockWiedemann::SeededPolicy cpu_policy{/*pool_threads=*/1,
-                                                   /*use_krylov_mmap=*/false,
-                                                   /*use_krylov_compression=*/false,
-                                                   /*allow_metal=*/false};
+                                                  /*use_krylov_mmap=*/false,
+                                                  /*use_krylov_compression=*/false,
+                                                  /*allow_metal=*/false};
 
     const auto clean = solver.find_dependencies_view_seeded(matrix, 8, 91, 1, cpu_policy);
     {
@@ -264,13 +262,13 @@ void test_seeded_policy_is_environment_independent() {
     }
 
     const BlockWiedemann::SeededPolicy mmap_policy{/*pool_threads=*/1,
-                                                    /*use_krylov_mmap=*/true,
-                                                    /*use_krylov_compression=*/false,
-                                                    /*allow_metal=*/false};
+                                                   /*use_krylov_mmap=*/true,
+                                                   /*use_krylov_compression=*/false,
+                                                   /*allow_metal=*/false};
     const BlockWiedemann::SeededPolicy compressed_policy{/*pool_threads=*/1,
-                                                          /*use_krylov_mmap=*/true,
-                                                          /*use_krylov_compression=*/true,
-                                                          /*allow_metal=*/false};
+                                                         /*use_krylov_mmap=*/true,
+                                                         /*use_krylov_compression=*/true,
+                                                         /*allow_metal=*/false};
     const auto before_mmap = capture_bw_scratch_names(".kry");
     const auto mmap_result = solver.find_dependencies_view_seeded(matrix, 8, 91, 1, mmap_policy);
     const auto after_mmap = capture_bw_scratch_names(".kry");
@@ -287,9 +285,9 @@ void test_seeded_policy_is_environment_independent() {
     bool invalid_compression = false;
     try {
         const BlockWiedemann::SeededPolicy invalid{/*pool_threads=*/1,
-                                                    /*use_krylov_mmap=*/false,
-                                                    /*use_krylov_compression=*/true,
-                                                    /*allow_metal=*/false};
+                                                   /*use_krylov_mmap=*/false,
+                                                   /*use_krylov_compression=*/true,
+                                                   /*allow_metal=*/false};
         (void)solver.find_dependencies_view_seeded(matrix, 1, 91, 1, invalid);
     } catch (const std::invalid_argument&) {
         invalid_compression = true;
@@ -300,10 +298,10 @@ void test_seeded_policy_is_environment_independent() {
     bool invalid_workers = false;
     try {
         const BlockWiedemann::SeededPolicy invalid{/*pool_threads=*/
-                                                    BlockWiedemann::kMaxSeededPoolThreads + 1,
-                                                    /*use_krylov_mmap=*/false,
-                                                    /*use_krylov_compression=*/false,
-                                                    /*allow_metal=*/false};
+                                                   BlockWiedemann::kMaxSeededPoolThreads + 1,
+                                                   /*use_krylov_mmap=*/false,
+                                                   /*use_krylov_compression=*/false,
+                                                   /*allow_metal=*/false};
         (void)solver.find_dependencies_view_seeded(matrix, 1, 91, 1, invalid);
     } catch (const std::invalid_argument&) {
         invalid_workers = true;
@@ -315,13 +313,13 @@ void test_seeded_policy_is_environment_independent() {
 void test_seeded_scratch_isolation_under_concurrency() {
     const CSRMatrix matrix = make_seeded_contract_matrix();
     const BlockWiedemann::SeededPolicy mmap_policy{/*pool_threads=*/1,
-                                                    /*use_krylov_mmap=*/true,
-                                                    /*use_krylov_compression=*/false,
-                                                    /*allow_metal=*/false};
+                                                   /*use_krylov_mmap=*/true,
+                                                   /*use_krylov_compression=*/false,
+                                                   /*allow_metal=*/false};
     const BlockWiedemann::SeededPolicy compressed_policy{/*pool_threads=*/1,
-                                                          /*use_krylov_mmap=*/true,
-                                                          /*use_krylov_compression=*/true,
-                                                          /*allow_metal=*/false};
+                                                         /*use_krylov_mmap=*/true,
+                                                         /*use_krylov_compression=*/true,
+                                                         /*allow_metal=*/false};
 
     const auto run_pair = [&](const BlockWiedemann::SeededPolicy& policy,
                               const std::string& extension) {
@@ -365,9 +363,9 @@ void test_seeded_empty_view_validation_order() {
     CSRMatrix empty(0, 0, std::vector<size_t>{0}, std::vector<uint32_t>{});
     BlockWiedemann solver;
     const BlockWiedemann::SeededPolicy invalid_policy{/*pool_threads=*/1,
-                                                       /*use_krylov_mmap=*/false,
-                                                       /*use_krylov_compression=*/true,
-                                                       /*allow_metal=*/false};
+                                                      /*use_krylov_mmap=*/false,
+                                                      /*use_krylov_compression=*/true,
+                                                      /*allow_metal=*/false};
 
     // max_deps==0 is a documented strict no-op, even when the remaining
     // policy fields are malformed.
@@ -395,8 +393,8 @@ void test_seeded_empty_view_validation_order() {
 }
 
 void test_matrix_status_mapping_contract() {
-    using gnfs::siqs::shadow_proof_detail::matrix_fallback;
     using gnfs::siqs::shadow_proof_detail::matrix_failure_is_internal;
+    using gnfs::siqs::shadow_proof_detail::matrix_fallback;
     CHECK(matrix_fallback(SIQSShadowMatrixStatus::resource_limit) ==
           SIQSShadowProofFallbackReason::matrix_resource_limit);
     CHECK(matrix_fallback(SIQSShadowMatrixStatus::unsupported_backend) ==
@@ -411,7 +409,10 @@ void test_matrix_status_mapping_contract() {
 
 [[nodiscard]] SIQSShadowRow make_zero_shadow_row(size_t source_id) {
     return SIQSShadowRow{SIQSShadowRowOrigin::raw_full,
-                         SIQSPostMergeRow{Integer(1), false, {}, {},
+                         SIQSPostMergeRow{Integer(1),
+                                          false,
+                                          {},
+                                          {},
                                           std::vector<gnfs::siqs::SIQSSourceId>{
                                               gnfs::siqs::SIQSSourceId{source_id}}}};
 }
@@ -432,21 +433,29 @@ void test_matrix_status_mapping_contract() {
                 powers.push_back(SIQSFactorPower{bit + 1, 1});
             }
         }
-        rows.push_back(SIQSShadowRow{
-            SIQSShadowRowOrigin::raw_full,
-            SIQSPostMergeRow{Integer(1), false, std::move(powers), {},
-                             std::vector<gnfs::siqs::SIQSSourceId>{
-                                 gnfs::siqs::SIQSSourceId{row_index}}}});
+        rows.push_back(SIQSShadowRow{SIQSShadowRowOrigin::raw_full,
+                                     SIQSPostMergeRow{Integer(1),
+                                                      false,
+                                                      std::move(powers),
+                                                      {},
+                                                      std::vector<gnfs::siqs::SIQSSourceId>{
+                                                          gnfs::siqs::SIQSSourceId{row_index}}}});
     }
     return rows;
 }
 
 [[nodiscard]] bool dependency_is_zero(const std::vector<SIQSShadowRow>& rows,
-                                      const std::vector<size_t>& dependency) {
-    std::vector<uint8_t> parity(5, uint8_t{0});
+                                      const std::vector<size_t>& dependency, size_t column_count) {
+    std::vector<uint8_t> parity(column_count, uint8_t{0});
     for (const size_t row_index : dependency) {
+        if (row_index >= rows.size()) {
+            return false;
+        }
         for (const SIQSFactorPower& power : rows[row_index].row.factor_powers) {
             if ((power.exponent & 1U) != 0) {
+                if (power.factor_base_index == 0 || power.factor_base_index >= column_count) {
+                    return false;
+                }
                 parity[power.factor_base_index - 1] ^= uint8_t{1};
             }
         }
@@ -550,21 +559,28 @@ void test_sparse_solver_returns_verified_basis() {
         CHECK(!dependency.empty());
         CHECK(std::is_sorted(dependency.begin(), dependency.end()));
     }
-    CHECK(std::any_of(result.solution()->dependencies.begin(), result.solution()->dependencies.end(),
+    CHECK(std::any_of(result.solution()->dependencies.begin(),
+                      result.solution()->dependencies.end(),
                       [](const auto& dependency) { return dependency == std::vector<size_t>{4}; }));
-    CHECK(std::all_of(result.solution()->dependencies.begin(), result.solution()->dependencies.end(),
-                      [&](const auto& dependency) { return dependency_is_zero(rows, dependency); }));
+    CHECK(std::all_of(result.solution()->dependencies.begin(),
+                      result.solution()->dependencies.end(), [&](const auto& dependency) {
+                          return dependency_is_zero(rows, dependency, factor_base.size());
+                      }));
 }
 
-[[nodiscard]] SIQSShadowRow make_single_factor_shadow_row(size_t source_id,
-                                                           uint32_t factor_index) {
+[[nodiscard]] SIQSShadowRow make_single_factor_shadow_row(size_t source_id, uint32_t factor_index) {
     return SIQSShadowRow{
         SIQSShadowRowOrigin::raw_full,
-        SIQSPostMergeRow{Integer(1), false,
-                         std::vector<SIQSFactorPower>{SIQSFactorPower{factor_index, 1}}, {},
-                         std::vector<gnfs::siqs::SIQSSourceId>{
-                             gnfs::siqs::SIQSSourceId{source_id}}}};
+        SIQSPostMergeRow{
+            Integer(1),
+            false,
+            std::vector<SIQSFactorPower>{SIQSFactorPower{factor_index, 1}},
+            {},
+            std::vector<gnfs::siqs::SIQSSourceId>{gnfs::siqs::SIQSSourceId{source_id}}}};
 }
+
+[[nodiscard]] bool
+sparse_dependency_basis_is_independent(const gnfs::siqs::SIQSShadowMatrixSolution& solution);
 
 void test_sparse_invalid_candidate_is_not_masked() {
     // Keep this shape just outside the bounded exact pass so the injected
@@ -585,8 +601,8 @@ void test_sparse_invalid_candidate_is_not_masked() {
     options.sparse_retry_count = 1;
 
     bool provider_called = false;
-    auto provider = [&](const CSRMatrix&, size_t max_dependencies, uint64_t,
-                        uint32_t, const gnfs::linalg::BlockWiedemannSeededPolicy&) {
+    auto provider = [&](const CSRMatrix&, size_t max_dependencies, uint64_t, uint32_t,
+                        const gnfs::linalg::BlockWiedemannSeededPolicy&) {
         provider_called = true;
         CHECK(max_dependencies == 1);
         std::vector<bool> malformed(1, true);
@@ -606,6 +622,46 @@ void test_sparse_invalid_candidate_is_not_masked() {
     CHECK(!outcome.solution.has_value());
 }
 
+void test_sparse_wide_shape_uses_real_seeded_bw() {
+    // Cross the deterministic exact-pass row bound without introducing zero
+    // rows, so the production wrapper must construct CSR and invoke seeded
+    // Block Wiedemann. Every row has the same odd factor, making any
+    // two-row combination a valid left-nullspace dependency.
+    const size_t row_count = gnfs::siqs::SIQS_SHADOW_EXACT_SPARSE_MAX_ROWS + 1;
+    const std::vector<uint32_t> factor_base{0, 3};
+    std::vector<SIQSShadowRow> rows;
+    rows.reserve(row_count);
+    for (size_t row_index = 0; row_index < row_count; ++row_index) {
+        rows.push_back(make_single_factor_shadow_row(row_index, 1));
+    }
+
+    SIQSShadowMatrixOptions options;
+    options.backend = SIQSShadowMatrixBackend::sparse_only;
+    options.max_dependencies = 1;
+    options.sparse_worker_threads = 1;
+    options.sparse_retry_count = 3;
+
+    const auto result = solve_siqs_shadow_matrix(
+        std::span<const SIQSShadowRow>(rows.data(), rows.size()),
+        std::span<const uint32_t>(factor_base.data(), factor_base.size()), Integer(2), options);
+    CHECK(result.status() == SIQSShadowMatrixStatus::valid);
+    CHECK(result.solution().has_value());
+    if (!result.solution()) {
+        return;
+    }
+    CHECK(result.solution()->row_count == row_count);
+    CHECK(result.solution()->column_count == factor_base.size());
+    CHECK(result.solution()->dependencies.size() == 1);
+    if (result.solution()->dependencies.empty()) {
+        return;
+    }
+    const auto& dependency = result.solution()->dependencies.front();
+    CHECK(!dependency.empty());
+    CHECK(std::is_sorted(dependency.begin(), dependency.end()));
+    CHECK(dependency_is_zero(rows, dependency, factor_base.size()));
+    CHECK(sparse_dependency_basis_is_independent(*result.solution()));
+}
+
 void test_sparse_exact_small_rank_deficient_regression() {
     // A^T has rows [1,1,0] and [0,1,1].  Its one-dimensional left nullspace
     // is the dependency {0,1,2}; seeded BW used to return no candidates for
@@ -614,22 +670,25 @@ void test_sparse_exact_small_rank_deficient_regression() {
     const std::vector<SIQSShadowRow> rows{
         SIQSShadowRow{
             SIQSShadowRowOrigin::raw_full,
-            SIQSPostMergeRow{Integer(1), false,
-                             std::vector<SIQSFactorPower>{{1, 1}}, {},
-                             std::vector<gnfs::siqs::SIQSSourceId>{
-                                 gnfs::siqs::SIQSSourceId{0}}}},
+            SIQSPostMergeRow{Integer(1),
+                             false,
+                             std::vector<SIQSFactorPower>{{1, 1}},
+                             {},
+                             std::vector<gnfs::siqs::SIQSSourceId>{gnfs::siqs::SIQSSourceId{0}}}},
         SIQSShadowRow{
             SIQSShadowRowOrigin::raw_full,
-            SIQSPostMergeRow{Integer(1), false,
-                             std::vector<SIQSFactorPower>{{1, 1}, {2, 1}}, {},
-                             std::vector<gnfs::siqs::SIQSSourceId>{
-                                 gnfs::siqs::SIQSSourceId{1}}}},
+            SIQSPostMergeRow{Integer(1),
+                             false,
+                             std::vector<SIQSFactorPower>{{1, 1}, {2, 1}},
+                             {},
+                             std::vector<gnfs::siqs::SIQSSourceId>{gnfs::siqs::SIQSSourceId{1}}}},
         SIQSShadowRow{
             SIQSShadowRowOrigin::raw_full,
-            SIQSPostMergeRow{Integer(1), false,
-                             std::vector<SIQSFactorPower>{{2, 1}}, {},
-                             std::vector<gnfs::siqs::SIQSSourceId>{
-                                 gnfs::siqs::SIQSSourceId{2}}}},
+            SIQSPostMergeRow{Integer(1),
+                             false,
+                             std::vector<SIQSFactorPower>{{2, 1}},
+                             {},
+                             std::vector<gnfs::siqs::SIQSSourceId>{gnfs::siqs::SIQSSourceId{2}}}},
     };
 
     SIQSShadowMatrixOptions options;
@@ -650,7 +709,7 @@ void test_sparse_exact_small_rank_deficient_regression() {
     if (result.solution()->dependencies.size() == 1) {
         const auto& dependency = result.solution()->dependencies.front();
         CHECK(dependency == std::vector<size_t>({0, 1, 2}));
-        CHECK(dependency_is_zero(rows, dependency));
+        CHECK(dependency_is_zero(rows, dependency, factor_base.size()));
     }
 }
 
@@ -659,15 +718,15 @@ void test_sparse_limits_and_rank_evidence() {
     const auto rows = make_rank_deficient_rows();
     const auto row_span = std::span<const SIQSShadowRow>(rows.data(), rows.size());
     const auto factor_span = std::span<const uint32_t>(factor_base.data(), factor_base.size());
-    const auto estimate = gnfs::siqs::checked_siqs_shadow_sparse_workspace_estimate(
-        row_span, factor_base.size(), 5);
+    const auto estimate =
+        gnfs::siqs::checked_siqs_shadow_sparse_workspace_estimate(row_span, factor_base.size(), 5);
     CHECK(estimate.has_value());
     if (!estimate) {
         return;
     }
     CHECK(estimate->nonzero_count == 8);
-    CHECK(estimate->csr_bytes == (rows.size() + 1) * sizeof(size_t) +
-                                     estimate->nonzero_count * sizeof(uint32_t));
+    CHECK(estimate->csr_bytes ==
+          (rows.size() + 1) * sizeof(size_t) + estimate->nonzero_count * sizeof(uint32_t));
     CHECK(estimate->total_bytes >= estimate->csr_bytes);
     CHECK(estimate->vector_bytes != 0);
     CHECK(estimate->bm_bytes != 0);
@@ -727,12 +786,11 @@ void test_sparse_estimate_overflow_and_zero_row_budget() {
     CHECK(checked_siqs_shadow_sparse_csr_estimate(0, 0).has_value());
     CHECK(checked_siqs_shadow_sparse_csr_estimate(0, 0)->csr_bytes == sizeof(size_t));
     CHECK(!checked_siqs_shadow_sparse_csr_estimate(std::numeric_limits<size_t>::max(), 0));
-    CHECK(!checked_siqs_shadow_sparse_csr_estimate(
-        1, std::numeric_limits<size_t>::max()));
-    CHECK(!checked_siqs_shadow_sparse_workspace_estimate(
-        std::numeric_limits<size_t>::max(), 1, 0, 1));
-    CHECK(!checked_siqs_shadow_sparse_workspace_estimate(1, std::numeric_limits<size_t>::max(),
-                                                         0, 1));
+    CHECK(!checked_siqs_shadow_sparse_csr_estimate(1, std::numeric_limits<size_t>::max()));
+    CHECK(!checked_siqs_shadow_sparse_workspace_estimate(std::numeric_limits<size_t>::max(), 1, 0,
+                                                         1));
+    CHECK(!checked_siqs_shadow_sparse_workspace_estimate(1, std::numeric_limits<size_t>::max(), 0,
+                                                         1));
 
     const std::vector<uint32_t> factor_base{0, 3};
     std::vector<SIQSShadowRow> rows;
@@ -751,10 +809,10 @@ void test_sparse_estimate_overflow_and_zero_row_budget() {
 }
 
 void test_sparse_exact_admission_boundaries() {
+    using gnfs::siqs::checked_siqs_shadow_sparse_workspace_estimate;
     using gnfs::siqs::SIQS_SHADOW_EXACT_SPARSE_MAX_COLUMNS;
     using gnfs::siqs::SIQS_SHADOW_EXACT_SPARSE_MAX_NONZERO_COUNT;
     using gnfs::siqs::SIQS_SHADOW_EXACT_SPARSE_MAX_ROWS;
-    using gnfs::siqs::checked_siqs_shadow_sparse_workspace_estimate;
 
     // The admission arithmetic must keep the exact path representable at all
     // three documented limits.  This is an estimator-only check for the NNZ
@@ -800,8 +858,8 @@ void test_sparse_exact_admission_boundaries() {
     }
 }
 
-[[nodiscard]] bool sparse_dependency_basis_is_independent(
-    const gnfs::siqs::SIQSShadowMatrixSolution& solution) {
+[[nodiscard]] bool
+sparse_dependency_basis_is_independent(const gnfs::siqs::SIQSShadowMatrixSolution& solution) {
     const size_t words = solution.row_count / size_t{64} +
                          ((solution.row_count % size_t{64}) != 0 ? size_t{1} : size_t{0});
     std::vector<std::vector<uint64_t>> pivots(solution.row_count);
@@ -861,16 +919,18 @@ void test_sparse_exact_matches_dense_random_small() {
                     powers.push_back(SIQSFactorPower{column, 1});
                 }
             }
-            rows.push_back(SIQSShadowRow{
-                SIQSShadowRowOrigin::raw_full,
-                SIQSPostMergeRow{Integer(1), (rng() & 1U) != 0, std::move(powers), {},
-                                 std::vector<gnfs::siqs::SIQSSourceId>{
-                                     gnfs::siqs::SIQSSourceId{row_index}}}});
+            rows.push_back(
+                SIQSShadowRow{SIQSShadowRowOrigin::raw_full,
+                              SIQSPostMergeRow{Integer(1),
+                                               (rng() & 1U) != 0,
+                                               std::move(powers),
+                                               {},
+                                               std::vector<gnfs::siqs::SIQSSourceId>{
+                                                   gnfs::siqs::SIQSSourceId{row_index}}}});
         }
 
         const auto row_span = std::span<const SIQSShadowRow>(rows.data(), rows.size());
-        const auto factor_span =
-            std::span<const uint32_t>(factor_base.data(), factor_base.size());
+        const auto factor_span = std::span<const uint32_t>(factor_base.data(), factor_base.size());
 
         SIQSShadowMatrixOptions dense_options;
         dense_options.backend = SIQSShadowMatrixBackend::dense_only;
@@ -898,9 +958,9 @@ void test_sparse_exact_matches_dense_random_small() {
         CHECK(sparse.solution()->column_count == factor_base.size());
         CHECK(std::all_of(sparse.solution()->dependencies.begin(),
                           sparse.solution()->dependencies.end(), [&](const auto& dependency) {
-                              return !dependency.empty() && std::is_sorted(dependency.begin(),
-                                                                            dependency.end()) &&
-                                     dependency_is_zero(rows, dependency);
+                              return !dependency.empty() &&
+                                     std::is_sorted(dependency.begin(), dependency.end()) &&
+                                     dependency_is_zero(rows, dependency, factor_base.size());
                           }));
         CHECK(sparse_dependency_basis_is_independent(*sparse.solution()));
     }
@@ -921,6 +981,7 @@ int main() {
     test_dense_route_options_contract();
     test_sparse_solver_returns_verified_basis();
     test_sparse_invalid_candidate_is_not_masked();
+    test_sparse_wide_shape_uses_real_seeded_bw();
     test_sparse_exact_small_rank_deficient_regression();
     test_sparse_limits_and_rank_evidence();
     test_sparse_estimate_overflow_and_zero_row_budget();

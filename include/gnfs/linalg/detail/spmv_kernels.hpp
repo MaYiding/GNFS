@@ -117,9 +117,8 @@ inline void spmv_forward(const M& matrix, const BlockVector& x, BlockVector& y,
             return;
         }
         std::uint64_t acc = 0;
-        const std::uint32_t* p_pref = (row_nnz > SPMV_PREFETCH_AHEAD)
-                                          ? p_end - SPMV_PREFETCH_AHEAD
-                                          : p_begin;
+        const std::uint32_t* p_pref =
+            (row_nnz > SPMV_PREFETCH_AHEAD) ? p_end - SPMV_PREFETCH_AHEAD : p_begin;
         const std::uint32_t* p = p_begin;
         // Prefetch phase stays scalar — the prefetch hint references one
         // element ahead and the gather is naturally serialised by the
@@ -267,9 +266,8 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
                 const std::size_t row_nnz = matrix.row_nnz(i);
                 if (row_nnz == 0)
                     continue;
-                const std::uint32_t* p_pref = (row_nnz > SPMV_PREFETCH_AHEAD)
-                                                  ? p_end - SPMV_PREFETCH_AHEAD
-                                                  : p_begin;
+                const std::uint32_t* p_pref =
+                    (row_nnz > SPMV_PREFETCH_AHEAD) ? p_end - SPMV_PREFETCH_AHEAD : p_begin;
                 const std::uint32_t* p = p_begin;
                 // Prefetch phase stays scalar so the L1 prefetcher
                 // continues to see one access at a time and the prefetch

@@ -285,12 +285,14 @@ public:
     /// Fully explicit seeded boundary.  This overload never reads
     /// GNFS_BW_KRYLOV_STREAMS, GNFS_BW_KRYLOV_MMAP, GNFS_BW_KRYLOV_COMPRESS, or
     /// GNFS_METAL_SPMV.  Optional paths are selected solely by `policy`.
-    std::vector<std::vector<bool>> find_dependencies_view_seeded(
-        const CSRMatrix& matrix, size_t max_deps, uint64_t seed, uint32_t retry_count,
-        const SeededPolicy& policy);
-    std::vector<std::vector<bool>> find_dependencies_view_seeded(
-        const MmapCSRMatrix& matrix, size_t max_deps, uint64_t seed, uint32_t retry_count,
-        const SeededPolicy& policy);
+    std::vector<std::vector<bool>> find_dependencies_view_seeded(const CSRMatrix& matrix,
+                                                                 size_t max_deps, uint64_t seed,
+                                                                 uint32_t retry_count,
+                                                                 const SeededPolicy& policy);
+    std::vector<std::vector<bool>> find_dependencies_view_seeded(const MmapCSRMatrix& matrix,
+                                                                 size_t max_deps, uint64_t seed,
+                                                                 uint32_t retry_count,
+                                                                 const SeededPolicy& policy);
 
     /// Coppersmith's Block Berlekamp-Massey algorithm (public for unit testing).
     /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))

@@ -3,15 +3,15 @@
 // Verifies that save→load round-trip produces identical SpMV results
 // as the in-memory CSRMatrix.
 
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/detail/spmv_kernels.hpp>
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
-#include <gnfs/util/thread_pool.hpp>
 #include <gnfs/util/temp_path.hpp>
+#include <gnfs/util/thread_pool.hpp>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -207,8 +207,7 @@ void test_zero_nnz_nonempty_shape() {
     TEST_ASSERT(mmap.num_cols() == 5, "5 columns with zero nnz");
     TEST_ASSERT(mmap.nnz() == 0, "zero nnz");
     for (size_t row = 0; row < mmap.num_rows(); ++row) {
-        TEST_ASSERT(mmap.row_nnz(row) == 0,
-                    "zero-NNZ mmap row has no entries");
+        TEST_ASSERT(mmap.row_nnz(row) == 0, "zero-NNZ mmap row has no entries");
         TEST_ASSERT(mmap.row_begin(row) == mmap.row_end(row),
                     "zero-NNZ mmap row has an empty pointer range");
     }
@@ -223,7 +222,7 @@ void test_zero_nnz_nonempty_shape() {
 
     gnfs::util::ThreadPool pool(2);
     gnfs::linalg::detail::spmv_forward(mmap, input, forward, pool,
-                                        gnfs::linalg::detail::SpmvMetalPolicy::disabled);
+                                       gnfs::linalg::detail::SpmvMetalPolicy::disabled);
     gnfs::linalg::detail::spmv_transpose(mmap, forward, transpose, pool,
                                          gnfs::linalg::detail::SpmvMetalPolicy::disabled);
 

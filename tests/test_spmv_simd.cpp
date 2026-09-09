@@ -612,9 +612,15 @@ static void test_transpose_scratch_shape_reset() {
     CSRMatrix narrow(narrow_storage);
     struct MatrixAlias {
         const CSRMatrix& matrix;
-        [[nodiscard]] std::size_t num_rows() const noexcept { return matrix.num_rows(); }
-        [[nodiscard]] std::size_t num_cols() const noexcept { return matrix.num_cols(); }
-        [[nodiscard]] std::size_t nnz() const noexcept { return matrix.nnz(); }
+        [[nodiscard]] std::size_t num_rows() const noexcept {
+            return matrix.num_rows();
+        }
+        [[nodiscard]] std::size_t num_cols() const noexcept {
+            return matrix.num_cols();
+        }
+        [[nodiscard]] std::size_t nnz() const noexcept {
+            return matrix.nnz();
+        }
         [[nodiscard]] const std::uint32_t* row_begin(std::size_t row) const {
             return matrix.row_begin(row);
         }

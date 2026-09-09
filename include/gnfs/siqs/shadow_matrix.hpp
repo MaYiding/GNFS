@@ -3,11 +3,11 @@
 /// @file shadow_matrix.hpp
 /// @brief Deterministic GF(2) left-nullspace solving for canonical SIQS shadow rows.
 
-#include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/krylov_compress.hpp>
-#include <gnfs/linalg/krylov_sequence_mmap.hpp>
 #include <gnfs/linalg/krylov_sequence_compressed.hpp>
+#include <gnfs/linalg/krylov_sequence_mmap.hpp>
+#include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/util/joining_thread.hpp>
 #include <gnfs/util/thread_pool.hpp>
 
@@ -86,8 +86,8 @@ struct SIQSShadowSparseStorageEstimate {
     size_t csr_bytes = 0;
 
     [[nodiscard]] friend constexpr bool
-    operator==(const SIQSShadowSparseStorageEstimate&, const SIQSShadowSparseStorageEstimate&) =
-        default;
+    operator==(const SIQSShadowSparseStorageEstimate&,
+               const SIQSShadowSparseStorageEstimate&) = default;
 };
 
 using SIQSShadowSparseEstimate = SIQSShadowSparseStorageEstimate;
@@ -123,9 +123,9 @@ struct SIQSShadowSparseWorkspaceEstimate {
         return total_bytes;
     }
 
-    [[nodiscard]] friend constexpr bool operator==(
-        const SIQSShadowSparseWorkspaceEstimate&, const SIQSShadowSparseWorkspaceEstimate&) =
-        default;
+    [[nodiscard]] friend constexpr bool
+    operator==(const SIQSShadowSparseWorkspaceEstimate&,
+               const SIQSShadowSparseWorkspaceEstimate&) = default;
 };
 
 struct SIQSShadowMatrixOptions {
@@ -232,8 +232,7 @@ checked_siqs_shadow_sparse_csr_estimate(size_t row_count, size_t nonzero_count) 
     if (row_offsets_bytes > std::numeric_limits<size_t>::max() - column_indices_bytes) {
         return std::nullopt;
     }
-    return SIQSShadowSparseStorageEstimate{nonzero_count, row_offsets_bytes,
-                                           column_indices_bytes,
+    return SIQSShadowSparseStorageEstimate{nonzero_count, row_offsets_bytes, column_indices_bytes,
                                            row_offsets_bytes + column_indices_bytes};
 }
 
@@ -318,13 +317,10 @@ siqs_shadow_matrix_options_are_valid(const SIQSShadowMatrixOptions& options) noe
 /// by this resource-aware estimator.
 [[nodiscard]] inline std::optional<SIQSShadowSparseWorkspaceEstimate>
 checked_siqs_shadow_sparse_workspace_estimate(size_t row_count, size_t equation_count,
-                                               size_t nonzero_count,
-                                               size_t max_dependencies,
-                                               uint32_t worker_threads,
-                                               uint32_t retry_count,
-                                               bool use_krylov_mmap,
-                                               bool use_krylov_compression,
-                                               bool allow_metal) noexcept {
+                                              size_t nonzero_count, size_t max_dependencies,
+                                              uint32_t worker_threads, uint32_t retry_count,
+                                              bool use_krylov_mmap, bool use_krylov_compression,
+                                              bool allow_metal) noexcept {
     const size_t max_size = std::numeric_limits<size_t>::max();
     const auto multiply = [](size_t lhs, size_t rhs, size_t& result) noexcept {
         const size_t max_size = std::numeric_limits<size_t>::max();
@@ -418,14 +414,12 @@ checked_siqs_shadow_sparse_workspace_estimate(size_t row_count, size_t equation_
     size_t six_max = 0;
     size_t two_min = 0;
     if (!multiply(maximum_dimension, size_t{6}, six_max) ||
-        !multiply(minimum_dimension, size_t{2}, two_min) ||
-        !add(six_max, two_min, vector_slots) ||
+        !multiply(minimum_dimension, size_t{2}, two_min) || !add(six_max, two_min, vector_slots) ||
         !multiply(vector_slots, sizeof(uint64_t), estimate.vector_bytes)) {
         return std::nullopt;
     }
 
-    if (!multiply(static_cast<size_t>(resolved_workers), equation_count,
-                  vector_slots) ||
+    if (!multiply(static_cast<size_t>(resolved_workers), equation_count, vector_slots) ||
         !multiply(vector_slots, sizeof(uint64_t), estimate.transpose_scratch_bytes)) {
         return std::nullopt;
     }
@@ -561,8 +555,8 @@ checked_siqs_shadow_sparse_workspace_estimate(size_t row_count, size_t equation_
                 return std::nullopt;
             }
         } else {
-            const size_t chunk_blocks = static_cast<size_t>(
-                gnfs::linalg::KrylovSequenceCompressed::DEFAULT_CHUNK_BLOCKS);
+            const size_t chunk_blocks =
+                static_cast<size_t>(gnfs::linalg::KrylovSequenceCompressed::DEFAULT_CHUNK_BLOCKS);
             size_t chunk_count = 0;
             size_t max_chunk_bytes = 0;
             size_t literal_headers = 0;
@@ -589,9 +583,10 @@ checked_siqs_shadow_sparse_workspace_estimate(size_t row_count, size_t equation_
             }
 
             size_t writer_bytes = 0;
-            size_t reader_cache_bytes = std::max(
-                static_cast<size_t>(gnfs::linalg::KrylovSequenceCompressed::DEFAULT_CACHE_LIMIT_BYTES),
-                max_chunk_bytes);
+            size_t reader_cache_bytes =
+                std::max(static_cast<size_t>(
+                             gnfs::linalg::KrylovSequenceCompressed::DEFAULT_CACHE_LIMIT_BYTES),
+                         max_chunk_bytes);
             size_t reader_bytes = 0;
             size_t reader_copy_bytes = 0;
             if (!add(max_chunk_bytes, max_chunk_bytes, writer_bytes) ||
@@ -608,8 +603,7 @@ checked_siqs_shadow_sparse_workspace_estimate(size_t row_count, size_t equation_
             if (!add(sizeof(gnfs::linalg::KrylovSequenceCompressed),
                      gnfs::linalg::KrylovSequenceCompressed::HEADER_SIZE,
                      compressed_object_overhead) ||
-                !add(estimate.ooc_bytes, compressed_object_overhead,
-                     estimate.ooc_bytes)) {
+                !add(estimate.ooc_bytes, compressed_object_overhead, estimate.ooc_bytes)) {
                 return std::nullopt;
             }
         }
@@ -654,9 +648,8 @@ checked_siqs_shadow_sparse_workspace_estimate(size_t row_count, size_t equation_
         !accumulate(estimate.bm_bytes) || !accumulate(estimate.candidate_bytes) ||
         !accumulate(estimate.verification_bytes) || !accumulate(estimate.dependency_bytes) ||
         !accumulate(estimate.rank_proof_bytes) ||
-        (use_krylov_mmap && !accumulate(estimate.ooc_bytes)) ||
-        !accumulate(estimate.metal_bytes) || !accumulate(estimate.zero_rows_bytes) ||
-        !accumulate(metadata)) {
+        (use_krylov_mmap && !accumulate(estimate.ooc_bytes)) || !accumulate(estimate.metal_bytes) ||
+        !accumulate(estimate.zero_rows_bytes) || !accumulate(metadata)) {
         return std::nullopt;
     }
     estimate.total_bytes = total;
@@ -666,38 +659,33 @@ checked_siqs_shadow_sparse_workspace_estimate(size_t row_count, size_t equation_
 /// Compatibility overload using the sparse backend defaults.
 [[nodiscard]] inline std::optional<SIQSShadowSparseWorkspaceEstimate>
 checked_siqs_shadow_sparse_workspace_estimate(size_t row_count, size_t equation_count,
-                                               size_t nonzero_count,
-                                               size_t max_dependencies) noexcept {
+                                              size_t nonzero_count,
+                                              size_t max_dependencies) noexcept {
     return checked_siqs_shadow_sparse_workspace_estimate(
         row_count, equation_count, nonzero_count, max_dependencies,
-        SIQS_SHADOW_DEFAULT_SPARSE_WORKER_THREADS, SIQS_SHADOW_DEFAULT_SPARSE_RETRY_COUNT,
-        false, false, false);
+        SIQS_SHADOW_DEFAULT_SPARSE_WORKER_THREADS, SIQS_SHADOW_DEFAULT_SPARSE_RETRY_COUNT, false,
+        false, false);
 }
 
 [[nodiscard]] inline std::optional<SIQSShadowSparseWorkspaceEstimate>
 checked_siqs_shadow_sparse_workspace_estimate(std::span<const SIQSShadowRow> rows,
-                                               size_t equation_count,
-                                               size_t max_dependencies,
-                                               uint32_t worker_threads,
-                                               uint32_t retry_count,
-                                               bool use_krylov_mmap,
-                                               bool use_krylov_compression,
-                                               bool allow_metal) noexcept {
+                                              size_t equation_count, size_t max_dependencies,
+                                              uint32_t worker_threads, uint32_t retry_count,
+                                              bool use_krylov_mmap, bool use_krylov_compression,
+                                              bool allow_metal) noexcept {
     const auto nonzero_count = checked_siqs_shadow_sparse_nonzero_count(rows);
     if (!nonzero_count) {
         return std::nullopt;
     }
-    return checked_siqs_shadow_sparse_workspace_estimate(rows.size(), equation_count,
-                                                         *nonzero_count, max_dependencies,
-                                                         worker_threads, retry_count,
-                                                         use_krylov_mmap, use_krylov_compression,
-                                                         allow_metal);
+    return checked_siqs_shadow_sparse_workspace_estimate(
+        rows.size(), equation_count, *nonzero_count, max_dependencies, worker_threads, retry_count,
+        use_krylov_mmap, use_krylov_compression, allow_metal);
 }
 
 [[nodiscard]] inline std::optional<SIQSShadowSparseWorkspaceEstimate>
 checked_siqs_shadow_sparse_workspace_estimate(std::span<const SIQSShadowRow> rows,
-                                               size_t equation_count,
-                                               size_t max_dependencies) noexcept {
+                                              size_t equation_count,
+                                              size_t max_dependencies) noexcept {
     return checked_siqs_shadow_sparse_workspace_estimate(
         rows, equation_count, max_dependencies, SIQS_SHADOW_DEFAULT_SPARSE_WORKER_THREADS,
         SIQS_SHADOW_DEFAULT_SPARSE_RETRY_COUNT, false, false, false);
@@ -1000,9 +988,8 @@ private:
 [[nodiscard]] inline SIQSShadowMatrixStatus
 eliminate_pivot(std::vector<uint64_t>& matrix, size_t equation_count, size_t words_per_row,
                 size_t pivot_row, size_t pivot_column, const SIQSShadowMatrixOptions& options) {
-    const bool use_parallel =
-        equation_count != 0 && options.elimination_workers > 1 &&
-        equation_count >= options.parallel_column_threshold;
+    const bool use_parallel = equation_count != 0 && options.elimination_workers > 1 &&
+                              equation_count >= options.parallel_column_threshold;
     if (!use_parallel) {
         eliminate_pivot_range(matrix, words_per_row, pivot_row, pivot_column, 0, equation_count);
         return SIQSShadowMatrixStatus::valid;
@@ -1186,8 +1173,7 @@ prove_sparse_full_row_rank(const gnfs::linalg::CSRMatrix& matrix) {
             size_t lhs = 0;
             size_t rhs = 0;
             while (lhs < reduced.size() || rhs < pivot.size()) {
-                if (rhs == pivot.size() ||
-                    (lhs < reduced.size() && reduced[lhs] < pivot[rhs])) {
+                if (rhs == pivot.size() || (lhs < reduced.size() && reduced[lhs] < pivot[rhs])) {
                     next.push_back(reduced[lhs++]);
                 } else if (lhs == reduced.size() || pivot[rhs] < reduced[lhs]) {
                     next.push_back(pivot[rhs++]);
@@ -1231,7 +1217,8 @@ build_sparse_csr(std::span<const SIQSShadowRow> rows, size_t equation_count,
         bool have_previous = false;
         visit_siqs_post_merge_odd_columns(rows[row_index].row, [&](size_t column) {
             if (column >= equation_count || column > static_cast<size_t>(UINT32_MAX) ||
-                position >= expected_nonzero_count || (have_previous && column <= previous_column)) {
+                position >= expected_nonzero_count ||
+                (have_previous && column <= previous_column)) {
                 throw std::logic_error("SIQS shadow CSR row is not canonical");
             }
             col_indices[position++] = static_cast<uint32_t>(column);
@@ -1251,9 +1238,10 @@ build_sparse_csr(std::span<const SIQSShadowRow> rows, size_t equation_count,
         rows.size(), equation_count, std::move(row_offsets), std::move(col_indices));
 }
 
-[[nodiscard]] inline bool verify_sparse_dependency_against_rows(
-    std::span<const SIQSShadowRow> rows, std::span<const size_t> dependency, size_t equation_count,
-    std::vector<uint8_t>& parity) noexcept {
+[[nodiscard]] inline bool
+verify_sparse_dependency_against_rows(std::span<const SIQSShadowRow> rows,
+                                      std::span<const size_t> dependency, size_t equation_count,
+                                      std::vector<uint8_t>& parity) noexcept {
     if (dependency.empty() || parity.size() != equation_count) {
         return false;
     }
@@ -1290,9 +1278,8 @@ build_sparse_csr(std::span<const SIQSShadowRow> rows, size_t equation_count,
 /// reduced row-echelon form over GF(2).  A free variable then directly gives
 /// one dependency, with the pivot variables selected from its reduced row.
 [[nodiscard]] inline std::optional<std::vector<std::vector<size_t>>>
-solve_sparse_exact_small(std::span<const SIQSShadowRow> rows,
-                         const gnfs::linalg::CSRMatrix& matrix, size_t equation_count,
-                         size_t nonzero_count, size_t dependency_limit) {
+solve_sparse_exact_small(std::span<const SIQSShadowRow> rows, const gnfs::linalg::CSRMatrix& matrix,
+                         size_t equation_count, size_t nonzero_count, size_t dependency_limit) {
     if (rows.size() > SIQS_SHADOW_EXACT_SPARSE_MAX_ROWS ||
         equation_count > SIQS_SHADOW_EXACT_SPARSE_MAX_COLUMNS ||
         nonzero_count > SIQS_SHADOW_EXACT_SPARSE_MAX_NONZERO_COUNT) {
@@ -1386,8 +1373,8 @@ solve_sparse_exact_small(std::span<const SIQSShadowRow> rows,
     const size_t requested = std::min(dependency_limit, row_count);
     dependencies.reserve(requested);
     std::vector<uint8_t> parity(equation_count, uint8_t{0});
-    for (size_t free_variable = 0;
-         free_variable < row_count && dependencies.size() < requested; ++free_variable) {
+    for (size_t free_variable = 0; free_variable < row_count && dependencies.size() < requested;
+         ++free_variable) {
         if (is_pivot[free_variable] != 0) {
             continue;
         }
@@ -1416,9 +1403,9 @@ solve_sparse_exact_small(std::span<const SIQSShadowRow> rows,
 /// Install a packed dependency in a tiny pivot table and report whether it
 /// contributes a new independent vector.  The table is bounded by the
 /// caller's dependency budget, while the pivot-slot array is indexed by row.
-[[nodiscard]] inline bool install_sparse_basis_vector(
-    std::vector<uint64_t>& candidate, std::vector<size_t>& pivot_slots,
-    std::vector<std::vector<uint64_t>>& pivot_vectors) {
+[[nodiscard]] inline bool
+install_sparse_basis_vector(std::vector<uint64_t>& candidate, std::vector<size_t>& pivot_slots,
+                            std::vector<std::vector<uint64_t>>& pivot_vectors) {
     const size_t row_count = pivot_slots.size();
     const size_t words = candidate.size();
     const size_t no_pivot = std::numeric_limits<size_t>::max();
@@ -1475,9 +1462,8 @@ solve_sparse_backend_with_provider(std::span<const SIQSShadowRow> rows, size_t e
     }
     const auto workspace = checked_siqs_shadow_sparse_workspace_estimate(
         rows.size(), equation_count, estimate->nonzero_count, options.max_dependencies,
-        options.sparse_worker_threads, options.sparse_retry_count,
-        options.sparse_use_krylov_mmap, options.sparse_use_krylov_compression,
-        options.sparse_allow_metal);
+        options.sparse_worker_threads, options.sparse_retry_count, options.sparse_use_krylov_mmap,
+        options.sparse_use_krylov_compression, options.sparse_allow_metal);
     if (!workspace) {
         const uint32_t resolved_workers =
             resolve_siqs_shadow_sparse_worker_threads(options.sparse_worker_threads);
@@ -1485,8 +1471,7 @@ solve_sparse_backend_with_provider(std::span<const SIQSShadowRow> rows, size_t e
             options.sparse_retry_count == 0 ||
             options.sparse_retry_count > SIQS_SHADOW_MAX_SPARSE_RETRY_COUNT ||
             options.sparse_worker_threads > SIQS_SHADOW_MAX_SPARSE_WORKER_THREADS ||
-            resolved_workers == 0 ||
-            resolved_workers > SIQS_SHADOW_MAX_SPARSE_WORKER_THREADS ||
+            resolved_workers == 0 || resolved_workers > SIQS_SHADOW_MAX_SPARSE_WORKER_THREADS ||
             (options.sparse_use_krylov_compression && !options.sparse_use_krylov_mmap) ||
             options.sparse_allow_metal;
         outcome.status = invalid_policy ? SIQSShadowMatrixStatus::invalid_options
@@ -1551,9 +1536,9 @@ solve_sparse_backend_with_provider(std::span<const SIQSShadowRow> rows, size_t e
         // Route its basis through the same independence table used for BW
         // candidates, then finish immediately: an engaged empty result is a
         // proved full-row-rank matrix, not a probabilistic no-dependency event.
-        const auto exact_dependencies = solve_sparse_exact_small(
-            std::span<const SIQSShadowRow>(rows.data(), rows.size()), *csr, equation_count,
-            estimate->nonzero_count, dependency_limit);
+        const auto exact_dependencies =
+            solve_sparse_exact_small(std::span<const SIQSShadowRow>(rows.data(), rows.size()), *csr,
+                                     equation_count, estimate->nonzero_count, dependency_limit);
         if (exact_dependencies) {
             for (auto& dependency : *exact_dependencies) {
                 if (solution.dependencies.size() >= dependency_limit) {
@@ -1592,14 +1577,11 @@ solve_sparse_backend_with_provider(std::span<const SIQSShadowRow> rows, size_t e
         const bool solver_needed = solution.dependencies.size() < dependency_limit;
         if (solver_needed) {
             const gnfs::linalg::BlockWiedemannSeededPolicy policy{
-                static_cast<uint32_t>(workspace->worker_threads),
-                options.sparse_use_krylov_mmap,
-                options.sparse_use_krylov_compression,
-                options.sparse_allow_metal};
-            candidates = std::invoke(
-                std::forward<CandidateProvider>(candidate_provider), *csr,
-                dependency_limit - solution.dependencies.size(), options.sparse_seed,
-                options.sparse_retry_count, policy);
+                static_cast<uint32_t>(workspace->worker_threads), options.sparse_use_krylov_mmap,
+                options.sparse_use_krylov_compression, options.sparse_allow_metal};
+            candidates = std::invoke(std::forward<CandidateProvider>(candidate_provider), *csr,
+                                     dependency_limit - solution.dependencies.size(),
+                                     options.sparse_seed, options.sparse_retry_count, policy);
         }
 
         const bool had_solver_candidates = !candidates.empty();
@@ -1634,7 +1616,8 @@ solve_sparse_backend_with_provider(std::span<const SIQSShadowRow> rows, size_t e
                                                           rhs.end());
                   });
 
-        const size_t minimum_nullity = rows.size() > equation_count ? rows.size() - equation_count : 0;
+        const size_t minimum_nullity =
+            rows.size() > equation_count ? rows.size() - equation_count : 0;
         const size_t required_dependencies = std::min(minimum_nullity, options.max_dependencies);
         if (solution.dependencies.size() < required_dependencies) {
             outcome.status = had_solver_candidates || dependent_candidate || invalid_candidate
@@ -1647,10 +1630,8 @@ solve_sparse_backend_with_provider(std::span<const SIQSShadowRow> rows, size_t e
         // sparse rank certificate before preserving an empty result; an empty
         // probabilistic solver response otherwise remains typed failure.
         if (solution.dependencies.empty()) {
-            const SparseFullRowRankProof rank_proof =
-                prove_sparse_full_row_rank(*csr);
-            if (required_dependencies == 0 &&
-                rank_proof == SparseFullRowRankProof::full_row_rank &&
+            const SparseFullRowRankProof rank_proof = prove_sparse_full_row_rank(*csr);
+            if (required_dependencies == 0 && rank_proof == SparseFullRowRankProof::full_row_rank &&
                 !had_solver_candidates && !dependent_candidate && !invalid_candidate) {
                 outcome.status = SIQSShadowMatrixStatus::valid;
                 outcome.solution = std::move(solution);
@@ -1693,7 +1674,7 @@ solve_sparse_backend(std::span<const SIQSShadowRow> rows, size_t equation_count,
            uint32_t retry_count, const gnfs::linalg::BlockWiedemannSeededPolicy& policy) {
             gnfs::linalg::BlockWiedemann wiedemann;
             return wiedemann.find_dependencies_view_seeded(matrix, max_dependencies, seed,
-                                                            retry_count, policy);
+                                                           retry_count, policy);
         });
 }
 
@@ -1754,12 +1735,12 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
     // Automatic mode admits dense storage only when both explicit limits and
     // checked arithmetic pass.  Otherwise it promotes to the direct CSR/BW
     // implementation.  `dense_only` preserves the historical typed boundary.
-    const bool dense_admitted =
-        dense_matrix_bytes && variable_count <= options.max_dense_variable_count &&
-        *dense_matrix_bytes <= options.max_dense_matrix_bytes;
-    const bool use_sparse = options.backend == SIQSShadowMatrixBackend::sparse_only ||
-                            (options.backend == SIQSShadowMatrixBackend::automatic &&
-                             !dense_admitted);
+    const bool dense_admitted = dense_matrix_bytes &&
+                                variable_count <= options.max_dense_variable_count &&
+                                *dense_matrix_bytes <= options.max_dense_matrix_bytes;
+    const bool use_sparse =
+        options.backend == SIQSShadowMatrixBackend::sparse_only ||
+        (options.backend == SIQSShadowMatrixBackend::automatic && !dense_admitted);
     if (use_sparse) {
         SparseSolveOutcome sparse = solve_sparse_backend(rows, equation_count, options);
         if (sparse.status != SIQSShadowMatrixStatus::valid || !sparse.solution) {
@@ -1807,9 +1788,8 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
     const size_t no_pivot = std::numeric_limits<size_t>::max();
     std::vector<size_t> pivot_columns(equation_count, no_pivot);
     std::vector<uint8_t> is_pivot(variable_count, uint8_t{0});
-    const bool use_parallel_elimination =
-        equation_count != 0 && options.elimination_workers > 1 &&
-        equation_count >= options.parallel_column_threshold;
+    const bool use_parallel_elimination = equation_count != 0 && options.elimination_workers > 1 &&
+                                          equation_count >= options.parallel_column_threshold;
     const size_t elimination_worker_count =
         std::min(equation_count, static_cast<size_t>(options.elimination_workers));
     std::unique_ptr<PersistentPivotEliminationTeam> elimination_team;

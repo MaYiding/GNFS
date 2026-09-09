@@ -73,8 +73,8 @@ using gnfs::siqs::SIQSShadowAssemblyFingerprints;
 using gnfs::siqs::SIQSShadowAssemblyOptions;
 using gnfs::siqs::SIQSShadowAssemblyStats;
 using gnfs::siqs::SIQSShadowAssemblyStatus;
-using gnfs::siqs::SIQSShadowMatrixOptions;
 using gnfs::siqs::SIQSShadowMatrixBackend;
+using gnfs::siqs::SIQSShadowMatrixOptions;
 using gnfs::siqs::SIQSShadowMatrixStatus;
 using gnfs::siqs::SIQSShadowRow;
 using gnfs::siqs::solve_siqs_shadow_matrix;
@@ -2616,7 +2616,7 @@ struct ScaleProofRecord final {
     proof.options = SIQSShadowMatrixOptions{
         SCALE_SOLVER_MAX_DEPENDENCIES,          requested_workers,
         SCALE_SOLVER_PARALLEL_COLUMN_THRESHOLD, SCALE_SOLVER_MAX_DENSE_MATRIX_BYTES,
-        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT, SIQSShadowMatrixBackend::dense_only,
+        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT,  SIQSShadowMatrixBackend::dense_only,
     };
     return proof;
 }
