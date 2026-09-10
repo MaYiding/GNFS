@@ -289,6 +289,7 @@ void test_target_multiplier_is_frozen_in_snapshot() {
 
     GNFSParams tiny_target;
     tiny_target.large_prime_bits = 0;
+    tiny_target.sieve_target_multiplier = 0.1;
     GNFS_TEST_CHECK(tiny_target.raw_relation_target(1) == 1);
     GNFS_TEST_CHECK(tiny_target.raw_relation_target(0) == 0);
 
