@@ -51,13 +51,17 @@ struct GNFSParams {
     int32_t sieve_j_max = 500;
     uint16_t rational_threshold = 50;
     uint16_t algebraic_threshold = 50;
+    /// Frozen when `compute()` materializes the parameter snapshot.  The
+    /// sieve target and all budgets derived from that snapshot must not change
+    /// when a caller mutates the process environment later.
+    double sieve_target_multiplier = 1.0;
 
     // === Special-Q ===
     uint32_t special_q_min = 1000;
     uint32_t special_q_max = 5000;
     uint32_t max_special_q = 2000;            // 最大处理的 special-q 数量
     uint32_t max_special_q_batch_workers = 4; // 单个本地 special-q 批次的外层 worker 上限
-    uint32_t max_local_sieve_threads = 0; // 本地筛法计算通道预算 (0 = Pipeline 自动冻结)
+    uint32_t max_local_sieve_threads = 0;     // 本地筛法计算通道预算 (0 = Pipeline 自动冻结)
 
     // === 线性代数 ===
     uint32_t num_qc_primes = 64;  // 二次特征素数数量
@@ -92,6 +96,7 @@ struct GNFSParams {
         p.bits = n_bits;
         constexpr double LOG10_2 = 0.30103; // log10(2)
         p.digits = static_cast<size_t>(static_cast<double>(n_bits) * LOG10_2 + 1.0);
+        p.sieve_target_multiplier = target_multiplier_from_env();
 
         // L_N 函数的核心值: (ln N)^{1/3} · (ln ln N)^{2/3}
         double ln_n = static_cast<double>(n_bits) * std::log(2.0);
@@ -332,8 +337,9 @@ struct GNFSParams {
         {
             size_t est_rels = p.estimated_relations_needed();
             // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 6 安全余量
-            // Note: est_rels uses raw_relation_target which may be aggressive (1.5×),
-            // so the safety factor here must compensate.
+            // Keep the hard special-Q cap tied to the unscaled geometry.  The
+            // experiment multiplier changes only the initial target within
+            // this already materialized parameter snapshot.
             const size_t bounded_sq_count = util::saturating_size_product(est_rels, size_t{6});
             uint32_t needed_sq =
                 static_cast<uint32_t>(std::min(static_cast<size_t>(UINT32_MAX), bounded_sq_count));
@@ -433,10 +439,9 @@ struct GNFSParams {
         // multiplier 适用于最终 target 输出. 用于 50d/60d β plateau 突破:
         // CADO-NFS 50d 标准 target 100M+ raw, 我们 5.9M 不足. X=10-20 可对齐.
         // 默认 1.0 (无 multiplier, 原始策略 unchanged).
-        // Read this per call. A process may run multiple Pipeline instances
-        // with different experiment environments, and a function-local static
-        // would silently retain the first instance's multiplier.
-        const double target_mult = target_multiplier_from_env();
+        // The multiplier is captured by compute(). Reading the environment
+        // here would let a Pipeline outlive its own derived budget snapshot.
+        const double target_mult = sieve_target_multiplier;
 
         const size_t base_target = raw_relation_target_unscaled(matrix_columns);
         const size_t scaled_target = util::size_from_nonnegative_double_floor(
@@ -532,7 +537,7 @@ private:
         return *parsed;
     }
 
-    /// Calculate the size-aware target without applying experiment-only ENV
+    /// Calculate the size-aware target without applying experiment-only
     /// scaling. This keeps derived limits such as max_special_q stable.
     [[nodiscard]] size_t raw_relation_target_unscaled(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {

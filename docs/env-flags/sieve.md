@@ -91,12 +91,15 @@ finite decimal numbers in `[0.1, 100.0]`. Invalid, non-finite, prefixed, or
 out-of-range values fall back to `1.0`. Parsing uses the invariant C numeric
 locale, so the result is independent of the process `LC_NUMERIC` setting.
 
-The value is read on every target calculation. This matters for applications
-that run multiple `Pipeline` instances in one process with different
-experiment environments. The multiplier is applied after the size-aware
-target has been calculated, and the existing saturating `size_t` conversion
-still governs overflow. A positive base target is clamped to at least one
-relation after scaling; an explicit zero-column input remains zero.
+The value is captured when `GNFSParams::compute()` runs, which is normally when
+a `Pipeline` is constructed. Existing parameter snapshots do not reread the
+process environment; applications that need different experiment values must
+construct separate instances under the desired environment. The multiplier is
+applied after the size-aware target has been calculated, and the existing
+saturating `size_t` conversion still governs overflow. A positive base target
+is clamped to at least one relation after scaling; an explicit zero-column input
+remains zero. The hard `max_special_q` cap remains derived from the unscaled
+size-aware geometry and is therefore stable within the snapshot.
 
 ```bash
 GNFS_SIEVE_TARGET_MULT=2 ./gnfs <N>       # double the initial target
@@ -105,20 +108,21 @@ unset GNFS_SIEVE_TARGET_MULT              # use the default target
 ```
 
 This tuning switch changes only the starting point of the adaptive sieve
-loop. It does not change relation encoding, merge policy, matrix contents, or
-the checkpoint run identity. The geometry helper
+loop. It does not change relation encoding, merge policy, or matrix contents.
+The frozen multiplier is included in the checkpoint run identity, so a
+checkpoint cannot be resumed under a different target strategy. The geometry helper
 `GNFSParams::sieve_i_bounds_for_width()` also keeps explicitly configured odd
 sieve widths exact; the default even widths retain their historical bounds.
 
 **Integration points**:
 
-- `include/gnfs/core/params.hpp`: strict per-call parser, target scaling, and
+- `include/gnfs/core/params.hpp`: strict snapshot parser, target scaling, and
   exact/overflow-safe sieve geometry;
 - `include/gnfs/api/config.hpp`: shared geometry mapping for typed width
   overrides;
 - `src/sieve/distributed_sieve_bound_work.cpp`: repeat the materialization cap
   during distributed worker preflight;
-- `tests/test_params.cpp`: reload, invalid-value, odd-width, and extreme-width
+- `tests/test_params.cpp`: snapshot, invalid-value, odd-width, and extreme-width
   contracts.
 
 ---

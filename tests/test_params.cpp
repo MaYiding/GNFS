@@ -240,8 +240,8 @@ void test_lp_bits_env_override() {
     std::cout << "  PASS" << std::endl;
 }
 
-void test_target_multiplier_reloads_per_call() {
-    std::cout << "Testing GNFS_SIEVE_TARGET_MULT reload semantics..." << std::endl;
+void test_target_multiplier_is_frozen_in_snapshot() {
+    std::cout << "Testing GNFS_SIEVE_TARGET_MULT snapshot semantics..." << std::endl;
 
     std::optional<std::string> previous_value;
     if (const char* previous = std::getenv("GNFS_SIEVE_TARGET_MULT")) {
@@ -258,25 +258,33 @@ void test_target_multiplier_reloads_per_call() {
     unsetenv("GNFS_SIEVE_TARGET_MULT");
     const auto params = GNFSParams::compute(197);
     const uint32_t baseline_max_special_q = params.max_special_q;
-    setenv("GNFS_SIEVE_TARGET_MULT", "100", 1);
-    const auto scaled_params = GNFSParams::compute(197);
-    GNFS_TEST_CHECK(scaled_params.max_special_q == baseline_max_special_q);
-
-    unsetenv("GNFS_SIEVE_TARGET_MULT");
     constexpr size_t columns = 1000;
     const size_t baseline = params.raw_relation_target(columns);
     GNFS_TEST_CHECK(baseline > 0);
+    GNFS_TEST_CHECK(params.sieve_target_multiplier == 1.0);
 
     setenv("GNFS_SIEVE_TARGET_MULT", "2", 1);
-    const size_t doubled = params.raw_relation_target(columns);
+    const auto scaled_params = GNFSParams::compute(197);
+    const size_t doubled = scaled_params.raw_relation_target(columns);
+    GNFS_TEST_CHECK(scaled_params.sieve_target_multiplier == 2.0);
     GNFS_TEST_CHECK(doubled == baseline * 2);
+    GNFS_TEST_CHECK(scaled_params.max_special_q == baseline_max_special_q);
+
+    // Changing the environment after construction must not alter either
+    // snapshot.  Separate parameter instances can still capture separate
+    // experiment values at construction time.
+    setenv("GNFS_SIEVE_TARGET_MULT", "100", 1);
+    GNFS_TEST_CHECK(params.raw_relation_target(columns) == baseline);
+    GNFS_TEST_CHECK(scaled_params.raw_relation_target(columns) == doubled);
 
     setenv("GNFS_SIEVE_TARGET_MULT", "3.5", 1);
-    const size_t fractional = params.raw_relation_target(columns);
+    const auto fractional_params = GNFSParams::compute(197);
+    const size_t fractional = fractional_params.raw_relation_target(columns);
     GNFS_TEST_CHECK(fractional == static_cast<size_t>(static_cast<double>(baseline) * 3.5));
 
     setenv("GNFS_SIEVE_TARGET_MULT", "0.1", 1);
-    const size_t minimum = params.raw_relation_target(columns);
+    const auto minimum_params = GNFSParams::compute(197);
+    const size_t minimum = minimum_params.raw_relation_target(columns);
     GNFS_TEST_CHECK(minimum == static_cast<size_t>(static_cast<double>(baseline) * 0.1));
 
     GNFSParams tiny_target;
@@ -285,7 +293,8 @@ void test_target_multiplier_reloads_per_call() {
     GNFS_TEST_CHECK(tiny_target.raw_relation_target(0) == 0);
 
     setenv("GNFS_SIEVE_TARGET_MULT", "100.0", 1);
-    const size_t maximum = params.raw_relation_target(columns);
+    const auto maximum_params = GNFSParams::compute(197);
+    const size_t maximum = maximum_params.raw_relation_target(columns);
     GNFS_TEST_CHECK(maximum == static_cast<size_t>(static_cast<double>(baseline) * 100.0));
 
     // Whitespace, non-decimal syntax, invalid suffixes, non-finite values, and
@@ -293,7 +302,9 @@ void test_target_multiplier_reloads_per_call() {
     for (const char* invalid :
          {" 2", "2 ", "0x1p1", "2x", ".", "1e", "1e+", "nan", "0.01", "101", "1e-9999", "1e9999"}) {
         setenv("GNFS_SIEVE_TARGET_MULT", invalid, 1);
-        GNFS_TEST_CHECK(params.raw_relation_target(columns) == baseline);
+        const auto invalid_params = GNFSParams::compute(197);
+        GNFS_TEST_CHECK(invalid_params.sieve_target_multiplier == 1.0);
+        GNFS_TEST_CHECK(invalid_params.raw_relation_target(columns) == baseline);
     }
 
     restore_environment();
@@ -311,10 +322,11 @@ void test_target_multiplier_is_locale_independent() {
     }
 
     unsetenv("GNFS_SIEVE_TARGET_MULT");
-    const auto params = GNFSParams::compute(197);
     constexpr size_t columns = 1000;
-    const size_t baseline = params.raw_relation_target(columns);
+    const auto baseline_params = GNFSParams::compute(197);
+    const size_t baseline = baseline_params.raw_relation_target(columns);
     setenv("GNFS_SIEVE_TARGET_MULT", "3.5", 1);
+    const auto params = GNFSParams::compute(197);
 
     // The test is conditional because minimal CI images may not install a
     // non-C locale. When one is available, its comma decimal separator makes
@@ -505,7 +517,7 @@ int main() {
     test_sieve_region_matches_runtime_geometry_contract();
     test_large_prime_bound();
     test_lp_bits_env_override();
-    test_target_multiplier_reloads_per_call();
+    test_target_multiplier_is_frozen_in_snapshot();
     test_target_multiplier_is_locale_independent();
     test_threshold_values();
     test_max_special_q();

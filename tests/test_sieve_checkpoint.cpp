@@ -360,6 +360,7 @@ void test_run_identity_mutations_change_fingerprint() {
     expect_param_changed([](auto& params) { ++params.special_q_max; });
     expect_param_changed([](auto& params) { ++params.max_special_q; });
     expect_param_changed([](auto& params) { ++params.target_excess; });
+    expect_param_changed([](auto& params) { params.sieve_target_multiplier = 2.0; });
     expect_changed([](auto& fixture) { fixture.policy.cascade_v3_mode = 1; });
     expect_changed([](auto& fixture) { fixture.policy.accept_3lp = true; });
     expect_changed([](auto& fixture) { fixture.policy.merge_weight3 = true; });

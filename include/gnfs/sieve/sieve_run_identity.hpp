@@ -38,7 +38,7 @@ struct SieveRunPolicyIdentity {
     friend bool operator==(const SieveRunPolicyIdentity&, const SieveRunPolicyIdentity&) = default;
 };
 
-inline constexpr uint32_t SIEVE_RUN_IDENTITY_SCHEMA_VERSION = 3;
+inline constexpr uint32_t SIEVE_RUN_IDENTITY_SCHEMA_VERSION = 4;
 
 namespace sieve_run_identity_detail {
 
@@ -222,6 +222,8 @@ make_sieve_run_identity(const core::PolynomialContext& context,
     add_u32(hash, "special_q_max", params.special_q_max);
     add_u32(hash, "max_special_q", params.max_special_q);
     add_u32(hash, "target_excess", params.target_excess);
+    hash.add_field("sieve_target_multiplier.bits");
+    hash.add_u64(std::bit_cast<uint64_t>(params.sieve_target_multiplier));
 
     hash.add_field("semantic-policy");
     hash.add_field("cascade_v3_mode");
