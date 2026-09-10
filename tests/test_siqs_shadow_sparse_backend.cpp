@@ -628,6 +628,58 @@ void test_sparse_solver_returns_verified_basis() {
             std::vector<gnfs::siqs::SIQSSourceId>{gnfs::siqs::SIQSSourceId{source_id}}}};
 }
 
+void test_sparse_provider_budget_includes_admitted_zero_rows() {
+    // Keep the shape outside the deterministic exact pass.  The zero row is
+    // admitted before the seeded solver, but the provider still needs room to
+    // return the independent non-singleton candidate that completes the
+    // requested two-vector basis.
+    const size_t row_count = gnfs::siqs::SIQS_SHADOW_EXACT_SPARSE_MAX_ROWS + 1;
+    const std::vector<uint32_t> factor_base{0, 3};
+    std::vector<SIQSShadowRow> rows;
+    rows.reserve(row_count);
+    rows.push_back(make_zero_shadow_row(0));
+    for (size_t row_index = 1; row_index < row_count; ++row_index) {
+        rows.push_back(make_single_factor_shadow_row(row_index, 1));
+    }
+
+    SIQSShadowMatrixOptions options;
+    options.backend = SIQSShadowMatrixBackend::sparse_only;
+    options.max_dependencies = 2;
+    options.sparse_worker_threads = 1;
+    options.sparse_retry_count = 1;
+
+    bool provider_called = false;
+    auto provider = [&](const CSRMatrix&, size_t max_dependencies, uint64_t, uint32_t,
+                        const gnfs::linalg::BlockWiedemannSeededPolicy&) {
+        provider_called = true;
+        CHECK(max_dependencies == options.max_dependencies);
+
+        std::vector<std::vector<bool>> candidates;
+        if (max_dependencies >= 1) {
+            std::vector<bool> zero_singleton(row_count, false);
+            zero_singleton[0] = true;
+            candidates.push_back(std::move(zero_singleton));
+        }
+        if (max_dependencies >= 2) {
+            std::vector<bool> independent_pair(row_count, false);
+            independent_pair[1] = true;
+            independent_pair[2] = true;
+            candidates.push_back(std::move(independent_pair));
+        }
+        return candidates;
+    };
+
+    const auto outcome = gnfs::siqs::shadow_matrix_detail::solve_sparse_backend_with_provider(
+        std::span<const SIQSShadowRow>(rows.data(), rows.size()), factor_base.size(), options,
+        provider);
+    CHECK(provider_called);
+    CHECK(outcome.status == SIQSShadowMatrixStatus::valid);
+    CHECK(outcome.solution.has_value());
+    if (outcome.solution) {
+        CHECK(outcome.solution->dependencies == std::vector<std::vector<size_t>>{{0}, {1, 2}});
+    }
+}
+
 [[nodiscard]] bool
 sparse_dependency_basis_is_independent(const gnfs::siqs::SIQSShadowMatrixSolution& solution);
 
@@ -1030,6 +1082,7 @@ int main() {
     test_dense_route_options_contract();
     test_sparse_solver_returns_verified_basis();
     test_sparse_invalid_candidate_is_not_masked();
+    test_sparse_provider_budget_includes_admitted_zero_rows();
     test_sparse_wide_shape_uses_real_seeded_bw();
     test_sparse_exact_small_rank_deficient_regression();
     test_sparse_limits_and_rank_evidence();

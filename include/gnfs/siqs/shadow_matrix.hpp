@@ -1580,8 +1580,8 @@ solve_sparse_backend_with_provider(std::span<const SIQSShadowRow> rows, size_t e
                 static_cast<uint32_t>(workspace->worker_threads), options.sparse_use_krylov_mmap,
                 options.sparse_use_krylov_compression, options.sparse_allow_metal};
             candidates = std::invoke(std::forward<CandidateProvider>(candidate_provider), *csr,
-                                     dependency_limit - solution.dependencies.size(),
-                                     options.sparse_seed, options.sparse_retry_count, policy);
+                                     dependency_limit, options.sparse_seed,
+                                     options.sparse_retry_count, policy);
         }
 
         const bool had_solver_candidates = !candidates.empty();
