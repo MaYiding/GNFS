@@ -1397,6 +1397,7 @@ validate_siqs_shadow_gate_bench() {
             worker = field($0, "workers")
             implementation = field($0, "implementation")
             digest = field($0, "result_digest")
+            dependency_digest = field($0, "dependency_digest")
             minimum = field($0, "wall_min_ns") + 0
             median = field($0, "wall_median_ns") + 0
             maximum = field($0, "wall_max_ns") + 0
@@ -1417,6 +1418,18 @@ validate_siqs_shadow_gate_bench() {
                 reference_digest = digest
             } else if (digest != reference_digest) {
                 invalid = 1
+            }
+            if (mode == "solve") {
+                if (implementation != "public_solver" || dependency_digest != digest) {
+                    invalid = 1
+                }
+            } else if (mode == "kernel") {
+                if (dependency_digest != "na" ||
+                    (implementation != "legacy_per_pivot_jthread" &&
+                     implementation != "benchmark_only_queued_thread_pool" &&
+                     implementation != "production_persistent_worker_team")) {
+                    invalid = 1
+                }
             }
             seen[worker, implementation]++
         }
