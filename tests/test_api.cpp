@@ -1527,6 +1527,95 @@ bool test_pipeline_rejects_foreign_context() {
            callbacks == 0;
 }
 
+bool test_pipeline_context_and_factor_base_contract() {
+    Config cfg;
+    cfg.verbose = false;
+
+    Pipeline owner(Integer(143), cfg);
+    const auto selected = owner.select_polynomial();
+
+    // Preserve the modular root while changing the exact polynomial
+    // coefficients.  N-only validation must not accept this substitution.
+    std::vector<Integer> foreign_coefficients;
+    foreign_coefficients.reserve(selected.coefficients().size());
+    for (const auto& coefficient : selected.coefficients()) {
+        foreign_coefficients.emplace_back(coefficient);
+    }
+    foreign_coefficients.front() += Integer(143);
+    PolynomialContext same_n_foreign(Integer(143), std::move(foreign_coefficients),
+                                     Integer(selected.m()), selected.skewness());
+
+    size_t callbacks = 0;
+    owner.set_progress_callback([&](const ProgressInfo&) { ++callbacks; });
+
+    bool same_n_rejected = false;
+    try {
+        (void)owner.build_factor_base(same_n_foreign);
+    } catch (const std::invalid_argument& error) {
+        same_n_rejected = std::string_view(error.what()).find("different polynomial context") !=
+                          std::string_view::npos;
+    }
+    if (!same_n_rejected || callbacks != 0) {
+        std::cout << "(same-N polynomial context substitution was accepted or emitted a callback) ";
+        return false;
+    }
+
+    auto factor_base = owner.build_factor_base(selected);
+    const size_t callbacks_after_build = callbacks;
+
+    // A bound factor base must remain immutable from the Pipeline's point of
+    // view.  This deliberately uses a valid prime so the identity mismatch,
+    // rather than a malformed-entry check, is the observed failure.
+    factor_base.add_rational(3, 0);
+    bool foreign_factor_base_rejected = false;
+    try {
+        (void)owner.sieve_and_collect(selected, factor_base);
+    } catch (const std::invalid_argument& error) {
+        foreign_factor_base_rejected =
+            std::string_view(error.what()).find("factor base different") != std::string_view::npos;
+    }
+    if (!foreign_factor_base_rejected || callbacks != callbacks_after_build) {
+        // The rejected call must not add another event beyond the successful
+        // factor-base build.
+        std::cout << "(foreign factor base was accepted or callback preflight changed) ";
+        return false;
+    }
+
+    Pipeline degree_owner(Integer(143), cfg);
+    PolynomialContext degree_mismatch(Integer(143), {Integer(0), Integer(0), Integer(1)},
+                                      Integer(0));
+    bool degree_rejected = false;
+    try {
+        (void)degree_owner.build_factor_base(degree_mismatch);
+    } catch (const std::invalid_argument& error) {
+        degree_rejected =
+            std::string_view(error.what()).find("degree does not match") != std::string_view::npos;
+    }
+
+    std::vector<Integer> invalid_coefficients;
+    invalid_coefficients.reserve(selected.coefficients().size());
+    for (const auto& coefficient : selected.coefficients()) {
+        invalid_coefficients.emplace_back(coefficient);
+    }
+    invalid_coefficients.front() += Integer(1);
+    Pipeline invalid_owner(Integer(143), cfg);
+    PolynomialContext invalid_root(Integer(143), std::move(invalid_coefficients),
+                                   Integer(selected.m()), selected.skewness());
+    bool invalid_root_rejected = false;
+    try {
+        (void)invalid_owner.build_factor_base(invalid_root);
+    } catch (const std::invalid_argument& error) {
+        invalid_root_rejected =
+            std::string_view(error.what()).find("does not satisfy f(m)") != std::string_view::npos;
+    }
+
+    if (!degree_rejected || !invalid_root_rejected) {
+        std::cout << "(invalid degree or modular-root context was accepted) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_v3_cascade_pipeline_integration() {
     // Verify GNFS_CASCADE_V3 ENV actually fires V3 cascade in Pipeline path.
     // Uses 12-digit N (~40-bit, lp_bits=17 → LP enabled) so V3 cascade branch
@@ -2354,6 +2443,44 @@ bool test_sieve_collection_options_preflight() {
     auto reduction = pipeline.filter({});
     if (reduction.generation != 1) {
         std::cout << "(invalid sieve collection options consumed a relation generation) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_sieve_option_preflight_does_not_bind_factor_base() {
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+
+    Pipeline source(Integer(143), cfg);
+    auto ctx = source.select_polynomial();
+    auto alternate_factor_base = source.build_factor_base(ctx);
+    // Keep the alternate base mathematically admissible but distinguishable
+    // from the canonical base that a fresh Pipeline will build later.
+    alternate_factor_base.add_rational(3, 0);
+
+    Pipeline target(Integer(143), cfg);
+    SieveCollectionOptions invalid_options;
+    invalid_options.adaptive_round_limit = 0;
+    bool rejected = false;
+    try {
+        (void)target.sieve_and_collect(ctx, alternate_factor_base, invalid_options);
+    } catch (const std::out_of_range&) {
+        rejected = true;
+    } catch (...) {
+    }
+    if (!rejected) {
+        std::cout << "(invalid sieve options were not rejected) ";
+        return false;
+    }
+
+    try {
+        (void)target.build_factor_base(ctx);
+    } catch (const std::exception& error) {
+        std::cout << "(invalid sieve preflight bound factor-base state: " << error.what() << ") ";
         return false;
     }
     return true;
@@ -4306,6 +4433,8 @@ int main() {
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
     TEST(pipeline_rejects_foreign_context);
+    TEST(pipeline_context_and_factor_base_contract);
+    TEST(sieve_option_preflight_does_not_bind_factor_base);
     TEST(pipeline_progress_callback);
     TEST(structured_filter_stage_telemetry_parser);
     TEST(structured_ooc_path_namespace_contract);

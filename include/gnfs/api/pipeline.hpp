@@ -200,6 +200,27 @@ public:
     }
 
 private:
+    /// Exact identity of the polynomial inputs accepted by this Pipeline.
+    /// PolynomialContext is intentionally move-only, so retaining a compact
+    /// textual copy avoids borrowing caller-owned state while still detecting
+    /// same-N context substitution between phases.
+    struct PolynomialContextSignature final {
+        std::string n;
+        std::string m;
+        uint32_t degree = 0;
+        std::vector<std::string> coefficients;
+        uint64_t skewness_bits = 0;
+
+        [[nodiscard]] bool operator==(const PolynomialContextSignature&) const noexcept = default;
+    };
+
+    struct FactorBaseSignature final {
+        uint64_t fingerprint_lo = 0;
+        uint64_t fingerprint_hi = 0;
+
+        [[nodiscard]] bool operator==(const FactorBaseSignature&) const noexcept = default;
+    };
+
     struct StructuredRouteSnapshot final {
         relation::StructuredFilterPolicyDecision policy{};
         std::string resume_base_path;
@@ -240,6 +261,12 @@ private:
     static void refresh_relation_corpus_checked(relation::RelationCorpus& corpus,
                                                 const relation::CorpusDigest& expected,
                                                 const char* mismatch_message);
+    [[nodiscard]] static PolynomialContextSignature
+    make_context_signature(const PolynomialContext& ctx);
+    void require_context_contract(const PolynomialContext& ctx, const char* phase,
+                                  bool bind_if_unbound);
+    void require_factor_base_contract(const PolynomialContext& ctx, const FactorBase& fb,
+                                      const char* phase, bool bind_if_unbound);
     MatrixResult matrix_phase(relation::RelationReductionResult& reduction, const FactorBase& fb,
                               const PolynomialContext& ctx, bool solve_dependencies);
     void emit_progress(Phase phase, const std::string& msg, double phase_progress = -1.0);
@@ -247,6 +274,8 @@ private:
     double elapsed_s() const;
 
     uint64_t next_relation_generation_ = 1;
+    std::optional<PolynomialContextSignature> polynomial_context_signature_;
+    std::optional<FactorBaseSignature> factor_base_signature_;
 };
 
 } // namespace gnfs::api
