@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace gnfs::siqs {
@@ -103,6 +104,16 @@ struct SIQSPostMergeRowWireDecodeResult final {
 };
 
 namespace post_merge_row_wire_detail {
+
+class WireSizeOverflow final : public std::length_error {
+public:
+    using std::length_error::length_error;
+};
+
+class WireResourceLimit final : public std::length_error {
+public:
+    using std::length_error::length_error;
+};
 
 inline constexpr std::size_t declared_size_offset = 12;
 inline constexpr std::size_t flags_offset = 20;
@@ -196,11 +207,11 @@ constexpr void write_u64(std::vector<std::byte>& bytes, std::size_t offset,
 [[nodiscard]] inline std::vector<std::byte> export_integer(const core::Integer& value) {
     const std::size_t bit_count = mpz_sizeinbase(value.get_mpz(), 2);
     if (bit_count > std::numeric_limits<std::size_t>::max() - 7) {
-        throw std::length_error("SIQS row integer size overflows byte conversion");
+        throw WireSizeOverflow("SIQS row integer size overflows byte conversion");
     }
     const std::size_t byte_count = bit_count == 0 ? 1 : (bit_count + 7) / 8;
     if (byte_count > SIQS_POST_MERGE_ROW_WIRE_MAX_BYTES - payload_offset) {
-        throw std::length_error("SIQS row integer exceeds wire resource limit");
+        throw WireResourceLimit("SIQS row integer exceeds wire resource limit");
     }
     std::vector<std::byte> result(byte_count, std::byte{0});
     if (value.is_zero()) {
@@ -402,6 +413,10 @@ encode_siqs_post_merge_row(const SIQSPostMergeRow& row) noexcept {
                 SIQS_POST_MERGE_ROW_WIRE_NO_ERROR_OFFSET};
     } catch (const std::bad_alloc&) {
         return {std::nullopt, SIQSPostMergeRowWireError::allocation_failure, 0};
+    } catch (const WireResourceLimit&) {
+        return {std::nullopt, SIQSPostMergeRowWireError::resource_limit, 0};
+    } catch (const WireSizeOverflow&) {
+        return {std::nullopt, SIQSPostMergeRowWireError::size_overflow, 0};
     } catch (const std::length_error&) {
         return {std::nullopt, SIQSPostMergeRowWireError::size_overflow, 0};
     } catch (...) {
