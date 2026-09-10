@@ -1,12 +1,14 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../util/bit_intrin.hpp"
@@ -484,6 +486,44 @@ class CSRMatrix {
 public:
     CSRMatrix() = default;
 
+    /// Take ownership of already-packed CSR storage without an intermediate
+    /// SparseMatrix.  The vectors are validated in place and then moved into
+    /// the view, which keeps one contiguous copy at the caller boundary.
+    CSRMatrix(size_t num_rows, size_t num_cols, std::vector<size_t> row_offsets,
+              std::vector<uint32_t> col_indices)
+        : col_indices_(std::move(col_indices)), row_offsets_(std::move(row_offsets)),
+          num_rows_(num_rows), num_cols_(num_cols) {
+        if (num_cols_ > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+            throw std::invalid_argument("CSRMatrix: column count exceeds uint32_t storage");
+        }
+        if (num_rows_ == std::numeric_limits<size_t>::max() ||
+            row_offsets_.size() != num_rows_ + size_t{1}) {
+            throw std::invalid_argument("CSRMatrix: row offset count does not match dimensions");
+        }
+        if (row_offsets_.empty() || row_offsets_.front() != 0 ||
+            row_offsets_.back() != col_indices_.size()) {
+            throw std::invalid_argument("CSRMatrix: invalid row offset boundaries");
+        }
+        for (size_t row = 0; row < num_rows_; ++row) {
+            if (row_offsets_[row] > row_offsets_[row + 1] ||
+                row_offsets_[row + 1] > col_indices_.size()) {
+                throw std::invalid_argument("CSRMatrix: row offsets are not monotonic");
+            }
+            const size_t begin = row_offsets_[row];
+            const size_t end = row_offsets_[row + 1];
+            uint32_t previous = 0;
+            bool have_previous = false;
+            for (size_t position = begin; position < end; ++position) {
+                const uint32_t column = col_indices_[position];
+                if (column >= num_cols_ || (have_previous && column <= previous)) {
+                    throw std::invalid_argument("CSRMatrix: row columns are not canonical");
+                }
+                previous = column;
+                have_previous = true;
+            }
+        }
+    }
+
     /// Build CSR from SparseMatrix (ensures all rows are sorted first).
     /// Validates col < num_cols at construction so SpMV hot loops can elide
     /// per-element bounds checks.
@@ -527,10 +567,10 @@ public:
 
     /// Get column indices for row i as a contiguous span
     [[nodiscard]] const uint32_t* row_begin(size_t i) const noexcept {
-        return col_indices_.data() + row_offsets_[i];
+        return column_data() + row_offsets_[i];
     }
     [[nodiscard]] const uint32_t* row_end(size_t i) const noexcept {
-        return col_indices_.data() + row_offsets_[i + 1];
+        return column_data() + row_offsets_[i + 1];
     }
     [[nodiscard]] size_t row_nnz(size_t i) const noexcept {
         return row_offsets_[i + 1] - row_offsets_[i];
@@ -572,6 +612,18 @@ public:
     }
 
 private:
+    [[nodiscard]] static const uint32_t* empty_column_data() noexcept {
+        static const uint32_t sentinel = 0;
+        return &sentinel;
+    }
+
+    [[nodiscard]] const uint32_t* column_data() const noexcept {
+        // std::vector::data() may be null for an empty CSR payload. Return a
+        // stable one-element sentinel so an empty row still forms a valid
+        // [begin,end) pointer range for generic MatrixView callers.
+        return col_indices_.empty() ? empty_column_data() : col_indices_.data();
+    }
+
     std::vector<uint32_t> col_indices_; // All column indices, packed contiguously
     std::vector<size_t> row_offsets_;   // row_offsets_[i] = start of row i in col_indices_
     mutable std::vector<uint32_t> row_offsets_u32_; // Lazy uint32 view for Metal

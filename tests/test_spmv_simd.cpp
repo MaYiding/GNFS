@@ -587,6 +587,86 @@ static void test_dispatch_worker_exception_drain() {
     TEST_PASS("dispatcher worker exception drain");
 }
 
+static void test_transpose_scratch_shape_reset() {
+    std::printf("[16] transpose scratch shape reset\n");
+    gnfs::linalg::detail::SpmvLocals scratch;
+    scratch.ensure(4, 1024);
+    TEST_ASSERT(scratch.locals.size() == 4, "scratch must create one slot per worker");
+    scratch.ensure(2, 8);
+    TEST_ASSERT(scratch.locals.size() == 2,
+                "scratch must release worker slots when the pool shrinks");
+    for (const auto& local : scratch.locals) {
+        TEST_ASSERT(local.size() == 8, "scratch logical length must follow the current shape");
+        TEST_ASSERT(local.capacity() == 8,
+                    "scratch capacity must not retain a larger admitted shape");
+    }
+
+    // A function-template TLS would keep one independent allocation per
+    // MatrixView specialization. Exercise two specializations to ensure the
+    // shared accessor releases the wide shape before the narrow call.
+    SparseMatrix wide_storage(1, 1024);
+    wide_storage.set(0, 7);
+    CSRMatrix wide(wide_storage);
+    SparseMatrix narrow_storage(1, 8);
+    narrow_storage.set(0, 3);
+    CSRMatrix narrow(narrow_storage);
+    struct MatrixAlias {
+        const CSRMatrix& matrix;
+        [[nodiscard]] std::size_t num_rows() const noexcept {
+            return matrix.num_rows();
+        }
+        [[nodiscard]] std::size_t num_cols() const noexcept {
+            return matrix.num_cols();
+        }
+        [[nodiscard]] std::size_t nnz() const noexcept {
+            return matrix.nnz();
+        }
+        [[nodiscard]] const std::uint32_t* row_begin(std::size_t row) const {
+            return matrix.row_begin(row);
+        }
+        [[nodiscard]] const std::uint32_t* row_end(std::size_t row) const {
+            return matrix.row_end(row);
+        }
+        [[nodiscard]] std::size_t row_nnz(std::size_t row) const noexcept {
+            return matrix.row_nnz(row);
+        }
+    } alias{narrow};
+    BlockVector input(1);
+    input.data[0] = 1;
+    BlockVector wide_output(wide.num_cols());
+    BlockVector narrow_output(narrow.num_cols());
+    gnfs::util::ThreadPool pool(1);
+    gnfs::linalg::detail::spmv_transpose(wide, input, wide_output, pool);
+    const auto& shared_scratch = gnfs::linalg::detail::transpose_scratch_locals();
+    TEST_ASSERT(shared_scratch.locals.size() == 1 && shared_scratch.locals[0].size() == 1024,
+                "shared scratch must record the wide MatrixView shape");
+    gnfs::linalg::detail::spmv_transpose(alias, input, narrow_output, pool);
+    TEST_ASSERT(shared_scratch.locals.size() == 1 && shared_scratch.locals[0].size() == 8,
+                "shared scratch must release a prior specialization's wide shape");
+    TEST_ASSERT(shared_scratch.locals[0].capacity() == 8,
+                "shared scratch capacity must follow the narrow specialization");
+    TEST_PASS("transpose scratch shape reset");
+}
+
+static void test_empty_csr_rows() {
+    std::printf("[17] empty CSR rows\n");
+    CSRMatrix empty(3, 5, std::vector<std::size_t>{0, 0, 0, 0}, {});
+    TEST_ASSERT(empty.row_begin(0) == empty.row_end(0),
+                "empty CSR rows must expose an empty pointer range");
+
+    BlockVector input(5);
+    BlockVector forward(3);
+    BlockVector transpose(5);
+    gnfs::util::ThreadPool pool(1);
+    gnfs::linalg::detail::spmv_forward(empty, input, forward, pool);
+    gnfs::linalg::detail::spmv_transpose(empty, forward, transpose, pool);
+    for (std::uint64_t value : forward.data)
+        TEST_ASSERT(value == 0, "forward SpMV must clear empty rows");
+    for (std::uint64_t value : transpose.data)
+        TEST_ASSERT(value == 0, "transpose SpMV must clear empty columns");
+    TEST_PASS("empty CSR rows");
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -614,6 +694,8 @@ int main() {
     test_zero_input();
     test_dispatch_contracts();
     test_dispatch_worker_exception_drain();
+    test_transpose_scratch_shape_reset();
+    test_empty_csr_rows();
 
     std::printf("\n=== Summary ===\n");
     std::printf("  passed: %d\n", tests_passed);

@@ -36,6 +36,7 @@ using gnfs::siqs::SIQSRawRelationCorpusView;
 using gnfs::siqs::SIQSRelation;
 using gnfs::siqs::SIQSShadowAssemblyStatus;
 using gnfs::siqs::SIQSShadowFingerprint;
+using gnfs::siqs::SIQSShadowMatrixBackend;
 using gnfs::siqs::SIQSShadowMatrixStatus;
 using gnfs::siqs::SIQSShadowProofEvidence;
 using gnfs::siqs::SIQSShadowProofFallbackReason;
@@ -518,6 +519,7 @@ void test_insufficient_and_matrix_inclusive_caps() {
 
     const auto relations = make_factor_corpus();
     SIQSShadowProofOptions exact_bytes;
+    exact_bytes.matrix.backend = SIQSShadowMatrixBackend::dense_only;
     exact_bytes.matrix.max_dense_matrix_bytes = 8;
     check_factor_oracle(run_immutable(relations, sign_only_factor_base, oracle_modulus,
                                       oracle_modulus, 47, splitter, exact_bytes));
@@ -533,6 +535,7 @@ void test_insufficient_and_matrix_inclusive_caps() {
     CHECK(bytes_rejected.evidence().matrix_status == SIQSShadowMatrixStatus::resource_limit);
 
     SIQSShadowProofOptions exact_variables;
+    exact_variables.matrix.backend = SIQSShadowMatrixBackend::dense_only;
     exact_variables.matrix.max_dense_variable_count = 2;
     check_factor_oracle(run_immutable(relations, sign_only_factor_base, oracle_modulus,
                                       oracle_modulus, 47, splitter, exact_variables));
@@ -635,6 +638,35 @@ void test_invalid_context_and_options() {
     check_terminal_contract(invalid_trim, SIQSShadowProofTerminalStatus::invalid_input,
                             SIQSShadowProofStage::input_validation,
                             SIQSShadowProofFallbackReason::none);
+
+    const auto expect_invalid_matrix_options = [&](SIQSShadowProofOptions options) {
+        const auto result = run_immutable(relations, sign_only_factor_base, oracle_modulus,
+                                          oracle_modulus, 47, splitter, options);
+        check_terminal_contract(result, SIQSShadowProofTerminalStatus::invalid_input,
+                                SIQSShadowProofStage::input_validation,
+                                SIQSShadowProofFallbackReason::none);
+        CHECK(!result.evidence().matrix_status.has_value());
+    };
+
+    SIQSShadowProofOptions zero_sparse_retries;
+    zero_sparse_retries.matrix.sparse_retry_count = 0;
+    expect_invalid_matrix_options(zero_sparse_retries);
+
+    SIQSShadowProofOptions excessive_sparse_workers;
+    excessive_sparse_workers.matrix.sparse_worker_threads = std::numeric_limits<uint32_t>::max();
+    expect_invalid_matrix_options(excessive_sparse_workers);
+
+    SIQSShadowProofOptions compression_without_mmap;
+    compression_without_mmap.matrix.sparse_use_krylov_compression = true;
+    expect_invalid_matrix_options(compression_without_mmap);
+
+    SIQSShadowProofOptions unbounded_metal;
+    unbounded_metal.matrix.sparse_allow_metal = true;
+    expect_invalid_matrix_options(unbounded_metal);
+
+    SIQSShadowProofOptions forged_backend;
+    forged_backend.matrix.backend = static_cast<SIQSShadowMatrixBackend>(255);
+    expect_invalid_matrix_options(forged_backend);
 }
 
 void test_malformed_full_and_rejected_cycle() {
