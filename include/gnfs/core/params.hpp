@@ -1,14 +1,21 @@
 #pragma once
 
 #include "../util/safe_math.hpp"
+#include "sieve_limits.hpp"
 #include "types.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib> // getenv, atoi for GNFS_OVERRIDE_LP_BITS
 #include <limits>
+#include <locale.h>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <utility>
 
 namespace gnfs::core {
 
@@ -44,13 +51,18 @@ struct GNFSParams {
     int32_t sieve_j_max = 500;
     uint16_t rational_threshold = 50;
     uint16_t algebraic_threshold = 50;
+    /// Frozen when `compute()` materializes the parameter snapshot.  The
+    /// sieve target and all budgets derived from that snapshot must not change
+    /// when a caller mutates the process environment later.
+    double sieve_target_multiplier = 1.0;
 
     // === Special-Q ===
     uint32_t special_q_min = 1000;
     uint32_t special_q_max = 5000;
     uint32_t max_special_q = 2000;            // 最大处理的 special-q 数量
     uint32_t max_special_q_batch_workers = 4; // 单个本地 special-q 批次的外层 worker 上限
-    uint32_t max_local_sieve_threads = 0; // 本地筛法计算通道预算 (0 = Pipeline 自动冻结)
+    // 本地筛法计算通道预算 (0 = Pipeline 自动冻结)
+    uint32_t max_local_sieve_threads = 0;
 
     // === 线性代数 ===
     uint32_t num_qc_primes = 64;  // 二次特征素数数量
@@ -65,11 +77,27 @@ struct GNFSParams {
     bool verbose = true;
 
     /// 根据 N 的位数计算所有参数
+    ///
+    /// The returned i interval uses exactly the requested width. For an odd
+    /// width the interval is centered on zero; for an even width it retains
+    /// the historical half-open symmetry around -0.5 (for example, width 4
+    /// maps to [-2, 1]).
+    [[nodiscard]] static std::pair<int32_t, int32_t> sieve_i_bounds_for_width(int32_t width) {
+        if (width <= 0) {
+            throw std::invalid_argument("GNFSParams: sieve width must be positive");
+        }
+        const int64_t i_min = -static_cast<int64_t>(width / 2);
+        const int64_t i_max = i_min + static_cast<int64_t>(width) - 1;
+        return {static_cast<int32_t>(i_min), static_cast<int32_t>(i_max)};
+    }
+
+    /// 根据 N 的位数计算所有参数
     static GNFSParams compute(size_t n_bits) {
         GNFSParams p;
         p.bits = n_bits;
         constexpr double LOG10_2 = 0.30103; // log10(2)
         p.digits = static_cast<size_t>(static_cast<double>(n_bits) * LOG10_2 + 1.0);
+        p.sieve_target_multiplier = target_multiplier_from_env();
 
         // L_N 函数的核心值: (ln N)^{1/3} · (ln ln N)^{2/3}
         double ln_n = static_cast<double>(n_bits) * std::log(2.0);
@@ -260,8 +288,10 @@ struct GNFSParams {
             sieve_height = 16384; // I=15, 536M positions
         }
 
-        p.sieve_i_min = -static_cast<int32_t>(sieve_width / 2);
-        p.sieve_i_max = static_cast<int32_t>(sieve_width / 2) - 1;
+        const auto [sieve_i_min, sieve_i_max] =
+            sieve_i_bounds_for_width(static_cast<int32_t>(sieve_width));
+        p.sieve_i_min = sieve_i_min;
+        p.sieve_i_max = sieve_i_max;
         p.sieve_j_min = 1;
         p.sieve_j_max = static_cast<int32_t>(sieve_height);
 
@@ -308,10 +338,12 @@ struct GNFSParams {
         {
             size_t est_rels = p.estimated_relations_needed();
             // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 6 安全余量
-            // Note: est_rels uses raw_relation_target which may be aggressive (1.5×),
-            // so the safety factor here must compensate.
+            // Keep the hard special-Q cap tied to the unscaled geometry.  The
+            // experiment multiplier changes only the initial target within
+            // this already materialized parameter snapshot.
+            const size_t bounded_sq_count = util::saturating_size_product(est_rels, size_t{6});
             uint32_t needed_sq =
-                static_cast<uint32_t>(std::min(static_cast<size_t>(UINT32_MAX), est_rels * 6));
+                static_cast<uint32_t>(std::min(static_cast<size_t>(UINT32_MAX), bounded_sq_count));
             // 下限：按位数平滑设置
             uint32_t min_sq = (p.digits < 15)   ? 2000u
                               : (p.digits < 25) ? 10000u
@@ -390,7 +422,8 @@ struct GNFSParams {
         double matrix_cols = pi_r + pi_a + target_excess;
 
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
-            return raw_relation_target(util::size_from_nonnegative_double_floor(matrix_cols));
+            return raw_relation_target_unscaled(
+                util::size_from_nonnegative_double_floor(matrix_cols));
         }
         return util::size_from_nonnegative_double_floor(matrix_cols);
     }
@@ -407,46 +440,153 @@ struct GNFSParams {
         // multiplier 适用于最终 target 输出. 用于 50d/60d β plateau 突破:
         // CADO-NFS 50d 标准 target 100M+ raw, 我们 5.9M 不足. X=10-20 可对齐.
         // 默认 1.0 (无 multiplier, 原始策略 unchanged).
-        static const double target_mult = []() {
-            const char* env = std::getenv("GNFS_SIEVE_TARGET_MULT");
-            if (!env)
-                return 1.0;
-            double v = std::atof(env);
-            return (v >= 0.1 && v <= 100.0) ? v : 1.0;
-        }();
+        // The multiplier is captured by compute(). Reading the environment
+        // here would let a Pipeline outlive its own derived budget snapshot.
+        const double target_mult = sieve_target_multiplier;
 
-        size_t base_target;
+        const size_t base_target = raw_relation_target_unscaled(matrix_columns);
+        const size_t scaled_target = util::size_from_nonnegative_double_floor(
+            static_cast<double>(base_target) * target_mult);
+        // A positive column budget must never turn into a zero stopping target
+        // merely because the experiment multiplier is fractional. Preserve
+        // zero for the explicit zero-column input, which remains a useful
+        // sentinel for callers validating an empty matrix.
+        return base_target != 0 && scaled_target == 0 ? size_t{1} : scaled_target;
+    }
+
+private:
+    /// Parse a floating-point value with the invariant C numeric locale.
+    /// `strtod` follows the process locale, so using it directly would make
+    /// an otherwise valid ASCII value such as `3.5` depend on LC_NUMERIC.
+    [[nodiscard]] static std::optional<double> parse_c_locale_double(const char* text) noexcept {
+        try {
+            const std::string storage(text);
+            char* end = nullptr;
+#if defined(_WIN32)
+            _locale_t c_locale = _create_locale(LC_NUMERIC, "C");
+            if (c_locale == nullptr) {
+                return std::nullopt;
+            }
+            errno = 0;
+            const double value = _strtod_l(storage.c_str(), &end, c_locale);
+            const int parse_errno = errno;
+            _free_locale(c_locale);
+#else
+            locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+            if (c_locale == nullptr) {
+                return std::nullopt;
+            }
+            errno = 0;
+            const double value = strtod_l(storage.c_str(), &end, c_locale);
+            const int parse_errno = errno;
+            freelocale(c_locale);
+#endif
+            if (parse_errno == ERANGE || end == storage.c_str() ||
+                end != storage.c_str() + storage.size() || !std::isfinite(value)) {
+                return std::nullopt;
+            }
+            return value;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    /// Parse GNFS_SIEVE_TARGET_MULT using an ASCII-only decimal grammar.
+    [[nodiscard]] static double target_multiplier_from_env() noexcept {
+        const char* env = std::getenv("GNFS_SIEVE_TARGET_MULT");
+        if (!env || *env == '\0')
+            return 1.0;
+
+        const char* cursor = env;
+        if (*cursor == '+' || *cursor == '-')
+            ++cursor;
+
+        bool has_digit = false;
+        while (*cursor >= '0' && *cursor <= '9') {
+            has_digit = true;
+            ++cursor;
+        }
+        if (*cursor == '.') {
+            ++cursor;
+            while (*cursor >= '0' && *cursor <= '9') {
+                has_digit = true;
+                ++cursor;
+            }
+        }
+        if (!has_digit)
+            return 1.0;
+
+        if (*cursor == 'e' || *cursor == 'E') {
+            ++cursor;
+            if (*cursor == '+' || *cursor == '-')
+                ++cursor;
+            bool exponent_digit = false;
+            while (*cursor >= '0' && *cursor <= '9') {
+                exponent_digit = true;
+                ++cursor;
+            }
+            if (!exponent_digit)
+                return 1.0;
+        }
+        if (*cursor != '\0')
+            return 1.0;
+
+        const auto parsed = parse_c_locale_double(env);
+        if (!parsed.has_value() || *parsed < 0.1 || *parsed > 100.0) {
+            return 1.0;
+        }
+        return *parsed;
+    }
+
+    /// Calculate the size-aware target without applying experiment-only
+    /// scaling. This keeps derived limits such as max_special_q stable.
+    [[nodiscard]] size_t raw_relation_target_unscaled(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
-            double mc = static_cast<double>(matrix_columns);
+            const double mc = static_cast<double>(matrix_columns);
             // Birthday bound: need ~sqrt(2 × LP_space × needed_usable) raw relations
             // for LP merge to produce enough collisions.
-            double lp_space = static_cast<double>(large_prime_bound);
-            double birthday = std::sqrt(2.0 * lp_space * mc);
+            const double lp_space = static_cast<double>(large_prime_bound);
+            const double birthday = std::sqrt(2.0 * lp_space * mc);
             // Use max(birthday, mc × 2.0) — birthday handles LP-heavy cases,
             // 2.0× handles cases where most relations are full.
             double target = std::max(birthday, mc * 2.0);
             // Cap at mc × 50 to prevent runaway targets for huge LP spaces.
             target = std::min(target, mc * 50.0);
-            base_target = util::size_from_nonnegative_double_floor(target);
-        } else {
-            // No LP: need R/B > 3 to survive singleton filter.
-            // Each FB prime p appears ~R/p times. For p near B, need R/B > 2-3.
-            // With ratio 4×, singleton survival ≈ 60-70%.
-            base_target = util::saturating_size_product(matrix_columns, 4);
+            return util::size_from_nonnegative_double_floor(target);
         }
-        return util::size_from_nonnegative_double_floor(static_cast<double>(base_target) *
-                                                        target_mult);
+
+        // No LP: need R/B > 3 to survive singleton filter.
+        // Each FB prime p appears ~R/p times. For p near B, need R/B > 2-3.
+        // With ratio 4×, singleton survival ≈ 60-70%.
+        return util::saturating_size_product(matrix_columns, 4);
     }
 
+public:
     /// 估算筛区域大小 (位置数)
     [[nodiscard]] size_t sieve_region_size() const {
-        return static_cast<size_t>(sieve_i_max - sieve_i_min + 1) *
-               static_cast<size_t>(sieve_j_max - sieve_j_min + 1);
+        // Widen before subtracting: the public fields are int32_t and callers
+        // can provide the full representable interval.
+        const int64_t width =
+            static_cast<int64_t>(sieve_i_max) - static_cast<int64_t>(sieve_i_min) + 1;
+        const int64_t height =
+            static_cast<int64_t>(sieve_j_max) - static_cast<int64_t>(sieve_j_min) + 1;
+        const int64_t max_dimension = static_cast<int64_t>((std::numeric_limits<int32_t>::max)());
+        if (width <= 0 || height <= 0 || width > max_dimension || height > max_dimension ||
+            static_cast<uint64_t>(width) >
+                static_cast<uint64_t>((std::numeric_limits<size_t>::max)()) /
+                    static_cast<uint64_t>(height)) {
+            return 0;
+        }
+        return static_cast<size_t>(static_cast<uint64_t>(width) * static_cast<uint64_t>(height));
     }
 
     /// 估算筛区域内存使用 (bytes, uint16_t per position)
     [[nodiscard]] size_t sieve_memory_bytes() const {
-        return sieve_region_size() * sizeof(uint16_t);
+        const size_t area = sieve_region_size();
+        if (area > (std::numeric_limits<size_t>::max)() / sizeof(uint16_t)) {
+            return 0;
+        }
+        return area * sizeof(uint16_t);
     }
 };
 

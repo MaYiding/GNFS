@@ -2,6 +2,7 @@
 
 #include "../core/polynomial_context.hpp"
 #include "../core/relation.hpp"
+#include "../core/sieve_limits.hpp"
 #include "../core/types.hpp"
 #include "../factor_base/factor_base.hpp"
 #include "../util/joined_worker_group.hpp"
@@ -191,7 +192,6 @@ inline void apply_log_p_stride_scalar(uint16_t* arr, size_t start, size_t end, s
         if (stride >= end - idx)
             break;
         idx += stride;
-
     }
 }
 
@@ -279,9 +279,22 @@ public:
         const int32_t width = region.i_width();
         const int32_t height = region.j_height();
         const size_t area = region.size();
-        if (width <= 0 || height <= 0 || area == 0) {
+        if (width <= 0 || height <= 0) {
             throw std::invalid_argument(
                 "LatticeSieve region must have positive, representable dimensions");
+        }
+        if (area == 0) {
+            throw std::length_error("LatticeSieve region area is not representable");
+        }
+        // Keep the allocation boundary deterministic. A geometrically valid
+        // int32 rectangle can otherwise turn into a multi-exabyte request,
+        // and relying on the allocator to reject it is not fail-closed.
+        if (area > core::SIEVE_MAX_REGION_CELLS) {
+            throw std::length_error("LatticeSieve region exceeds the per-sieve cell limit");
+        }
+        const size_t max_elements = std::vector<uint16_t>{}.max_size();
+        if (area > max_elements || area > (std::numeric_limits<size_t>::max)() / sizeof(uint16_t)) {
+            throw std::length_error("LatticeSieve region exceeds vector storage limits");
         }
 
         // Allocate for the requested region before publishing it. A plain

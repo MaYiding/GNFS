@@ -54,9 +54,10 @@ receipt, accumulated only after each OOC relation is accepted. A
 `collection_complete` field distinguishes periodic appendable progress from
 the exact terminal prefix waiting for final magic. The fingerprint covers the
 selected polynomial, ordered factor-base contents, and the sieve parameters
-that affect relation generation or stopping. Run-identity schema 3 also binds
-the affine-only Special-Q enumeration policy and the frozen cascade-V3, 3LP,
-V0 weight/cutoff/residual, and structured-versus-legacy reduction decisions.
+that affect relation generation or stopping. Run-identity schema 4 also binds
+the affine-only Special-Q enumeration policy, the frozen target multiplier, and
+the frozen cascade-V3, 3LP, V0 weight/cutoff/residual, and
+structured-versus-legacy reduction decisions.
 Checkpoints from the earlier projective-Q schedule or a different semantic
 reduction policy fail closed.
 

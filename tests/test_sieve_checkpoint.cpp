@@ -294,7 +294,7 @@ void test_v3_round_trip() {
 }
 
 void test_run_identity_is_stable_and_matches_checkpoint() {
-    static_assert(gnfs::sieve::SIEVE_RUN_IDENTITY_SCHEMA_VERSION == 3);
+    static_assert(gnfs::sieve::SIEVE_RUN_IDENTITY_SCHEMA_VERSION == 4);
     const auto first = identity_from(RunIdentityFixture{});
     const auto second = identity_from(RunIdentityFixture{});
 
@@ -360,6 +360,7 @@ void test_run_identity_mutations_change_fingerprint() {
     expect_param_changed([](auto& params) { ++params.special_q_max; });
     expect_param_changed([](auto& params) { ++params.max_special_q; });
     expect_param_changed([](auto& params) { ++params.target_excess; });
+    expect_param_changed([](auto& params) { params.sieve_target_multiplier = 2.0; });
     expect_changed([](auto& fixture) { fixture.policy.cascade_v3_mode = 1; });
     expect_changed([](auto& fixture) { fixture.policy.accept_3lp = true; });
     expect_changed([](auto& fixture) { fixture.policy.merge_weight3 = true; });

@@ -71,12 +71,17 @@ so validating an extreme `int64_t` candidate cannot overflow.
 
 - positive width and height, each at most `INT32_MAX`;
 - an area representable as `size_t` and allocatable as `vector<uint16_t>`;
+- an area no larger than `core::SIEVE_MAX_REGION_CELLS` (512 Mi cells,
+  or 1 GiB of score storage);
 - all four `(a,b)` projection corners representable as `int64_t` for the
   current basis.
 
-The default-region generator adds a policy cap of 256 Mi cells. Explicit
-regions are governed by the representation and allocation checks above rather
-than that default-generation policy.
+The default-region generator applies a tighter policy cap of 256 Mi cells.
+Explicit regions use the shared 512 Mi-cell materialization cap in addition to
+the representation and allocation checks above; this keeps configuration and
+direct `LatticeSieve::set_region()` callers on the same fail-closed boundary.
+The distributed bound-work preflight repeats this cap before worker runtime
+objects or launch-side effects are created.
 
 The compact row-major path stores small-prime state in `int16_t`, making width
 32768 its inclusive upper boundary. A wider valid region routes the complete

@@ -38,9 +38,10 @@ MSVC ARM64 和无宽乘法 intrinsic 的 fallback 必须作出相同的规约与
 SkewLLL 的加权度量仍使用 `double`，不属于该 bit-for-bit 整数算术保证。
 
 `SieveRegion` 的 inclusive width/height 必须为正且各自可表示为 `int32_t`，面积必须
-可表示为 `size_t` 并可由 `vector<uint16_t>` 分配。默认 region 生成器另外把面积限制为
-256 Mi cells。宽度 32768 是 compact row-state 的上界；更宽的合法 region 把全部素数
-路由到 region-bucket 路径，而不是直接拒绝。每次初始或 adaptive sieve pass 之前都会
+可表示为 `size_t`、不超过共享的 `core::SIEVE_MAX_REGION_CELLS`（512 Mi cells，即
+1 GiB `uint16_t` score storage），并可由 `vector<uint16_t>` 分配。默认 region 生成器
+另外把面积限制为 256 Mi cells。宽度 32768 是 compact row-state 的上界；更宽的合法 region
+把全部素数路由到 region-bucket 路径，而不是直接拒绝。每次初始或 adaptive sieve pass 之前都会
 精确检查矩形的四个投影角点；任何 `(a,b)` 超出 `int64_t` 时 fail closed。SkewLLL
 还会在浮点转整数前拒绝不能保持有限 norm/dot/quotient 的 skew；分布式 identity
 仅接受平方在任意 rounding/FTZ 环境中都为 normal finite 的 binary64 指数域。进入
@@ -79,6 +80,50 @@ GNFS_SIEVE_ECORE_THREADS=6 ./gnfs <N>  # 最多 6 个 Utility QoS worker
 - `tests/test_sieve_ecore_qos.cpp`：默认值、负值、前缀、溢出和线程上限合同。
 
 该开关只改变调度提示，不改变 special-Q 顺序、sieve 分数、候选关系或停止条件。
+
+---
+
+## Adaptive Raw Target Multiplier (`GNFS_SIEVE_TARGET_MULT`)
+
+`GNFS_SIEVE_TARGET_MULT=X` scales the initial raw-relation target returned by
+`GNFSParams::raw_relation_target()`. The default is `1.0`; accepted values are
+finite decimal numbers in `[0.1, 100.0]`. Invalid, non-finite, prefixed, or
+out-of-range values fall back to `1.0`. Parsing uses the invariant C numeric
+locale, so the result is independent of the process `LC_NUMERIC` setting.
+
+The value is captured when `GNFSParams::compute()` runs, which is normally when
+a `Pipeline` is constructed. Existing parameter snapshots do not reread the
+process environment; applications that need different experiment values must
+construct separate instances under the desired environment. The multiplier is
+applied after the size-aware target has been calculated, and the existing
+saturating `size_t` conversion still governs overflow. A positive base target
+is clamped to at least one relation after scaling; an explicit zero-column input
+remains zero. The hard `max_special_q` cap remains derived from the unscaled
+size-aware geometry and is therefore stable within the snapshot.
+
+```bash
+GNFS_SIEVE_TARGET_MULT=2 ./gnfs <N>       # double the initial target
+GNFS_SIEVE_TARGET_MULT=0.5 ./gnfs <N>     # halve it, within the accepted range
+unset GNFS_SIEVE_TARGET_MULT              # use the default target
+```
+
+This tuning switch changes only the starting point of the adaptive sieve
+loop. It does not change relation encoding, merge policy, or matrix contents.
+The frozen multiplier is included in the checkpoint run identity, so a
+checkpoint cannot be resumed under a different target strategy. The geometry helper
+`GNFSParams::sieve_i_bounds_for_width()` also keeps explicitly configured odd
+sieve widths exact; the default even widths retain their historical bounds.
+
+**Integration points**:
+
+- `include/gnfs/core/params.hpp`: strict snapshot parser, target scaling, and
+  exact/overflow-safe sieve geometry;
+- `include/gnfs/api/config.hpp`: shared geometry mapping for typed width
+  overrides;
+- `src/sieve/distributed_sieve_bound_work.cpp`: repeat the materialization cap
+  during distributed worker preflight;
+- `tests/test_params.cpp`: snapshot, invalid-value, odd-width, and extreme-width
+  contracts.
 
 ---
 
@@ -255,9 +300,10 @@ GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
    suspended，并直接从同一 generation 发布 final magic。
 4. 重启先严格加载 V3 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
    128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。当前 run
-   identity schema 3 还绑定 affine-only Special-Q 枚举规则，以及冻结后的 cascade
-   V3、3LP、V0 weight/cutoff/residual 和 structured/legacy reduction 选择，因此旧
-   schema 或不同语义策略不会跨 checkpoint 恢复。
+   identity schema 4 还绑定 affine-only Special-Q 枚举规则、冻结后的
+   `GNFS_SIEVE_TARGET_MULT`，以及 cascade V3、3LP、V0 weight/cutoff/residual 和
+   structured/legacy reduction 选择，因此旧 schema 或不同语义策略不会跨 checkpoint
+   恢复。
 5. identity 匹配后，再从同一次只读打开校验 OOC V3 index/data header、配对
    `store_id` 与 committed prefix，并重算 checkpoint prefix 的 sequence receipt；
    所有检查通过后才允许截断 checkpoint 之后的未提交 index/data tail。同尺寸改写
