@@ -208,6 +208,47 @@ void test_owning_csr_validation() {
     return true;
 }
 
+[[nodiscard]] bool
+dependency_vectors_are_independent(const std::vector<std::vector<bool>>& dependencies) {
+    if (dependencies.empty()) {
+        return true;
+    }
+    const size_t width = dependencies.front().size();
+    std::vector<std::vector<uint64_t>> pivots(width);
+    for (const auto& dependency : dependencies) {
+        if (dependency.size() != width) {
+            return false;
+        }
+        std::vector<uint64_t> reduced(
+            width / size_t{64} + (width % size_t{64} != 0 ? size_t{1} : size_t{0}), uint64_t{0});
+        for (size_t bit = 0; bit < width; ++bit) {
+            if (dependency[bit]) {
+                reduced[bit / size_t{64}] |= uint64_t{1} << (bit % size_t{64});
+            }
+        }
+        bool admitted = false;
+        for (size_t bit = 0; bit < width; ++bit) {
+            const size_t word = bit / size_t{64};
+            const uint64_t mask = uint64_t{1} << (bit % size_t{64});
+            if ((reduced[word] & mask) == 0) {
+                continue;
+            }
+            if (pivots[bit].empty()) {
+                pivots[bit] = std::move(reduced);
+                admitted = true;
+                break;
+            }
+            for (size_t index = 0; index < reduced.size(); ++index) {
+                reduced[index] ^= pivots[bit][index];
+            }
+        }
+        if (!admitted) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void test_seeded_view_contract() {
     // Rows 0, 1, 2 are independent; row 3 is row 0 XOR row 1. Empty rows
     // make the nullspace non-trivial without requiring a large allocation.
@@ -228,10 +269,18 @@ void test_seeded_view_contract() {
         const auto first = solver.find_dependencies_view_seeded(matrix, 8, 17, 1);
         const auto second = solver.find_dependencies_view_seeded(matrix, 8, 17, 1);
         CHECK(first == second);
+        CHECK(dependency_vectors_are_independent(first));
+        // The fixture has rank two over four columns and therefore a six-
+        // dimensional left null space.  A seeded result must not report more
+        // than six independent vectors merely because it found more distinct
+        // (but dependent) candidates.
+        CHECK(first.size() <= 6);
         for (const auto& dependency : first) {
             CHECK(verifies_left_nullspace(matrix, dependency));
         }
         const auto retried = solver.find_dependencies_view_seeded(matrix, 8, 17, 2);
+        CHECK(dependency_vectors_are_independent(retried));
+        CHECK(retried.size() <= 6);
         for (const auto& dependency : retried) {
             CHECK(verifies_left_nullspace(matrix, dependency));
         }

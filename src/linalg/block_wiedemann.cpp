@@ -25,6 +25,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -131,6 +132,63 @@ inline uint64_t bw_stream_seed(uint64_t base_seed, uint32_t stream_id) noexcept 
     static constexpr uint64_t kStride = 0x9E3779B97F4A7C15ULL; // golden-ratio prime
     return base_seed + static_cast<uint64_t>(stream_id) * kStride;
 }
+
+// Seeded view retries are consumed by callers that need an independent null
+// space basis, not merely a set of distinct vectors.  Keep a compact GF(2)
+// basis here so a retry cannot be stopped by dependent candidates filling the
+// requested vector count.
+class IndependentDependencyBasis final {
+public:
+    explicit IndependentDependencyBasis(size_t width) : width_(width) {}
+
+    IndependentDependencyBasis(const IndependentDependencyBasis&) = delete;
+    IndependentDependencyBasis& operator=(const IndependentDependencyBasis&) = delete;
+
+    [[nodiscard]] bool insert(const std::vector<bool>& input) {
+        if (input.size() != width_) {
+            return false;
+        }
+
+        const size_t word_count =
+            width_ / size_t{64} + (width_ % size_t{64} != 0 ? size_t{1} : size_t{0});
+        std::vector<uint64_t> candidate(word_count, uint64_t{0});
+        for (size_t bit = 0; bit < width_; ++bit) {
+            if (input[bit]) {
+                candidate[bit / size_t{64}] |= uint64_t{1} << (bit % size_t{64});
+            }
+        }
+
+        for (size_t bit = 0; bit < width_; ++bit) {
+            const size_t word = bit / size_t{64};
+            const uint64_t mask = uint64_t{1} << (bit % size_t{64});
+            if ((candidate[word] & mask) == 0) {
+                continue;
+            }
+
+            const auto pivot = pivots_.find(bit);
+            if (pivot == pivots_.end()) {
+                pivots_.emplace(bit, std::move(candidate));
+                ++rank_;
+                return true;
+            }
+
+            const std::vector<uint64_t>& pivot_words = pivot->second;
+            for (size_t index = 0; index < word_count; ++index) {
+                candidate[index] ^= pivot_words[index];
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] size_t rank() const noexcept {
+        return rank_;
+    }
+
+private:
+    size_t width_ = 0;
+    size_t rank_ = 0;
+    std::unordered_map<size_t, std::vector<uint64_t>> pivots_;
+};
 
 } // namespace
 
@@ -1603,6 +1661,7 @@ find_dependencies_view_seeded_impl(const MV& matrix, size_t max_deps, uint64_t s
     const bool is_thin = matrix.num_rows() < matrix.num_cols();
     std::vector<std::vector<bool>> merged;
     merged.reserve(std::min(max_deps, size_t{64}));
+    IndependentDependencyBasis independent_basis(matrix.num_rows());
 
     for (uint32_t attempt = 0; attempt < retry_count; ++attempt) {
         const uint64_t attempt_seed = bw_stream_seed(seed, attempt);
@@ -1616,13 +1675,13 @@ find_dependencies_view_seeded_impl(const MV& matrix, size_t max_deps, uint64_t s
         }
 
         for (auto& candidate : candidates) {
-            if (std::find(merged.begin(), merged.end(), candidate) == merged.end()) {
+            if (independent_basis.insert(candidate)) {
                 merged.push_back(std::move(candidate));
-                if (merged.size() >= max_deps)
+                if (independent_basis.rank() >= max_deps)
                     break;
             }
         }
-        if (merged.size() >= max_deps)
+        if (independent_basis.rank() >= max_deps)
             break;
     }
 

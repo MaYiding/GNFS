@@ -271,6 +271,9 @@ public:
     /// default; resource-aware callers should pass an explicit bounded value.
     /// Unlike the environment-driven dispatcher above, this entry point never
     /// consults GNFS_BW_KRYLOV_STREAMS and only uses the supplied seed stride.
+    /// Results are an independent subset of the verified candidates; retries
+    /// continue until that basis reaches `max_deps` or the finite attempt
+    /// budget is exhausted.
     /// It accepts an owning CSR view so callers can build storage directly from
     /// their canonical rows without a SparseMatrix copy.
     std::vector<std::vector<bool>> find_dependencies_view_seeded(const CSRMatrix& matrix,
