@@ -300,9 +300,10 @@ GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
    suspended，并直接从同一 generation 发布 final magic。
 4. 重启先严格加载 V3 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
    128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。当前 run
-   identity schema 3 还绑定 affine-only Special-Q 枚举规则，以及冻结后的 cascade
-   V3、3LP、V0 weight/cutoff/residual 和 structured/legacy reduction 选择，因此旧
-   schema 或不同语义策略不会跨 checkpoint 恢复。
+   identity schema 4 还绑定 affine-only Special-Q 枚举规则、冻结后的
+   `GNFS_SIEVE_TARGET_MULT`，以及 cascade V3、3LP、V0 weight/cutoff/residual 和
+   structured/legacy reduction 选择，因此旧 schema 或不同语义策略不会跨 checkpoint
+   恢复。
 5. identity 匹配后，再从同一次只读打开校验 OOC V3 index/data header、配对
    `store_id` 与 committed prefix，并重算 checkpoint prefix 的 sequence receipt；
    所有检查通过后才允许截断 checkpoint 之后的未提交 index/data tail。同尺寸改写

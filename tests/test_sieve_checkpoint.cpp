@@ -294,7 +294,7 @@ void test_v3_round_trip() {
 }
 
 void test_run_identity_is_stable_and_matches_checkpoint() {
-    static_assert(gnfs::sieve::SIEVE_RUN_IDENTITY_SCHEMA_VERSION == 3);
+    static_assert(gnfs::sieve::SIEVE_RUN_IDENTITY_SCHEMA_VERSION == 4);
     const auto first = identity_from(RunIdentityFixture{});
     const auto second = identity_from(RunIdentityFixture{});
 
