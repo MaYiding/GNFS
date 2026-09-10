@@ -676,7 +676,8 @@ void test_sparse_provider_budget_includes_admitted_zero_rows() {
     CHECK(outcome.status == SIQSShadowMatrixStatus::valid);
     CHECK(outcome.solution.has_value());
     if (outcome.solution) {
-        CHECK(outcome.solution->dependencies == std::vector<std::vector<size_t>>{{0}, {1, 2}});
+        const std::vector<std::vector<size_t>> expected_dependencies{{0}, {1, 2}};
+        CHECK(outcome.solution->dependencies == expected_dependencies);
     }
 }
 
