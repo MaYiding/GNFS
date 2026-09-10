@@ -716,6 +716,25 @@ inline std::string pipeline_resume_base_path() {
     return {};
 }
 
+void reject_distributed_resume_combination(std::string_view resume_base,
+                                           size_t distributed_workers) {
+    if (distributed_workers == 0 || resume_base.empty()) {
+        return;
+    }
+    throw std::invalid_argument(
+        "GNFS_DISTRIBUTED_SIEVE_WORKERS cannot be combined with GNFS_RESUME or "
+        "GNFS_SIEVE_RESUME; distributed sieve is one-shot and does not support checkpoint "
+        "resume");
+}
+
+void reject_distributed_resume_combination(std::string_view resume_base) {
+    if (resume_base.empty()) {
+        return;
+    }
+    reject_distributed_resume_combination(resume_base,
+                                          sieve::parse_distributed_sieve_env().num_workers);
+}
+
 std::string allocate_structured_ooc_run_identity() {
     static std::atomic<uint64_t> next_run_ordinal{1};
     uint64_t run_ordinal = next_run_ordinal.load(std::memory_order_relaxed);
@@ -1128,12 +1147,7 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
     // GNFS_SIEVE_RESUME alias.  Do not silently fall back to the local route:
     // that would make a requested process topology disappear while leaving
     // the caller believing that the resumable distributed path was active.
-    if (distributed_workers > 0 && resume_enabled) {
-        throw std::invalid_argument(
-            "GNFS_DISTRIBUTED_SIEVE_WORKERS cannot be combined with GNFS_RESUME or "
-            "GNFS_SIEVE_RESUME; distributed sieve is one-shot and does not support checkpoint "
-            "resume");
-    }
+    reject_distributed_resume_combination(resume_base_path, distributed_workers);
     if (distributed_workers > 0) {
         distributed_config.base_path =
             relation::relation_corpus_detail::freeze_ooc_path(distributed_config.base_path);
@@ -1247,7 +1261,9 @@ void Pipeline::emit_log(LogLevel level, Phase phase, const std::string& msg) {
 // ============================================================
 
 PolynomialContext Pipeline::select_polynomial() {
-    return select_polynomial_impl(pipeline_resume_base_path());
+    const std::string resume_base = pipeline_resume_base_path();
+    reject_distributed_resume_combination(resume_base);
+    return select_polynomial_impl(resume_base);
 }
 
 PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_base) {
@@ -1321,8 +1337,10 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
 // ============================================================
 
 FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
+    const std::string resume_base = pipeline_resume_base_path();
+    reject_distributed_resume_combination(resume_base);
     require_pipeline_context(n_, ctx, "build_factor_base");
-    return build_factor_base_impl(ctx, pipeline_resume_base_path());
+    return build_factor_base_impl(ctx, resume_base);
 }
 
 FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
@@ -1424,6 +1442,8 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
 relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                                                               const FactorBase& fb,
                                                               SieveCollectionOptions options) {
+    const std::string resume_base = pipeline_resume_base_path();
+    reject_distributed_resume_combination(resume_base);
     require_pipeline_context(n_, ctx, "sieve_and_collect");
     if (options.adaptive_round_limit == 0 ||
         options.adaptive_round_limit > DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT) {
