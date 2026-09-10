@@ -78,6 +78,8 @@
 #                                         # 固定 50 位 SQUFOF multiplier/吞吐基准
 #   ./scripts/test.sh bench-siqs-shadow <mode> [options]
 #                                         # Release-only SIQS shadow matrix 可复现基准
+#   ./scripts/test.sh gate-siqs-shadow
+#                                         # 一次构建的 SIQS shadow correctness/schema 门禁
 #   ./scripts/test.sh probe-siqs-live-sieve <50|70|90> <1|2|4>
 #                                         # Release-only 有界 SIQS live-sieve 单进程探针
 #   ./scripts/test.sh compare-siqs-live-sieve <50|70|90>
@@ -447,6 +449,7 @@ ALL_TEST_BINARIES=(
     test_siqs_2lp_adapter
     test_siqs_2lp_congruence
     test_siqs_post_merge_row
+    test_siqs_post_merge_row_wire
     test_siqs_shadow_assembly
     test_siqs_shadow_linear_algebra
     test_siqs_shadow_proof_runner
@@ -492,7 +495,7 @@ MODULE_TESTS=(
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_api test_i18n test_method_selection test_event_stream test_cli_event_stream test_relation_reduction_engine"
-    siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_proof_observe_record_codec test_siqs_runtime_facts test_siqs_shadow_proof_rss_probe_execution_identity test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_terminal_gate_record test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_artifact_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_campaign_entry test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_rss_holdout_probe_record_codec test_siqs_shadow_proof_rss_holdout_stream_join test_siqs_shadow_proof_prefer test_siqs_shadow_prefer_route test_siqs_shadow_cross_size"
+    siqs           "test_siqs test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_post_merge_row_wire test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_proof_observe_record_codec test_siqs_runtime_facts test_siqs_shadow_proof_rss_probe_execution_identity test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_terminal_gate_record test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_artifact_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_campaign_entry test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_rss_holdout_probe_record_codec test_siqs_shadow_proof_rss_holdout_stream_join test_siqs_shadow_proof_prefer test_siqs_shadow_prefer_route test_siqs_shadow_cross_size"
 )
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
@@ -633,6 +636,7 @@ SMOKE_TESTS=(
     test_siqs_2lp_adapter
     test_siqs_2lp_congruence
     test_siqs_post_merge_row
+    test_siqs_post_merge_row_wire
     test_siqs_shadow_assembly
     test_siqs_shadow_linear_algebra
     test_siqs_shadow_proof_runner
@@ -961,6 +965,7 @@ TEST_TIMEOUT=(
     test_siqs_2lp_adapter    10
     test_siqs_2lp_congruence 10
     test_siqs_post_merge_row 10
+    test_siqs_post_merge_row_wire 10
     test_siqs_shadow_assembly 10
     test_siqs_shadow_linear_algebra 10
     test_siqs_shadow_proof_runner 10
@@ -1153,6 +1158,7 @@ TEST_TIER=(
     test_siqs_2lp_adapter    "instant"
     test_siqs_2lp_congruence "instant"
     test_siqs_post_merge_row "instant"
+    test_siqs_post_merge_row_wire "instant"
     test_siqs_shadow_assembly "instant"
     test_siqs_shadow_linear_algebra "instant"
     test_siqs_shadow_proof_runner "instant"
@@ -1350,6 +1356,240 @@ do_module_map_check() {
         return 1
     fi
     log_success "测试模块映射合同通过 (${checked} 个注册测试)"
+}
+
+# Validate the machine-readable records emitted by one bounded shadow-matrix
+# benchmark invocation. The benchmark itself checks mathematical identity;
+# this wrapper checks that the runner saw the complete requested worker and
+# implementation matrix before accepting the gate case.
+validate_siqs_shadow_gate_bench() {
+    local mode="$1"
+    local requested_workers="$2"
+    local label="$3"
+
+    if printf '%s\n' "$RUN_OUTPUT" | awk \
+        -v mode="$mode" -v requested_workers="$requested_workers" '
+        function has_field(line, key, value) {
+            return index(" " line " ", " " key "=" value " ") != 0
+        }
+        function field(line, key,    count, index_, fields, prefix) {
+            count = split(line, fields, " ")
+            prefix = key "="
+            for (index_ = 1; index_ <= count; ++index_) {
+                if (index(fields[index_], prefix) == 1) {
+                    return substr(fields[index_], length(prefix) + 1)
+                }
+            }
+            return ""
+        }
+        index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1 ") == 1 {
+            configs++
+            if (!has_field($0, "mode", mode) ||
+                !has_field($0, "build_contract", "release_ndebug") ||
+                !has_field($0, "cmake_build_type", "Release") ||
+                !has_field($0, "timing_asserted", "false") ||
+                !has_field($0, "seed", "0x53a9f19d97e8c641")) {
+                invalid = 1
+            }
+        }
+        index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1 ") == 1 {
+            results++
+            worker = field($0, "workers")
+            implementation = field($0, "implementation")
+            digest = field($0, "result_digest")
+            dependency_digest = field($0, "dependency_digest")
+            minimum = field($0, "wall_min_ns") + 0
+            median = field($0, "wall_median_ns") + 0
+            maximum = field($0, "wall_max_ns") + 0
+            if (!has_field($0, "status", "ok") ||
+                !has_field($0, "mode", mode) ||
+                !has_field($0, "build_contract", "release_ndebug") ||
+                !has_field($0, "cmake_build_type", "Release") ||
+                !has_field($0, "timing_asserted", "false") ||
+                !has_field($0, "seed", "0x53a9f19d97e8c641") ||
+                $0 !~ / wall_min_ns=[0-9]+ / ||
+                $0 !~ / wall_median_ns=[0-9]+ / ||
+                $0 !~ / wall_max_ns=[0-9]+ / ||
+                $0 !~ / result_digest=0x[0-9a-f]+$/ ||
+                minimum > median || median > maximum) {
+                invalid = 1
+            }
+            if (reference_digest == "") {
+                reference_digest = digest
+            } else if (digest != reference_digest) {
+                invalid = 1
+            }
+            if (mode == "solve") {
+                if (implementation != "public_solver" || dependency_digest != digest) {
+                    invalid = 1
+                }
+            } else if (mode == "kernel") {
+                if (dependency_digest != "na" ||
+                    (implementation != "legacy_per_pivot_jthread" &&
+                     implementation != "benchmark_only_queued_thread_pool" &&
+                     implementation != "production_persistent_worker_team")) {
+                    invalid = 1
+                }
+            }
+            seen[worker, implementation]++
+        }
+        END {
+            if (configs != 1 || results == 0) {
+                invalid = 1
+            }
+            expected_count = split(requested_workers, expected, ",")
+            if (mode == "solve") {
+                if (results != expected_count) {
+                    invalid = 1
+                }
+                for (index_ = 1; index_ <= expected_count; ++index_) {
+                    if (seen[expected[index_], "public_solver"] != 1) {
+                        invalid = 1
+                    }
+                }
+            } else if (mode == "kernel") {
+                if (results != expected_count * 3) {
+                    invalid = 1
+                }
+                for (index_ = 1; index_ <= expected_count; ++index_) {
+                    if (seen[expected[index_], "legacy_per_pivot_jthread"] != 1 ||
+                        seen[expected[index_], "benchmark_only_queued_thread_pool"] != 1 ||
+                        seen[expected[index_], "production_persistent_worker_team"] != 1) {
+                        invalid = 1
+                    }
+                }
+            } else {
+                invalid = 1
+            }
+            if (invalid) {
+                exit 1
+            }
+        }
+    '; then
+        printf '%s\n' "$RUN_OUTPUT" | awk '
+            index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1 ") == 1 ||
+            index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1 ") == 1 { print }
+        '
+        log_success "${label} schema、构建合同、worker/implementation 矩阵与 digest 均有效"
+        return 0
+    fi
+
+    log_fail "${label} benchmark schema 或 worker/implementation identity 无效"
+    return 1
+}
+
+run_siqs_shadow_gate_bench() {
+    local mode="$1"
+    local requested_workers="$2"
+    local label="$3"
+    shift 3
+
+    local _status=0
+    run_single_test test_siqs_shadow_matrix_bench "$mode" "$@" || _status=$?
+    if (( _status != 0 )); then
+        return "$_status"
+    fi
+    if ! validate_siqs_shadow_gate_bench "$mode" "$requested_workers" "$label"; then
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+    return 0
+}
+
+do_siqs_shadow_gate() {
+    if [[ $# -ne 0 ]]; then
+        log_fail "用法: ${TEST_RUNNER_COMMAND} gate-siqs-shadow"
+        return 1
+    fi
+    if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
+        log_fail "gate-siqs-shadow 只接受 Release 构建 (传入: ${BUILD_TYPE})"
+        return 1
+    fi
+    BUILD_TYPE="Release"
+    if (( SKIP_BUILD )); then
+        log_fail "gate-siqs-shadow 不接受 --no-build；门禁必须由本次请求的构建生成"
+        return 1
+    fi
+    if (( RETRY_COUNT != 0 )); then
+        log_fail "gate-siqs-shadow 不接受 --retry；独立 benchmark 证据不得自动重试"
+        return 1
+    fi
+
+    do_build
+    if [[ ! -x "${BUILD_DIR}/test_siqs_shadow_cross_size" ||
+          ! -x "${BUILD_DIR}/test_siqs_shadow_prefer_route" ||
+          ! -x "${BUILD_DIR}/test_siqs_shadow_matrix_bench" ]]; then
+        log_fail "SIQS shadow gate 所需二进制不存在"
+        (( FAILED_TESTS += 1 ))
+        return 1
+    fi
+
+    log_header "SIQS shadow matrix correctness/schema 门禁"
+    log_info "一次 Release/NDEBUG 构建；固定 cross-size corpus；benchmark wall time 仅记录"
+    local gate_start_ms
+    gate_start_ms=$(timer_start_ms)
+    local baseline_failed=$FAILED_TESTS
+    local _status=0
+
+    log_section "Cross-size correctness"
+    run_single_test test_siqs_shadow_cross_size || _status=$?
+    if (( _status != 0 || FAILED_TESTS > baseline_failed )); then
+        if (( FAILED_TESTS == baseline_failed )); then
+            (( FAILED_TESTS += 1 ))
+        fi
+        log_fail "SIQS shadow cross-size correctness 失败"
+        return 1
+    fi
+
+    log_section "Legacy fallback route"
+    _status=0
+    run_single_test test_siqs_shadow_prefer_route || _status=$?
+    if (( _status != 0 || FAILED_TESTS > baseline_failed )); then
+        if (( FAILED_TESTS == baseline_failed )); then
+            (( FAILED_TESTS += 1 ))
+        fi
+        log_fail "SIQS shadow legacy fallback route 失败"
+        return 1
+    fi
+
+    log_section "Worker determinism"
+    _status=0
+    run_siqs_shadow_gate_bench solve 1,2,4 "solve 50-digit-shaped" \
+        --fb 1601 --rows 1701 --weight 20 --workers 1,2,4 \
+        --parallel-threshold 0 --warmups 0 --reps 1 || _status=$?
+    if (( _status != 0 || FAILED_TESTS > baseline_failed )); then
+        if (( FAILED_TESTS == baseline_failed )); then
+            (( FAILED_TESTS += 1 ))
+        fi
+        log_fail "SIQS shadow solve determinism/schema 失败"
+        return 1
+    fi
+
+    log_section "Kernel implementation identity"
+    _status=0
+    run_siqs_shadow_gate_bench kernel 1,4 "kernel crossover-shaped" \
+        --fb 4000 --rows 4100 --weight 20 --workers 1,4 \
+        --parallel-threshold 0 --warmups 0 --reps 1 || _status=$?
+    if (( _status != 0 || FAILED_TESTS > baseline_failed )); then
+        if (( FAILED_TESTS == baseline_failed )); then
+            (( FAILED_TESTS += 1 ))
+        fi
+        log_fail "SIQS shadow kernel implementation/schema 失败"
+        return 1
+    fi
+
+    local gate_end_ms elapsed
+    gate_end_ms=$(timer_start_ms)
+    elapsed=$((gate_end_ms - gate_start_ms))
+    (( TOTAL_TESTS += 1 ))
+    (( PASSED_TESTS += 1 ))
+    REPORT_ENTRIES+=(
+        "{\"name\":\"gate_siqs_shadow\",\"status\":\"pass\",\"elapsed_ms\":${elapsed},\"detail\":\"cross_size+legacy_fallback+solve+kernel\"}"
+    )
+    printf '%s\n' \
+        "GNFS_SIQS_SHADOW_MATRIX_GATE_V1 status=pass schema=1 build_contract=release_ndebug cmake_build_type=Release timing_asserted=false cross_size=pass legacy_fallback=pass solve_workers=1,2,4 kernel_workers=1,4 promotion=false"
+    log_success "SIQS shadow matrix correctness/schema 门禁通过 ($(format_duration "$elapsed"))"
+    return 0
 }
 
 # ============================================================
@@ -8273,6 +8513,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_candidate_batch_50d_sweep${RESET} — 固定 50 位 4-SQ candidate 调度扫测"
     echo "  ${BULLET} ${CYAN}test_squfof_bench${RESET}     — 固定 50 位 SQUFOF multiplier/吞吐基准"
     echo "  ${BULLET} ${CYAN}test_siqs_shadow_matrix_bench${RESET} — 固定 SIQS shadow matrix 求解/内核/准备基准"
+    echo "  ${BULLET} ${CYAN}gate-siqs-shadow${RESET}       — 单次 Release 构建的 cross-size/schema 门禁"
     echo "  ${BULLET} ${CYAN}probe-siqs-live-sieve <band> <workers>${RESET} — Release-only 50/70/90 位有界现场探针"
     echo "  ${BULLET} ${CYAN}compare-siqs-live-sieve <band>${RESET} — 同一新构建的 1/2/4 独立进程身份对照"
     echo "  ${BULLET} ${CYAN}profile-siqs-cycle-density <workers>${RESET} — 固定 50 位 1/4/16/64 A cycle-density profile"
@@ -8580,6 +8821,11 @@ case "$MODE" in
     gate)
         do_build
         do_gate "${MODE_ARGS[@]}"
+        show_summary
+        ;;
+
+    gate-siqs-shadow)
+        do_siqs_shadow_gate "${MODE_ARGS[@]}"
         show_summary
         ;;
 
