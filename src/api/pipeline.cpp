@@ -1568,7 +1568,6 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
 relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                                                               const FactorBase& fb,
                                                               SieveCollectionOptions options) {
-    require_factor_base_contract(ctx, fb, "sieve_and_collect", true);
     if (options.adaptive_round_limit == 0 ||
         options.adaptive_round_limit > DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT) {
         throw std::out_of_range("adaptive_round_limit must be in [1, 10]");
@@ -1587,6 +1586,10 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
         throw std::invalid_argument(
             "bounded local sieve collection options are incompatible with distributed sieving");
     }
+    // Bind caller-owned mathematical identities only after every option and
+    // route preflight has succeeded.  A rejected invocation must not poison a
+    // later corrected call with a different factor base.
+    require_factor_base_contract(ctx, fb, "sieve_and_collect", true);
     return sieve_and_collect_impl(ctx, fb, structured_route, options);
 }
 

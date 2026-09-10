@@ -2448,6 +2448,44 @@ bool test_sieve_collection_options_preflight() {
     return true;
 }
 
+bool test_sieve_option_preflight_does_not_bind_factor_base() {
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+
+    Pipeline source(Integer(143), cfg);
+    auto ctx = source.select_polynomial();
+    auto alternate_factor_base = source.build_factor_base(ctx);
+    // Keep the alternate base mathematically admissible but distinguishable
+    // from the canonical base that a fresh Pipeline will build later.
+    alternate_factor_base.add_rational(3, 0);
+
+    Pipeline target(Integer(143), cfg);
+    SieveCollectionOptions invalid_options;
+    invalid_options.adaptive_round_limit = 0;
+    bool rejected = false;
+    try {
+        (void)target.sieve_and_collect(ctx, alternate_factor_base, invalid_options);
+    } catch (const std::out_of_range&) {
+        rejected = true;
+    } catch (...) {
+    }
+    if (!rejected) {
+        std::cout << "(invalid sieve options were not rejected) ";
+        return false;
+    }
+
+    try {
+        (void)target.build_factor_base(ctx);
+    } catch (const std::exception& error) {
+        std::cout << "(invalid sieve preflight bound factor-base state: " << error.what() << ") ";
+        return false;
+    }
+    return true;
+}
+
 bool test_structured_filter_adaptive_route() {
     ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
     ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
@@ -4396,6 +4434,7 @@ int main() {
     TEST(pipeline_relation_generations);
     TEST(pipeline_rejects_foreign_context);
     TEST(pipeline_context_and_factor_base_contract);
+    TEST(sieve_option_preflight_does_not_bind_factor_base);
     TEST(pipeline_progress_callback);
     TEST(structured_filter_stage_telemetry_parser);
     TEST(structured_ooc_path_namespace_contract);
