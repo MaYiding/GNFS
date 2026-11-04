@@ -202,6 +202,20 @@ void test_block_vector_contracts() {
     }
     TEST_ASSERT(caught, "BlockVector rejects xor dimension mismatch");
 
+    BlockVector longer_vector(3);
+    longer_vector.data[0] = 0x1111ULL;
+    longer_vector.data[1] = 0x2222ULL;
+    longer_vector.data[2] = 0x3333ULL;
+    const auto before_long_xor = a.data;
+    caught = false;
+    try {
+        a.xor_with(longer_vector);
+    } catch (const std::invalid_argument&) {
+        caught = true;
+    }
+    TEST_ASSERT(caught, "BlockVector rejects longer xor source");
+    TEST_ASSERT(a.data == before_long_xor, "longer xor source leaves destination unchanged");
+
     BlockVector malformed;
     malformed.length = 1;
     caught = false;
