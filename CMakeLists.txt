@@ -1089,6 +1089,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME BlockLanczosCheckpoint COMMAND test_bl_checkpoint)
     set_tests_properties(BlockLanczosCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_bl_checkpoint_stream_failure
+        tests/test_bl_checkpoint_stream_failure.cpp
+    )
+    target_link_libraries(test_bl_checkpoint_stream_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BlockLanczosCheckpointStreamFailure COMMAND test_bl_checkpoint_stream_failure)
+    set_tests_properties(BlockLanczosCheckpointStreamFailure
+        PROPERTIES LABELS "fast" TIMEOUT 60 SKIP_RETURN_CODE 77)
+
     add_executable(test_bl_resume_integration
         tests/test_bl_resume_integration.cpp
     )

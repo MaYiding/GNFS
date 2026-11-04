@@ -79,69 +79,73 @@ struct BlockLanczosCheckpoint {
     std::optional<util::Sha256Digest> matrix_fingerprint;
     std::vector<uint64_t> aug; // size = rows * aug_words_per_row
 
-    /// Serialize to path. Returns false on any I/O failure (does not throw).
+    /// Serialize to path. Returns false on I/O or allocation failure; never throws.
     bool save(const std::string& path) const noexcept {
-        // Do not truncate an existing checkpoint for a state without provenance.
-        if (!matrix_fingerprint)
-            return false;
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out)
-            return false;
+        try {
+            // Do not truncate an existing checkpoint for a state without provenance.
+            if (!matrix_fingerprint)
+                return false;
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            if (!out)
+                return false;
 
-        // Phase 1: write INCOMPLETE magic + everything. Every V3 scalar is
-        // encoded explicitly so the checkpoint is independent of host endian.
-        const uint64_t version = VERSION_V3;
-        if (!write_u64_le(out, MAGIC_INCOMPLETE) || !write_u64_le(out, version) ||
-            !write_u64_le(out, rows) || !write_u64_le(out, cols) ||
-            !write_u64_le(out, aug_words_per_row) || !write_u64_le(out, pivot_row) ||
-            !write_u64_le(out, cur_col) || !write_u64_le(out, iteration)) {
-            return false;
-        }
-
-        // Header checksum also covers the source-matrix fingerprint.
-        const uint64_t header_csum = version ^ rows ^ cols ^ aug_words_per_row ^ pivot_row ^
-                                     cur_col ^ iteration ^
-                                     fingerprint_checksum(*matrix_fingerprint);
-        if (!write_u64_le(out, header_csum))
-            return false;
-        out.write(reinterpret_cast<const char*>(matrix_fingerprint->bytes.data()),
-                  static_cast<std::streamsize>(matrix_fingerprint->bytes.size()));
-        if (!out)
-            return false;
-
-        // Body: aug_word_count + payload + body checksum
-        const uint64_t aug_word_count = static_cast<uint64_t>(aug.size());
-        // Sanity: rows * wpr must equal aug.size() (guard caller bugs).
-        if (rows != 0 && aug_words_per_row != 0) {
-            if (rows > (UINT64_MAX / aug_words_per_row) ||
-                aug_word_count != rows * aug_words_per_row) {
+            // Phase 1: write INCOMPLETE magic + everything. Every V3 scalar is
+            // encoded explicitly so the checkpoint is independent of host endian.
+            const uint64_t version = VERSION_V3;
+            if (!write_u64_le(out, MAGIC_INCOMPLETE) || !write_u64_le(out, version) ||
+                !write_u64_le(out, rows) || !write_u64_le(out, cols) ||
+                !write_u64_le(out, aug_words_per_row) || !write_u64_le(out, pivot_row) ||
+                !write_u64_le(out, cur_col) || !write_u64_le(out, iteration)) {
                 return false;
             }
-        }
-        if (!write_u64_le(out, aug_word_count))
-            return false;
-        uint64_t body_csum = 0;
-        for (uint64_t w : aug) {
-            if (!write_u64_le(out, w))
+
+            // Header checksum also covers the source-matrix fingerprint.
+            const uint64_t header_csum = version ^ rows ^ cols ^ aug_words_per_row ^ pivot_row ^
+                                         cur_col ^ iteration ^
+                                         fingerprint_checksum(*matrix_fingerprint);
+            if (!write_u64_le(out, header_csum))
                 return false;
-            body_csum ^= w;
+            out.write(reinterpret_cast<const char*>(matrix_fingerprint->bytes.data()),
+                      static_cast<std::streamsize>(matrix_fingerprint->bytes.size()));
+            if (!out)
+                return false;
+
+            // Body: aug_word_count + payload + body checksum
+            const uint64_t aug_word_count = static_cast<uint64_t>(aug.size());
+            // Sanity: rows * wpr must equal aug.size() (guard caller bugs).
+            if (rows != 0 && aug_words_per_row != 0) {
+                if (rows > (UINT64_MAX / aug_words_per_row) ||
+                    aug_word_count != rows * aug_words_per_row) {
+                    return false;
+                }
+            }
+            if (!write_u64_le(out, aug_word_count))
+                return false;
+            uint64_t body_csum = 0;
+            for (uint64_t w : aug) {
+                if (!write_u64_le(out, w))
+                    return false;
+                body_csum ^= w;
+            }
+            if (!write_u64_le(out, body_csum))
+                return false;
+
+            out.flush();
+            if (!out)
+                return false;
+
+            // Phase 2: flip magic at offset 0
+            out.seekp(0);
+            if (!out || !write_u64_le(out, MAGIC))
+                return false;
+            out.flush();
+            if (!out)
+                return false;
+            out.close();
+            return static_cast<bool>(out);
+        } catch (...) {
+            return false;
         }
-        if (!write_u64_le(out, body_csum))
-            return false;
-
-        out.flush();
-        if (!out)
-            return false;
-
-        // Phase 2: flip magic at offset 0
-        out.seekp(0);
-        if (!out || !write_u64_le(out, MAGIC))
-            return false;
-        out.flush();
-        if (!out)
-            return false;
-        out.close();
-        return true;
     }
 
     /// Deserialize from path. Returns nullopt on any failure (invalid magic,
@@ -199,7 +203,7 @@ private:
         if (!little_endian && !native_endian_v1)
             return std::nullopt;
 
-        auto read_u64 = [&in, little_endian](uint64_t& value) noexcept {
+        auto read_u64 = [&in, little_endian](uint64_t& value) {
             return little_endian ? read_u64_le(in, value) : read_u64_native(in, value);
         };
 
@@ -288,25 +292,29 @@ private:
 
 public:
     /// Cheap check: does the file exist with a valid (finalized) magic?
-    /// Returns false on I/O failure or INCOMPLETE — never throws.
+    /// Returns false on I/O/allocation failure or INCOMPLETE; never throws.
     static bool exists_and_valid(const std::string& path) noexcept {
-        std::ifstream in(path, std::ios::binary);
-        if (!in)
-            return false;
-        std::array<uint8_t, sizeof(uint64_t)> magic_bytes{};
-        std::array<uint8_t, sizeof(uint64_t)> version_bytes{};
-        if (!read_exact(in, magic_bytes.data(), magic_bytes.size()) ||
-            !read_exact(in, version_bytes.data(), version_bytes.size())) {
+        try {
+            std::ifstream in(path, std::ios::binary);
+            if (!in)
+                return false;
+            std::array<uint8_t, sizeof(uint64_t)> magic_bytes{};
+            std::array<uint8_t, sizeof(uint64_t)> version_bytes{};
+            if (!read_exact(in, magic_bytes.data(), magic_bytes.size()) ||
+                !read_exact(in, version_bytes.data(), version_bytes.size())) {
+                return false;
+            }
+            uint64_t native_magic = 0;
+            uint64_t native_version = 0;
+            std::memcpy(&native_magic, magic_bytes.data(), sizeof(native_magic));
+            std::memcpy(&native_version, version_bytes.data(), sizeof(native_version));
+            const uint64_t little_version = decode_u64_le(version_bytes.data());
+            return (decode_u64_le(magic_bytes.data()) == MAGIC &&
+                    (little_version == VERSION_V2 || little_version == VERSION_V3)) ||
+                   (native_magic == MAGIC && native_version == VERSION_V1);
+        } catch (...) {
             return false;
         }
-        uint64_t native_magic = 0;
-        uint64_t native_version = 0;
-        std::memcpy(&native_magic, magic_bytes.data(), sizeof(native_magic));
-        std::memcpy(&native_version, version_bytes.data(), sizeof(native_version));
-        const uint64_t little_version = decode_u64_le(version_bytes.data());
-        return (decode_u64_le(magic_bytes.data()) == MAGIC &&
-                (little_version == VERSION_V2 || little_version == VERSION_V3)) ||
-               (native_magic == MAGIC && native_version == VERSION_V1);
     }
 
     /// Remove checkpoint file (called on successful BL completion).
@@ -324,7 +332,7 @@ private:
         return result;
     }
 
-    static bool write_u64_le(std::ofstream& out, uint64_t value) noexcept {
+    static bool write_u64_le(std::ofstream& out, uint64_t value) {
         std::array<uint8_t, sizeof(uint64_t)> bytes{};
         for (size_t i = 0; i < bytes.size(); ++i) {
             bytes[i] = static_cast<uint8_t>(value >> (i * 8));
@@ -334,7 +342,7 @@ private:
         return static_cast<bool>(out);
     }
 
-    static bool read_exact(std::ifstream& in, void* destination, size_t size) noexcept {
+    static bool read_exact(std::ifstream& in, void* destination, size_t size) {
         in.read(static_cast<char*>(destination), static_cast<std::streamsize>(size));
         return in.gcount() == static_cast<std::streamsize>(size);
     }
@@ -347,7 +355,7 @@ private:
         return value;
     }
 
-    static bool read_u64_le(std::ifstream& in, uint64_t& value) noexcept {
+    static bool read_u64_le(std::ifstream& in, uint64_t& value) {
         std::array<uint8_t, sizeof(uint64_t)> bytes{};
         if (!read_exact(in, bytes.data(), bytes.size()))
             return false;
@@ -355,7 +363,7 @@ private:
         return true;
     }
 
-    static bool read_u64_native(std::ifstream& in, uint64_t& value) noexcept {
+    static bool read_u64_native(std::ifstream& in, uint64_t& value) {
         return read_exact(in, &value, sizeof(value));
     }
 };
