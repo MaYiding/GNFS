@@ -32,7 +32,7 @@ OBSOLETE_HARNESS_FILES = (
 )
 SHELL_FUNCTION_SHA256 = {
     ("scripts/test.sh", "run_single_test"): (
-        "6d206a516abad2c55f4c0ecc4dcd5dbd064fde7e023fb211c03c4e341141a975"
+        "3bae6314d8e5f2b08068f919d4544e631d379de95e1eac8c828ba1c36760148c"
     ),
     ("scripts/test.sh", "run_dual_stream_with_timeout"): (
         "4597d13f41083f419ba7d8b436e3cf592de6fcf86ec0acf339d4cbdfeac1719b"

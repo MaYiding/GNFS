@@ -1534,16 +1534,21 @@ run_single_test() {
             module|mod|changed|diff|gate) required_binary=1 ;;
         esac
         if (( required_binary && ${WINDOWS_UNAVAILABLE_TESTS[(Ie)$name]} > 0 )); then
-            # Native Windows shells use MSYS/MinGW names. Cygwin has a Unix
-            # CMake target and must not inherit the WIN32 exclusions.
-            case "$(uname -s)" in
-                MINGW*|MSYS*) required_binary=0; missing_detail="platform_unsupported" ;;
-            esac
+            # Match CMake's target condition, not the shell's uname. Missing
+            # or unrecognized metadata must not excuse a missing binary.
+            local platform_file="${BUILD_DIR}/gnfs-test-platform.txt"
+            if [[ -r "$platform_file" && "$(<"$platform_file")" == "WIN32=1" ]]; then
+                required_binary=0
+                missing_detail="platform_unsupported"
+            fi
         fi
         if (( required_binary )); then
             (( FAILED_TESTS += 1 ))
             log_fail "${name}: 必需的测试二进制不存在或不可执行"
             REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"binary_missing\"}")
+            if (( FAIL_FAST )); then
+                finish_fail_fast
+            fi
             return 1
         fi
         log_skip "${name}: 二进制不存在 (${missing_detail})"
@@ -1595,9 +1600,7 @@ run_single_test() {
         (( FAILED_TESTS += 1 ))
         REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"timeout\",\"elapsed_ms\":${elapsed},\"detail\":\"timeout=${test_timeout}s\"}")
         if (( FAIL_FAST )); then
-            log_fail "首次失败即停 (--fail-fast)"
-            show_summary
-            exit 1
+            finish_fail_fast
         fi
         return 3
     fi
@@ -1649,9 +1652,7 @@ run_single_test() {
         echo "${RESET}"
         REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":${elapsed},\"detail\":\"exit_code=$exit_code\"}")
         if (( FAIL_FAST )); then
-            log_fail "首次失败即停 (--fail-fast)"
-            show_summary
-            exit 1
+            finish_fail_fast
         fi
         return 1
     fi
@@ -7268,7 +7269,7 @@ write_report() {
         entries+="$entry"
     done
 
-    cat > "$REPORT_FILE" <<EOF
+    cat > "$REPORT_FILE" <<EOF || return 1
 {
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "build_type": "${BUILD_TYPE}",
@@ -7281,6 +7282,16 @@ write_report() {
 }
 EOF
     log_info "测试报告 ${ARROW} ${REPORT_FILE}"
+}
+
+finish_fail_fast() {
+    log_fail "首次失败即停 (--fail-fast)"
+    local overall_end_ms
+    overall_end_ms=$(timer_start_ms)
+    write_report "$((overall_end_ms - OVERALL_START_MS))" ||
+        log_fail "无法写入 fail-fast 测试报告"
+    show_summary
+    exit 1
 }
 
 write_50d_campaign_report_atomic() {
