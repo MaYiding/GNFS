@@ -1,18 +1,18 @@
 #include "gnfs/linalg/block_lanczos.hpp"
-#include "gnfs/linalg/block_wiedemann.hpp"
 #include "gnfs/linalg/bl_checkpoint.hpp"
+#include "gnfs/linalg/block_wiedemann.hpp"
 #include "gnfs/util/cpu_intrin.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <random>
-#include <cstring>
 #include <thread>
 
 namespace gnfs::linalg {
@@ -29,8 +29,7 @@ public:
     std::vector<uint64_t> data_;
 
     PackedGF2Matrix(size_t rows, size_t cols)
-        : rows_(rows), cols_(cols),
-          words_per_row_((cols + 63) / 64),
+        : rows_(rows), cols_(cols), words_per_row_((cols + 63) / 64),
           data_(rows * words_per_row_, 0) {}
 
     void set(size_t row, size_t col) {
@@ -106,16 +105,17 @@ public:
 // ============================================================================
 // Optimized Gaussian Elimination using Word-Packed Matrix
 // ============================================================================
-std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
-    const SparseMatrix& matrix, size_t max_deps) {
+std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const SparseMatrix& matrix,
+                                                                      size_t max_deps) {
 
     std::vector<std::vector<bool>> dependencies;
-    dependencies.reserve(max_deps);  // exit cap
+    dependencies.reserve(max_deps); // exit cap
 
     size_t m = matrix.num_rows();
     size_t n = matrix.num_cols();
 
-    if (m == 0 || n == 0) return dependencies;
+    if (m == 0 || n == 0)
+        return dependencies;
 
     PackedGF2Matrix aug(m, m + n);
 
@@ -144,29 +144,30 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     const std::string bl_ckpt_path = bl_checkpoint_full_path();
     const bool bl_ckpt_enabled = !bl_ckpt_path.empty();
     const uint64_t bl_ckpt_interval = bl_checkpoint_interval();
+    const uint64_t matrix_rows = static_cast<uint64_t>(m);
+    const uint64_t matrix_cols = static_cast<uint64_t>(n);
 
     if (bl_ckpt_enabled && BlockLanczosCheckpoint::exists_and_valid(bl_ckpt_path)) {
         auto loaded = BlockLanczosCheckpoint::load(bl_ckpt_path);
-        if (loaded.has_value()
-            && loaded->rows == m
-            && loaded->cols == n
-            && loaded->aug_words_per_row == aug.words_per_row_
-            && loaded->aug.size() == aug.data_.size()
-            && loaded->pivot_row <= m
-            && loaded->cur_col >= m && loaded->cur_col <= m + n) {
+        if (loaded.has_value() && loaded->rows == matrix_rows && loaded->cols == matrix_cols &&
+            loaded->aug_words_per_row == aug.words_per_row_ &&
+            loaded->aug.size() == aug.data_.size()
+            // Each pivot consumes exactly one scanned matrix column. Reject
+            // a checksum-valid cursor that claims more pivots than columns
+            // already passed; resuming such a state would skip valid work.
+            && loaded->pivot_row <= matrix_rows && loaded->cur_col >= matrix_rows &&
+            loaded->cur_col - matrix_rows <= matrix_cols &&
+            loaded->pivot_row <= loaded->cur_col - matrix_rows) {
             std::copy(loaded->aug.begin(), loaded->aug.end(), aug.data_.begin());
             pivot_row = loaded->pivot_row;
             scan_start_col = loaded->cur_col;
             iter_counter = loaded->iteration;
-            std::cerr << "[bl_ckpt] resume from " << bl_ckpt_path
-                      << " iter=" << iter_counter
-                      << " pivot_row=" << pivot_row
-                      << " cur_col=" << scan_start_col
-                      << " (m=" << m << ", n=" << n << ")\n";
+            std::cerr << "[bl_ckpt] resume from " << bl_ckpt_path << " iter=" << iter_counter
+                      << " pivot_row=" << pivot_row << " cur_col=" << scan_start_col << " (m=" << m
+                      << ", n=" << n << ")\n";
         } else {
             // Stale or shape-mismatched checkpoint: reject and start clean.
-            std::cerr << "[bl_ckpt] rejecting incompatible checkpoint "
-                      << bl_ckpt_path
+            std::cerr << "[bl_ckpt] rejecting incompatible checkpoint " << bl_ckpt_path
                       << " (shape or fields mismatched, starting fresh)\n";
             BlockLanczosCheckpoint::remove(bl_ckpt_path);
         }
@@ -176,7 +177,8 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     // The XOR elimination across rows is independent and dominates the cost.
     // For small matrices, single-threaded is fine. For larger ones, parallelize.
     size_t n_threads = std::thread::hardware_concurrency();
-    if (n_threads == 0) n_threads = 4;
+    if (n_threads == 0)
+        n_threads = 4;
 
     // Use persistent ThreadPool for parallel Gaussian elimination.
     // Per-column thread creation (std::thread ctor ~30μs × 12 × 1000 pivots = 360ms)
@@ -189,7 +191,8 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
 
     // Collect rows needing elimination to avoid branch in tight loop
     std::vector<size_t> elim_rows;
-    if (use_parallel) elim_rows.reserve(m);
+    if (use_parallel)
+        elim_rows.reserve(m);
 
     // Instrumentation (env var GNFS_DEBUG_GAUSSIAN=1 to enable output, no runtime cost otherwise)
     size_t stat_pivots = 0;
@@ -208,7 +211,8 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
             }
         }
 
-        if (best_pivot == m) continue;
+        if (best_pivot == m)
+            continue;
 
         if (best_pivot != pivot_row) {
             aug.swap_rows(pivot_row, best_pivot);
@@ -227,14 +231,16 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
 
             ++stat_pivots_in_parallel;
             stat_sum_elim_rows += elim_rows.size();
-            if (elim_rows.size() > stat_max_elim_rows) stat_max_elim_rows = elim_rows.size();
+            if (elim_rows.size() > stat_max_elim_rows)
+                stat_max_elim_rows = elim_rows.size();
 
             // Dynamic threshold (P1.B-1b follow-up, 2026-05-16): adapts to wpr × n_threads.
             // Target: chunk_work_us ≥ 50 μs (5× pool overhead 10 μs).
             //   chunk_rows ≥ 50 × 2000 / wpr  (since 0.5 ns/word)
             //   total_rows ≥ chunk_rows × n_threads = 100000 × n_threads / wpr
             // Caps: [500, 10000] — under 500 cv overhead 主导, 超 10000 浪费 SIMD.
-            // 静态 5000 替换 (适合 wpr≈1700 × n_threads=12 sweet spot, 但 wpr 大时 over-conservative)
+            // 静态 5000 替换 (适合 wpr≈1700 × n_threads=12 sweet spot, 但 wpr 大时
+            // over-conservative)
             const size_t wpr_safe = std::max<size_t>(aug.words_per_row_, 100);
             const size_t dyn_thr_raw = 100000 * n_threads / wpr_safe;
             const size_t dynamic_threshold = std::clamp<size_t>(dyn_thr_raw, 500, 10000);
@@ -248,9 +254,11 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
 
                 for (size_t t = 0; t < n_threads; ++t) {
                     size_t start = t * chunk;
-                    if (start >= elim_rows.size()) break;
+                    if (start >= elim_rows.size())
+                        break;
                     size_t end = std::min(start + chunk, elim_rows.size());
-                    futures.push_back(pool->submit([&aug, &elim_rows, pivot_row, start, end, wpr]() {
+                    futures.push_back(pool->submit([&aug, &elim_rows, pivot_row, start, end,
+                                                    wpr]() {
                         // Prefetch next-row start: aug.data_ size ≥ 100 MB on real workload,
                         // dst row jumps by random elim_rows[i+1] which misses L1/L2.
                         // rw=1 (write intent — xor_rows writes dst), locality=1 (may revisit).
@@ -262,7 +270,8 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
                         }
                     }));
                 }
-                for (auto& f : futures) f.get();
+                for (auto& f : futures)
+                    f.get();
             } else {
                 ++stat_serial_subcalls;
                 // Few rows — single-threaded, same prefetch pattern
@@ -298,14 +307,13 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
             snap.iteration = iter_counter;
             snap.aug = aug.data_;
             if (!snap.save(bl_ckpt_path)) {
-                std::cerr << "[bl_ckpt] WARNING: save failed at iter="
-                          << iter_counter << " col=" << (col + 1) << "\n";
+                std::cerr << "[bl_ckpt] WARNING: save failed at iter=" << iter_counter
+                          << " col=" << (col + 1) << "\n";
             } else {
                 const char* dbg = std::getenv("GNFS_DEBUG_BL_CKPT");
                 if (dbg && dbg[0] != '0' && dbg[0] != '\0') {
                     std::cerr << "[bl_ckpt] save iter=" << iter_counter
-                              << " pivot_row=" << pivot_row
-                              << " col=" << (col + 1) << "\n";
+                              << " pivot_row=" << pivot_row << " col=" << (col + 1) << "\n";
                 }
             }
         }
@@ -322,7 +330,10 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
             auto dep = aug.extract_bits(row, m);
             bool has_nonzero = false;
             for (bool b : dep) {
-                if (b) { has_nonzero = true; break; }
+                if (b) {
+                    has_nonzero = true;
+                    break;
+                }
             }
             if (has_nonzero) {
                 dependencies.push_back(std::move(dep));
@@ -335,20 +346,16 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
     if (gnfs_dbg && gnfs_dbg[0] != '0' && gnfs_dbg[0] != '\0') {
         long double aug_bytes_est =
             (static_cast<long double>(m) * static_cast<long double>(m + n)) / 8.0L;
-        size_t avg_elim = stat_pivots_in_parallel ? stat_sum_elim_rows / stat_pivots_in_parallel : 0;
-        std::cerr << "[Gaussian] m=" << m
-                  << " n=" << n
+        size_t avg_elim =
+            stat_pivots_in_parallel ? stat_sum_elim_rows / stat_pivots_in_parallel : 0;
+        std::cerr << "[Gaussian] m=" << m << " n=" << n
                   << " aug_KB=" << static_cast<size_t>(aug_bytes_est / 1024.0L)
-                  << " pivots=" << stat_pivots
-                  << " in_parallel=" << stat_pivots_in_parallel
+                  << " pivots=" << stat_pivots << " in_parallel=" << stat_pivots_in_parallel
                   << " parallel_calls=" << stat_parallel_calls
-                  << " serial_subcalls=" << stat_serial_subcalls
-                  << " avg_elim=" << avg_elim
+                  << " serial_subcalls=" << stat_serial_subcalls << " avg_elim=" << avg_elim
                   << " max_elim=" << stat_max_elim_rows
-                  << " use_parallel=" << (use_parallel ? 1 : 0)
-                  << " n_threads=" << n_threads
-                  << " deps_found=" << dependencies.size()
-                  << "\n";
+                  << " use_parallel=" << (use_parallel ? 1 : 0) << " n_threads=" << n_threads
+                  << " deps_found=" << dependencies.size() << "\n";
     }
 
     return dependencies;
@@ -357,8 +364,8 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(
 // ============================================================================
 // Main entry point — dispatches to Gaussian or Block Lanczos
 // ============================================================================
-std::vector<std::vector<bool>> BlockLanczos::find_dependencies(
-    const SparseMatrix& matrix, size_t max_deps) {
+std::vector<std::vector<bool>> BlockLanczos::find_dependencies(const SparseMatrix& matrix,
+                                                               size_t max_deps) {
 
     if (matrix.num_rows() == 0 || matrix.num_cols() == 0) {
         return {};
@@ -391,7 +398,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies(
     //
     // The old row-only guard (≤20000) was overly conservative — it left Gaussian
     // out of reach for matrices up to ~90K that would fit comfortably.
-    constexpr size_t GAUSS_BYTE_LIMIT = 4ULL * 1024 * 1024 * 1024;  // 4 GiB
+    constexpr size_t GAUSS_BYTE_LIMIT = 4ULL * 1024 * 1024 * 1024; // 4 GiB
     size_t m_rows = matrix.num_rows();
     size_t n_cols = matrix.num_cols();
     bool gaussian_aug_fits = false;
