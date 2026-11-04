@@ -2,6 +2,7 @@
 #include "gnfs/polynomial/int_polynomial.hpp"
 #include "support/test_check.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
