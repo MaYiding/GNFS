@@ -98,8 +98,12 @@ EOF before cleanup is accepted.
 ### Isolated Build and Report Directory
 
 `scripts/test.sh` uses `${PROJECT_ROOT}/build` for generated build files and
-`test_report.json` by default. Set `GNFS_BUILD_DIR` to an absolute local path
-when a contract test or parallel checkout needs isolated output:
+`test_report.json` by default. Set `GNFS_BUILD_DIR` to a local path when a
+contract test or parallel checkout needs isolated output. Relative paths are
+resolved against the caller's working directory at startup, including when the
+runner is invoked outside the source tree. Configuration, builds, test launches,
+and reports use the resulting absolute path. The `GNFS_TSAN_BUILD_DIR` override
+for `tsan-relation` follows the same rule:
 
 ```bash
 GNFS_BUILD_DIR=/tmp/gnfs-harness-check-build ./scripts/test.sh --no-build perf
@@ -129,8 +133,11 @@ prefix and rejects names outside the registered test catalog before CMake
 configuration. It builds only the selected executable and
 `gnfs_test_process_supervisor`, including their CMake dependencies, then passes
 remaining test arguments through unchanged. `--no-build` keeps the same name
-validation and executes existing binaries without invoking CMake. Other modes
-retain their full-build behavior.
+validation and executes existing binaries without invoking CMake. If the
+requested executable is missing or not executable, the runner reports a failed
+test and exits non-zero, including with `--no-build`. Other modes retain their
+full-build and optional-binary skip behavior. Verbose builds use CMake's
+`--verbose` option so Make and Ninja both build their targets.
 
 `scripts/test.sh module <name>` treats an unknown module as a failed selection.
 The runner records that invalid request in `test_report.json` and exits non-zero;
