@@ -322,17 +322,30 @@ void test_target_multiplier_is_locale_independent() {
         previous_value = previous;
     }
 
-    unsetenv("GNFS_SIEVE_TARGET_MULT");
+    struct RestoreTestState final {
+        std::string numeric_locale;
+        std::optional<std::string> target_multiplier;
+
+        ~RestoreTestState() noexcept {
+            (void)std::setlocale(LC_NUMERIC, numeric_locale.c_str());
+            if (target_multiplier.has_value()) {
+                (void)setenv("GNFS_SIEVE_TARGET_MULT", target_multiplier->c_str(), 1);
+            } else {
+                (void)unsetenv("GNFS_SIEVE_TARGET_MULT");
+            }
+        }
+    };
+    const RestoreTestState restore{previous_locale, previous_value};
+
+    GNFS_TEST_CHECK(std::setlocale(LC_NUMERIC, "C") != nullptr);
+    GNFS_TEST_CHECK(unsetenv("GNFS_SIEVE_TARGET_MULT") == 0);
     constexpr size_t columns = 1000;
     const auto baseline_params = GNFSParams::compute(197);
     const size_t baseline = baseline_params.raw_relation_target(columns);
-    setenv("GNFS_SIEVE_TARGET_MULT", "3.5", 1);
-    const auto params = GNFSParams::compute(197);
 
     // The test is conditional because minimal CI images may not install a
     // non-C locale. When one is available, its comma decimal separator makes
     // the process-locale regression deterministic.
-    (void)std::setlocale(LC_NUMERIC, "C");
 #if defined(_WIN32)
     constexpr const char* locale_candidates[] = {"German_Germany.1252", "French_France.1252"};
 #else
@@ -345,28 +358,28 @@ void test_target_multiplier_is_locale_independent() {
         }
         const auto* conventions = std::localeconv();
         if (conventions != nullptr && conventions->decimal_point != nullptr &&
-            std::string_view(conventions->decimal_point) != ".") {
+            std::string_view(conventions->decimal_point) == ",") {
             comma_locale_found = true;
             break;
         }
     }
 
+    if (!comma_locale_found) {
+        std::cout << "  SKIP (no comma-decimal locale available)" << std::endl;
+        return;
+    }
+
+    // compute() parses and freezes the multiplier, so create the snapshot
+    // only after changing LC_NUMERIC. An existing snapshot would not exercise
+    // the locale-sensitive parser boundary.
+    GNFS_TEST_CHECK(setenv("GNFS_SIEVE_TARGET_MULT", "3.5", 1) == 0);
+    const auto params = GNFSParams::compute(197);
+    GNFS_TEST_CHECK(params.sieve_target_multiplier == 3.5);
     const size_t observed = params.raw_relation_target(columns);
     const size_t expected = static_cast<size_t>(static_cast<double>(baseline) * 3.5);
-
-    if (previous_value.has_value()) {
-        (void)setenv("GNFS_SIEVE_TARGET_MULT", previous_value->c_str(), 1);
-    } else {
-        (void)unsetenv("GNFS_SIEVE_TARGET_MULT");
-    }
-    (void)std::setlocale(LC_NUMERIC, previous_locale.c_str());
-
-    if (comma_locale_found) {
-        GNFS_TEST_CHECK(observed == expected);
-    } else {
-        std::cout << "  SKIP (no comma-decimal locale available)" << std::endl;
-    }
-    std::cout << "  PASS" << std::endl;
+    GNFS_TEST_CHECK(observed == expected);
+    std::cout << "  PASS (comma-decimal locale: " << std::setlocale(LC_NUMERIC, nullptr) << ")"
+              << std::endl;
 }
 
 void test_threshold_values() {
