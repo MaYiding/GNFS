@@ -2142,8 +2142,11 @@ def parse_record(line):
         require(current_supported and peak_supported, "supported backend omitted RSS")
         phase_currents = [int(fields[key]) for key in current_fields[1:]]
         phase_peaks = [int(fields[key]) for key in peak_fields[1:]]
-        require(all(current <= peak for current, peak in zip(phase_currents, phase_peaks)),
-                "phase current RSS exceeds lifetime peak")
+        # Linux statm uses approximate RSS accounting and is read separately
+        # from getrusage. Preserve both observations without ordering them.
+        if fields["process_rss_backend"] != "linux_getrusage":
+            require(all(current <= peak for current, peak in zip(phase_currents, phase_peaks)),
+                    "phase current RSS exceeds lifetime peak")
         require(phase_peaks == sorted(phase_peaks), "lifetime peak RSS regressed")
     return fields
 
@@ -2194,8 +2197,39 @@ try:
         else "process_current_rss_bytes=1"
     )
     expect_rejected(" ".join(partial_rss), "partial RSS linkage")
+
+    # Linux statm and getrusage are independent observations. Exercise this
+    # contract even when the supplied fixture has no native RSS measurements.
+    linux_rss = dict(parsed)
+    linux_rss.update(process_rss_backend="linux_getrusage",
+                     process_current_rss_supported="true",
+                     process_peak_rss_supported="true")
+    for key in OPTIONAL_UINT_FIELDS:
+        if "rss" in key:
+            linux_rss[key] = "1000" if "peak" in key else "2000"
+
+    def rss_record(**changes):
+        fields = {**linux_rss, **changes}
+        return "GNFS_EXPERIMENT_V2 " + " ".join(
+            f"{key}={fields[key]}" for key in EXPECTED_KEYS
+        )
+
+    require(parse_record(rss_record()) == linux_rss,
+            "Linux RSS observations were changed")
+    for backend in ("darwin_getrusage", "windows_psapi"):
+        expect_rejected(rss_record(process_rss_backend=backend),
+                        f"{backend} current RSS above peak")
+    for changes, description in (
+        ({"rss_after_polynomial_peak_bytes": "999"}, "Linux lifetime peak regression"),
+        ({"process_current_rss_bytes": "1999"}, "Linux terminal current RSS mismatch"),
+        ({"process_peak_rss_bytes": "999"}, "Linux terminal peak RSS mismatch"),
+        ({"rss_after_sieve_current_bytes": "na"}, "Linux partial RSS linkage"),
+        ({"process_peak_rss_supported": "false"}, "Linux RSS support mismatch"),
+    ):
+        expect_rejected(rss_record(**changes), description)
 except SchemaError as error:
     print(f"{label}: GNFS_EXPERIMENT_V2 schema error: {error}", file=sys.stderr)
+    print(f"{label}: rejected record (unvalidated): {record}", file=sys.stderr)
     sys.exit(1)
 PY
 }
