@@ -58,7 +58,7 @@ std::vector<uint32_t> make_primes(std::size_t count, uint32_t start = 3) {
     uint32_t v = start;
     for (std::size_t i = 0; i < count; ++i) {
         primes.push_back(v);
-        v += 2;  // odd-stride; sufficient diversity for dispatcher tests
+        v += 2; // odd-stride; sufficient diversity for dispatcher tests
     }
     return primes;
 }
@@ -82,13 +82,11 @@ std::vector<uint32_t> deterministic_roots(uint32_t p) {
 
 // Convenience: run the dispatcher with a given env value and return the
 // per-prime root vectors.
-std::vector<std::vector<uint32_t>>
-run_dispatch_with_env(const std::vector<uint32_t>& primes,
-                      const char* env_value) {
+std::vector<std::vector<uint32_t>> run_dispatch_with_env(const std::vector<uint32_t>& primes,
+                                                         const char* env_value) {
     apply_env(env_value);
     auto results = parallel_fb_roots<std::vector<uint32_t>>(
-        primes,
-        [](uint32_t p) { return deterministic_roots(p); });
+        primes, [](uint32_t p) { return deterministic_roots(p); });
     apply_env(nullptr);
     return results;
 }
@@ -102,19 +100,19 @@ void test_env_unset_default_zero() {
     apply_env(nullptr);
     int v = fb_roots_threads();
     if (v != 0) {
-        std::cerr << "\n  ERROR: expected 0 (unset default), got " << v
-                  << std::endl;
+        std::cerr << "\n  ERROR: expected 0 (unset default), got " << v << std::endl;
         std::abort();
     }
 
     // resolve() with env == 0 should pick up hardware_concurrency, bounded by n.
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::size_t resolved100 = resolve_fb_roots_threads(100);
     std::size_t expect100 = std::min<std::size_t>(hw, 100);
     if (resolved100 != expect100) {
-        std::cerr << "\n  ERROR: resolve(100) = " << resolved100
-                  << ", expected " << expect100 << std::endl;
+        std::cerr << "\n  ERROR: resolve(100) = " << resolved100 << ", expected " << expect100
+                  << std::endl;
         std::abort();
     }
 
@@ -162,8 +160,8 @@ void test_env_one_sequential() {
         std::abort();
     }
     if (resolve_fb_roots_threads(0) != 0) {
-        std::cerr << "\n  ERROR: resolve(0) expected 0, got "
-                  << resolve_fb_roots_threads(0) << std::endl;
+        std::cerr << "\n  ERROR: resolve(0) expected 0, got " << resolve_fb_roots_threads(0)
+                  << std::endl;
         std::abort();
     }
 
@@ -181,11 +179,12 @@ void test_env_four_parallel() {
     int v = fb_roots_threads();
     unsigned int hw = std::thread::hardware_concurrency();
     int hw_max = static_cast<int>(hw) * 2;
-    if (hw_max <= 0) hw_max = 16;
+    if (hw_max <= 0)
+        hw_max = 16;
     int expect = (4 <= hw_max) ? 4 : hw_max;
     if (v != expect) {
-        std::cerr << "\n  ERROR: expected " << expect << " for \"4\" (hw*2="
-                  << hw_max << "), got " << v << std::endl;
+        std::cerr << "\n  ERROR: expected " << expect << " for \"4\" (hw*2=" << hw_max << "), got "
+                  << v << std::endl;
         std::abort();
     }
     apply_env(nullptr);
@@ -202,14 +201,25 @@ void test_env_above_max_clamps() {
     int v = fb_roots_threads();
     unsigned int hw = std::thread::hardware_concurrency();
     int hw_max = static_cast<int>(hw) * 2;
-    if (hw_max <= 0) hw_max = 16;
+    if (hw_max <= 0)
+        hw_max = 16;
     if (v != hw_max) {
-        std::cerr << "\n  ERROR: expected clamp to " << hw_max
-                  << ", got " << v << std::endl;
+        std::cerr << "\n  ERROR: expected clamp to " << hw_max << ", got " << v << std::endl;
         std::abort();
     }
     apply_env(nullptr);
     std::cout << " PASS (clamped to " << v << ")\n";
+
+    // Values beyond int/strtoull range must saturate to the same cap instead
+    // of falling back to the default path.
+    apply_env("999999999999999999999999999999");
+    const int huge = fb_roots_threads();
+    if (huge != hw_max) {
+        std::cerr << "\n  ERROR: oversized value expected " << hw_max << ", got " << huge
+                  << std::endl;
+        std::abort();
+    }
+    apply_env(nullptr);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -229,8 +239,7 @@ void test_env_invalid_non_numeric() {
         apply_env(s);
         int v = fb_roots_threads();
         if (v != 0) {
-            std::cerr << "\n  ERROR: \"" << s << "\" expected 0, got " << v
-                      << std::endl;
+            std::cerr << "\n  ERROR: \"" << s << "\" expected 0, got " << v << std::endl;
             std::abort();
         }
     }
@@ -239,8 +248,7 @@ void test_env_invalid_non_numeric() {
     apply_env("xyz5");
     int v_xyz = fb_roots_threads();
     if (v_xyz != 0) {
-        std::cerr << "\n  ERROR: \"xyz5\" expected 0, got " << v_xyz
-                  << std::endl;
+        std::cerr << "\n  ERROR: \"xyz5\" expected 0, got " << v_xyz << std::endl;
         std::abort();
     }
 
@@ -252,24 +260,21 @@ void test_env_invalid_non_numeric() {
 // Test 7: Dispatcher N=1 sequential — calls worker exactly once per prime
 // ───────────────────────────────────────────────────────────────────────────
 void test_parallel_dispatcher_n1_sequential() {
-    std::cout << "Test 7: dispatcher N=1 sequential, exactly-once invocation..."
-              << std::flush;
+    std::cout << "Test 7: dispatcher N=1 sequential, exactly-once invocation..." << std::flush;
 
     apply_env("1");
     auto primes = make_primes(50, /*start=*/11);
     std::atomic<int> call_count{0};
 
-    auto results = parallel_fb_roots<std::vector<uint32_t>>(
-        primes,
-        [&call_count](uint32_t p) {
-            call_count.fetch_add(1, std::memory_order_relaxed);
-            return deterministic_roots(p);
-        });
+    auto results = parallel_fb_roots<std::vector<uint32_t>>(primes, [&call_count](uint32_t p) {
+        call_count.fetch_add(1, std::memory_order_relaxed);
+        return deterministic_roots(p);
+    });
 
     int calls = call_count.load(std::memory_order_relaxed);
     if (calls != static_cast<int>(primes.size())) {
-        std::cerr << "\n  ERROR: expected " << primes.size() << " calls, got "
-                  << calls << std::endl;
+        std::cerr << "\n  ERROR: expected " << primes.size() << " calls, got " << calls
+                  << std::endl;
         std::abort();
     }
     if (results.size() != primes.size()) {
@@ -279,8 +284,8 @@ void test_parallel_dispatcher_n1_sequential() {
     }
     for (std::size_t i = 0; i < primes.size(); ++i) {
         if (results[i] != deterministic_roots(primes[i])) {
-            std::cerr << "\n  ERROR: results[" << i << "] mismatch for prime="
-                      << primes[i] << std::endl;
+            std::cerr << "\n  ERROR: results[" << i << "] mismatch for prime=" << primes[i]
+                      << std::endl;
             std::abort();
         }
     }
@@ -304,15 +309,15 @@ void test_parallel_dispatcher_n4_parity() {
     auto par = run_dispatch_with_env(primes, "4");
 
     if (seq.size() != par.size()) {
-        std::cerr << "\n  ERROR: seq.size()=" << seq.size()
-                  << " != par.size()=" << par.size() << std::endl;
+        std::cerr << "\n  ERROR: seq.size()=" << seq.size() << " != par.size()=" << par.size()
+                  << std::endl;
         std::abort();
     }
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
-            std::cerr << "\n  ERROR: index " << i << " mismatch for prime="
-                      << primes[i] << " seq.size=" << seq[i].size()
-                      << " par.size=" << par[i].size() << std::endl;
+            std::cerr << "\n  ERROR: index " << i << " mismatch for prime=" << primes[i]
+                      << " seq.size=" << seq[i].size() << " par.size=" << par[i].size()
+                      << std::endl;
             std::abort();
         }
     }
@@ -341,7 +346,8 @@ void test_parallel_dispatcher_nhw_parity() {
     std::cout << "Test 9: dispatcher N=hw parity..." << std::flush;
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::string hw_str = std::to_string(hw);
 
     auto primes = make_primes(500, /*start=*/19);
@@ -351,14 +357,13 @@ void test_parallel_dispatcher_nhw_parity() {
     assert(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
-            std::cerr << "\n  ERROR: hw-parity index " << i
-                      << " mismatch for prime=" << primes[i] << std::endl;
+            std::cerr << "\n  ERROR: hw-parity index " << i << " mismatch for prime=" << primes[i]
+                      << std::endl;
             std::abort();
         }
     }
 
-    std::cout << " PASS (N=hw=" << hw << ", " << primes.size()
-              << " primes)\n";
+    std::cout << " PASS (N=hw=" << hw << ", " << primes.size() << " primes)\n";
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -374,11 +379,9 @@ void test_empty_primes_no_stall() {
     // called.
     apply_env("1");
     auto seq = parallel_fb_roots<std::vector<uint32_t>>(
-        empty,
-        [&calls](uint32_t) -> std::vector<uint32_t> {
+        empty, [&calls](uint32_t) -> std::vector<uint32_t> {
             calls.fetch_add(1);
-            std::cerr << "\n  ERROR: worker invoked on empty primes vector"
-                      << std::endl;
+            std::cerr << "\n  ERROR: worker invoked on empty primes vector" << std::endl;
             std::abort();
         });
     assert(seq.empty());
@@ -388,11 +391,9 @@ void test_empty_primes_no_stall() {
     // ThreadPool spawn.
     apply_env("4");
     auto par = parallel_fb_roots<std::vector<uint32_t>>(
-        empty,
-        [&calls](uint32_t) -> std::vector<uint32_t> {
+        empty, [&calls](uint32_t) -> std::vector<uint32_t> {
             calls.fetch_add(1);
-            std::cerr << "\n  ERROR: worker invoked on empty primes vector"
-                      << std::endl;
+            std::cerr << "\n  ERROR: worker invoked on empty primes vector" << std::endl;
             std::abort();
         });
     assert(par.empty());
@@ -401,11 +402,9 @@ void test_empty_primes_no_stall() {
     // Default (env unset) — also no-op.
     apply_env(nullptr);
     auto def = parallel_fb_roots<std::vector<uint32_t>>(
-        empty,
-        [&calls](uint32_t) -> std::vector<uint32_t> {
+        empty, [&calls](uint32_t) -> std::vector<uint32_t> {
             calls.fetch_add(1);
-            std::cerr << "\n  ERROR: worker invoked on empty primes vector"
-                      << std::endl;
+            std::cerr << "\n  ERROR: worker invoked on empty primes vector" << std::endl;
             std::abort();
         });
     assert(def.empty());
@@ -419,30 +418,25 @@ void test_empty_primes_no_stall() {
 // no double-call)
 // ───────────────────────────────────────────────────────────────────────────
 void test_single_prime_no_stall() {
-    std::cout << "Test 11: single prime N=4 (no stall, called exactly once)..."
-              << std::flush;
+    std::cout << "Test 11: single prime N=4 (no stall, called exactly once)..." << std::flush;
 
     apply_env("4");
     std::vector<uint32_t> single = {17};
     std::atomic<int> calls{0};
 
     auto t0 = std::chrono::steady_clock::now();
-    auto results = parallel_fb_roots<std::vector<uint32_t>>(
-        single,
-        [&calls](uint32_t p) {
-            calls.fetch_add(1, std::memory_order_relaxed);
-            return deterministic_roots(p);
-        });
+    auto results = parallel_fb_roots<std::vector<uint32_t>>(single, [&calls](uint32_t p) {
+        calls.fetch_add(1, std::memory_order_relaxed);
+        return deterministic_roots(p);
+    });
     auto t1 = std::chrono::steady_clock::now();
-    long long ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
     assert(results.size() == 1);
     assert(results[0] == deterministic_roots(17));
     int total_calls = calls.load(std::memory_order_relaxed);
     if (total_calls != 1) {
-        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls
-                  << std::endl;
+        std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls << std::endl;
         std::abort();
     }
 
@@ -450,8 +444,8 @@ void test_single_prime_no_stall() {
     // creation). Guard against accidental pool spin-up — a generous bound
     // so sanitizers do not false-fail.
     if (ms > 1000) {
-        std::cerr << "\n  WARN: single-prime dispatch took " << ms
-                  << " ms (expected << 1000 ms)" << std::endl;
+        std::cerr << "\n  WARN: single-prime dispatch took " << ms << " ms (expected << 1000 ms)"
+                  << std::endl;
         // Soft signal; do not abort.
     }
 
@@ -472,22 +466,21 @@ void test_env_partial_parse_behaviour() {
     // partial parses (consumed > 0) so this yields 12 (clamped to hw*2).
     unsigned int hw = std::thread::hardware_concurrency();
     int hw_max = static_cast<int>(hw) * 2;
-    if (hw_max <= 0) hw_max = 16;
+    if (hw_max <= 0)
+        hw_max = 16;
     int expect = (12 <= hw_max) ? 12 : hw_max;
     if (v != expect) {
-        std::cerr << "\n  ERROR: \"12abc\" expected " << expect
-                  << ", got " << v << std::endl;
+        std::cerr << "\n  ERROR: \"12abc\" expected " << expect << ", got " << v << std::endl;
         std::abort();
     }
     apply_env(nullptr);
     std::cout << " PASS (parsed to " << v << ")\n";
 }
 
-}  // namespace
+} // namespace
 
 int main() {
-    std::cout << "=== Factor Base Roots Parallel Dispatch Tests ==="
-              << std::endl;
+    std::cout << "=== Factor Base Roots Parallel Dispatch Tests ===" << std::endl;
 
     test_env_unset_default_zero();
     test_env_zero_explicit();
@@ -502,7 +495,6 @@ int main() {
     test_single_prime_no_stall();
     test_env_partial_parse_behaviour();
 
-    std::cout << std::endl
-              << "=== All FB Roots Parallel Tests PASSED ===" << std::endl;
+    std::cout << std::endl << "=== All FB Roots Parallel Tests PASSED ===" << std::endl;
     return 0;
 }
