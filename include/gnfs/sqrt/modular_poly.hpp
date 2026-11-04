@@ -361,7 +361,7 @@ public:
             throw std::invalid_argument(
                 "ModularPoly::is_square requires an invertible leading coefficient");
         }
-        ModularPoly normalized_a(normalized_coefficients(a.coeffs_, p));
+        ModularPoly normalized_a = reduce(a, f, p);
         if (normalized_a.is_zero())
             return true;
         if (normalized_a.is_one())
@@ -476,7 +476,7 @@ public:
             throw std::invalid_argument(
                 "ModularPoly::sqrt_tonelli_shanks requires an invertible leading coefficient");
         }
-        ModularPoly normalized_a(normalized_coefficients(a.coeffs_, p));
+        ModularPoly normalized_a = reduce(a, f, p);
         if (normalized_a.is_zero())
             return ModularPoly();
         if (normalized_a.is_one())
