@@ -45,9 +45,10 @@
 //   parallel paths produce identical `std::vector<Result>` outputs.
 //
 // Integration boundary:
-//   * `src/factor_base/builder.cpp` uses this dispatcher for both ordinary
-//     algebraic-prime and special-Q range root finding. The default (unset or
-//     zero-valued env) keeps the legacy hardware-concurrency worker count.
+//   * `src/factor_base/builder.cpp` shares this worker-count resolver for both
+//     ordinary and special-Q roots, using flat buffers per contiguous range.
+//     The per-prime dispatcher remains available to independent callers.
+//     Unset or zero-valued env keeps the legacy hardware-concurrency count.
 //   * We do NOT change the inner CZ algorithm. Only outer dispatch changes.
 //   * We do NOT impose synchronisation requirements beyond "worker_fn writes
 //     no shared mutable state" — the helper does not own GMP buffers and

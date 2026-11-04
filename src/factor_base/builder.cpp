@@ -2,6 +2,7 @@
 #include "gnfs/factor_base/fb_roots_parallel.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 #include "gnfs/util/primes.hpp"
+#include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -28,6 +29,53 @@ constexpr uint32_t FACTOR_BASE_VERSION = 1;
 // Legacy v1 files used zero for an unset count, so only an explicitly configured
 // zero receives this marker.
 constexpr uint64_t EXPLICIT_ZERO_SIEVE_COUNT = UINT64_C(1) << 63;
+
+struct AlgebraicRootEntry {
+    uint32_t p, r, log_p;
+};
+
+template <typename AppendPrime>
+void append_algebraic_primes_in_chunks(FactorBase& fb, const std::vector<uint32_t>& primes,
+                                       bool parallel, const AppendPrime& append_prime) {
+    if (primes.empty()) {
+        return;
+    }
+    const size_t workers =
+        parallel && primes.size() >= 200 ? resolve_fb_roots_threads(primes.size()) : 1;
+    std::vector<std::vector<AlgebraicRootEntry>> chunks(workers);
+    const size_t chunk_size = primes.size() / workers;
+    const size_t remainder = primes.size() % workers;
+
+    const auto process_chunk = [&](size_t chunk) {
+        const size_t begin = chunk * chunk_size + std::min(chunk, remainder);
+        const size_t end = begin + chunk_size + (chunk < remainder ? 1 : 0);
+        auto& entries = chunks[chunk];
+        if (end - begin > entries.max_size() / 2) {
+            throw std::length_error("FactorBaseBuilder: root chunk exceeds vector limits");
+        }
+        // Retain the historical two-entries-per-prime reserve, but only one
+        // flat buffer per worker. Individual root vectors remain temporary.
+        entries.reserve((end - begin) * 2);
+        for (size_t index = begin; index < end; ++index) {
+            append_prime(primes[index], entries);
+        }
+    };
+
+    if (workers == 1) {
+        process_chunk(0);
+    } else {
+        gnfs::util::ThreadPool pool(static_cast<uint32_t>(workers));
+        pool.parallel_for_index(0, workers, process_chunk);
+    }
+
+    // Consecutive prime ranges and ordered flattening make the output
+    // independent of worker scheduling and the selected worker cap.
+    for (const auto& entries : chunks) {
+        for (const auto& entry : entries) {
+            fb.add_algebraic(entry.p, entry.r, entry.log_p, 1);
+        }
+    }
+}
 
 enum class FactorBaseWireEncoding {
     LittleEndian,
@@ -562,19 +610,10 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
             break;
     }
 
-    // Step 2: Parallel root finding
-    // Each prime is an independent CZ/root-finding task. Keep one result
-    // vector per input prime so the dispatcher can write disjoint slots while
-    // the final flattening preserves the historical prime order.
-    struct AlgEntry {
-        uint32_t p, r, log_p;
-    };
-
-    const auto worker = [&](uint32_t p) {
-        std::vector<AlgEntry> entries;
+    // Step 2: Find roots into bounded, consecutive worker buffers.
+    const auto append_prime = [&](uint32_t p, std::vector<AlgebraicRootEntry>& entries) {
         auto roots = find_roots_mod_p_unchecked(ctx, p);
         const uint32_t lp = compute_log_prime_precise(p, log_scale);
-        entries.reserve(roots.size() + 1);
         for (uint32_t root : roots) {
             entries.push_back({p, root, lp});
         }
@@ -585,26 +624,8 @@ void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialCo
         if (has_proj) {
             entries.push_back({p, core::AlgebraicPrime::PROJECTIVE_ROOT, lp});
         }
-        return entries;
     };
-
-    std::vector<std::vector<AlgEntry>> per_prime;
-    if (parallel && primes.size() >= 200) {
-        per_prime = parallel_fb_roots<std::vector<AlgEntry>>(primes, worker);
-    } else {
-        per_prime.reserve(primes.size());
-        for (uint32_t p : primes) {
-            per_prime.push_back(worker(p));
-        }
-    }
-
-    // Step 3: Merge in prime order. The per-prime dispatcher guarantees that
-    // result[i] corresponds to primes[i] regardless of worker count.
-    for (auto& local : per_prime) {
-        for (auto& e : local) {
-            fb.add_algebraic(e.p, e.r, e.log_p, 1);
-        }
-    }
+    append_algebraic_primes_in_chunks(fb, primes, parallel, append_prime);
 }
 
 std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p(const PolynomialContext& ctx,
@@ -841,17 +862,10 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
         primes.push_back(p32);
     }
 
-    // Step 2: Parallel root finding. See find_algebraic_primes() above for
-    // the per-prime ordering and GNFS_FB_ROOTS_THREADS contract.
-    struct AlgEntry {
-        uint32_t p, r, log_p;
-    };
-
-    const auto worker = [&](uint32_t p) {
-        std::vector<AlgEntry> entries;
+    // Step 2: Use the same bounded buffers and ordering as ordinary roots.
+    const auto append_prime = [&](uint32_t p, std::vector<AlgebraicRootEntry>& entries) {
         auto roots = find_roots_mod_p_unchecked(ctx, p);
         const uint32_t lp = compute_log_prime_precise(p, log_scale);
-        entries.reserve(roots.size() + 1);
         for (uint32_t root : roots) {
             entries.push_back({p, root, lp});
         }
@@ -861,25 +875,8 @@ void FactorBaseBuilder::find_algebraic_primes_range(FactorBase& fb, const Polyno
         if (has_proj) {
             entries.push_back({p, core::AlgebraicPrime::PROJECTIVE_ROOT, lp});
         }
-        return entries;
     };
-
-    std::vector<std::vector<AlgEntry>> per_prime;
-    if (parallel && primes.size() >= 200) {
-        per_prime = parallel_fb_roots<std::vector<AlgEntry>>(primes, worker);
-    } else {
-        per_prime.reserve(primes.size());
-        for (uint32_t p : primes) {
-            per_prime.push_back(worker(p));
-        }
-    }
-
-    // Step 3: Merge in prime order.
-    for (auto& local : per_prime) {
-        for (auto& e : local) {
-            fb.add_algebraic(e.p, e.r, e.log_p, 1);
-        }
-    }
+    append_algebraic_primes_in_chunks(fb, primes, parallel, append_prime);
 }
 
 } // namespace gnfs::factor_base

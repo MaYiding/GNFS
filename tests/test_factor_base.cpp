@@ -394,16 +394,30 @@ void test_builder_root_worker_cap() {
     // The explicit sequential cap and an explicit multi-worker cap must retain
     // the same prime/root order as the legacy default path.
     auto sequential = build_with_env("1", true);
+    auto two_workers = build_with_env("2", true);
     auto parallel = build_with_env("4", true);
     auto default_path = build_with_env(nullptr, true);
     require(sequential.rational_count() == parallel.rational_count() &&
                 sequential.rational_count() == default_path.rational_count(),
             "worker cap changed rational-prime count");
     require(sequential.algebraic_count() == parallel.algebraic_count() &&
-                sequential.algebraic_count() == default_path.algebraic_count(),
+                sequential.algebraic_count() == default_path.algebraic_count() &&
+                sequential.algebraic_count() == two_workers.algebraic_count(),
             "worker cap changed algebraic-prime count");
+    require(sequential.sieve_algebraic_count() > 0 &&
+                sequential.sieve_algebraic_count() < sequential.algebraic_count(),
+            "worker-cap fixture must cover ordinary and special-Q roots");
+    require(sequential.sieve_algebraic_count() == two_workers.sieve_algebraic_count() &&
+                sequential.sieve_algebraic_count() == parallel.sieve_algebraic_count() &&
+                sequential.sieve_algebraic_count() == default_path.sieve_algebraic_count(),
+            "worker cap changed ordinary/special-Q boundary");
     for (size_t i = 0; i < sequential.algebraic_count(); ++i) {
         const auto& expected = sequential.algebraic()[i];
+        require(expected.p == two_workers.algebraic()[i].p &&
+                    expected.r == two_workers.algebraic()[i].r &&
+                    expected.log_p == two_workers.algebraic()[i].log_p &&
+                    expected.degree == two_workers.algebraic()[i].degree,
+                "two-worker chunks changed root ordering");
         require(expected.p == parallel.algebraic()[i].p &&
                     expected.r == parallel.algebraic()[i].r &&
                     expected.log_p == parallel.algebraic()[i].log_p &&
@@ -431,7 +445,46 @@ void test_builder_root_worker_cap() {
 
     set_fb_roots_env(nullptr);
     gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
-    std::cout << "  Builder worker cap: PASS (default, N=1, N=4, parallel=false)" << std::endl;
+    std::cout << "  Builder worker cap: PASS (default, N=1, N=2, N=4, parallel=false)" << std::endl;
+}
+
+void test_builder_root_chunks_preserve_projective_roots() {
+    std::cout << "Testing projective roots across ordinary/special-Q chunks..." << std::endl;
+    // The leading coefficient has one prime below and one prime above the
+    // ordinary bound. f(2) = 143, so both paths use a valid context.
+    PolynomialContext ctx(Integer(143), {Integer(-1321), Integer(0), Integer(0), Integer(183)},
+                          Integer(2));
+    GNFS_TEST_CHECK(ctx.verify());
+    FactorBaseBuilder::Options options;
+    options.rational_bound = 43;
+    options.algebraic_bound = 43;
+    options.special_q_bound = 10000;
+    options.parallel = false;
+    const auto sequential = FactorBaseBuilder::build(ctx, options);
+
+    set_fb_roots_env("2");
+    gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
+    options.parallel = true;
+    const auto parallel = FactorBaseBuilder::build(ctx, options);
+    set_fb_roots_env(nullptr);
+    gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
+
+    GNFS_TEST_CHECK(sequential.algebraic_count() == parallel.algebraic_count());
+    GNFS_TEST_CHECK(sequential.sieve_algebraic_count() == parallel.sieve_algebraic_count());
+    bool ordinary_projective = false;
+    bool special_q_projective = false;
+    for (size_t i = 0; i < sequential.algebraic_count(); ++i) {
+        const auto& expected = sequential.algebraic()[i];
+        const auto& actual = parallel.algebraic()[i];
+        GNFS_TEST_CHECK(expected.p == actual.p && expected.r == actual.r &&
+                        expected.log_p == actual.log_p && expected.degree == actual.degree);
+        if (actual.r == AlgebraicPrime::PROJECTIVE_ROOT) {
+            ordinary_projective |= actual.p == 3 && i < parallel.sieve_algebraic_count();
+            special_q_projective |= actual.p == 61 && i >= parallel.sieve_algebraic_count();
+        }
+    }
+    GNFS_TEST_CHECK(ordinary_projective && special_q_projective);
+    std::cout << "  Projective root chunk ordering: PASS" << std::endl;
 }
 
 void test_larger_bound() {
@@ -1037,6 +1090,7 @@ int main() {
     test_zero_and_one_bounds();
     test_parallel_build();
     test_builder_root_worker_cap();
+    test_builder_root_chunks_preserve_projective_roots();
     test_larger_bound();
     test_segmented_parallel_sieve();
     test_base_m_irreducibility();
