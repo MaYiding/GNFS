@@ -290,14 +290,15 @@ env.pop('GNFS_TEST_PROCESS_SUPERVISOR', None)
 
 case_index = 0
 
-def invoke(options, *, cached=False, build_exit=0):
+def invoke(options, *, cached=False, build_exit=0, missing_binary=False):
     global case_index
     case_index += 1
     build = fixture / str(case_index) / "build"
     build.mkdir(parents=True)
     if cached:
         (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Debug\n')
-    executable(build / 'test_integer', "raise SystemExit(0)\n")
+    if not missing_binary:
+        executable(build / 'test_integer', "raise SystemExit(0)\n")
     executable(build / 'gnfs_test_process_supervisor',
                "args = sys.argv[sys.argv.index('--') + 1:]\nraise SystemExit(subprocess.call(args))\n")
     log.write_text('')
@@ -321,6 +322,9 @@ for options, cached in [(['run', 'integer', '--suite', 'value with spaces'], Fal
     builds = [c for c in calls if c[:2] == ['cmake', '--build']]
     require(len(builds) == 1, f'expected one build: {calls!r}')
     command = builds[0]
+    if '-v' in options:
+        require('--verbose' in command and '--' not in command,
+                f'verbose build depends on generator-specific flags: {command!r}')
     require('--target' in command, f'single-test run requested a full build: {command!r}')
     targets = command[command.index('--target') + 1:]
     if '--' in targets:
@@ -349,6 +353,14 @@ require(any(c[0] == 'test_integer' for c in calls), '--no-build did not execute 
 result, calls, _ = invoke(['run', 'integer'], build_exit=41)
 require(result.returncode != 0 and not any(c[0] == 'test_integer' for c in calls),
         f'failed build continued into tests: {calls!r}, {result.stdout}')
+
+for options in [['run', 'integer'], ['--no-build', 'run', 'integer']]:
+    result, calls, build = invoke(options, missing_binary=True)
+    require(result.returncode != 0, f'missing explicitly requested binary succeeded: {result.stdout}')
+    report = json.loads((build / 'test_report.json').read_text())
+    require(report['total'] == 1 and report['failed'] == 1 and report['skipped'] == 0 and
+            report['tests'][0]['detail'] == 'binary_missing',
+            f'missing requested test was not reported as a failure: {report!r}')
 
 result, calls, _ = invoke(['build'], cached=True)
 require(result.returncode == 0 and not any('--target' in c for c in calls),

@@ -1440,13 +1440,16 @@ do_build() {
 
     # An empty target list preserves the full build used by other modes.
     local -a build_command=(cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS")
+    # Let CMake select the generator's verbose option. Native Make -v prints
+    # its version and exits without building any target.
+    (( VERBOSE )) && build_command+=(--verbose)
     if (( $# > 0 )); then
         build_command+=(--target "$@")
         log_info "构建目标: $*"
     fi
     local build_output exit_code=0
     if (( VERBOSE )); then
-        "${build_command[@]}" -- -v 2>&1 || exit_code=$?
+        "${build_command[@]}" 2>&1 || exit_code=$?
     else
         build_output=$("${build_command[@]}" 2>&1) || exit_code=$?
     fi
@@ -7588,7 +7591,16 @@ do_run() {
     fi
 
     log_section "运行: ${name} ${extra_args[*]:-}"
-    run_single_test "$name" "${extra_args[@]}" || true
+    if [[ ! -x "${BUILD_DIR}/${name}" ]]; then
+        # An explicit test selection must execute. Record the failure here so
+        # shared modes can retain their optional-binary skip behavior.
+        (( TOTAL_TESTS += 1 ))
+        (( FAILED_TESTS += 1 ))
+        log_fail "${name}: 请求的测试二进制不存在或不可执行"
+        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"binary_missing\"}")
+    else
+        run_single_test "$name" "${extra_args[@]}" || true
+    fi
 }
 
 # ============================================================
