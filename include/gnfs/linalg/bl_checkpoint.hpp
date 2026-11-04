@@ -1,6 +1,9 @@
 #pragma once
 
+#include "gnfs/util/sha256.hpp"
+
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -29,23 +32,24 @@ namespace gnfs::linalg {
 ///   - The post-loop null-space extraction (fast, runs from final aug state)
 ///   - ThreadPool / std::future state (recreated on resume)
 ///
-/// File layout (`<base>.bl_ckpt`, V2):
+/// File layout (`<base>.bl_ckpt`, V3):
 ///   [u64 magic]            'BLCKPT01' (little-endian bytes), or INCOMPLETE = 0
-///   [u64 version]          2 (little-endian)
+///   [u64 version]          3 (little-endian)
 ///   [u64 rows]             m
 ///   [u64 cols]             n
 ///   [u64 aug_words_per_row] ceil((m+n)/64)
 ///   [u64 pivot_row]        next pivot row index
 ///   [u64 cur_col]          next column to scan (m <= cur_col <= m+n)
 ///   [u64 iteration]        pivots already completed
-///   [u64 header_checksum]  XOR of the 7 fields above
+///   [u64 header_checksum]  XOR of the 7 fields above and 4 digest words
+///   [32 bytes matrix_fingerprint] SHA-256 of canonical source matrix
 ///   [u64 aug_word_count]   rows * aug_words_per_row
 ///   [u64[] aug_payload]    packed augmented matrix data (each word little-endian)
 ///   [u64 body_checksum]    XOR-fold of payload words
 ///
-/// V1 files used native-endian u64 fields and payload words. They remain
-/// readable so a checkpoint written before V2 can still be resumed; new files
-/// are always emitted as V2 little-endian bytes.
+/// V1 used native-endian u64 fields; V2 used little-endian fields. Both remain
+/// readable as unbound states, but the solver rejects them because neither
+/// records the source matrix identity. New writes require an identity and use V3.
 ///
 /// MAGIC / INCOMPLETE flip:
 ///   1. truncate + write INCOMPLETE magic + body
@@ -58,8 +62,9 @@ struct BlockLanczosCheckpoint {
     static constexpr uint64_t MAGIC_INCOMPLETE = 0ULL;
     static constexpr uint64_t VERSION_V1 = 1;
     static constexpr uint64_t VERSION_V2 = 2;
+    static constexpr uint64_t VERSION_V3 = 3;
     /// Current on-disk version emitted by save().
-    static constexpr uint64_t VERSION = VERSION_V2;
+    static constexpr uint64_t VERSION = VERSION_V3;
 
     uint64_t rows = 0;
     uint64_t cols = 0;
@@ -67,17 +72,21 @@ struct BlockLanczosCheckpoint {
     uint64_t pivot_row = 0;
     uint64_t cur_col = 0;
     uint64_t iteration = 0;
+    std::optional<util::Sha256Digest> matrix_fingerprint;
     std::vector<uint64_t> aug; // size = rows * aug_words_per_row
 
     /// Serialize to path. Returns false on any I/O failure (does not throw).
     bool save(const std::string& path) const noexcept {
+        // Do not truncate an existing checkpoint for a state without provenance.
+        if (!matrix_fingerprint)
+            return false;
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out)
             return false;
 
-        // Phase 1: write INCOMPLETE magic + everything. Every V2 scalar is
+        // Phase 1: write INCOMPLETE magic + everything. Every V3 scalar is
         // encoded explicitly so the checkpoint is independent of host endian.
-        const uint64_t version = VERSION_V2;
+        const uint64_t version = VERSION_V3;
         if (!write_u64_le(out, MAGIC_INCOMPLETE) || !write_u64_le(out, version) ||
             !write_u64_le(out, rows) || !write_u64_le(out, cols) ||
             !write_u64_le(out, aug_words_per_row) || !write_u64_le(out, pivot_row) ||
@@ -85,10 +94,15 @@ struct BlockLanczosCheckpoint {
             return false;
         }
 
-        // Header checksum: XOR of version + rows + cols + wpr + pivot_row + cur_col + iteration
-        const uint64_t header_csum =
-            version ^ rows ^ cols ^ aug_words_per_row ^ pivot_row ^ cur_col ^ iteration;
+        // Header checksum also covers the source-matrix fingerprint.
+        const uint64_t header_csum = version ^ rows ^ cols ^ aug_words_per_row ^ pivot_row ^
+                                     cur_col ^ iteration ^
+                                     fingerprint_checksum(*matrix_fingerprint);
         if (!write_u64_le(out, header_csum))
+            return false;
+        out.write(reinterpret_cast<const char*>(matrix_fingerprint->bytes.data()),
+                  static_cast<std::streamsize>(matrix_fingerprint->bytes.size()));
+        if (!out)
             return false;
 
         // Body: aug_word_count + payload + body checksum
@@ -156,16 +170,17 @@ struct BlockLanczosCheckpoint {
         std::memcpy(&native_version, version_bytes.data(), sizeof(native_version));
         const uint64_t little_magic = decode_u64_le(magic_bytes.data());
         const uint64_t little_version = decode_u64_le(version_bytes.data());
-        const bool little_endian_v2 = little_magic == MAGIC && little_version == VERSION_V2;
+        const bool little_endian =
+            little_magic == MAGIC && (little_version == VERSION_V2 || little_version == VERSION_V3);
         const bool native_endian_v1 = native_magic == MAGIC && native_version == VERSION_V1;
-        if (!little_endian_v2 && !native_endian_v1)
+        if (!little_endian && !native_endian_v1)
             return std::nullopt;
 
-        auto read_u64 = [&in, little_endian_v2](uint64_t& value) noexcept {
-            return little_endian_v2 ? read_u64_le(in, value) : read_u64_native(in, value);
+        auto read_u64 = [&in, little_endian](uint64_t& value) noexcept {
+            return little_endian ? read_u64_le(in, value) : read_u64_native(in, value);
         };
 
-        const uint64_t version = little_endian_v2 ? VERSION_V2 : VERSION_V1;
+        const uint64_t version = little_endian ? little_version : VERSION_V1;
 
         BlockLanczosCheckpoint ck;
         if (!read_u64(ck.rows) || !read_u64(ck.cols) || !read_u64(ck.aug_words_per_row) ||
@@ -176,8 +191,17 @@ struct BlockLanczosCheckpoint {
         uint64_t header_csum = 0;
         if (!read_u64(header_csum))
             return std::nullopt;
-        const uint64_t expected_hcsum = version ^ ck.rows ^ ck.cols ^ ck.aug_words_per_row ^
-                                        ck.pivot_row ^ ck.cur_col ^ ck.iteration;
+        if (version == VERSION_V3) {
+            ck.matrix_fingerprint.emplace();
+            if (!read_exact(in, ck.matrix_fingerprint->bytes.data(),
+                            ck.matrix_fingerprint->bytes.size())) {
+                return std::nullopt;
+            }
+        }
+        const uint64_t expected_hcsum =
+            version ^ ck.rows ^ ck.cols ^ ck.aug_words_per_row ^ ck.pivot_row ^ ck.cur_col ^
+            ck.iteration ^
+            (ck.matrix_fingerprint ? fingerprint_checksum(*ck.matrix_fingerprint) : 0);
         if (header_csum != expected_hcsum)
             return std::nullopt;
 
@@ -207,11 +231,12 @@ struct BlockLanczosCheckpoint {
             return std::nullopt;
         }
 
-        constexpr uint64_t FIXED_FILE_BYTES = 11ULL * 8ULL;
-        if (aug_word_count > (UINT64_MAX - FIXED_FILE_BYTES) / 8ULL) {
+        const uint64_t fixed_file_bytes =
+            11ULL * 8ULL + (version == VERSION_V3 ? util::SHA256_DIGEST_BYTES : 0);
+        if (aug_word_count > (UINT64_MAX - fixed_file_bytes) / 8ULL) {
             return std::nullopt;
         }
-        const uint64_t expected_file_size = FIXED_FILE_BYTES + aug_word_count * 8ULL;
+        const uint64_t expected_file_size = fixed_file_bytes + aug_word_count * 8ULL;
         if (file_size != expected_file_size)
             return std::nullopt;
 
@@ -249,8 +274,9 @@ struct BlockLanczosCheckpoint {
         uint64_t native_version = 0;
         std::memcpy(&native_magic, magic_bytes.data(), sizeof(native_magic));
         std::memcpy(&native_version, version_bytes.data(), sizeof(native_version));
+        const uint64_t little_version = decode_u64_le(version_bytes.data());
         return (decode_u64_le(magic_bytes.data()) == MAGIC &&
-                decode_u64_le(version_bytes.data()) == VERSION_V2) ||
+                (little_version == VERSION_V2 || little_version == VERSION_V3)) ||
                (native_magic == MAGIC && native_version == VERSION_V1);
     }
 
@@ -260,6 +286,15 @@ struct BlockLanczosCheckpoint {
     }
 
 private:
+    static uint64_t fingerprint_checksum(const util::Sha256Digest& digest) noexcept {
+        uint64_t result = 0;
+        for (size_t index = 0; index < digest.bytes.size(); ++index) {
+            result ^= static_cast<uint64_t>(std::to_integer<uint8_t>(digest.bytes[index]))
+                      << ((index % sizeof(uint64_t)) * 8);
+        }
+        return result;
+    }
+
     static bool write_u64_le(std::ofstream& out, uint64_t value) noexcept {
         std::array<uint8_t, sizeof(uint64_t)> bytes{};
         for (size_t i = 0; i < bytes.size(); ++i) {
