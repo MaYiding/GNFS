@@ -457,6 +457,8 @@ public:
     }
 
     /// Tonelli-Shanks square root in F_p[x]/f(x)
+    /// Requires prime p and irreducible f. Exhausting the non-square witness
+    /// search reports a domain error instead of a false zero root.
     /// Returns sqrt(a) if a is a square, zero polynomial otherwise
     [[nodiscard]] static ModularPoly
     sqrt_tonelli_shanks(const ModularPoly& a, const std::vector<uint64_t>& f, uint64_t p) {
@@ -542,7 +544,8 @@ public:
 
         if (!found_nonsq) {
             // Even d (or odd-d fallback): polynomial non-squares z = x + c.
-            // ~50% of F_{p^d}* are non-squares, so expect ~2 trials.
+            // Keep this inexpensive search, but the affine line can consist
+            // entirely of squares even when f is irreducible.
             for (uint64_t c = 0; c < p; ++c) {
                 z = ModularPoly(std::vector<uint64_t>{c, 1});
                 if (!is_square(z, f, p)) {
@@ -553,7 +556,27 @@ public:
         }
 
         if (!found_nonsq) {
-            return ModularPoly(); // Should not happen for irreducible f
+            // Enumerate all nonzero field elements with a base-p counter.
+            // No fixed-width p^d calculation is needed. For an odd finite
+            // field, half the nonzero elements are non-squares, so this
+            // complete search must find a witness before the counter wraps.
+            std::vector<uint64_t> coefficients(static_cast<size_t>(d), 0);
+            for (;;) {
+                size_t digit = 0;
+                while (digit < coefficients.size() && coefficients[digit] == p - 1) {
+                    coefficients[digit] = 0;
+                    ++digit;
+                }
+                if (digit == coefficients.size()) {
+                    throw std::domain_error(
+                        "ModularPoly::sqrt_tonelli_shanks exhausted finite-field non-squares");
+                }
+                ++coefficients[digit];
+                z = ModularPoly(coefficients);
+                if (!is_square(z, f, p)) {
+                    break;
+                }
+            }
         }
 
         // Initialize: exp_m = (q+1)/2 — mpz_add_ui writes q+1 directly (skip clone)
