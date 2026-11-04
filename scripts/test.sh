@@ -5919,7 +5919,10 @@ try:
                       ("pass" if expected_rss == "pass" else
                        "unavailable" if expected_rss == "unavailable" else "fail"))
     need(summary["scale_evidence"] == expected_scale)
-    if summary["final_current_rss_bytes"] != "na" and peak != "na":
+    # Linux statm uses approximate RSS accounting and is read separately from
+    # getrusage. Keep the raw values and peak-based budget without ordering them.
+    if (summary["rss_backend"] != "linux_getrusage" and
+            summary["final_current_rss_bytes"] != "na" and peak != "na"):
         need(int(summary["final_current_rss_bytes"]) <= int(peak))
     need(I(summary, "plan_wall_ns") > 0 and I(summary, "capture_wall_ns") > 0 and
          I(summary, "wall_ns") >= I(summary, "plan_wall_ns") + I(summary, "capture_wall_ns") +
@@ -6045,6 +6048,34 @@ print("\n".join(lines))
 PY
 }
 
+# Exercise RSS semantics through both the V3 scale and V4 proof validators.
+# All mutations retain the existing synthetic transcript's mathematical fields.
+siqs_256a_rss_validator_self_check() {
+    local validator="$1" baseline="$2" output_variable="$3"
+    local linux_rss mutation change
+    linux_rss=$(siqs_256a_mutate_transcript "$baseline" \
+        "6:rss_backend=linux_getrusage" "6:final_current_rss_bytes=3000") || return 1
+    if ! "$validator" "$linux_rss" 1 6 0 10 || \
+       [[ "${(P)output_variable}" != "$linux_rss" ]]; then
+        log_fail "${validator} 未保留 Linux 独立 RSS 观测"
+        return 1
+    fi
+    for change in \
+        "rss_backend=darwin_getrusage" "rss_backend=windows_psapi" \
+        "rss_backend=unsupported" "rss_backend=unknown" \
+        "final_current_rss_bytes=-1" "final_current_rss_bytes=0" \
+        "final_current_rss_bytes=01" "final_current_rss_bytes=1.5" \
+        "final_peak_rss_bytes=na" "final_peak_rss_bytes=536870913" \
+        "rss_evidence=unavailable"; do
+        mutation=$(siqs_256a_mutate_transcript "$linux_rss" "6:${change}") || return 1
+        if "$validator" "$mutation" 1 6 0 10 2>/dev/null; then
+            log_fail "${validator} RSS self-check 未拒绝 ${change}"
+            return 1
+        fi
+    done
+    return 0
+}
+
 # Cheap parser-only regression table. It deliberately never starts the profile
 # binary; the real modes run this before their single fresh Release build.
 siqs_256a_validator_self_check() {
@@ -6059,6 +6090,8 @@ GNFS_SIQS_256A_SUMMARY_V3 schema_version=3 status=solver_ready profile_id=siqs50
 EOF
     )
 
+    siqs_256a_rss_validator_self_check validate_siqs_256a_profile_output \
+        "$baseline" SIQS_256A_PROFILE_OUTPUT || return 1
     validate_siqs_256a_profile_output "$baseline" 1 6 0 10 || return 1
     (( SIQS_256A_SCALE_PASS == 1 )) || return 1
     local baseline_identity="$SIQS_256A_PROFILE_IDENTITY"
@@ -6649,6 +6682,8 @@ siqs_256a_proof_validator_self_check() {
     baseline+="GNFS_SIQS_256A_PROOF_V4 schema_version=4 attempted=true status=factor_found deterministic_terminal=solver_ready matrix_status=valid dependency_status=valid factor_status=factor_found matrix_rows=1701 matrix_columns=1601 matrix_projected_dense_bytes=345816 solver_max_dependencies=64 solver_elimination_workers=1 solver_parallel_column_threshold=0 solver_max_dense_matrix_bytes=345816 solver_max_dense_variable_count=1701 elimination_mode=serial dependency_search=first_free_column_basis_prefix dependency_combinations_attempted=false dependency_search_complete=false dependency_ordinal_base=0 minimum_nullity=100 dependencies_returned=64 dependencies_examined=4 dependencies_verified=4 dependency_cap_reached=true dependency_digest_low=10254149926071895734 dependency_digest_high=17300745096364993287 first_failed_dependency=none factor_no_factor_count=3 factor_found_count=1 winning_dependency=3 winning_dependency_size=703 square_modulus=sieved_n gcd_target=n factor=2041646378661656688438487 cofactor=8829847714527711737483339 solver_wall_ns=5 verify_extract_wall_ns=6 solver_attempted=true promotion=false"$'\n'
     baseline+="GNFS_SIQS_256A_SUMMARY_V4 schema_version=4 status=factor_found profile_id=siqs50_multi_a_256x32_scale_v3 stdout_records=6 config_records=1 capture_records=1 graph_records=1 assembly_records=1 proof_records=1 summary_records=1 workers=1 rss_scope=self_lifetime rss_backend=darwin_getrusage rss_evidence=pass scale_evidence=pass proof_evidence=factor_found final_current_rss_bytes=1000 final_peak_rss_bytes=2000 plan_wall_ns=10 capture_wall_ns=20 analysis_wall_ns=30 solver_wall_ns=5 verify_extract_wall_ns=6 wall_ns=70 solver_attempted=true proof_status=factor_found matrix_status=valid dependency_status=valid factor_status=factor_found dependencies_returned=64 dependencies_examined=4 dependency_cap_reached=true factor=2041646378661656688438487 cofactor=8829847714527711737483339 promotion=false"
 
+    siqs_256a_rss_validator_self_check validate_siqs_256a_proof_output \
+        "$baseline" SIQS_256A_PROOF_OUTPUT || return 1
     validate_siqs_256a_proof_output "$baseline" 1 6 0 10 || return 1
     (( SIQS_256A_PROOF_GATE_SCALE_PASS == 1 && SIQS_256A_PROOF_PASS == 1 )) || return 1
     local baseline_identity="$SIQS_256A_PROOF_IDENTITY"
