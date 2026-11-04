@@ -183,6 +183,21 @@ jobs:
           cat "diagnostic/traced-${attempt}.log"
         done
 
+    - name: Capture a waiting child stack through its existing tracer
+      if: always() && !cancelled() && steps.baseline.outcome != 'skipped'
+      timeout-minutes: 7
+      env:
+        ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX: '1'
+      # A killed, unfinished futex has no strace -k exit stack. After observing
+      # a stalled pre-exec child, briefly stop/resume that child so the same
+      # tracer prints its signal-stop stack. This perturbs the diagnostic run;
+      # neither its result nor its disabled leak check is acceptance evidence.
+      run: |
+        python3 scripts/trace_bounded_child_launch.py \
+          --build-dir build --output-dir diagnostic/traced-stop-stacks
+
     - name: Upload bounded-child diagnostic evidence
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
