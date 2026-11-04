@@ -241,7 +241,9 @@ and native-architecture tuning disabled; that tree builds only
 This separately proves the ordinary child transport on the published glibc
 2.31 floor without changing the release artifact closure. Its Windows 2022 job
 installs the digest-pinned UCRT64
-compiler and runtime packages, configures the build with
+compiler, build tools, and their complete package dependency closure. A clean
+UCRT64 package set and a repository-free `pacman -U` transaction prevent rolling
+bootstrap packages from replacing the runtime pins. It configures the build with
 `GNFS_ENABLE_NTL=OFF`, derives the four-DLL closure with `ldd`, launches the
 packaged CLI with `/ucrt64/bin` removed from `PATH`, creates the deterministic
 ZIP, and validates its package, license, DLL, and corresponding-source

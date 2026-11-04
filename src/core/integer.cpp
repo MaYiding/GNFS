@@ -442,7 +442,20 @@ Integer lcm(const Integer& a, const Integer& b) {
 }
 
 Integer powmod(const Integer& base, const Integer& exp, const Integer& mod) {
+    if (mod.is_zero()) {
+        throw std::domain_error("Integer modular exponentiation with zero modulus");
+    }
     Integer result;
+    if (exp.is_negative()) {
+        // GMP raises a divide-by-zero signal for a nonexistent inverse. Check
+        // it explicitly and reuse the inverse for the positive exponentiation.
+        if (mpz_invert(result.get_mpz(), base.get_mpz(), mod.get_mpz()) == 0) {
+            throw std::domain_error("Integer modular exponentiation requires an invertible base");
+        }
+        const Integer positive_exp = -exp;
+        mpz_powm(result.get_mpz(), result.get_mpz(), positive_exp.get_mpz(), mod.get_mpz());
+        return result;
+    }
     mpz_powm(result.get_mpz(), base.get_mpz(), exp.get_mpz(), mod.get_mpz());
     return result;
 }
@@ -454,6 +467,9 @@ Integer pow(const Integer& base, uint32_t exp) {
 }
 
 Integer sqrt(const Integer& n) {
+    if (n.is_negative()) {
+        throw std::domain_error("Integer square root of a negative value");
+    }
     Integer result;
     mpz_sqrt(result.get_mpz(), n.get_mpz());
     return result;

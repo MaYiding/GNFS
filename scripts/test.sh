@@ -148,6 +148,9 @@ PROJECT_ROOT="${0:A:h:h}"
 # Keep the default checkout-local build, while allowing isolated callers (for
 # example Harness contract tests) to direct generated reports elsewhere.
 BUILD_DIR="${GNFS_BUILD_DIR:-${PROJECT_ROOT}/build}"
+# Resolve overrides relative to the caller before any mode changes directory.
+# The process supervisor requires absolute executable paths.
+BUILD_DIR="${BUILD_DIR:A}"
 BENCH_DIR="${PROJECT_ROOT}/benchmarks"
 REPORT_FILE="${BUILD_DIR}/test_report.json"
 TEST_RUNNER_COMMAND="$0"
@@ -1438,11 +1441,20 @@ do_build() {
     local start_ms
     start_ms=$(timer_start_ms)
 
+    # An empty target list preserves the full build used by other modes.
+    local -a build_command=(cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS")
+    # Let CMake select the generator's verbose option. Native Make -v prints
+    # its version and exits without building any target.
+    (( VERBOSE )) && build_command+=(--verbose)
+    if (( $# > 0 )); then
+        build_command+=(--target "$@")
+        log_info "构建目标: $*"
+    fi
     local build_output exit_code=0
     if (( VERBOSE )); then
-        cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS" -- -v 2>&1 || exit_code=$?
+        "${build_command[@]}" 2>&1 || exit_code=$?
     else
-        build_output=$(cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS" 2>&1) || exit_code=$?
+        build_output=$("${build_command[@]}" 2>&1) || exit_code=$?
     fi
 
     local end_ms
@@ -2130,8 +2142,11 @@ def parse_record(line):
         require(current_supported and peak_supported, "supported backend omitted RSS")
         phase_currents = [int(fields[key]) for key in current_fields[1:]]
         phase_peaks = [int(fields[key]) for key in peak_fields[1:]]
-        require(all(current <= peak for current, peak in zip(phase_currents, phase_peaks)),
-                "phase current RSS exceeds lifetime peak")
+        # Linux statm uses approximate RSS accounting and is read separately
+        # from getrusage. Preserve both observations without ordering them.
+        if fields["process_rss_backend"] != "linux_getrusage":
+            require(all(current <= peak for current, peak in zip(phase_currents, phase_peaks)),
+                    "phase current RSS exceeds lifetime peak")
         require(phase_peaks == sorted(phase_peaks), "lifetime peak RSS regressed")
     return fields
 
@@ -2182,8 +2197,39 @@ try:
         else "process_current_rss_bytes=1"
     )
     expect_rejected(" ".join(partial_rss), "partial RSS linkage")
+
+    # Linux statm and getrusage are independent observations. Exercise this
+    # contract even when the supplied fixture has no native RSS measurements.
+    linux_rss = dict(parsed)
+    linux_rss.update(process_rss_backend="linux_getrusage",
+                     process_current_rss_supported="true",
+                     process_peak_rss_supported="true")
+    for key in OPTIONAL_UINT_FIELDS:
+        if "rss" in key:
+            linux_rss[key] = "1000" if "peak" in key else "2000"
+
+    def rss_record(**changes):
+        fields = {**linux_rss, **changes}
+        return "GNFS_EXPERIMENT_V2 " + " ".join(
+            f"{key}={fields[key]}" for key in EXPECTED_KEYS
+        )
+
+    require(parse_record(rss_record()) == linux_rss,
+            "Linux RSS observations were changed")
+    for backend in ("darwin_getrusage", "windows_psapi"):
+        expect_rejected(rss_record(process_rss_backend=backend),
+                        f"{backend} current RSS above peak")
+    for changes, description in (
+        ({"rss_after_polynomial_peak_bytes": "999"}, "Linux lifetime peak regression"),
+        ({"process_current_rss_bytes": "1999"}, "Linux terminal current RSS mismatch"),
+        ({"process_peak_rss_bytes": "999"}, "Linux terminal peak RSS mismatch"),
+        ({"rss_after_sieve_current_bytes": "na"}, "Linux partial RSS linkage"),
+        ({"process_peak_rss_supported": "false"}, "Linux RSS support mismatch"),
+    ):
+        expect_rejected(rss_record(**changes), description)
 except SchemaError as error:
     print(f"{label}: GNFS_EXPERIMENT_V2 schema error: {error}", file=sys.stderr)
+    print(f"{label}: rejected record (unvalidated): {record}", file=sys.stderr)
     sys.exit(1)
 PY
 }
@@ -7582,7 +7628,16 @@ do_run() {
     fi
 
     log_section "运行: ${name} ${extra_args[*]:-}"
-    run_single_test "$name" "${extra_args[@]}" || true
+    if [[ ! -x "${BUILD_DIR}/${name}" ]]; then
+        # An explicit test selection must execute. Record the failure here so
+        # shared modes can retain their optional-binary skip behavior.
+        (( TOTAL_TESTS += 1 ))
+        (( FAILED_TESTS += 1 ))
+        log_fail "${name}: 请求的测试二进制不存在或不可执行"
+        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"binary_missing\"}")
+    else
+        run_single_test "$name" "${extra_args[@]}" || true
+    fi
 }
 
 # ============================================================
@@ -8114,6 +8169,7 @@ do_watch() {
 
 do_tsan_relation() {
     BUILD_DIR="${GNFS_TSAN_BUILD_DIR:-${PROJECT_ROOT}/build-tsan-relation}"
+    BUILD_DIR="${BUILD_DIR:A}"
     REPORT_FILE="${BUILD_DIR}/test_report.json"
     BUILD_TYPE="Debug"
 
@@ -8518,7 +8574,15 @@ case "$MODE" in
             log_fail "用法: $0 run <test_name> [args...]"
             exit 1
         fi
-        do_build
+        # Normalize and validate before CMake configuration. Literal catalog
+        # membership also prevents target names from becoming paths or options.
+        local test_name="${MODE_ARGS[1]}"
+        [[ "$test_name" == test_* ]] || test_name="test_${test_name}"
+        if (( ${ALL_TEST_BINARIES[(Ie)$test_name]} == 0 )); then
+            usage_error "未知测试: ${MODE_ARGS[1]} (使用 list 查看测试目录)"
+        fi
+        MODE_ARGS[1]="$test_name"
+        do_build "$test_name" gnfs_test_process_supervisor
         do_run "${MODE_ARGS[@]}"
         show_summary
         ;;

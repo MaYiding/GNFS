@@ -212,8 +212,12 @@ private:
 // Non-member functions
 Integer gcd(const Integer& a, const Integer& b);
 Integer lcm(const Integer& a, const Integer& b);
+/// Return base^exp modulo |mod| as a nonnegative residue. Negative exponents
+/// require an inverse of base modulo mod. Throws std::domain_error if mod is
+/// zero or a required inverse does not exist.
 Integer powmod(const Integer& base, const Integer& exp, const Integer& mod);
 Integer pow(const Integer& base, uint32_t exp);
+/// Return floor(sqrt(n)). Throws std::domain_error if n is negative.
 Integer sqrt(const Integer& n);
 
 /// 计算 a 模 m 的逆元 (a^{-1} mod m)

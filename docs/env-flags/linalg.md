@@ -29,6 +29,39 @@ operator 而非标准 `B=M·M^T`. 工作在 R^n, recovery via `u=M·w`.
 
 `find_dependencies` routes m<n → thin_solve, m≥n → block_solve (existing path).
 
+## Block Lanczos Checkpoint Resume (GNFS_BL_CHECKPOINT)
+
+**ENV `GNFS_BL_CHECKPOINT=<base>`** enables a durable checkpoint for the
+word-packed Gaussian elimination path used by `BlockLanczos`. The solver writes
+`<base>.bl_ckpt` after each `GNFS_BL_CHECKPOINT_INTERVAL` completed pivots
+(default `50`, clamped to `[1, 1'000'000]`). A successful solve removes the
+checkpoint; an interrupted process may leave it for the next invocation.
+
+Resume is accepted only when the checksum, matrix shape, packed payload, and
+cursor semantics all agree. For a matrix with `rows` and `cols`, the persisted
+cursor must satisfy:
+
+```text
+pivot_row <= rows
+rows <= cur_col <= rows + cols
+pivot_row <= cur_col - rows
+```
+
+The final invariant records that every completed pivot corresponds to a matrix
+column already scanned. A checksum-valid file that violates any invariant is
+rejected, removed, and replaced by a fresh run (fail-closed resume with
+deterministic fallback). This prevents a malformed or stale cursor from
+skipping elimination work or treating an uninitialized augmented matrix as a
+completed prefix.
+
+**集成点与测试**:
+- `src/linalg/block_lanczos.cpp` — shape conversion and cursor validation before
+  copying checkpoint state into the live augmented matrix.
+- `include/gnfs/linalg/bl_checkpoint.hpp` — V2 checksum, payload, and two-phase
+  completion marker contract.
+- `tests/test_bl_resume_integration.cpp` — baseline parity, synthetic and real
+  partial resume, dimension mismatch rejection, and impossible-cursor fallback.
+
 ---
 
 ## BW Krylov sequence mmap (GNFS_BW_KRYLOV_MMAP)
