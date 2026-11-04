@@ -2,17 +2,22 @@
 
 #include "gnfs/util/cpu_intrin.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -266,9 +271,7 @@ public:
             }));
         }
 
-        for (auto& f : futures) {
-            f.get();
-        }
+        wait_for_futures(futures);
     }
 
     /// 等待所有任务完成
