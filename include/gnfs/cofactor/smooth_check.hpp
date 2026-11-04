@@ -93,9 +93,9 @@ struct CofactorClassification {
 
 /// 确定性 uint64 Miller-Rabin (零 GMP 分配)
 ///
-/// 使用 7 个 witness bases {2, 3, 5, 7, 11, 13, 17}，对所有 n < 3.317×10^24
-/// 给出 100% 确定性结果（覆盖全部 uint64 值域）。
-/// 参考: Jim Sinclair, https://miller-rabin.appspot.com/
+/// 按数值范围选择前若干素数作为 witness，最多使用 2 至 37 的 12 个素数。
+/// 前 12 个素数的最小强伪素数大于 2^64，因此覆盖全部 uint64 值域。
+/// 参考: Sorenson and Webster, Theorem 1.1, https://arxiv.org/abs/1509.00864
 [[nodiscard]] inline bool is_probable_prime_u64(uint64_t n, [[maybe_unused]] int rounds = 25) {
     if (n < 2)
         return false;
@@ -103,8 +103,9 @@ struct CofactorClassification {
         return true;
     if (n % 2 == 0 || n % 3 == 0 || n % 5 == 0)
         return false;
-    if (n < 19 * 19)
-        return true; // All remaining primes < 361
+    // After excluding factors 2, 3, and 5, the first possible composite is 7^2.
+    if (n < 7 * 7)
+        return true;
 
     // Decompose n-1 = d · 2^r
     uint64_t d = n - 1;
@@ -142,7 +143,7 @@ struct CofactorClassification {
         return false;
     };
 
-    // Deterministic Miller-Rabin for full uint64 range (Jim Sinclair):
+    // Deterministic Miller-Rabin for full uint64 range using prime bases:
     // n < 2,047:                          {2}
     // n < 1,373,653:                      {2, 3}
     // n < 25,326,001:                     {2, 3, 5}
@@ -151,7 +152,7 @@ struct CofactorClassification {
     // n < 3,474,749,660,383:              {2, 3, 5, 7, 11, 13}
     // n < 341,550,071,728,321:            {2, 3, 5, 7, 11, 13, 17}
     // n < 3,825,123,056,546,413,051:      +19, 23
-    // n < 2^64:                           +29, 31, 37 (Sinclair full set)
+    // n < 2^64:                           +29, 31, 37 (twelve prime bases)
     constexpr uint64_t witnesses[] = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37};
     int num_witnesses;
     if (n < 2047ULL)
