@@ -1180,6 +1180,121 @@ void test_sqrt_complete_extension_search() {
     }
 }
 
+namespace {
+
+SmallPolynomial equivalent_representative(const SmallPolynomial& element,
+                                          const SmallPolynomial& modulus,
+                                          const SmallPolynomial& multiplier, uint64_t p) {
+    // Construct a+k*f with exact GMP arithmetic, including coefficients and
+    // products above UINT64_MAX. Only the final residues become uint64_t.
+    std::vector<Integer> coefficients(
+        std::max(element.size(), modulus.size() + multiplier.size() - 1));
+    for (size_t i = 0; i < element.size(); ++i) {
+        coefficients[i] = element[i];
+    }
+    for (size_t i = 0; i < modulus.size(); ++i) {
+        for (size_t j = 0; j < multiplier.size(); ++j) {
+            coefficients[i + j] += Integer(modulus[i]) * Integer(multiplier[j]);
+        }
+    }
+    const Integer prime(p);
+    SmallPolynomial result(coefficients.size());
+    for (size_t i = 0; i < coefficients.size(); ++i) {
+        mpz_fdiv_r(coefficients[i].get_mpz(), coefficients[i].get_mpz(), prime.get_mpz());
+        result[i] = coefficients[i].to_uint64();
+    }
+    return result;
+}
+
+} // namespace
+
+void test_modular_sqrt_quotient_representatives() {
+    std::cout << "Testing square roots of equivalent quotient representatives..." << std::endl;
+    struct PrimeCase {
+        uint64_t p;
+        uint64_t nonsquare;
+    };
+    const std::vector<PrimeCase> primes{
+        {UINT64_C(4294967311), 3}, {UINT64_C(18446744073709551557), 2}, {3, 2}, {2, 0}};
+    const std::vector<SmallPolynomial> multipliers{{1}, {0, 1}, {2, 1, 2}};
+    for (const auto& field : primes) {
+        const Integer prime(field.p);
+        GNFS_TEST_CHECK(mpz_probab_prime_p(prime.get_mpz(), 20) != 0);
+        const SmallPolynomial modulus{field.p - 1, 1}; // x-1: evaluate at x=1.
+        std::vector<uint64_t> classes{0, 1};
+        if (field.p != 2) {
+            const Integer nonsquare(field.nonsquare);
+            GNFS_TEST_CHECK(mpz_legendre(nonsquare.get_mpz(), prime.get_mpz()) == -1);
+            classes.push_back(4 % field.p);
+            classes.push_back(field.nonsquare);
+        }
+        for (uint64_t value : classes) {
+            const Integer expected_value(value);
+            const bool square = field.p == 2 || value == 0 ||
+                                mpz_legendre(expected_value.get_mpz(), prime.get_mpz()) == 1;
+            const ModularPoly canonical(value);
+            const auto canonical_root =
+                ModularPoly::sqrt_tonelli_shanks(canonical, modulus, field.p);
+            for (const auto& multiplier : multipliers) {
+                const auto coefficients =
+                    equivalent_representative({value}, modulus, multiplier, field.p);
+                Integer at_one;
+                for (uint64_t coefficient : coefficients) {
+                    at_one += Integer(coefficient);
+                }
+                mpz_fdiv_r(at_one.get_mpz(), at_one.get_mpz(), prime.get_mpz());
+                GNFS_TEST_CHECK(at_one.compare(expected_value) == 0);
+
+                const ModularPoly representative(coefficients);
+                GNFS_TEST_CHECK(ModularPoly::is_square(representative, modulus, field.p) == square);
+                const auto root =
+                    ModularPoly::sqrt_tonelli_shanks(representative, modulus, field.p);
+                GNFS_TEST_CHECK(root.coefficients() == canonical_root.coefficients());
+                GNFS_TEST_CHECK(root.degree() < 1);
+                if (square) {
+                    const Integer coefficient(root.coeff(0));
+                    Integer squared = coefficient * coefficient;
+                    mpz_fdiv_r(squared.get_mpz(), squared.get_mpz(), prime.get_mpz());
+                    GNFS_TEST_CHECK(squared.compare(expected_value) == 0);
+                } else {
+                    GNFS_TEST_CHECK(root.is_zero());
+                }
+            }
+        }
+    }
+
+    // Nonlinear quotient: square all nine elements independently using the
+    // small-field convolution oracle instead of production reduction/powers.
+    const SmallPolynomial modulus{1, 0, 1};
+    std::vector<bool> squares(9, false);
+    for (uint64_t code = 0; code < 9; ++code) {
+        const auto element = small_decode(code, 2, 3);
+        squares[static_cast<size_t>(small_encode(small_product(element, element, modulus, 3), 3))] =
+            true;
+    }
+    const std::vector<SmallPolynomial> classes{{}, {1}, {0, 2}, {1, 1}};
+    for (const auto& element : classes) {
+        const bool square = squares[static_cast<size_t>(small_encode(element, 3))];
+        const auto canonical_root =
+            ModularPoly::sqrt_tonelli_shanks(ModularPoly(element), modulus, 3);
+        for (const auto& multiplier : multipliers) {
+            const auto coefficients = equivalent_representative(element, modulus, multiplier, 3);
+            GNFS_TEST_CHECK(small_remainder(coefficients, modulus, 3) == element);
+            const ModularPoly representative(coefficients);
+            GNFS_TEST_CHECK(ModularPoly::is_square(representative, modulus, 3) == square);
+            const auto root = ModularPoly::sqrt_tonelli_shanks(representative, modulus, 3);
+            GNFS_TEST_CHECK(root.coefficients() == canonical_root.coefficients());
+            if (square) {
+                GNFS_TEST_CHECK(
+                    small_product(root.coefficients(), root.coefficients(), modulus, 3) == element);
+            } else {
+                GNFS_TEST_CHECK(root.is_zero());
+            }
+        }
+    }
+    std::cout << "  Quotient representative invariance: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -1206,6 +1321,7 @@ int main() {
     test_characteristic_2_sqrt();
     test_sqrt_even_degree_extension();
     test_sqrt_complete_extension_search();
+    test_modular_sqrt_quotient_representatives();
     test_couveignes_compute_from_element_terminates();
     test_couveignes_compute_from_element_normal();
     test_couveignes_gray_code_invariants();
