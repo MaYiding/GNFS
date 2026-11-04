@@ -129,7 +129,7 @@ jobs:
         UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX: '1'
       run: |
-        ctest --output-on-failure --verbose \
+        ctest --output-on-failure --verbose --no-tests=error \
           --tests-regex '^BoundedChildProcess$' \
           --repeat until-fail:20 \
           --output-log ../diagnostic/untraced-ctest.log
@@ -154,7 +154,7 @@ jobs:
           fi
           status=0
           timeout --kill-after=5s 30s \
-            strace -ff -b execve -ttt -T -yy -s 128 \
+            strace --kill-on-exit -I 2 -ff -b execve -ttt -T -yy -s 128 \
               "${trace_options[@]}" -o "diagnostic/trace-${attempt}" \
               "$PWD/build/test_bounded_child_process" \
               "$PWD/build/bounded_child_process_fake_child" \
