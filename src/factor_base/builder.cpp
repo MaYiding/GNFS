@@ -374,8 +374,8 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
     // 把 B 限到 1e9,这层是 future-proof 防御。
     if (opts.special_q_bound > opts.algebraic_bound && opts.algebraic_bound < UINT32_MAX) {
         const uint32_t special_q_min = std::max<uint32_t>(opts.algebraic_bound + 1, 2);
-        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound,
-                                    opts.log_scale, opts.parallel);
+        find_algebraic_primes_range(fb, ctx, special_q_min, opts.special_q_bound, opts.log_scale,
+                                    opts.parallel);
     }
 
     fb.build_index();
@@ -527,8 +527,7 @@ void FactorBaseBuilder::find_rational_primes(FactorBase& fb, const PolynomialCon
 }
 
 void FactorBaseBuilder::find_algebraic_primes(FactorBase& fb, const PolynomialContext& ctx,
-                                              uint32_t bound, uint8_t log_scale,
-                                              bool parallel,
+                                              uint32_t bound, uint8_t log_scale, bool parallel,
                                               const std::vector<bool>* shared_sieve) {
     if (bound < 2)
         return;
@@ -654,6 +653,18 @@ std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p_unchecked(const Polyno
     for (uint32_t i = 0; i <= d; ++i) {
         f_mod[i] = static_cast<uint64_t>(mpz_fdiv_ui(ctx.coeff(i).get_mpz(), p));
     }
+    // The degree over F_p can be lower than the integer polynomial degree.
+    // ModularPoly::power requires an invertible leading coefficient.
+    while (!f_mod.empty() && f_mod.back() == 0)
+        f_mod.pop_back();
+    if (f_mod.empty()) {
+        // Preserve the large-prime rejection instead of allocating p roots.
+        throw std::runtime_error("factor-base root finding requires a nonzero polynomial modulo p "
+                                 "for p >= 64");
+    }
+    if (f_mod.size() == 1)
+        return {}; // A nonzero constant has no affine roots.
+
     // p_int still needed for ModularPoly::power below
     core::Integer p_int(static_cast<int64_t>(p));
 
