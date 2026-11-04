@@ -37,14 +37,15 @@ struct AlgebraicRootEntry {
 template <typename AppendPrime>
 void append_algebraic_primes_in_chunks(FactorBase& fb, const std::vector<uint32_t>& primes,
                                        bool parallel, const AppendPrime& append_prime) {
-    if (primes.empty()) {
+    const size_t prime_count = primes.size();
+    if (prime_count == 0) {
         return;
     }
     const size_t workers =
-        parallel && primes.size() >= 200 ? resolve_fb_roots_threads(primes.size()) : 1;
+        parallel && prime_count >= 200 ? resolve_fb_roots_threads(prime_count) : 1;
     std::vector<std::vector<AlgebraicRootEntry>> chunks(workers);
-    const size_t chunk_size = primes.size() / workers;
-    const size_t remainder = primes.size() % workers;
+    const size_t chunk_size = prime_count / workers;
+    const size_t remainder = prime_count % workers;
 
     const auto process_chunk = [&](size_t chunk) {
         const size_t begin = chunk * chunk_size + std::min(chunk, remainder);
