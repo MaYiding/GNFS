@@ -4,6 +4,7 @@
 #include "support/test_check.hpp"
 
 #include <climits>
+#include <cstdint>
 #include <initializer_list>
 #include <iostream>
 #include <numeric>
@@ -170,6 +171,87 @@ void test_powmod() {
     GNFS_TEST_CHECK(big_result >= Integer(static_cast<int64_t>(0)) && big_result < big_mod);
 
     std::cout << "  Powmod: PASS" << std::endl;
+}
+
+void test_powmod_negative_exponents() {
+    std::cout << "Testing powmod negative exponents..." << std::endl;
+
+    for (int modulus : {5, -5}) {
+        GNFS_TEST_CHECK(powmod(Integer(2), Integer(-1), Integer(modulus)).to_int64() == 3);
+        GNFS_TEST_CHECK(powmod(Integer(2), Integer(-3), Integer(modulus)).to_int64() == 2);
+        GNFS_TEST_CHECK(powmod(Integer(-2), Integer(-3), Integer(modulus)).to_int64() == 3);
+        // Exponents remain arbitrary precision, including the signed boundary.
+        GNFS_TEST_CHECK(powmod(Integer(2), Integer(INT64_MIN), Integer(modulus)).is_one());
+        GNFS_TEST_CHECK(
+            powmod(Integer(2), Integer("-18446744073709551617"), Integer(modulus)).to_int64() == 3);
+    }
+    const Integer wide_modulus("18446744073709551617");
+    const Integer wide_inverse("9223372036854775809");
+    GNFS_TEST_CHECK(powmod(Integer(2), Integer(-1), wide_modulus) == wide_inverse);
+    GNFS_TEST_CHECK(powmod(Integer(2), Integer(-1), -wide_modulus) == wide_inverse);
+
+    // GMP accepts the zero ring for either modulus sign, including 0^-1.
+    for (int modulus : {1, -1}) {
+        for (int base : {0, 2, -2}) {
+            for (int exponent : {-1, 0, 1}) {
+                GNFS_TEST_CHECK(
+                    powmod(Integer(base), Integer(exponent), Integer(modulus)).is_zero());
+            }
+        }
+    }
+    // Noninvertible bases remain valid for nonnegative exponents.
+    GNFS_TEST_CHECK(powmod(Integer(2), Integer(3), Integer(-4)).is_zero());
+    GNFS_TEST_CHECK(powmod(Integer(0), Integer(0), Integer(7)).is_one());
+
+    std::cout << "  Negative exponents: PASS" << std::endl;
+}
+
+void test_arithmetic_domain_errors() {
+    std::cout << "Testing arithmetic domain errors..." << std::endl;
+
+    const auto expect_domain_error = [](auto&& operation) {
+        bool threw = false;
+        try {
+            operation();
+        } catch (const std::domain_error&) {
+            threw = true;
+        }
+        GNFS_TEST_CHECK(threw);
+    };
+
+    for (int exponent : {-3, 0, 3}) {
+        expect_domain_error([&] { (void)powmod(Integer(2), Integer(exponent), Integer(0)); });
+    }
+    for (int modulus : {4, -4}) {
+        for (int base : {0, 2, -2}) {
+            expect_domain_error(
+                [&] { (void)powmod(Integer(base), Integer(-1), Integer(modulus)); });
+        }
+    }
+    expect_domain_error([] { (void)sqrt(Integer(-1)); });
+    expect_domain_error([] { (void)sqrt(Integer("-18446744073709551616")); });
+
+    std::cout << "  Arithmetic domain errors: PASS" << std::endl;
+}
+
+void test_sqrt_values() {
+    std::cout << "Testing integer square roots..." << std::endl;
+
+    for (int value : {0, 1, 2, 15, 16, 17}) {
+        const Integer n(value);
+        const Integer root = sqrt(n);
+        const Integer next = root + Integer(1);
+        GNFS_TEST_CHECK(!root.is_negative());
+        GNFS_TEST_CHECK(root * root <= n);
+        GNFS_TEST_CHECK(next * next > n);
+    }
+    const Integer expected("18446744073709551617");
+    const Integer square = expected * expected;
+    GNFS_TEST_CHECK(sqrt(square) == expected);
+    GNFS_TEST_CHECK(sqrt(square - Integer(1)) == expected - Integer(1));
+    GNFS_TEST_CHECK(sqrt(square + Integer(1)) == expected);
+
+    std::cout << "  Integer square roots: PASS" << std::endl;
 }
 
 void test_primality() {
@@ -564,6 +646,9 @@ int main() {
     test_move_semantics();
     test_gcd();
     test_powmod();
+    test_powmod_negative_exponents();
+    test_arithmetic_domain_errors();
+    test_sqrt_values();
     test_primality();
     test_stream_output();
     test_string_conversion_base_boundaries();
