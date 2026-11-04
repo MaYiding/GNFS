@@ -74,6 +74,13 @@ magic protocol remain unchanged. A complete V3 file contains
 `120 + 8 * aug_word_count` bytes. A state without a fingerprint cannot be saved;
 the writer rejects it before truncating an existing file.
 
+The reader checks payload counts against the 64 GiB packed-payload cap and the
+vector implementation's maximum size before allocation. If allocating a valid
+payload still fails, `load()` returns `nullopt`, allowing the solver to restart.
+The allocation-failure regression uses a Linux resource limit and explicitly
+skips that probe on other platforms or under AddressSanitizer; oversized-count
+rejection remains covered on every platform.
+
 V1 native-endian and V2 little-endian files remain decodable, with an absent
 matrix fingerprint. They are not safe to resume because a different matrix may
 have the same dimensions. The solver removes these unbound checkpoints and
