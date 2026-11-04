@@ -197,8 +197,18 @@ public:
 
     /// 标量乘法
     IntPolynomial& operator*=(const Integer& scalar) {
+        Integer* aliased_coefficient = nullptr;
         for (auto& c : coeffs_) {
-            c *= scalar;
+            if (&c == &scalar) {
+                // Keep the scalar unchanged until every other coefficient has
+                // consumed it. This also avoids copying a multi-limb Integer.
+                aliased_coefficient = &c;
+            } else {
+                c *= scalar;
+            }
+        }
+        if (aliased_coefficient != nullptr) {
+            *aliased_coefficient *= scalar;
         }
         normalize();
         return *this;
