@@ -29,6 +29,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -309,9 +310,18 @@ struct FBPrime {
 // Knuth-Schroeppel multiplier selection
 // ================================================================
 
-/// Select optimal multiplier k for N. Returns k such that kN has a dense factor base.
-/// Score = -0.5*log(kN) + Σ_{p small, kN is QR mod p} log(p)/(p-1)
-inline uint32_t select_multiplier(const Integer& N) {
+namespace siqs_multiplier_detail {
+
+struct ScoredCandidate {
+    uint32_t multiplier;
+    double score;
+    size_t ordinal;
+};
+
+inline auto score_candidates(const Integer& N) {
+    if (mpz_sgn(N.get_mpz()) <= 0)
+        throw std::invalid_argument("SIQS multiplier scoring requires a positive N");
+
     static const uint32_t candidates[] = {1,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31,
                                           37, 41, 43, 47, 53, 59, 61, 67, 71, 73};
     // Small primes for scoring
@@ -320,8 +330,8 @@ inline uint32_t select_multiplier(const Integer& N) {
         59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131,
         137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199};
 
-    double best_score = -1e30;
-    uint32_t best_k = 1;
+    std::array<ScoredCandidate, sizeof(candidates) / sizeof(candidates[0])> scored{};
+    size_t ordinal = 0;
 
     for (uint32_t k : candidates) {
         Integer kN;
@@ -361,12 +371,70 @@ inline uint32_t select_multiplier(const Integer& N) {
             }
         }
 
-        if (score > best_score) {
-            best_score = score;
-            best_k = k;
-        }
+        scored[ordinal] = {k, score, ordinal};
+        ++ordinal;
     }
-    return best_k;
+    return scored;
+}
+
+/// Return the unique positive coprime candidates in their supplied order.
+/// Filter the complete ranking before applying the eligible-candidate limit;
+/// this limit does not count started attempts or grant a runtime budget.
+inline std::vector<uint32_t> admit_candidates(const Integer& N, std::span<const uint32_t> ranked,
+                                              size_t limit) {
+    if (limit == 0)
+        return {};
+    if (mpz_sgn(N.get_mpz()) <= 0)
+        throw std::invalid_argument("SIQS multiplier admission requires a positive N");
+
+    std::vector<uint32_t> eligible;
+    eligible.reserve(std::min(limit, ranked.size()));
+    for (uint32_t multiplier : ranked) {
+        if (multiplier == 0 ||
+            std::find(eligible.begin(), eligible.end(), multiplier) != eligible.end())
+            continue;
+        const auto residue = static_cast<uint32_t>(mpz_fdiv_ui(N.get_mpz(), multiplier));
+        if (std::gcd(multiplier, residue) != 1)
+            continue;
+        eligible.push_back(multiplier);
+        if (eligible.size() == limit)
+            break;
+    }
+    return eligible;
+}
+
+} // namespace siqs_multiplier_detail
+
+/// Rank all fixed Knuth-Schroeppel candidates, then return at most limit entries.
+/// Zero limit returns empty; positive limits require a positive N. The raw
+/// ranking is unfiltered by gcd(N, k). Equal scores retain historical candidate
+/// order; floating-point ordering is deterministic within one implementation.
+/// Callers preparing multiple attempts must filter the complete ranking before
+/// applying their eligible-candidate limit. This function starts no attempt.
+inline std::vector<uint32_t> rank_multiplier_candidates(const Integer& N, size_t limit) {
+    if (limit == 0)
+        return {};
+    auto scored = siqs_multiplier_detail::score_candidates(N);
+    std::sort(scored.begin(), scored.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.score == rhs.score)
+            return lhs.ordinal < rhs.ordinal;
+        return lhs.score > rhs.score;
+    });
+    const size_t count = std::min(limit, scored.size());
+    std::vector<uint32_t> ranked;
+    ranked.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+        ranked.push_back(scored[i].multiplier);
+    return ranked;
+}
+
+/// Select the historical top-ranked multiplier for positive N, without coprime
+/// filtering. Score = -0.5*log(kN) + small-prime quadratic-residue contributions.
+inline uint32_t select_multiplier(const Integer& N) {
+    const auto scored = siqs_multiplier_detail::score_candidates(N);
+    return std::max_element(scored.begin(), scored.end(),
+                            [](const auto& lhs, const auto& rhs) { return lhs.score < rhs.score; })
+        ->multiplier;
 }
 
 /// Build factor base: primes p where Legendre(N, p) = 1

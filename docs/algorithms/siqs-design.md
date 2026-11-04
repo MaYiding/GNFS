@@ -128,6 +128,31 @@ finite bound while allowing LP components deeper than the former fixed
 | `tests/test_siqs_shadow_prefer_route.cpp` | Instant production-adapter composition, three-gate truth table, exact candidate/fallback records, write failure, stale candidate rejection, and cross-platform environment/stderr paths |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
+## Multiplier Candidate Preparation
+
+`rank_multiplier_candidates(N, limit)` exposes the raw Knuth-Schroeppel ranking
+for callers that need to inspect or prepare more than one candidate. It ranks
+all 21 fixed candidates before returning the requested prefix. A zero limit
+returns an empty vector without inspecting `N`; a positive limit requires
+positive `N` and otherwise throws `std::invalid_argument`. Limits above 21
+return the complete ranking. Equal scores retain the historical candidate
+order. Floating-point score ordering is deterministic within an implementation;
+near-tie ordering across platforms is not a golden contract.
+
+`select_multiplier(N)` keeps the historical first candidate for positive `N`.
+The raw ranking and selector do not filter shared factors. The internal
+`siqs_multiplier_detail::admit_candidates` helper preserves supplied order,
+rejects zero and every `gcd(N, k) > 1` (including `k = N`), and removes duplicates
+before applying the eligible-candidate limit. Callers must supply the complete
+ranking: truncating the raw ranking first can discard available candidates.
+For example, `N = 15015` has only one admissible entry in its raw first three,
+while the complete ranking supplies three coprime candidates.
+
+These helpers prepare candidates only. Production `factor()` still selects
+one multiplier. Its budget checks, shadow records, and result commit behavior
+remain unchanged. Candidate limits do not count started attempts or establish a time
+budget. A retry controller and its budget admission remain separate work.
+
 ## Parameter Calibration
 
 The `select_params` table is tuned against msieve, CADO-NFS, and YAFU defaults.

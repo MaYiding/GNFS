@@ -4,19 +4,26 @@
 #include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/siqs/siqs.hpp>
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <optional>
+#include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using gnfs::core::Integer;
 using gnfs::tests::siqs_live_sieve_fixture_v1;
@@ -98,7 +105,177 @@ factor_with_unwritable_shadow_stderr(const Integer& modulus, size_t max_seconds,
                                                                     : end - value_begin);
 }
 
+std::vector<uint32_t> reference_scoring_primes() {
+    std::vector<uint32_t> primes;
+    for (uint32_t p = 2; p < 200; ++p) {
+        bool prime = true;
+        for (uint32_t divisor = 2; divisor * divisor <= p; ++divisor)
+            if (p % divisor == 0)
+                prime = false;
+        if (prime)
+            primes.push_back(p);
+    }
+    return primes;
+}
+
+// Independent small-input score oracle: enumerate primes and quadratic
+// residues instead of using the production prime table or modular exponentiation.
+std::vector<uint32_t> reference_multiplier_ranking(uint32_t n) {
+    const auto primes = reference_scoring_primes();
+    std::vector<std::pair<uint32_t, double>> scores;
+    for (uint32_t k = 1; k <= 73; k += 2) {
+        if (k != 1 && std::find(primes.begin(), primes.end(), k) == primes.end())
+            continue;
+        const uint64_t product = static_cast<uint64_t>(n) * k;
+        double score = -0.5 * (static_cast<double>(std::bit_width(product)) * 0.6931);
+        const std::array<double, 8> two_adic_score{0, 2.0 * std::log(2.0), 0, 0,
+                                                   0, std::log(2.0),       0, 0};
+        score += two_adic_score[product % 8];
+        for (uint32_t p : primes) {
+            if (p == 2)
+                continue;
+            const auto residue = static_cast<uint32_t>(product % p);
+            if (residue == 0) {
+                score += std::log(static_cast<double>(p)) / p;
+                continue;
+            }
+            bool quadratic_residue = false;
+            for (uint32_t root = 1; root < p; ++root)
+                if (root * root % p == residue)
+                    quadratic_residue = true;
+            if (quadratic_residue)
+                score += 2.0 * std::log(static_cast<double>(p)) / (p - 1);
+        }
+        scores.emplace_back(k, score);
+    }
+    std::stable_sort(scores.begin(), scores.end(),
+                     [](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
+    std::vector<uint32_t> ranked;
+    for (const auto& [multiplier, score] : scores) {
+        (void)score;
+        ranked.push_back(multiplier);
+    }
+    return ranked;
+}
+
+std::vector<uint32_t>
+reference_multiplier_admission(const Integer& n, std::span<const uint32_t> ranked, size_t limit) {
+    std::vector<uint32_t> all_eligible;
+    std::set<uint32_t> seen;
+    Integer common_divisor;
+    for (uint32_t candidate : ranked) {
+        if (candidate == 0 || !seen.insert(candidate).second)
+            continue;
+        const Integer multiplier(candidate);
+        mpz_gcd(common_divisor.get_mpz(), n.get_mpz(), multiplier.get_mpz());
+        if (mpz_cmp_ui(common_divisor.get_mpz(), 1) == 0)
+            all_eligible.push_back(candidate);
+    }
+    all_eligible.resize(std::min(limit, all_eligible.size()));
+    return all_eligible;
+}
+
 } // namespace
+
+void test_multiplier_ranking_and_admission() {
+    constexpr std::array<size_t, 6> limits{0, 1, 3, 21, 22, std::numeric_limits<size_t>::max()};
+    // Check complete ordering with an independent oracle on a bounded sample.
+    for (uint32_t n : {1u, 15u, 17u, 105u, 303u, 1001u, 1999u, 2003u, 15015u}) {
+        const Integer modulus(n);
+        const auto reference = reference_multiplier_ranking(n);
+        require_test(reference.size() == 21, "reference candidate set size changed");
+        const auto complete = rank_multiplier_candidates(modulus, limits.back());
+        require_test(complete == reference, "multiplier score ordering differs from oracle");
+        require_test(select_multiplier(modulus) == reference.front(),
+                     "selector differs from historical top score");
+        require_test(rank_multiplier_candidates(modulus, limits.back()) == complete,
+                     "ranking is not deterministic in the same build");
+        require_test(std::set<uint32_t>(complete.begin(), complete.end()).size() == complete.size(),
+                     "raw multiplier ranking contains duplicates");
+        for (size_t limit : limits) {
+            auto expected = reference;
+            expected.resize(std::min(limit, expected.size()));
+            require_test(rank_multiplier_candidates(modulus, limit) == expected,
+                         "raw ranking limit changed the prefix");
+            require_test(siqs_multiplier_detail::admit_candidates(modulus, complete, limit) ==
+                             reference_multiplier_admission(modulus, reference, limit),
+                         "candidate admission differs from complete-filter oracle");
+        }
+    }
+
+    // Every odd scoring prime divides this modulus and its residue mod 8 is
+    // zero. Candidates with the same product bit length therefore tie exactly;
+    // ascending historical order must survive throughout those score groups.
+    Integer tied_modulus(8u);
+    std::vector<uint32_t> historical_order{1};
+    for (uint32_t prime : reference_scoring_primes()) {
+        if (prime == 2)
+            continue;
+        mpz_mul_ui(tied_modulus.get_mpz(), tied_modulus.get_mpz(), prime);
+        if (prime <= 73)
+            historical_order.push_back(prime);
+    }
+    require_test(rank_multiplier_candidates(tied_modulus, limits.back()) == historical_order,
+                 "equal multiplier scores lost historical ordinal order");
+
+    for (uint32_t n : {303u, 15015u}) {
+        const Integer modulus(n);
+        const auto complete = rank_multiplier_candidates(modulus, limits.back());
+        const auto truncated = rank_multiplier_candidates(modulus, 3);
+        const auto eligible = siqs_multiplier_detail::admit_candidates(modulus, complete, 3);
+        require_test(eligible.size() == 3, "full ranking lost available coprime candidates");
+        require_test(siqs_multiplier_detail::admit_candidates(modulus, truncated, 3).size() < 3,
+                     "truncate-before-filter counterexample no longer exercises candidate loss");
+    }
+
+    constexpr std::array<uint32_t, 15> supplied{
+        0, 3, 5, 3, 1, 7, 0, 11, 1, 13, 17, 17, 19, 23, std::numeric_limits<uint32_t>::max()};
+    for (const char* text :
+         {"1", "17", "105", "303", "15015", "170141183460469231731687303715884105779",
+          "340282366920938463463374607431768211455"}) {
+        const Integer n(text);
+        for (size_t limit : limits)
+            require_test(siqs_multiplier_detail::admit_candidates(n, supplied, limit) ==
+                             reference_multiplier_admission(n, supplied, limit),
+                         "admission consumed a slot for zero, duplicates, or non-coprime values");
+    }
+    const auto prime_ranking = rank_multiplier_candidates(Integer(17u), limits.back());
+    const auto prime_eligible =
+        siqs_multiplier_detail::admit_candidates(Integer(17u), prime_ranking, 3);
+    require_test(prime_ranking.front() == 17 && prime_eligible.size() == 3 &&
+                     std::find(prime_eligible.begin(), prime_eligible.end(), 17) ==
+                         prime_eligible.end(),
+                 "admission failed to reject gcd equal to N");
+    require_test(siqs_multiplier_detail::admit_candidates(Integer(17u), {}, 3).empty(),
+                 "empty ranking produced a candidate");
+    for (const char* text : {"0", "-1"}) {
+        const Integer n(text);
+        require_test(rank_multiplier_candidates(n, 0).empty() &&
+                         siqs_multiplier_detail::admit_candidates(n, supplied, 0).empty(),
+                     "zero limit did not return without scoring or admission");
+        bool ranking_rejected = false;
+        bool admission_rejected = false;
+        bool selector_rejected = false;
+        try {
+            (void)rank_multiplier_candidates(n, 1);
+        } catch (const std::invalid_argument&) {
+            ranking_rejected = true;
+        }
+        try {
+            (void)siqs_multiplier_detail::admit_candidates(n, supplied, 1);
+        } catch (const std::invalid_argument&) {
+            admission_rejected = true;
+        }
+        try {
+            (void)select_multiplier(n);
+        } catch (const std::invalid_argument&) {
+            selector_rejected = true;
+        }
+        require_test(ranking_rejected && admission_rejected && selector_rejected,
+                     "multiplier API accepted a non-positive modulus");
+    }
+    printf("  multiplier ranking and admission: PASS\n");
+}
 
 void test_one_large_prime_rejects_strong_pseudoprimes() {
     // Each value is composite but passes the legacy single-witness base-2
@@ -546,6 +723,7 @@ int main() {
     printf("=== SIQS Unit Tests ===\n\n");
 
     printf("--- Helper tests ---\n");
+    test_multiplier_ranking_and_admission();
     test_one_large_prime_rejects_strong_pseudoprimes();
     test_tonelli_shanks();
     test_factor_base();
