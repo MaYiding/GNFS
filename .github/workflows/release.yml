@@ -304,10 +304,7 @@ jobs:
         with:
           msystem: UCRT64
           update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-python
+          install: python
 
       - name: Install exact Windows compiler and runtime packages
         if: runner.os == 'Windows'

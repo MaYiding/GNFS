@@ -1,16 +1,21 @@
 #include "gnfs/factor_base/builder.hpp"
+#include "gnfs/factor_base/fb_roots_parallel.hpp"
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 #include "support/test_check.hpp"
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace gnfs;
 using namespace gnfs::factor_base;
@@ -19,6 +24,22 @@ using namespace gnfs::core;
 
 // 测试用的半素数: 1000003 * 1000033 = 1000036000099
 const char* test_n = "1000036000099";
+
+static void set_fb_roots_env(const char* value) {
+#if defined(_WIN32)
+    if (value == nullptr) {
+        _putenv_s("GNFS_FB_ROOTS_THREADS", "");
+    } else {
+        _putenv_s("GNFS_FB_ROOTS_THREADS", value);
+    }
+#else
+    if (value == nullptr) {
+        unsetenv("GNFS_FB_ROOTS_THREADS");
+    } else {
+        setenv("GNFS_FB_ROOTS_THREADS", value, 1);
+    }
+#endif
+}
 
 void test_prime_sieve() {
     std::cout << "Testing prime sieve..." << std::endl;
@@ -151,6 +172,101 @@ void test_cz_random_splitting() {
     assert(roots_5[1] == 3);
 
     std::cout << "  CZ random splitting: PASS (2 roots @ p=101/131; p=2/3/5 边界)" << std::endl;
+}
+
+void test_root_finder_degree_reduction() {
+    std::cout << "Testing root finding after modular degree reduction..." << std::endl;
+
+    const auto check_roots = [](const std::vector<int64_t>& coefficients, uint32_t p) {
+        std::vector<Integer> values;
+        for (int64_t coefficient : coefficients)
+            values.emplace_back(coefficient);
+        PolynomialContext ctx(Integer(int64_t{143}), std::move(values), Integer(int64_t{2}));
+
+        // Evaluate over the integers, independently of evaluate_mod and CZ.
+        std::vector<uint32_t> expected;
+        for (uint32_t r = 0; r < p; ++r) {
+            Integer value;
+            const Integer argument(static_cast<int64_t>(r));
+            for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it) {
+                value *= argument;
+                value += Integer(*it);
+            }
+            if (mpz_divisible_ui_p(value.get_mpz(), p))
+                expected.push_back(r);
+        }
+        const auto roots = FactorBaseBuilder::find_roots_mod_p(ctx, p);
+        auto sorted_roots = roots;
+        std::sort(sorted_roots.begin(), sorted_roots.end());
+        GNFS_TEST_CHECK(sorted_roots == expected);
+        return roots;
+    };
+
+    // Admissible GNFS context: f(2) = 143, but modulo 8009 only 143 remains.
+    GNFS_TEST_CHECK(check_roots({-192073, 0, 0, 24027}, 8009).empty());
+    for (uint32_t p : {61u, 67u, 101u}) {
+        const int64_t prime = static_cast<int64_t>(p);
+        check_roots({143, 0, prime}, p);        // nonzero constant
+        check_roots({-2, 1, prime, -prime}, p); // linear
+        check_roots({4, -4, 1, prime}, p);      // repeated root
+        check_roots({1, 0, 1, prime}, p);       // irreducible at p = 67
+        const auto reduced = check_roots({21, -10, 1}, p);
+        const auto lifted = check_roots({21, -10, 1, -prime, prime}, p);
+        GNFS_TEST_CHECK(lifted == reduced); // normalization preserves CZ root order
+        check_roots({1}, p);
+    }
+    check_roots({0}, 61);
+    check_roots({61, -122, 61}, 61);
+
+    // Primality uses bounded trial division even near UINT32_MAX. Zero input
+    // must fail without attempting to enumerate billions of roots.
+    for (uint32_t p : {67u, UINT32_C(4294967291)}) {
+        const int64_t prime = static_cast<int64_t>(p);
+        for (const auto& coefficients : {std::vector<int64_t>{0}, {prime, -2 * prime, prime}}) {
+            std::vector<Integer> values;
+            for (int64_t coefficient : coefficients)
+                values.emplace_back(coefficient);
+            PolynomialContext ctx(Integer(int64_t{143}), std::move(values), Integer(int64_t{2}));
+            bool rejected = false;
+            try {
+                (void)FactorBaseBuilder::find_roots_mod_p(ctx, p);
+            } catch (const std::runtime_error&) {
+                rejected = true;
+            }
+            GNFS_TEST_CHECK(rejected);
+        }
+    }
+
+    std::cout << "  Modular degree reduction: PASS" << std::endl;
+}
+
+void test_projective_root_after_degree_reduction() {
+    std::cout << "Testing projective factor-base roots after degree reduction..." << std::endl;
+    std::vector<Integer> coefficients;
+    for (int64_t coefficient : {-192073, 0, 0, 24027})
+        coefficients.emplace_back(coefficient);
+    PolynomialContext ctx(Integer(int64_t{143}), std::move(coefficients), Integer(int64_t{2}));
+    GNFS_TEST_CHECK(ctx.evaluate(ctx.m()) == ctx.n());
+
+    for (bool special_q : {false, true}) {
+        FactorBaseBuilder::Options opts;
+        opts.rational_bound = 0;
+        opts.algebraic_bound = special_q ? 0 : 8009;
+        opts.special_q_bound = special_q ? 8009 : 0;
+        opts.parallel = false;
+        const auto fb = FactorBaseBuilder::build(ctx, opts);
+        size_t matching_entries = 0;
+        for (const auto& entry : fb.algebraic()) {
+            if (entry.p == 8009) {
+                ++matching_entries;
+                GNFS_TEST_CHECK(entry.r == AlgebraicPrime::PROJECTIVE_ROOT);
+            }
+        }
+        GNFS_TEST_CHECK(matching_entries == 1);
+        if (special_q)
+            GNFS_TEST_CHECK(fb.sieve_algebraic_count() == 0);
+    }
+    std::cout << "  Projective roots after degree reduction: PASS" << std::endl;
 }
 
 void test_root_finder_rejects_non_prime_modulus() {
@@ -347,6 +463,127 @@ void test_parallel_build() {
 
     std::cout << "  Parallel build: PASS (seq=" << fb_seq.rational_count()
               << ", par=" << fb_par.rational_count() << " rationals)" << std::endl;
+}
+
+void test_builder_root_worker_cap() {
+    std::cout << "Testing builder GNFS_FB_ROOTS_THREADS integration..." << std::endl;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    };
+
+    Integer n(test_n);
+    auto result = BaseMSelector::select(n, 3);
+    require(result.success, "base-m selection failed for worker-cap test");
+    auto ctx = BaseMSelector::create_context(n, result);
+
+    FactorBaseBuilder::Options options;
+    options.rational_bound = 4000;
+    options.algebraic_bound = 4000;
+    options.special_q_bound = 10000;
+    options.parallel = true;
+
+    const auto build_with_env = [&](const char* value, bool parallel) {
+        set_fb_roots_env(value);
+        gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
+        options.parallel = parallel;
+        return FactorBaseBuilder::build(ctx, options);
+    };
+
+    // The explicit sequential cap and an explicit multi-worker cap must retain
+    // the same prime/root order as the legacy default path.
+    auto sequential = build_with_env("1", true);
+    auto two_workers = build_with_env("2", true);
+    auto parallel = build_with_env("4", true);
+    auto default_path = build_with_env(nullptr, true);
+    require(sequential.rational_count() == parallel.rational_count() &&
+                sequential.rational_count() == default_path.rational_count(),
+            "worker cap changed rational-prime count");
+    require(sequential.algebraic_count() == parallel.algebraic_count() &&
+                sequential.algebraic_count() == default_path.algebraic_count() &&
+                sequential.algebraic_count() == two_workers.algebraic_count(),
+            "worker cap changed algebraic-prime count");
+    require(sequential.sieve_algebraic_count() > 0 &&
+                sequential.sieve_algebraic_count() < sequential.algebraic_count(),
+            "worker-cap fixture must cover ordinary and special-Q roots");
+    require(sequential.sieve_algebraic_count() == two_workers.sieve_algebraic_count() &&
+                sequential.sieve_algebraic_count() == parallel.sieve_algebraic_count() &&
+                sequential.sieve_algebraic_count() == default_path.sieve_algebraic_count(),
+            "worker cap changed ordinary/special-Q boundary");
+    for (size_t i = 0; i < sequential.algebraic_count(); ++i) {
+        const auto& expected = sequential.algebraic()[i];
+        require(expected.p == two_workers.algebraic()[i].p &&
+                    expected.r == two_workers.algebraic()[i].r &&
+                    expected.log_p == two_workers.algebraic()[i].log_p &&
+                    expected.degree == two_workers.algebraic()[i].degree,
+                "two-worker chunks changed root ordering");
+        require(expected.p == parallel.algebraic()[i].p &&
+                    expected.r == parallel.algebraic()[i].r &&
+                    expected.log_p == parallel.algebraic()[i].log_p &&
+                    expected.degree == parallel.algebraic()[i].degree,
+                "worker cap changed explicit parallel root ordering");
+        require(expected.p == default_path.algebraic()[i].p &&
+                    expected.r == default_path.algebraic()[i].r &&
+                    expected.log_p == default_path.algebraic()[i].log_p &&
+                    expected.degree == default_path.algebraic()[i].degree,
+                "worker cap changed default root ordering");
+    }
+
+    // Options::parallel=false is a stronger C++ caller contract and must not
+    // accidentally spawn a pool just because the environment requests one.
+    auto disabled = build_with_env("4", false);
+    require(disabled.algebraic_count() == sequential.algebraic_count(),
+            "parallel=false changed algebraic-prime count");
+    for (size_t i = 0; i < sequential.algebraic_count(); ++i) {
+        require(disabled.algebraic()[i].p == sequential.algebraic()[i].p &&
+                    disabled.algebraic()[i].r == sequential.algebraic()[i].r &&
+                    disabled.algebraic()[i].log_p == sequential.algebraic()[i].log_p &&
+                    disabled.algebraic()[i].degree == sequential.algebraic()[i].degree,
+                "parallel=false changed root ordering");
+    }
+
+    set_fb_roots_env(nullptr);
+    gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
+    std::cout << "  Builder worker cap: PASS (default, N=1, N=2, N=4, parallel=false)" << std::endl;
+}
+
+void test_builder_root_chunks_preserve_projective_roots() {
+    std::cout << "Testing projective roots across ordinary/special-Q chunks..." << std::endl;
+    // The leading coefficient has one prime below and one prime above the
+    // ordinary bound. f(2) = 143, so both paths use a valid context.
+    PolynomialContext ctx(Integer(143), {Integer(-1321), Integer(0), Integer(0), Integer(183)},
+                          Integer(2));
+    GNFS_TEST_CHECK(ctx.verify());
+    FactorBaseBuilder::Options options;
+    options.rational_bound = 43;
+    options.algebraic_bound = 43;
+    options.special_q_bound = 10000;
+    options.parallel = false;
+    const auto sequential = FactorBaseBuilder::build(ctx, options);
+
+    set_fb_roots_env("2");
+    gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
+    options.parallel = true;
+    const auto parallel = FactorBaseBuilder::build(ctx, options);
+    set_fb_roots_env(nullptr);
+    gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
+
+    GNFS_TEST_CHECK(sequential.algebraic_count() == parallel.algebraic_count());
+    GNFS_TEST_CHECK(sequential.sieve_algebraic_count() == parallel.sieve_algebraic_count());
+    bool ordinary_projective = false;
+    bool special_q_projective = false;
+    for (size_t i = 0; i < sequential.algebraic_count(); ++i) {
+        const auto& expected = sequential.algebraic()[i];
+        const auto& actual = parallel.algebraic()[i];
+        GNFS_TEST_CHECK(expected.p == actual.p && expected.r == actual.r &&
+                        expected.log_p == actual.log_p && expected.degree == actual.degree);
+        if (actual.r == AlgebraicPrime::PROJECTIVE_ROOT) {
+            ordinary_projective |= actual.p == 3 && i < parallel.sieve_algebraic_count();
+            special_q_projective |= actual.p == 61 && i >= parallel.sieve_algebraic_count();
+        }
+    }
+    GNFS_TEST_CHECK(ordinary_projective && special_q_projective);
+    std::cout << "  Projective root chunk ordering: PASS" << std::endl;
 }
 
 void test_larger_bound() {
@@ -946,11 +1183,15 @@ int main() {
     test_zero_bounds();
     test_algebraic_roots();
     test_cz_random_splitting();
+    test_root_finder_degree_reduction();
+    test_projective_root_after_degree_reduction();
     test_root_finder_rejects_non_prime_modulus();
     test_index_lookup();
     test_log_values();
     test_zero_and_one_bounds();
     test_parallel_build();
+    test_builder_root_worker_cap();
+    test_builder_root_chunks_preserve_projective_roots();
     test_larger_bound();
     test_segmented_parallel_sieve();
     test_base_m_irreducibility();
