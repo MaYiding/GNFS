@@ -488,6 +488,70 @@ void test_parallel_for_stealing_exception_waits_for_all_tasks() {
     std::cout << "  parallel_for_stealing exception wait: PASS" << std::endl;
 }
 
+// Partitioning the second chunk fails only after the first callback has
+// started. Keep the shared coordination state outside the launching call.
+struct ThrowingPartitionIterator : HugeRangeIterator {
+    std::shared_future<void>* first_task_started;
+    std::promise<void>* partition_failed;
+
+    ThrowingPartitionIterator(size_t position, std::shared_future<void>& started,
+                              std::promise<void>& failed)
+        : HugeRangeIterator{position}, first_task_started(&started), partition_failed(&failed) {}
+
+    ThrowingPartitionIterator& operator+=(difference_type offset) {
+        if (position == 2) {
+            first_task_started->wait();
+            partition_failed->set_value();
+            throw std::runtime_error("partition failure");
+        }
+        position += offset;
+        return *this;
+    }
+};
+
+void test_parallel_for_launch_exception_waits_for_accepted_task() {
+    std::cout << "Testing partial parallel launch failure drains accepted tasks..." << std::endl;
+
+    ThreadPool pool(2);
+    std::promise<void> task_started;
+    auto task_ready = task_started.get_future().share();
+    std::promise<void> partition_failed;
+    auto failure_ready = partition_failed.get_future();
+    std::promise<void> release_task;
+    auto task_release = release_task.get_future().share();
+    std::atomic<bool> task_done{false};
+    auto callback = [&](size_t) {
+        task_started.set_value();
+        task_release.wait();
+        task_done.store(true, std::memory_order_release);
+        // The launch failure must retain priority over this callback failure.
+        throw std::runtime_error("accepted callback failure");
+    };
+
+    auto caller = std::async(std::launch::async, [&]() {
+        try {
+            pool.parallel_for(ThrowingPartitionIterator{0, task_ready, partition_failed},
+                              ThrowingPartitionIterator{4, task_ready, partition_failed}, callback);
+        } catch (const std::runtime_error& error) {
+            return std::string(error.what());
+        }
+        return std::string{};
+    });
+    failure_ready.wait();
+    const bool returned_early =
+        caller.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
+    release_task.set_value();
+    const auto error = caller.get();
+    pool.wait_all();
+
+    GNFS_TEST_CHECK(!returned_early);
+    GNFS_TEST_CHECK(task_done.load(std::memory_order_acquire));
+    GNFS_TEST_CHECK(error == "partition failure");
+    GNFS_TEST_CHECK(pool.submit([]() { return 42; }).get() == 42);
+
+    std::cout << "  Partial parallel launch failure: PASS" << std::endl;
+}
+
 void test_parallel_for_stealing_size_max_range() {
     std::cout << "Testing parallel_for_stealing SIZE_MAX range..." << std::endl;
 
@@ -534,6 +598,7 @@ int main() {
     test_parallel_for_index_exception_waits_for_all_tasks();
     test_parallel_for_stealing_exception_waits_for_all_tasks();
     test_parallel_for_stealing_size_max_range();
+    test_parallel_for_launch_exception_waits_for_accepted_task();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
