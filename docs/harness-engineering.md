@@ -135,8 +135,20 @@ configuration. It builds only the selected executable and
 remaining test arguments through unchanged. `--no-build` keeps the same name
 validation and executes existing binaries without invoking CMake. If the
 requested executable is missing or not executable, the runner reports a failed
-test and exits non-zero, including with `--no-build`. Other modes retain their
-full-build and optional-binary skip behavior. Verbose builds use CMake's
+test and exits non-zero, including with `--no-build`.
+
+`module` (including `mod`), `changed` (including `diff`), and `gate` also fail
+when a selected binary is missing or not executable. This applies after a
+successful build and with `--no-build`. The explicit `WINDOWS_UNAVAILABLE_TESTS`
+list preserves CMake's `NOT WIN32` exclusions in native MinGW/MSYS Windows
+shells; it does not exempt those binaries on Linux, macOS, or Cygwin. Harness
+tests check that this list matches CMake's conditional targets. Executed tests
+that return 77 remain platform skips. Other modes, including `perf` and
+`stress`, retain their optional-binary skip behavior.
+Failed gate stages still write the JSON report. Ordinary test-mode results use
+exit status 1 for failures; the report retains the full failure count.
+
+These modes retain their existing build scope. Verbose builds use CMake's
 `--verbose` option so Make and Ninja both build their targets.
 
 `scripts/test.sh module <name>` treats an unknown module as a failed selection.

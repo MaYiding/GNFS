@@ -481,6 +481,22 @@ ALL_TEST_BINARIES=(
     test_work_stealing
 )
 
+# CMake excludes these targets under WIN32. Keep platform exclusions explicit
+# so a missing ordinary target, or GNFS_BUILD_TESTS=OFF, cannot make a gate pass.
+typeset -a WINDOWS_UNAVAILABLE_TESTS
+WINDOWS_UNAVAILABLE_TESTS=(
+    test_distributed_sieve_worker_entry
+    test_distributed_sieve_worker_writer_authority
+    test_distributed_sieve_worker_execution
+    test_distributed_sieve_merge_writer_authority
+    test_distributed_sieve_wave_merge_commit
+    test_distributed_sieve_worker_cleanup_tail
+    test_distributed_sieve_worker_cleanup_authorization_publisher
+    test_distributed_sieve_worker_cleanup_orchestrator
+    test_distributed_sieve_worker_work_package_file
+    test_distributed_sieve_resume
+)
+
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
@@ -1513,9 +1529,26 @@ run_single_test() {
 
     if [[ ! -x "$binary" ]]; then
         (( TOTAL_TESTS += 1 ))
-        log_skip "${name}: 二进制不存在"
+        local required_binary=0 missing_detail="binary_missing"
+        case "$MODE" in
+            module|mod|changed|diff|gate) required_binary=1 ;;
+        esac
+        if (( required_binary && ${WINDOWS_UNAVAILABLE_TESTS[(Ie)$name]} > 0 )); then
+            # Native Windows shells use MSYS/MinGW names. Cygwin has a Unix
+            # CMake target and must not inherit the WIN32 exclusions.
+            case "$(uname -s)" in
+                MINGW*|MSYS*) required_binary=0; missing_detail="platform_unsupported" ;;
+            esac
+        fi
+        if (( required_binary )); then
+            (( FAILED_TESTS += 1 ))
+            log_fail "${name}: 必需的测试二进制不存在或不可执行"
+            REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"binary_missing\"}")
+            return 1
+        fi
+        log_skip "${name}: 二进制不存在 (${missing_detail})"
         (( SKIPPED_TESTS += 1 ))
-        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"skip\",\"elapsed_ms\":0,\"detail\":\"binary_missing\"}")
+        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"skip\",\"elapsed_ms\":0,\"detail\":\"${missing_detail}\"}")
         return 2
     fi
 
@@ -8678,7 +8711,15 @@ case "$MODE" in
 
     gate)
         do_build
-        do_gate "${MODE_ARGS[@]}"
+        local gate_status=0
+        do_gate "${MODE_ARGS[@]}" || gate_status=$?
+        # Preserve the report path even if the gate returns an unrecorded error.
+        if (( gate_status != 0 && FAILED_TESTS == 0 )); then
+            (( TOTAL_TESTS += 1 ))
+            (( FAILED_TESTS += 1 ))
+            log_fail "门禁执行失败 (exit=${gate_status})"
+            REPORT_ENTRIES+=("{\"name\":\"gate_execution\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"exit_code=${gate_status}\"}")
+        fi
         show_summary
         ;;
 
@@ -10410,4 +10451,8 @@ case "$MODE" in
         ;;
 esac
 
-exit $FAILED_TESTS
+# Shell exit statuses are eight bits; keep the full count only in the report.
+if (( FAILED_TESTS > 0 )); then
+    exit 1
+fi
+exit 0
