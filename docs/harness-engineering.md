@@ -124,6 +124,14 @@ routing through this generic wrapper.
 
 ### Test Selection Contract
 
+`scripts/test.sh run <test_name> [args...]` normalizes the optional `test_`
+prefix and rejects names outside the registered test catalog before CMake
+configuration. It builds only the selected executable and
+`gnfs_test_process_supervisor`, including their CMake dependencies, then passes
+remaining test arguments through unchanged. `--no-build` keeps the same name
+validation and executes existing binaries without invoking CMake. Other modes
+retain their full-build behavior.
+
 `scripts/test.sh module <name>` treats an unknown module as a failed selection.
 The runner records that invalid request in `test_report.json` and exits non-zero;
 it never reports an empty module selection as successful. This keeps typos in

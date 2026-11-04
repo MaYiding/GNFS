@@ -1438,11 +1438,17 @@ do_build() {
     local start_ms
     start_ms=$(timer_start_ms)
 
+    # An empty target list preserves the full build used by other modes.
+    local -a build_command=(cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS")
+    if (( $# > 0 )); then
+        build_command+=(--target "$@")
+        log_info "构建目标: $*"
+    fi
     local build_output exit_code=0
     if (( VERBOSE )); then
-        cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS" -- -v 2>&1 || exit_code=$?
+        "${build_command[@]}" -- -v 2>&1 || exit_code=$?
     else
-        build_output=$(cmake --build "$BUILD_DIR" -j"$PARALLEL_JOBS" 2>&1) || exit_code=$?
+        build_output=$("${build_command[@]}" 2>&1) || exit_code=$?
     fi
 
     local end_ms
@@ -8518,7 +8524,15 @@ case "$MODE" in
             log_fail "用法: $0 run <test_name> [args...]"
             exit 1
         fi
-        do_build
+        # Normalize and validate before CMake configuration. Literal catalog
+        # membership also prevents target names from becoming paths or options.
+        local test_name="${MODE_ARGS[1]}"
+        [[ "$test_name" == test_* ]] || test_name="test_${test_name}"
+        if (( ${ALL_TEST_BINARIES[(Ie)$test_name]} == 0 )); then
+            usage_error "未知测试: ${MODE_ARGS[1]} (使用 list 查看测试目录)"
+        fi
+        MODE_ARGS[1]="$test_name"
+        do_build "$test_name" gnfs_test_process_supervisor
         do_run "${MODE_ARGS[@]}"
         show_summary
         ;;
