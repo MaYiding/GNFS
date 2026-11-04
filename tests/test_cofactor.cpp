@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -63,6 +64,36 @@ void test_primality() {
     assert(!is_probable_prime_u64(1299709 * 3));
 
     std::cout << "  Primality check: PASSED" << std::endl;
+}
+
+// Independent oracle for the small-number primality shortcut.
+void test_small_primality_oracle() {
+    std::cout << "Testing small primality against independent trial division..." << std::endl;
+    for (uint64_t n = 0; n <= 1000; ++n) {
+        bool prime = n >= 2;
+        for (uint64_t divisor = 2; divisor <= n / divisor; ++divisor) {
+            if (n % divisor == 0) {
+                prime = false;
+                break;
+            }
+        }
+        CHECK(is_probable_prime_u64(n) == prime);
+        CHECK(is_probable_prime(core::Integer(n)) == prime);
+    }
+    std::cout << "  Small primality oracle: PASSED (1001 inputs)" << std::endl;
+}
+
+void test_small_composite_classification() {
+    std::cout << "Testing small composite cofactor classification..." << std::endl;
+    // Both residuals fit B^2 and have only prime factors within B. Treating
+    // either residual as prime incorrectly rejects it as larger than B.
+    const auto square = classify_cofactor(core::Integer(49), 7);
+    const auto semiprime = classify_cofactor(core::Integer(77), 11);
+    CHECK(square.type == CofactorClass::PrimePower);
+    CHECK(square.factor1 == 7 && square.power == 2);
+    CHECK(semiprime.type == CofactorClass::Semiprime);
+    CHECK(semiprime.factor1 == 7 && semiprime.factor2 == 11);
+    std::cout << "  Small composite classification: PASSED" << std::endl;
 }
 
 // Test perfect power detection
@@ -830,6 +861,8 @@ int main() {
     std::cout << std::endl;
 
     test_primality();
+    test_small_composite_classification();
+    test_small_primality_oracle();
     test_perfect_power();
     test_pollard_rho();
     test_cofactor_classification();
