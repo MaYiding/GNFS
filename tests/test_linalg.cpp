@@ -11,6 +11,7 @@
 #include <gnfs/linalg/sparse_matrix.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -81,6 +82,71 @@ void test_sparse_row() {
     GNFS_TEST_CHECK(!row.test(7));
 
     std::cout << "  SparseRow: PASSED" << std::endl;
+}
+
+void test_sparse_row_constructor_parity() {
+    std::cout << "Testing SparseRow constructor GF(2) parity..." << std::endl;
+
+    constexpr size_t columns = 8;
+    const std::vector<SparseRow::IndexList> inputs{
+        {3, 3}, {}, {5, 1, 3, 1, 3, 3, 5}, {7, 7, 0, 7, 0, 2, 2, 2}, {0, 0, 0, 7, 7, 7}};
+    const auto check_row = [](const SparseRow& row, const std::vector<bool>& dense) {
+        SparseRow::IndexList expected_indices;
+        for (size_t column = 0; column < dense.size(); ++column) {
+            GNFS_TEST_CHECK(row.test(static_cast<uint32_t>(column)) == dense[column]);
+            if (dense[column])
+                expected_indices.push_back(static_cast<uint32_t>(column));
+        }
+        GNFS_TEST_CHECK(row.indices() == expected_indices);
+        GNFS_TEST_CHECK(row.weight() == expected_indices.size());
+        GNFS_TEST_CHECK(row.empty() == expected_indices.empty());
+        GNFS_TEST_CHECK(row.first_nonzero() ==
+                        (expected_indices.empty() ? UINT32_MAX : expected_indices.front()));
+        GNFS_TEST_CHECK(row.last_nonzero() ==
+                        (expected_indices.empty() ? UINT32_MAX : expected_indices.back()));
+    };
+
+    for (const auto& input : inputs) {
+        // Independent dense oracle: each occurrence toggles its GF(2) bit.
+        std::vector<bool> dense(columns, false);
+        for (uint32_t column : input)
+            dense[column] = !dense[column];
+        SparseRow row(input);
+        check_row(row, dense);
+
+        SparseMatrix matrix(1, columns);
+        matrix.row(0) = row;
+        const auto transposed = matrix.transpose();
+        for (size_t column = 0; column < columns; ++column) {
+            std::vector<bool> basis(columns, false);
+            basis[column] = true;
+            GNFS_TEST_CHECK(matrix.multiply(basis)[0] == dense[column]);
+            GNFS_TEST_CHECK(transposed.test(column, 0) == dense[column]);
+        }
+
+        row.clear(3);
+        dense[3] = false;
+        check_row(row, dense);
+        row.flip(1);
+        dense[1] = !dense[1];
+        check_row(row, dense);
+
+        const SparseRow::IndexList rhs_indices{0, 1, 1, 5, 5, 5};
+        const SparseRow rhs(rhs_indices);
+        row.xor_with(rhs);
+        for (uint32_t column : rhs_indices)
+            dense[column] = !dense[column];
+        check_row(row, dense);
+
+        row.set(0);
+        row.set(0);
+        dense[0] = true;
+        check_row(row, dense);
+        row.xor_with(row);
+        check_row(row, std::vector<bool>(columns, false));
+    }
+
+    std::cout << "  SparseRow constructor parity: PASSED" << std::endl;
 }
 
 // Test SparseRow XOR
@@ -1602,6 +1668,7 @@ int main() {
     std::cout << std::endl;
 
     test_sparse_row();
+    test_sparse_row_constructor_parity();
     test_sparse_row_xor();
     test_sparse_matrix();
     test_sparse_matrix_bounds();
