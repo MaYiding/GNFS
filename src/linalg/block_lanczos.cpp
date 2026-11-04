@@ -1,6 +1,7 @@
 #include "gnfs/linalg/block_lanczos.hpp"
 #include "gnfs/linalg/bl_checkpoint.hpp"
 #include "gnfs/linalg/block_wiedemann.hpp"
+#include "gnfs/linalg/matrix_fingerprint.hpp"
 #include "gnfs/util/cpu_intrin.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
@@ -138,18 +139,20 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
     // every `bl_checkpoint_interval()` pivots so a crash loses at most that
     // many pivots' worth of work.
     //
-    // The checkpoint is bound to the matrix shape (rows, cols, wpr); a stale
-    // file from a different run with mismatched dimensions is rejected and
-    // we start fresh.
+    // Shape alone cannot distinguish different runs. Bind the checkpoint to
+    // the canonical source matrix; unbound legacy states restart safely.
     const std::string bl_ckpt_path = bl_checkpoint_full_path();
     const bool bl_ckpt_enabled = !bl_ckpt_path.empty();
+    const std::optional<util::Sha256Digest> matrix_fingerprint =
+        bl_ckpt_enabled ? std::make_optional(sparse_matrix_fingerprint(matrix)) : std::nullopt;
     const uint64_t bl_ckpt_interval = bl_checkpoint_interval();
     const uint64_t matrix_rows = static_cast<uint64_t>(m);
     const uint64_t matrix_cols = static_cast<uint64_t>(n);
 
     if (bl_ckpt_enabled && BlockLanczosCheckpoint::exists_and_valid(bl_ckpt_path)) {
         auto loaded = BlockLanczosCheckpoint::load(bl_ckpt_path);
-        if (loaded.has_value() && loaded->rows == matrix_rows && loaded->cols == matrix_cols &&
+        if (loaded.has_value() && loaded->matrix_fingerprint == matrix_fingerprint &&
+            loaded->rows == matrix_rows && loaded->cols == matrix_cols &&
             loaded->aug_words_per_row == aug.words_per_row_ &&
             loaded->aug.size() == aug.data_.size()
             // Each pivot consumes exactly one scanned matrix column. Reject
@@ -168,7 +171,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
         } else {
             // Stale or shape-mismatched checkpoint: reject and start clean.
             std::cerr << "[bl_ckpt] rejecting incompatible checkpoint " << bl_ckpt_path
-                      << " (shape or fields mismatched, starting fresh)\n";
+                      << " (matrix identity, shape, or fields mismatched, starting fresh)\n";
             BlockLanczosCheckpoint::remove(bl_ckpt_path);
         }
     }
@@ -305,6 +308,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
             snap.pivot_row = pivot_row;
             snap.cur_col = col + 1;
             snap.iteration = iter_counter;
+            snap.matrix_fingerprint = matrix_fingerprint;
             snap.aug = aug.data_;
             if (!snap.save(bl_ckpt_path)) {
                 std::cerr << "[bl_ckpt] WARNING: save failed at iter=" << iter_counter
