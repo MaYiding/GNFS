@@ -95,8 +95,9 @@ jobs:
 
     - name: Install diagnostic dependencies
       run: |
+        libc_version=$(dpkg-query -W -f='${Version}' libc6)
         sudo apt-get update
-        sudo apt-get install -y libgmp-dev libntl-dev zsh strace
+        sudo apt-get install -y libgmp-dev libntl-dev zsh strace gdb "libc6-dbg=${libc_version}"
 
     - name: Record source and toolchain
       run: |
@@ -107,6 +108,8 @@ jobs:
           clang++ --version
           ldd --version
           strace --version
+          gdb --version
+          dpkg-query -W -f='${binary:Package} ${Version}\n' libc6 libc6-dbg gdb
           nproc
         } > diagnostic/environment.txt
         cat diagnostic/environment.txt
@@ -133,6 +136,21 @@ jobs:
           --tests-regex '^BoundedChildProcess$' \
           --repeat until-fail:20 \
           --output-log ../diagnostic/untraced-ctest.log
+
+    - name: Inspect an already-waiting pre-exec child
+      if: always() && !cancelled() && steps.baseline.outcome != 'skipped'
+      timeout-minutes: 4
+      env:
+        ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX: '1'
+      # Observe without ptrace first. Only a child already waiting in a futex
+      # gets a bounded stack inspection; the original launch deadline stays.
+      # The script's 30-second outer limit is a diagnostic bound, not CTest's
+      # effective 300-second sanitizer timeout.
+      run: |
+        python3 scripts/diagnose_bounded_child_launch.py \
+          --build-dir build --output-dir diagnostic/deferred-stacks
 
     - name: Trace only the fork-to-exec interval
       if: always() && !cancelled() && steps.baseline.outcome != 'skipped'
