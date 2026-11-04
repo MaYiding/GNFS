@@ -148,6 +148,9 @@ PROJECT_ROOT="${0:A:h:h}"
 # Keep the default checkout-local build, while allowing isolated callers (for
 # example Harness contract tests) to direct generated reports elsewhere.
 BUILD_DIR="${GNFS_BUILD_DIR:-${PROJECT_ROOT}/build}"
+# Resolve overrides relative to the caller before any mode changes directory.
+# The process supervisor requires absolute executable paths.
+BUILD_DIR="${BUILD_DIR:A}"
 BENCH_DIR="${PROJECT_ROOT}/benchmarks"
 REPORT_FILE="${BUILD_DIR}/test_report.json"
 TEST_RUNNER_COMMAND="$0"
@@ -8132,6 +8135,7 @@ do_watch() {
 
 do_tsan_relation() {
     BUILD_DIR="${GNFS_TSAN_BUILD_DIR:-${PROJECT_ROOT}/build-tsan-relation}"
+    BUILD_DIR="${BUILD_DIR:A}"
     REPORT_FILE="${BUILD_DIR}/test_report.json"
     BUILD_TYPE="Debug"
 

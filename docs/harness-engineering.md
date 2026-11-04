@@ -98,8 +98,12 @@ EOF before cleanup is accepted.
 ### Isolated Build and Report Directory
 
 `scripts/test.sh` uses `${PROJECT_ROOT}/build` for generated build files and
-`test_report.json` by default. Set `GNFS_BUILD_DIR` to an absolute local path
-when a contract test or parallel checkout needs isolated output:
+`test_report.json` by default. Set `GNFS_BUILD_DIR` to a local path when a
+contract test or parallel checkout needs isolated output. Relative paths are
+resolved against the caller's working directory at startup, including when the
+runner is invoked outside the source tree. Configuration, builds, test launches,
+and reports use the resulting absolute path. The `GNFS_TSAN_BUILD_DIR` override
+for `tsan-relation` follows the same rule:
 
 ```bash
 GNFS_BUILD_DIR=/tmp/gnfs-harness-check-build ./scripts/test.sh --no-build perf

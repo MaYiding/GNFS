@@ -287,14 +287,23 @@ raise SystemExit(int(os.environ.get('GNFS_STUB_BUILD_EXIT', '0')) if '--build' i
 env = os.environ.copy()
 env.update(PATH=str(bin_dir) + os.pathsep + env['PATH'], GNFS_STUB_LOG=str(log))
 env.pop('GNFS_TEST_PROCESS_SUPERVISOR', None)
+env.pop('GNFS_TSAN_BUILD_DIR', None)
 
 case_index = 0
 
-def invoke(options, *, cached=False, build_exit=0, missing_binary=False):
+def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
+           relative_build=False, tsan=False):
     global case_index
     case_index += 1
-    build = fixture / str(case_index) / "build"
+    build = fixture / str(case_index) / "build with spaces"
     build.mkdir(parents=True)
+    caller = fixture / str(case_index) / "caller directory"
+    caller.mkdir()
+    build_value = os.path.relpath(build, caller) if relative_build else str(build)
+    run_env = {**env, 'GNFS_BUILD_DIR': build_value, 'GNFS_STUB_BUILD_EXIT': str(build_exit)}
+    if tsan:
+        run_env['GNFS_BUILD_DIR'] = str(fixture / 'unused normal build')
+        run_env['GNFS_TSAN_BUILD_DIR'] = build_value
     if cached:
         (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Debug\n')
     if not missing_binary:
@@ -303,8 +312,7 @@ def invoke(options, *, cached=False, build_exit=0, missing_binary=False):
                "args = sys.argv[sys.argv.index('--') + 1:]\nraise SystemExit(subprocess.call(args))\n")
     log.write_text('')
     result = subprocess.run([zsh, str(project / 'scripts/test.sh'), '--no-color', *options],
-                            env={**env, 'GNFS_BUILD_DIR': str(build),
-                                 'GNFS_STUB_BUILD_EXIT': str(build_exit)},
+                            env=run_env, cwd=caller,
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             timeout=10)
     calls = [json.loads(line) for line in log.read_text().splitlines()]
@@ -361,6 +369,33 @@ for options in [['run', 'integer'], ['--no-build', 'run', 'integer']]:
     require(report['total'] == 1 and report['failed'] == 1 and report['skipped'] == 0 and
             report['tests'][0]['detail'] == 'binary_missing',
             f'missing requested test was not reported as a failure: {report!r}')
+
+result, calls, build = invoke(['run', 'integer'], relative_build=True)
+require(result.returncode == 0, f'relative build failed: {result.stdout}')
+for command in (c for c in calls if c[0] == 'cmake'):
+    selector = '--build' if '--build' in command else '-B'
+    require(command[command.index(selector) + 1] == str(build.resolve()),
+            f'CMake did not receive the caller-relative absolute path: {command!r}')
+supervisors = [c for c in calls if c[0] == 'gnfs_test_process_supervisor']
+require(len(supervisors) == 1 and
+        supervisors[0][supervisors[0].index('--') + 1] == str(build.resolve() / 'test_integer'),
+        f'supervisor did not receive an absolute test path: {calls!r}')
+report = json.loads((build / 'test_report.json').read_text())
+require(report['passed'] == 1 and report['skipped'] == 0,
+        f'relative build report was not written beside the binaries: {report!r}')
+
+# Exercise TSAN directory selection on every host without compiling or launching
+# instrumented tests. The fake build fails after recording its command paths.
+executable(bin_dir / 'uname', "print('Linux')\n")
+result, calls, build = invoke(['tsan-relation'], relative_build=True, tsan=True, build_exit=41)
+require(result.returncode != 0, 'synthetic TSAN build failure was ignored')
+cmake_calls = [c for c in calls if c[0] == 'cmake']
+require(len(cmake_calls) == 2, f'TSAN configuration/build were not selected: {calls!r}')
+for command in cmake_calls:
+    selector = '--build' if '--build' in command else '-B'
+    require(command[command.index(selector) + 1] == str(build.resolve()),
+            f'TSAN override was not normalized: {command!r}')
+require('-DGNFS_ENABLE_TSAN=ON' in cmake_calls[0], 'TSAN instrumentation option was lost')
 
 result, calls, _ = invoke(['build'], cached=True)
 require(result.returncode == 0 and not any('--target' in c for c in calls),
