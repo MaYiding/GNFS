@@ -657,6 +657,18 @@ std::vector<uint32_t> FactorBaseBuilder::find_roots_mod_p_unchecked(const Polyno
     for (uint32_t i = 0; i <= d; ++i) {
         f_mod[i] = static_cast<uint64_t>(mpz_fdiv_ui(ctx.coeff(i).get_mpz(), p));
     }
+    // The degree over F_p can be lower than the integer polynomial degree.
+    // ModularPoly::power requires an invertible leading coefficient.
+    while (!f_mod.empty() && f_mod.back() == 0)
+        f_mod.pop_back();
+    if (f_mod.empty()) {
+        // Preserve the large-prime rejection instead of allocating p roots.
+        throw std::runtime_error("factor-base root finding requires a nonzero polynomial modulo p "
+                                 "for p >= 64");
+    }
+    if (f_mod.size() == 1)
+        return {}; // A nonzero constant has no affine roots.
+
     // p_int still needed for ModularPoly::power below
     core::Integer p_int(static_cast<int64_t>(p));
 

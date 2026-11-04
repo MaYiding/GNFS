@@ -6,12 +6,16 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace gnfs;
 using namespace gnfs::factor_base;
@@ -168,6 +172,101 @@ void test_cz_random_splitting() {
     assert(roots_5[1] == 3);
 
     std::cout << "  CZ random splitting: PASS (2 roots @ p=101/131; p=2/3/5 边界)" << std::endl;
+}
+
+void test_root_finder_degree_reduction() {
+    std::cout << "Testing root finding after modular degree reduction..." << std::endl;
+
+    const auto check_roots = [](const std::vector<int64_t>& coefficients, uint32_t p) {
+        std::vector<Integer> values;
+        for (int64_t coefficient : coefficients)
+            values.emplace_back(coefficient);
+        PolynomialContext ctx(Integer(int64_t{143}), std::move(values), Integer(int64_t{2}));
+
+        // Evaluate over the integers, independently of evaluate_mod and CZ.
+        std::vector<uint32_t> expected;
+        for (uint32_t r = 0; r < p; ++r) {
+            Integer value;
+            const Integer argument(static_cast<int64_t>(r));
+            for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it) {
+                value *= argument;
+                value += Integer(*it);
+            }
+            if (mpz_divisible_ui_p(value.get_mpz(), p))
+                expected.push_back(r);
+        }
+        const auto roots = FactorBaseBuilder::find_roots_mod_p(ctx, p);
+        auto sorted_roots = roots;
+        std::sort(sorted_roots.begin(), sorted_roots.end());
+        GNFS_TEST_CHECK(sorted_roots == expected);
+        return roots;
+    };
+
+    // Admissible GNFS context: f(2) = 143, but modulo 8009 only 143 remains.
+    GNFS_TEST_CHECK(check_roots({-192073, 0, 0, 24027}, 8009).empty());
+    for (uint32_t p : {61u, 67u, 101u}) {
+        const int64_t prime = static_cast<int64_t>(p);
+        check_roots({143, 0, prime}, p);        // nonzero constant
+        check_roots({-2, 1, prime, -prime}, p); // linear
+        check_roots({4, -4, 1, prime}, p);      // repeated root
+        check_roots({1, 0, 1, prime}, p);       // irreducible at p = 67
+        const auto reduced = check_roots({21, -10, 1}, p);
+        const auto lifted = check_roots({21, -10, 1, -prime, prime}, p);
+        GNFS_TEST_CHECK(lifted == reduced); // normalization preserves CZ root order
+        check_roots({1}, p);
+    }
+    check_roots({0}, 61);
+    check_roots({61, -122, 61}, 61);
+
+    // Primality uses bounded trial division even near UINT32_MAX. Zero input
+    // must fail without attempting to enumerate billions of roots.
+    for (uint32_t p : {67u, UINT32_C(4294967291)}) {
+        const int64_t prime = static_cast<int64_t>(p);
+        for (const auto& coefficients : {std::vector<int64_t>{0}, {prime, -2 * prime, prime}}) {
+            std::vector<Integer> values;
+            for (int64_t coefficient : coefficients)
+                values.emplace_back(coefficient);
+            PolynomialContext ctx(Integer(int64_t{143}), std::move(values), Integer(int64_t{2}));
+            bool rejected = false;
+            try {
+                (void)FactorBaseBuilder::find_roots_mod_p(ctx, p);
+            } catch (const std::runtime_error&) {
+                rejected = true;
+            }
+            GNFS_TEST_CHECK(rejected);
+        }
+    }
+
+    std::cout << "  Modular degree reduction: PASS" << std::endl;
+}
+
+void test_projective_root_after_degree_reduction() {
+    std::cout << "Testing projective factor-base roots after degree reduction..." << std::endl;
+    std::vector<Integer> coefficients;
+    for (int64_t coefficient : {-192073, 0, 0, 24027})
+        coefficients.emplace_back(coefficient);
+    PolynomialContext ctx(Integer(int64_t{143}), std::move(coefficients), Integer(int64_t{2}));
+    GNFS_TEST_CHECK(ctx.evaluate(ctx.m()) == ctx.n());
+
+    for (bool special_q : {false, true}) {
+        FactorBaseBuilder::Options opts;
+        opts.rational_bound = 0;
+        opts.algebraic_bound = special_q ? 0 : 8009;
+        opts.special_q_bound = special_q ? 8009 : 0;
+        opts.parallel = false;
+        const auto fb = FactorBaseBuilder::build(ctx, opts);
+        size_t matching_entries = 0;
+        for (const auto& entry : fb.algebraic()) {
+            if (entry.p == 8009) {
+                ++matching_entries;
+                GNFS_TEST_CHECK(entry.r == AlgebraicPrime::PROJECTIVE_ROOT);
+            }
+        }
+        GNFS_TEST_CHECK(matching_entries == 1);
+        if (special_q)
+            GNFS_TEST_CHECK(fb.sieve_algebraic_count() == 0);
+    }
+    std::cout << "  Projective roots after degree reduction: PASS" << std::endl;
 }
 
 void test_root_finder_rejects_non_prime_modulus() {
@@ -1084,6 +1183,8 @@ int main() {
     test_zero_bounds();
     test_algebraic_roots();
     test_cz_random_splitting();
+    test_root_finder_degree_reduction();
+    test_projective_root_after_degree_reduction();
     test_root_finder_rejects_non_prime_modulus();
     test_index_lookup();
     test_log_values();
