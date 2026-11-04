@@ -23,7 +23,7 @@ The historical alternatives are:
 | Proposal | Exact Head | Relevant Behavior |
 |---|---|---|
 | PR #252 | `ab9853b68f55ea7e7e8d910d27bd26da06fe880a` | Rank three candidates; return a proper shared divisor directly; add internal cancellation checks |
-| PR #253 | `27617fe888dfe3a80bfbdce303b09930d0fef5ad` | Rank all 21 candidates; skip every non-coprime candidate; count only actual attempts |
+| PR #253 | `27617fe888dfe3a80bfbdce303b09930d0fef5ad` | Rank all 21 candidates; non-coprime candidates do not consume portfolio slots |
 
 The experiment below uses the exact ranking function from #253. It models an
 incorrect partial extraction that ranks only three candidates before applying
