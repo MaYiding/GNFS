@@ -254,6 +254,156 @@ PY
     pass "${name}"
 }
 
+assert_runner_target_builds() {
+    "${PYTHON}" - "${PROJECT_ROOT}" "${TEST_TMPDIR}/targeted runner" "${ZSH_EXECUTABLE}" <<'PYTEST'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+project, fixture, zsh = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+fixture.mkdir()
+bin_dir = fixture / "bin"
+bin_dir.mkdir()
+log = fixture / "calls.jsonl"
+common = "import json, os, pathlib, subprocess, sys\n"
+common += "with open(os.environ['GNFS_STUB_LOG'], 'a') as f:\n"
+common += "    f.write(json.dumps([pathlib.Path(sys.argv[0]).name, *sys.argv[1:]]) + '\\n')\n"
+
+def executable(path, body):
+    path.write_text("#!" + sys.executable + "\n" + common + body)
+    path.chmod(0o755)
+
+executable(bin_dir / "cmake", """
+args = sys.argv[1:]
+if '--build' not in args:
+    build = pathlib.Path(args[args.index('-B') + 1])
+    build.mkdir(parents=True, exist_ok=True)
+    build_type = next(a.split('=', 1)[1] for a in args if a.startswith('-DCMAKE_BUILD_TYPE='))
+    (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=' + build_type + '\\n')
+raise SystemExit(int(os.environ.get('GNFS_STUB_BUILD_EXIT', '0')) if '--build' in args else 0)
+""")
+env = os.environ.copy()
+env.update(PATH=str(bin_dir) + os.pathsep + env['PATH'], GNFS_STUB_LOG=str(log))
+env.pop('GNFS_TEST_PROCESS_SUPERVISOR', None)
+env.pop('GNFS_TSAN_BUILD_DIR', None)
+
+case_index = 0
+
+def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
+           relative_build=False, tsan=False):
+    global case_index
+    case_index += 1
+    build = fixture / str(case_index) / "build with spaces"
+    build.mkdir(parents=True)
+    caller = fixture / str(case_index) / "caller directory"
+    caller.mkdir()
+    build_value = os.path.relpath(build, caller) if relative_build else str(build)
+    run_env = {**env, 'GNFS_BUILD_DIR': build_value, 'GNFS_STUB_BUILD_EXIT': str(build_exit)}
+    if tsan:
+        run_env['GNFS_BUILD_DIR'] = str(fixture / 'unused normal build')
+        run_env['GNFS_TSAN_BUILD_DIR'] = build_value
+    if cached:
+        (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Debug\n')
+    if not missing_binary:
+        executable(build / 'test_integer', "raise SystemExit(0)\n")
+    executable(build / 'gnfs_test_process_supervisor',
+               "args = sys.argv[sys.argv.index('--') + 1:]\nraise SystemExit(subprocess.call(args))\n")
+    log.write_text('')
+    result = subprocess.run([zsh, str(project / 'scripts/test.sh'), '--no-color', *options],
+                            env=run_env, cwd=caller,
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            timeout=10)
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    return result, calls, build
+
+
+def require(condition, detail):
+    if not condition:
+        raise SystemExit(detail)
+
+for options, cached in [(['run', 'integer', '--suite', 'value with spaces'], False),
+                        (['-v', 'run', 'test_integer'], True)]:
+    result, calls, build = invoke(options, cached=cached)
+    require(result.returncode == 0, result.stdout)
+    builds = [c for c in calls if c[:2] == ['cmake', '--build']]
+    require(len(builds) == 1, f'expected one build: {calls!r}')
+    command = builds[0]
+    if '-v' in options:
+        require('--verbose' in command and '--' not in command,
+                f'verbose build depends on generator-specific flags: {command!r}')
+    require('--target' in command, f'single-test run requested a full build: {command!r}')
+    targets = command[command.index('--target') + 1:]
+    if '--' in targets:
+        targets = targets[:targets.index('--')]
+    require(targets == ['test_integer', 'gnfs_test_process_supervisor'],
+            f'unexpected build targets: {targets!r}')
+    configurations = [c for c in calls if c[0] == 'cmake' and '--build' not in c]
+    require(len(configurations) == (0 if cached else 1), f'configuration mismatch: {calls!r}')
+    tests = [c for c in calls if c[0] == 'test_integer']
+    expected_args = ['--suite', 'value with spaces'] if not cached else []
+    require(tests == [['test_integer', *expected_args]], f'test arguments changed: {calls!r}')
+    report = json.loads((build / 'test_report.json').read_text())
+    require(report['passed'] == 1 and report['failed'] == 0 and report['skipped'] == 0,
+            f'single-test run did not execute: {report!r}')
+
+for name in ['does_not_exist', '../test_integer', 'integer*', 'integer"']:
+    result, calls, _ = invoke(['run', name])
+    require(result.returncode != 0 and not calls,
+            f'invalid test reached a command: {name!r}, {calls!r}, {result.stdout}')
+
+result, calls, _ = invoke(['--no-build', 'run', 'integer'])
+require(result.returncode == 0 and not any(c[0] == 'cmake' for c in calls),
+        f'--no-build invoked CMake: {calls!r}, {result.stdout}')
+require(any(c[0] == 'test_integer' for c in calls), '--no-build did not execute the test')
+
+result, calls, _ = invoke(['run', 'integer'], build_exit=41)
+require(result.returncode != 0 and not any(c[0] == 'test_integer' for c in calls),
+        f'failed build continued into tests: {calls!r}, {result.stdout}')
+
+for options in [['run', 'integer'], ['--no-build', 'run', 'integer']]:
+    result, calls, build = invoke(options, missing_binary=True)
+    require(result.returncode != 0, f'missing explicitly requested binary succeeded: {result.stdout}')
+    report = json.loads((build / 'test_report.json').read_text())
+    require(report['total'] == 1 and report['failed'] == 1 and report['skipped'] == 0 and
+            report['tests'][0]['detail'] == 'binary_missing',
+            f'missing requested test was not reported as a failure: {report!r}')
+
+result, calls, build = invoke(['run', 'integer'], relative_build=True)
+require(result.returncode == 0, f'relative build failed: {result.stdout}')
+for command in (c for c in calls if c[0] == 'cmake'):
+    selector = '--build' if '--build' in command else '-B'
+    require(command[command.index(selector) + 1] == str(build.resolve()),
+            f'CMake did not receive the caller-relative absolute path: {command!r}')
+supervisors = [c for c in calls if c[0] == 'gnfs_test_process_supervisor']
+require(len(supervisors) == 1 and
+        supervisors[0][supervisors[0].index('--') + 1] == str(build.resolve() / 'test_integer'),
+        f'supervisor did not receive an absolute test path: {calls!r}')
+report = json.loads((build / 'test_report.json').read_text())
+require(report['passed'] == 1 and report['skipped'] == 0,
+        f'relative build report was not written beside the binaries: {report!r}')
+
+# Exercise TSAN directory selection on every host without compiling or launching
+# instrumented tests. The fake build fails after recording its command paths.
+executable(bin_dir / 'uname', "print('Linux')\n")
+result, calls, build = invoke(['tsan-relation'], relative_build=True, tsan=True, build_exit=41)
+require(result.returncode != 0, 'synthetic TSAN build failure was ignored')
+cmake_calls = [c for c in calls if c[0] == 'cmake']
+require(len(cmake_calls) == 2, f'TSAN configuration/build were not selected: {calls!r}')
+for command in cmake_calls:
+    selector = '--build' if '--build' in command else '-B'
+    require(command[command.index(selector) + 1] == str(build.resolve()),
+            f'TSAN override was not normalized: {command!r}')
+require('-DGNFS_ENABLE_TSAN=ON' in cmake_calls[0], 'TSAN instrumentation option was lost')
+
+result, calls, _ = invoke(['build'], cached=True)
+require(result.returncode == 0 and not any('--target' in c for c in calls),
+        f'build mode no longer builds the full catalog: {calls!r}, {result.stdout}')
+PYTEST
+    pass "single-test builds select only their target and supervisor"
+}
+
 "${PYTHON}" "${CHECKER}" >/dev/null
 pass "repository Harness checker passes"
 
@@ -274,6 +424,7 @@ assert_empty \
 assert_empty "malformed input fails open" "${PROJECT_ROOT}" 'not-json'
 
 if [[ -n "${ZSH_EXECUTABLE}" ]]; then
+    assert_runner_target_builds
     assert_runner_argument_error "missing timeout value is rejected" "--timeout" --timeout
     assert_runner_argument_error "negative timeout value is rejected" "--timeout" --timeout -1
     assert_runner_argument_error "invalid timeout value is rejected" "--timeout" --timeout 0

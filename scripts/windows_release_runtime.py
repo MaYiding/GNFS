@@ -118,7 +118,18 @@ def _run(command: list[str]) -> str:
     except OSError as error:
         raise RuntimeContractError(f"unable to execute {command[0]}: {error}") from error
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()[:1000]
+        details = []
+        for label, output in (("stdout", completed.stdout), ("stderr", completed.stderr)):
+            output = output.strip()
+            if not output:
+                continue
+            if len(output) > 1000:
+                output = output[:500] + "\n[... truncated ...]\n" + output[-500:]
+            details.append(f"{label}:\n{output}")
+        # pacman writes dependency details to stdout and warnings to stderr.
+        # Preserve both streams, including their tails, so warnings cannot hide
+        # the reason a pinned-package transaction was rejected.
+        detail = "\n".join(details) or "no output"
         raise RuntimeContractError(
             f"{' '.join(command)} failed with status {completed.returncode}: {detail}"
         )
@@ -640,6 +651,37 @@ def self_test() -> None:
                 raise RuntimeContractError("pinned install ignored a rejected transaction")
         if evidence.exists():
             raise RuntimeContractError("failed pinned transaction published success evidence")
+
+    failure_command = [
+        sys.executable,
+        "-c",
+        "import sys; "
+        "print('dependency transaction start\\n' + 'x' * 2000 + "
+        "'\\nrequires conflicting runtime'); "
+        "print('package downgrade warning', file=sys.stderr); sys.exit(7)",
+    ]
+    try:
+        _run(failure_command)
+    except RuntimeContractError as error:
+        detail = str(error).split("failed with status 7: ", 1)
+        if len(detail) != 2:
+            raise RuntimeContractError("command failure lost its exit status") from error
+        diagnostic = detail[1]
+        if not all(
+            marker in diagnostic
+            for marker in (
+                "stdout:\n",
+                "dependency transaction start",
+                "[... truncated ...]",
+                "requires conflicting runtime",
+                "stderr:\npackage downgrade warning",
+            )
+        ) or len(diagnostic) > 1200:
+            raise RuntimeContractError(
+                "command failure lost bounded stdout/stderr diagnostics"
+            ) from error
+    else:
+        raise RuntimeContractError("command failure was not rejected")
 
     fixture = (
         "libgmp-10.dll => /ucrt64/bin/libgmp-10.dll (0x0001)\n"

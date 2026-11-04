@@ -18,6 +18,14 @@ lifetime peak 从进程启动开始累计，不能重置。因此，每个可比
 执行。`peak_growth = final_peak - baseline_peak` 只表示测量窗口让进程高水位增长了
 多少；它不是当前内存差值，也不是净分配量。
 
+Linux 的 `/proc/self/statm` 使用异步近似 RSS 计数，与 `getrusage` 分别读取，
+不保证同一采样中的 current RSS 小于或等于 peak RSS，参见
+[Linux 内核 proc 文档](https://www.kernel.org/doc/html/v6.15/filesystems/proc.html)。
+50 位探针及 campaign 保留这两个原始值，不抬高 peak 或截断 current；schema 仍校验
+字段与支持标记的对应关系、终态样本一致性和 lifetime peak 单调性。macOS 和 Windows
+继续校验 current 不超过 peak。schema 拒绝记录时，探针校验器在 stderr 输出明确标注
+为未验证的原始记录，便于诊断；该输出不构成通过的测量证据。
+
 ## Synthetic Direct-Route RSS
 
 以下命令默认使用 Release 构建。显式传入 `-t` 时保留调用方选择。测量入口拒绝
