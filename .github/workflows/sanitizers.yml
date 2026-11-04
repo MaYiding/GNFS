@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main, dev ]
   workflow_dispatch:
+    inputs:
+      bounded_child_diagnostic:
+        description: 'Also run the bounded-child ASan launch diagnostic'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -76,3 +81,98 @@ jobs:
         CXX: clang++
         TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
       run: ./scripts/test.sh --no-color --timeout 120 tsan-relation
+
+  bounded-child-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.bounded_child_diagnostic
+    name: BoundedChildProcess ASan launch diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install diagnostic dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libgmp-dev libntl-dev zsh strace
+
+    - name: Record source and toolchain
+      run: |
+        mkdir -p diagnostic
+        {
+          git rev-parse HEAD 'HEAD^{tree}'
+          uname -a
+          clang++ --version
+          ldd --version
+          strace --version
+          nproc
+        } > diagnostic/environment.txt
+        cat diagnostic/environment.txt
+
+    - name: Build the original bounded-child test with ASan and UBSan
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+        cmake --build build --target test_bounded_child_process --parallel "$(nproc)"
+
+    - name: Repeat the original test without tracing or relaxed deadlines
+      id: baseline
+      working-directory: build
+      env:
+        ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX: '1'
+      run: |
+        ctest --output-on-failure --verbose \
+          --tests-regex '^BoundedChildProcess$' \
+          --repeat until-fail:20 \
+          --output-log ../diagnostic/untraced-ctest.log
+
+    - name: Trace only the fork-to-exec interval
+      if: always() && !cancelled() && steps.baseline.outcome != 'skipped'
+      timeout-minutes: 3
+      env:
+        # LSan cannot run under ptrace. This diagnostic is not a leak check.
+        # Exec'd children replace their environment, so detach at exec rather
+        # than tracing new programs whose default LSan would fail under ptrace.
+        ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        GNFS_TEST_REQUIRE_AUTHENTICATED_LINUX: '1'
+      run: |
+        for attempt in 1 2 3; do
+          trace_options=(-e 'trace=%process,%signal,futex,prctl,close,close_range,dup2,pipe2,poll,ppoll,read,write')
+          if [[ "$attempt" == 3 ]]; then
+            # A separate narrow trace captures lock stacks without unwinding
+            # every pipe read/write and distorting the original deadline.
+            trace_options=(-k -e 'trace=%process,futex')
+          fi
+          status=0
+          timeout --kill-after=5s 30s \
+            strace -ff -b execve -ttt -T -yy -s 128 \
+              "${trace_options[@]}" -o "diagnostic/trace-${attempt}" \
+              "$PWD/build/test_bounded_child_process" \
+              "$PWD/build/bounded_child_process_fake_child" \
+              "$PWD/build/bounded_child_process_authenticated_supervisor" \
+              > "diagnostic/traced-${attempt}.log" 2>&1 || status=$?
+          printf 'trace attempt %s: exit %s (diagnostic only)\n' "$attempt" "$status" \
+            | tee -a diagnostic/trace-status.txt
+          cat "diagnostic/traced-${attempt}.log"
+        done
+
+    - name: Upload bounded-child diagnostic evidence
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: bounded-child-asan-diagnostic
+        path: |
+          diagnostic/
+          build/Testing/Temporary/LastTest.log
+          build/Testing/Temporary/LastTestsFailed.log
+        retention-days: 7
+        if-no-files-found: warn
