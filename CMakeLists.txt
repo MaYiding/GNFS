@@ -526,6 +526,10 @@ target_link_libraries(gnfs PRIVATE
 # ============================================================
 
 option(GNFS_BUILD_TESTS "Build tests" ON)
+# The shell host may be MSYS even when the target uses the POSIX MSYS runtime.
+# Expose the exact condition used by the platform-specific test targets.
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/gnfs-test-platform.txt"
+    CONTENT "WIN32=$<BOOL:${WIN32}>\n")
 option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 
 if(GNFS_BUILD_TESTS)

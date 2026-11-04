@@ -140,12 +140,17 @@ test and exits non-zero, including with `--no-build`.
 `module` (including `mod`), `changed` (including `diff`), and `gate` also fail
 when a selected binary is missing or not executable. This applies after a
 successful build and with `--no-build`. The explicit `WINDOWS_UNAVAILABLE_TESTS`
-list preserves CMake's `NOT WIN32` exclusions in native MinGW/MSYS Windows
-shells; it does not exempt those binaries on Linux, macOS, or Cygwin. Harness
-tests check that this list matches CMake's conditional targets. Executed tests
+list preserves CMake's `NOT WIN32` exclusions only when the build directory's
+internal `gnfs-test-platform.txt` contains `WIN32=1`. CMake generates this marker
+from its actual target condition, independently of the shell host and
+`GNFS_BUILD_TESTS`. Missing or unrecognized metadata grants no exemption;
+reconfigure an older Windows build before using `--no-build`. MSYS POSIX targets
+have `WIN32=0` and must provide these binaries. Harness tests check that the
+exclusion list matches CMake's conditional targets. Executed tests
 that return 77 remain platform skips. Other modes, including `perf` and
 `stress`, retain their optional-binary skip behavior.
-Failed gate stages still write the JSON report. Ordinary test-mode results use
+Failed gate stages still write the JSON report, including ordinary test failures
+and timeouts that stop immediately with `--fail-fast`. Ordinary test-mode results use
 exit status 1 for failures; the report retains the full failure count.
 
 These modes retain their existing build scope. Verbose builds use CMake's

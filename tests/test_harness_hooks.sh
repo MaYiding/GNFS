@@ -406,6 +406,8 @@ PYTEST
 
 assert_runner_required_binaries() {
     "${PYTHON}" - "${PROJECT_ROOT}" "${TEST_TMPDIR}/required runner" "${ZSH_EXECUTABLE}" <<'PYTEST'
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 import json
 import os
 from pathlib import Path
@@ -459,17 +461,27 @@ executable(bin_dir / 'ctest', 'exit 0\n')
 executable(bin_dir / 'clock', 'printf \"0\\n\"\n')
 executable(bin_dir / 'uname', 'printf "%s\\n" "$GNFS_STUB_HOST"\n')
 case_index = 0
+case_lock = Lock()
 
-def invoke(options, *, missing=(), host='Linux', exit_77=(), empty=False, nonexecutable=None):
+def invoke(options, *, missing=(), host='Linux', win32='0', exit_77=(), exit_codes=None,
+           stale_report=False, empty=False, nonexecutable=None):
     global case_index
-    case_index += 1
-    build = cache / str(case_index)
+    with case_lock:
+        case_index += 1
+        case_id = case_index
+    build = cache / str(case_id)
     build.mkdir()
     (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Debug\nGNFS_BUILD_TESTS:BOOL=OFF\n')
+    if win32 is not None:
+        (build / 'gnfs-test-platform.txt').write_text('WIN32=' + win32 + '\n')
+    if stale_report:
+        (build / 'test_report.json').write_text('{"stale_previous_pass": true}\n')
     if not empty:
         for name in all_tests:
             if name not in missing:
-                executable(build / name, 'exit ' + ('77' if name in exit_77 else '0') + '\n')
+                code = (exit_codes or {}).get(name, 77 if name in exit_77 else 0)
+                executable(build / name,
+                           'printf "GNFS_FIXTURE_EXECUTED %s\\n" ' + name + '\nexit ' + str(code) + '\n')
     if nonexecutable:
         (build / nonexecutable).chmod(0o644)
     env = {**os.environ, 'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'],
@@ -494,27 +506,56 @@ def failed_missing(options, name, **kwargs):
             f'required binary was not a failure: {options!r}, {report!r}, {result.stdout}')
     require('合并门禁全部通过' not in result.stdout, 'failed gate claimed complete success')
 
-result, report = invoke(['--no-build', 'module', 'factor_base'], empty=True)
-require(result.returncode != 0 and report['failed'] == 3 and report['skipped'] == 0,
-        f'empty required module succeeded: {report!r}, {result.stdout}')
-result, report = invoke(['--no-build', 'module', *(['factor_base'] * 256)], empty=True)
-require(result.returncode == 1 and report['failed'] == 768 and report['skipped'] == 0,
-        f'failure count wrapped to a successful exit: {report!r}')
-for options in [['module', 'factor_base'], ['--no-build', 'mod', 'factor_base'],
-                ['--no-build', 'changed'], ['diff']]:
-    failed_missing(options, 'test_fb_checkpoint', missing={'test_fb_checkpoint'})
-failed_missing(['--no-build', 'module', 'factor_base'], 'test_fb_checkpoint',
-               nonexecutable='test_fb_checkpoint')
-failed_missing(['--no-build', 'gate'], 'test_regression_gate', missing={'test_regression_gate'})
-failed_missing(['gate', '--quick'], 'test_integer', missing={'test_integer'})
-for options in [['module', 'factor_base'], ['--no-build', 'changed']]:
-    result, report = invoke(options)
-    require(result.returncode == 0 and report['passed'] == 3 and report['failed'] == 0 and
-            report['skipped'] == 0, f'complete selection did not pass: {report!r}')
-result, report = invoke(['--no-build', 'module', 'factor_base'], exit_77={'test_fb_checkpoint'})
-require(result.returncode == 0 and report['passed'] == 2 and report['failed'] == 0 and
-        report['skipped'] == 1 and any(entry['detail'] == 'exit_code=77' for entry in report['tests']),
-        f'platform exit 77 stopped being a skip: {report!r}')
+def check_fail_fast():
+    for options, name, code in [(['gate'], 'test_integer', 1),
+                                 (['gate'], 'test_integer', 124),
+                                 (['run', 'test_integer'], 'test_integer', 1),
+                                 (['module', 'factor_base'], 'test_factor_base', 124)]:
+        result, report = invoke(['--no-build', '--fail-fast', *options],
+                                exit_codes={name: code}, stale_report=True)
+        expected = 'timeout' if code == 124 else 'fail'
+        require(result.returncode == 1 and report.get('total') == 1 and report['failed'] == 1 and
+                report['passed'] == 0 and report['skipped'] == 0 and
+                report['tests'][0]['name'] == name and report['tests'][0]['status'] == expected,
+                f'fail-fast lost its report or ran later tests: {report!r}, {result.stdout}')
+
+    for options, kwargs in [(['module', 'factor_base'], {'missing': {'test_fb_checkpoint'}}),
+                            (['changed'], {'nonexecutable': 'test_fb_checkpoint'})]:
+        result, report = invoke(['--no-build', '--fail-fast', *options], stale_report=True, **kwargs)
+        executed = [line.removeprefix('GNFS_FIXTURE_EXECUTED ') for line in result.stdout.splitlines()
+                    if line.startswith('GNFS_FIXTURE_EXECUTED ')]
+        require(result.returncode == 1 and report.get('total') == 2 and report['passed'] == 1 and
+                report['failed'] == 1 and report['skipped'] == 0 and
+                report['tests'][-1]['detail'] == 'binary_missing' and executed == ['test_factor_base'],
+                f'fail-fast missing binary ran later children: {report!r}, {result.stdout}')
+
+
+def check_missing_selections():
+    result, report = invoke(['--no-build', 'module', 'factor_base'], empty=True)
+    require(result.returncode != 0 and report['failed'] == 3 and report['skipped'] == 0,
+            f'empty required module succeeded: {report!r}, {result.stdout}')
+    result, report = invoke(['--no-build', 'module', *(['factor_base'] * 256)], empty=True)
+    require(result.returncode == 1 and report['failed'] == 768 and report['skipped'] == 0,
+            f'failure count wrapped to a successful exit: {report!r}')
+    for options in [['module', 'factor_base'], ['--no-build', 'mod', 'factor_base'],
+                    ['--no-build', 'changed'], ['diff']]:
+        failed_missing(options, 'test_fb_checkpoint', missing={'test_fb_checkpoint'})
+    failed_missing(['--no-build', 'module', 'factor_base'], 'test_fb_checkpoint',
+                   nonexecutable='test_fb_checkpoint')
+    failed_missing(['--no-build', 'gate'], 'test_regression_gate', missing={'test_regression_gate'})
+    failed_missing(['gate', '--quick'], 'test_integer', missing={'test_integer'})
+
+def check_successful_selections():
+    for options in [['module', 'factor_base'], ['--no-build', 'changed']]:
+        result, report = invoke(options)
+        require(result.returncode == 0 and report['passed'] == 3 and report['failed'] == 0 and
+                report['skipped'] == 0 and {entry['name'] for entry in report['tests']} ==
+                {'test_factor_base', 'test_fb_checkpoint', 'test_fb_roots_parallel'},
+                f'complete selection did not pass: {report!r}')
+    result, report = invoke(['--no-build', 'module', 'factor_base'], exit_77={'test_fb_checkpoint'})
+    require(result.returncode == 0 and report['passed'] == 2 and report['failed'] == 0 and
+            report['skipped'] == 1 and any(entry['detail'] == 'exit_code=77' for entry in report['tests']),
+            f'platform exit 77 stopped being a skip: {report!r}')
 
 # This allowlist follows CMake's target availability, not whether any arbitrary
 # build cache disabled all tests. Guard the deliberate cross-file contract.
@@ -535,23 +576,37 @@ for match in re.finditer(r'(?im)^\s*(if|elseif|else|endif|add_executable)\s*\(([
         cmake_optional.add(args.split()[0])
 require(windows_optional == cmake_optional and windows_optional,
         f'Windows exclusions differ from CMake: {windows_optional ^ cmake_optional!r}')
-result, report = invoke(['--no-build', 'gate'], exit_77={'test_integer'})
-require(result.returncode == 0 and report['failed'] == 0 and report['skipped'] == 1,
-        f'complete gate or exit-77 skip regressed: {report!r}')
-for host in ['MINGW64_NT-10.0', 'MSYS_NT-10.0']:
-    result, report = invoke(['--no-build', 'module', 'sieve'], missing=windows_optional, host=host)
-    skipped = {entry['name'] for entry in report['tests'] if entry['status'] == 'skip'}
-    require(result.returncode == 0 and report['failed'] == 0 and skipped == windows_optional,
-            f'Windows conditional targets became mandatory: {report!r}')
-    require(all(entry['detail'] == 'platform_unsupported' for entry in report['tests']
-                if entry['status'] == 'skip'), 'conditional skip lacks a platform reason')
-    failed_missing(['--no-build', 'module', 'sieve'], 'test_sieve_basic',
-                   missing=windows_optional | {'test_sieve_basic'}, host=host)
-for host in ['Linux', 'Darwin', 'CYGWIN_NT-10.0']:
-    result, report = invoke(['--no-build', 'module', 'sieve'], missing=windows_optional, host=host)
-    failed = {entry['name'] for entry in report['tests'] if entry['status'] == 'fail'}
-    require(result.returncode == 1 and failed == windows_optional and report['skipped'] == 0,
-            f'Windows exclusions leaked to {host}: {report!r}')
+def check_target_platforms():
+    result, report = invoke(['--no-build', 'gate'], exit_77={'test_integer'})
+    require(result.returncode == 0 and report['failed'] == 0 and report['skipped'] == 1,
+            f'complete gate or exit-77 skip regressed: {report!r}')
+    for host in ['MINGW64_NT-10.0', 'MSYS_NT-10.0']:
+        result, report = invoke(['--no-build', 'module', 'sieve'], missing=windows_optional, host=host, win32='1')
+        skipped = {entry['name'] for entry in report['tests'] if entry['status'] == 'skip'}
+        require(result.returncode == 0 and report['failed'] == 0 and skipped == windows_optional,
+                f'Windows conditional targets became mandatory: {report!r}')
+        require(all(entry['detail'] == 'platform_unsupported' for entry in report['tests']
+                    if entry['status'] == 'skip'), 'conditional skip lacks a platform reason')
+        failed_missing(['--no-build', 'module', 'sieve'], 'test_sieve_basic',
+                       missing=windows_optional | {'test_sieve_basic'}, host=host, win32='1')
+    for host, win32 in [('Linux', '0'), ('Darwin', '0'), ('CYGWIN_NT-10.0', '0'),
+                        ('MSYS_NT-10.0', '0'), ('MINGW64_NT-10.0', None), ('MSYS_NT-10.0', 'invalid')]:
+        result, report = invoke(['--no-build', 'module', 'sieve'], missing=windows_optional,
+                                host=host, win32=win32)
+        failed = {entry['name'] for entry in report['tests'] if entry['status'] == 'fail'}
+        require(result.returncode == 1 and failed == windows_optional and report['skipped'] == 0,
+                f'Windows exclusions leaked to {host}: {report!r}')
+
+# Every case owns its build/report directory; the runner fixture stays read-only
+# until these independent groups finish. Bound concurrency to keep the existing
+# ten-second HarnessHooks budget without weakening its coverage.
+with ThreadPoolExecutor(max_workers=3) as executor:
+    futures = [executor.submit(check) for check in
+               [check_fail_fast, check_missing_selections, check_successful_selections,
+                check_target_platforms]]
+    for future in futures:
+        future.result()
+
 # An unexpected gate error must still produce a failed report even if the
 # function did not record a failed test before returning.
 runner_path = fixture / 'scripts/test.sh'
