@@ -32,15 +32,16 @@ using namespace gnfs::linalg;
 static std::string tmp_base_path(const char* label) {
     static int seq = 0;
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "gnfs_test_bl_resume_%d_%d_%s",
-                  gnfs::util::process_id(), ++seq, label);
+    std::snprintf(buf, sizeof(buf), "gnfs_test_bl_resume_%d_%d_%s", gnfs::util::process_id(), ++seq,
+                  label);
     return gnfs::util::temp_path(buf);
 }
 
 struct CkptCleanup {
     std::string path;
     ~CkptCleanup() {
-        if (!path.empty()) std::remove(path.c_str());
+        if (!path.empty())
+            std::remove(path.c_str());
     }
 };
 
@@ -49,11 +50,11 @@ struct EnvScope {
     bool had_value;
     std::string saved;
 
-    EnvScope(const std::string& n, const std::string& value)
-        : name(n) {
+    EnvScope(const std::string& n, const std::string& value) : name(n) {
         const char* old = std::getenv(n.c_str());
         had_value = (old != nullptr);
-        if (had_value) saved = old;
+        if (had_value)
+            saved = old;
         ::setenv(n.c_str(), value.c_str(), /*overwrite=*/1);
     }
 
@@ -74,14 +75,26 @@ struct EnvUnsetScope {
     explicit EnvUnsetScope(const std::string& n) : name(n) {
         const char* old = std::getenv(n.c_str());
         had_value = (old != nullptr);
-        if (had_value) saved = old;
+        if (had_value)
+            saved = old;
         ::unsetenv(n.c_str());
     }
 
     ~EnvUnsetScope() {
-        if (had_value) ::setenv(name.c_str(), saved.c_str(), 1);
+        if (had_value)
+            ::setenv(name.c_str(), saved.c_str(), 1);
     }
 };
+
+[[noreturn]] static void fail_test(const char* message) {
+    std::cerr << "ERROR: " << message << std::endl;
+    std::exit(EXIT_FAILURE);
+}
+
+static void require_test(bool condition, const char* message) {
+    if (!condition)
+        fail_test(message);
+}
 
 // ── Workload: build a small matrix with known dependencies ───────────────────
 
@@ -103,9 +116,11 @@ static SparseMatrix make_dependent_matrix() {
     for (size_t r = 300; r < M; ++r) {
         const uint32_t a = static_cast<uint32_t>(rng() % 300);
         uint32_t b = static_cast<uint32_t>(rng() % 300);
-        if (a == b) b = (b + 1) % 300;
+        if (a == b)
+            b = (b + 1) % 300;
         // row[r] = row[a]
-        for (uint32_t c : mat.row(a).indices()) mat.set(r, c);
+        for (uint32_t c : mat.row(a).indices())
+            mat.set(r, c);
         // row[r] ^= row[b]
         mat.xor_rows(r, b);
     }
@@ -114,19 +129,19 @@ static SparseMatrix make_dependent_matrix() {
 
 // Compute a canonical signature of a list of dependencies, sorted, so we can
 // compare two runs even if BL returns deps in different order.
-static std::vector<std::vector<bool>>
-canonical(std::vector<std::vector<bool>> deps) {
+static std::vector<std::vector<bool>> canonical(std::vector<std::vector<bool>> deps) {
     std::sort(deps.begin(), deps.end());
     return deps;
 }
 
 // Verify that `dep` is a left-null vector for `mat`: XOR of selected rows = 0.
-static bool dep_is_valid(const SparseMatrix& mat,
-                        const std::vector<bool>& dep) {
-    if (dep.size() != mat.num_rows()) return false;
+static bool dep_is_valid(const SparseMatrix& mat, const std::vector<bool>& dep) {
+    if (dep.size() != mat.num_rows())
+        return false;
     std::vector<bool> xor_row(mat.num_cols(), false);
     for (size_t r = 0; r < dep.size(); ++r) {
-        if (!dep[r]) continue;
+        if (!dep[r])
+            continue;
         for (uint32_t c : mat.row(r).indices()) {
             if (c < mat.num_cols()) {
                 xor_row[c] = !xor_row[c];
@@ -134,11 +149,13 @@ static bool dep_is_valid(const SparseMatrix& mat,
         }
     }
     for (bool b : xor_row) {
-        if (b) return false;
+        if (b)
+            return false;
     }
     // Reject trivial all-zero "dependency".
     for (bool b : dep) {
-        if (b) return true;
+        if (b)
+            return true;
     }
     return false;
 }
@@ -146,8 +163,7 @@ static bool dep_is_valid(const SparseMatrix& mat,
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 void test_baseline_no_ckpt() {
-    std::cout << "Testing baseline (ENV unset) produces dependencies..."
-              << std::endl;
+    std::cout << "Testing baseline (ENV unset) produces dependencies..." << std::endl;
     EnvUnsetScope guard_a("GNFS_BL_CHECKPOINT");
     EnvUnsetScope guard_b("GNFS_BL_CHECKPOINT_INTERVAL");
 
@@ -166,7 +182,8 @@ void test_baseline_no_ckpt() {
 
 void test_ckpt_enabled_completes_and_matches_baseline() {
     std::cout << "Testing ENV-enabled run produces identical deps and "
-                 "removes checkpoint on success..." << std::endl;
+                 "removes checkpoint on success..."
+              << std::endl;
 
     // 1. Baseline.
     auto mat = make_dependent_matrix();
@@ -193,21 +210,17 @@ void test_ckpt_enabled_completes_and_matches_baseline() {
     }
     auto with_sig = canonical(with_ckpt);
 
-    std::cout << "  baseline=" << baseline.size()
-              << " with_ckpt=" << with_ckpt.size() << std::endl;
-    assert(baseline_sig == with_sig
-           && "ckpt-enabled run must match baseline deps");
+    std::cout << "  baseline=" << baseline.size() << " with_ckpt=" << with_ckpt.size() << std::endl;
+    assert(baseline_sig == with_sig && "ckpt-enabled run must match baseline deps");
 
     // 3. Successful completion must remove the checkpoint file.
     assert(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
 
-    std::cout << "  ENV-enabled run matches baseline + removes ckpt: PASS"
-              << std::endl;
+    std::cout << "  ENV-enabled run matches baseline + removes ckpt: PASS" << std::endl;
 }
 
 void test_resume_from_synthetic_checkpoint() {
-    std::cout << "Testing resume from synthetic mid-flight checkpoint..."
-              << std::endl;
+    std::cout << "Testing resume from synthetic mid-flight checkpoint..." << std::endl;
 
     auto mat = make_dependent_matrix();
     auto base = tmp_base_path("resume_synth");
@@ -294,10 +307,8 @@ void test_resume_from_synthetic_checkpoint() {
     }
     auto resumed_sig = canonical(resumed);
 
-    std::cout << "  baseline=" << baseline.size()
-              << " resumed=" << resumed.size() << std::endl;
-    assert(baseline_sig == resumed_sig
-           && "resumed run must match baseline deps");
+    std::cout << "  baseline=" << baseline.size() << " resumed=" << resumed.size() << std::endl;
+    assert(baseline_sig == resumed_sig && "resumed run must match baseline deps");
 
     // Successful completion still removes the ckpt file.
     assert(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
@@ -353,9 +364,10 @@ void test_resume_from_real_partial_state() {
     };
 
     for (size_t r = 0; r < m; ++r) {
-        bit_set(r, r);  // identity on left
+        bit_set(r, r); // identity on left
         for (uint32_t c : mat.row(r).indices()) {
-            if (c < n) bit_set(r, m + c);
+            if (c < n)
+                bit_set(r, m + c);
         }
     }
 
@@ -368,12 +380,20 @@ void test_resume_from_real_partial_state() {
         // Find pivot
         size_t best = m;
         for (size_t r = pivot_row; r < m; ++r) {
-            if (bit_test(r, cur_col)) { best = r; break; }
+            if (bit_test(r, cur_col)) {
+                best = r;
+                break;
+            }
         }
-        if (best == m) { ++cur_col; continue; }
-        if (best != pivot_row) swap_rows(pivot_row, best);
+        if (best == m) {
+            ++cur_col;
+            continue;
+        }
+        if (best != pivot_row)
+            swap_rows(pivot_row, best);
         for (size_t r = 0; r < m; ++r) {
-            if (r != pivot_row && bit_test(r, cur_col)) xor_rows(r, pivot_row);
+            if (r != pivot_row && bit_test(r, cur_col))
+                xor_rows(r, pivot_row);
         }
         ++pivot_row;
         ++iteration;
@@ -393,7 +413,7 @@ void test_resume_from_real_partial_state() {
         snap.pivot_row = pivot_row;
         snap.cur_col = cur_col;
         snap.iteration = iteration;
-        snap.aug = aug;  // copy
+        snap.aug = aug; // copy
         assert(snap.save(base + ".bl_ckpt"));
     }
 
@@ -408,18 +428,16 @@ void test_resume_from_real_partial_state() {
     }
     auto resumed_sig = canonical(resumed);
 
-    std::cout << "  baseline=" << baseline.size()
-              << " resumed_from_partial=" << resumed.size() << std::endl;
-    assert(baseline_sig == resumed_sig
-           && "real-partial resume must match baseline deps");
+    std::cout << "  baseline=" << baseline.size() << " resumed_from_partial=" << resumed.size()
+              << std::endl;
+    assert(baseline_sig == resumed_sig && "real-partial resume must match baseline deps");
     assert(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
 
     std::cout << "  resume from real partial state: PASS" << std::endl;
 }
 
 void test_stale_dim_mismatch_rejected_and_falls_back() {
-    std::cout << "Testing stale ckpt with wrong dims is rejected..."
-              << std::endl;
+    std::cout << "Testing stale ckpt with wrong dims is rejected..." << std::endl;
 
     auto mat = make_dependent_matrix();
     auto base = tmp_base_path("stale_dim");
@@ -428,8 +446,8 @@ void test_stale_dim_mismatch_rejected_and_falls_back() {
     // Save a checkpoint that claims a totally different matrix shape.
     {
         BlockLanczosCheckpoint stale;
-        stale.rows = mat.num_rows() + 100;        // wrong
-        stale.cols = mat.num_cols() + 100;        // wrong
+        stale.rows = mat.num_rows() + 100; // wrong
+        stale.cols = mat.num_cols() + 100; // wrong
         stale.aug_words_per_row = 4;
         stale.pivot_row = 1;
         stale.cur_col = stale.rows + 1;
@@ -464,14 +482,64 @@ void test_stale_dim_mismatch_rejected_and_falls_back() {
     }
     auto after_sig = canonical(after_reject);
 
-    std::cout << "  baseline=" << baseline.size()
-              << " after_reject=" << after_reject.size() << std::endl;
-    assert(baseline_sig == after_sig
-           && "post-rejection run must match baseline deps");
+    std::cout << "  baseline=" << baseline.size() << " after_reject=" << after_reject.size()
+              << std::endl;
+    assert(baseline_sig == after_sig && "post-rejection run must match baseline deps");
     // The rejected-on-load path removes the stale file.
     assert(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
 
     std::cout << "  stale-dim rejection: PASS" << std::endl;
+}
+
+void test_invalid_cursor_rejected_and_falls_back() {
+    std::cout << "Testing impossible checkpoint cursor is rejected..." << std::endl;
+
+    auto mat = make_dependent_matrix();
+    const auto base = tmp_base_path("invalid_cursor");
+    CkptCleanup cleanup{base + ".bl_ckpt"};
+
+    std::vector<std::vector<bool>> baseline;
+    {
+        EnvUnsetScope guard_a("GNFS_BL_CHECKPOINT");
+        EnvUnsetScope guard_b("GNFS_BL_CHECKPOINT_INTERVAL");
+        BlockLanczos solver;
+        baseline = solver.find_dependencies(mat, 16);
+    }
+    const auto baseline_sig = canonical(baseline);
+    require_test(!baseline.empty(), "invalid-cursor baseline must produce dependencies");
+    for (const auto& dep : baseline) {
+        require_test(dep_is_valid(mat, dep),
+                     "invalid-cursor baseline contains an invalid dependency");
+    }
+
+    // The payload is structurally valid, but one pivot cannot have been
+    // completed before the first matrix column was scanned. The old resume
+    // gate accepted this state and would run from an all-zero matrix.
+    BlockLanczosCheckpoint invalid;
+    invalid.rows = mat.num_rows();
+    invalid.cols = mat.num_cols();
+    invalid.aug_words_per_row = (invalid.rows + invalid.cols + 63) / 64;
+    invalid.pivot_row = 1;
+    invalid.cur_col = invalid.rows;
+    invalid.iteration = 1;
+    invalid.aug.assign(static_cast<size_t>(invalid.rows * invalid.aug_words_per_row), 0);
+    require_test(invalid.save(base + ".bl_ckpt"), "failed to save impossible-cursor checkpoint");
+    require_test(BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"),
+                 "impossible-cursor checkpoint was not finalized");
+
+    std::vector<std::vector<bool>> after_reject;
+    {
+        EnvScope guard_a("GNFS_BL_CHECKPOINT", base);
+        EnvScope guard_b("GNFS_BL_CHECKPOINT_INTERVAL", "50");
+        BlockLanczos solver;
+        after_reject = solver.find_dependencies(mat, 16);
+    }
+
+    require_test(canonical(after_reject) == baseline_sig,
+                 "impossible cursor did not fall back to baseline behavior");
+    require_test(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"),
+                 "rejected impossible-cursor checkpoint was not removed");
+    std::cout << "  impossible cursor rejection + fallback: PASS" << std::endl;
 }
 
 int main() {
@@ -482,8 +550,8 @@ int main() {
     test_resume_from_synthetic_checkpoint();
     test_resume_from_real_partial_state();
     test_stale_dim_mismatch_rejected_and_falls_back();
+    test_invalid_cursor_rejected_and_falls_back();
 
-    std::cout << "\n===== All BL resume integration tests PASSED ====="
-              << std::endl;
+    std::cout << "\n===== All BL resume integration tests PASSED =====" << std::endl;
     return 0;
 }
