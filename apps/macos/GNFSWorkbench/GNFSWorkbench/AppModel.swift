@@ -23,7 +23,7 @@ final class AppModel {
   var selectedRunID: UUID?
   var isParametersPresented = false
   var isHistoryPresented = true
-  var areLogsExpanded = true
+  var areLogsExpanded = false
   var alertMessage: String?
   var toastMessage: String?
   private(set) var isRunTaskActive = false

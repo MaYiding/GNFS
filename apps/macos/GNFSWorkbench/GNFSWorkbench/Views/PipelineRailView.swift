@@ -22,7 +22,7 @@ struct PipelineRailView: View {
         }
       }
       if run?.usesGNFSPipeline == true {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 12)], spacing: 16) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 6) {
           ForEach(PipelinePhase.allCases) { phaseNode($0) }
         }
       } else {
@@ -53,37 +53,36 @@ struct PipelineRailView: View {
 
   private func phaseNode(_ phase: PipelinePhase) -> some View {
     let state = state(for: phase)
-    return VStack(spacing: 8) {
+    return HStack(spacing: 6) {
       ZStack {
         Circle()
           .fill(state.background)
-          .frame(width: 36, height: 36)
+          .frame(width: 16, height: 16)
         Circle()
-          .stroke(state.stroke, lineWidth: state == .active ? 2 : 1)
-          .frame(width: 36, height: 36)
+          .stroke(state.stroke, lineWidth: state == .active ? 1.5 : 1)
+          .frame(width: 16, height: 16)
         if state == .complete {
           Image(systemName: "checkmark")
-            .font(.system(size: 11, weight: .bold))
+            .font(.system(size: 8, weight: .semibold))
             .foregroundStyle(state.foreground)
         } else if state == .failed {
           Image(systemName: "xmark")
-            .font(.system(size: 10, weight: .bold))
+            .font(.system(size: 8, weight: .semibold))
             .foregroundStyle(state.foreground)
         } else {
           Text("\(phase.order + 1)")
-            .font(.gnfsMonospaced(size: 12, weight: .semibold))
+            .font(.gnfsMonospaced(size: 9, weight: .medium))
             .foregroundStyle(state.foreground)
         }
       }
-      .shadow(color: state == .active ? AppTheme.cyan.opacity(0.35) : .clear, radius: 8)
-
       Text(phase.displayName)
-        .font(.system(size: 12.5, weight: state == .active ? .semibold : .medium))
+        .font(.system(size: 11, weight: state == .active ? .semibold : .regular))
         .foregroundStyle(state == .active ? AppTheme.indigo : AppTheme.secondaryText)
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
     }
-    .frame(minWidth: 76)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.vertical, 5)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: state)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("\(phase.displayName)：\(state.accessibilityLabel)")

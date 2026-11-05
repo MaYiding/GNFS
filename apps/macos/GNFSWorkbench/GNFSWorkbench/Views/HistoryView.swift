@@ -21,34 +21,41 @@ struct HistoryView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        Text("运行历史").font(.headline)
+        Text("运行历史").font(.system(size: 12, weight: .semibold))
         Spacer()
-        Text("\(model.history.count) / 50").font(.caption.monospacedDigit()).foregroundStyle(
-          .secondary)
+        Text("\(model.history.count)")
+          .font(.system(size: 11).monospacedDigit()).foregroundStyle(.tertiary)
+          .help("最多保留 50 条记录")
       }
-      .padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 12)
-      TextField("搜索整数、因子或状态", text: $query)
+      .padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 14)
+      TextField("搜索记录", text: $query)
         .textFieldStyle(.roundedBorder)
+        .controlSize(.small)
         .accessibilityLabel("搜索运行历史")
         .accessibilityIdentifier("historySearch")
-        .padding(.horizontal, 12).padding(.bottom, 12)
+        .help("搜索整数、因子、算法或状态")
+        .padding(.horizontal, 12).padding(.bottom, 10)
       if model.history.isEmpty {
-        VStack(spacing: 12) {
-          Image(systemName: "clock.arrow.circlepath").font(.largeTitle).foregroundStyle(.tertiary)
-          Text("还没有运行记录").font(.callout.weight(.medium))
-          Text("开始一次分解，结果会自动保存在这台 Mac 上。")
-            .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        VStack(alignment: .leading, spacing: 7) {
+          Text("暂无记录").font(.system(size: 12, weight: .medium))
+          Text("运行结果会自动保存在本机。")
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer()
         }
-        .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 16).padding(.top, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       } else if matchingRuns.isEmpty {
-        VStack(spacing: 8) {
-          Text("没有匹配的记录").font(.callout)
-          Button("清除搜索") { query = "" }
+        VStack(alignment: .leading, spacing: 8) {
+          Text("没有匹配的记录").font(.system(size: 12)).foregroundStyle(.secondary)
+          Button("清除搜索") { query = "" }.controlSize(.small)
+          Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 16).padding(.top, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       } else {
         ScrollView {
-          LazyVStack(spacing: 5) {
+          LazyVStack(spacing: 2) {
             ForEach(matchingRuns) { run in
               Button {
                 model.selectHistory(run.id)
@@ -75,12 +82,12 @@ struct HistoryView: View {
               }
             }
           }
-          .padding(.horizontal, 8)
+          .padding(.horizontal, 8).padding(.bottom, 8)
         }
       }
       Divider()
       HStack {
-        Label("仅保存在本机", systemImage: "internaldrive").font(.caption)
+        Text("本机记录").font(.system(size: 10))
         Spacer()
         Button {
           isConfirmingClear = true
@@ -92,10 +99,11 @@ struct HistoryView: View {
         .help("清除所有历史")
         .accessibilityLabel("清除所有历史")
       }
-      .foregroundStyle(.secondary).padding(14)
+      .foregroundStyle(.tertiary)
+      .padding(.horizontal, 16).padding(.vertical, 12)
     }
     .frame(width: embedded ? nil : 390, height: embedded ? nil : 470)
-    .background(AppTheme.canvas)
+    .background(AppTheme.header)
     .confirmationDialog("清除所有运行历史？", isPresented: $isConfirmingClear, titleVisibility: .visible) {
       Button("清除历史", role: .destructive) { Task { await model.clearHistory() } }
       Button("取消", role: .cancel) {}
@@ -107,47 +115,55 @@ struct HistoryView: View {
   private func historyRow(_ run: RunRecord) -> some View {
     let verified = run.hasVerifiedResult
     let needsVerification = run.status == .succeeded && !verified
-    return VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 6) {
-        Image(systemName: needsVerification ? "exclamationmark.circle" : statusIcon(run.status))
-          .foregroundStyle(needsVerification ? AppTheme.warning : statusColor(run.status))
-        Text(needsVerification ? "结果未验证" : statusLabel(run))
-          .foregroundStyle(needsVerification ? AppTheme.warning : statusColor(run.status))
+    let selected = model.displayedRun?.id == run.id
+    return VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 5) {
+        Circle()
+          .fill(needsVerification ? AppTheme.warning : statusColor(run.status))
+          .frame(width: 5, height: 5)
+          .accessibilityHidden(true)
+        Text(statusLabel(run))
+          .foregroundStyle(needsVerification ? AppTheme.warning : AppTheme.secondaryText)
+        Spacer(minLength: 0)
+        Text(run.createdAt.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()))
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+          .help(run.createdAt.formatted(date: .complete, time: .shortened))
+      }
+      .font(.system(size: 10))
+      Text(run.displayNumber)
+        .font(.system(size: 12, weight: selected ? .semibold : .medium, design: .monospaced))
+        .foregroundStyle(AppTheme.primaryText)
+        .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(
+          verified
+            ? run.result!.factorExpression
+            : needsVerification
+              ? "因子尚未验证"
+              : AlgorithmDisplay.name(
+                run.activeAlgorithm, fallback: run.status.isTerminal ? "未记录算法" : "等待引擎")
+        )
+        .lineLimit(1).truncationMode(.tail)
         Spacer(minLength: 0)
         if run.status == .running || run.status == .cancelling {
           TimelineView(.periodic(from: .now, by: 1)) { context in
             Text(DisplayFormat.duration(run.elapsed(at: context.date)))
-              .foregroundStyle(.secondary)
+              .monospacedDigit().fixedSize()
           }
         } else {
-          Text(DisplayFormat.duration(run.elapsed)).foregroundStyle(.secondary)
+          Text(DisplayFormat.duration(run.elapsed)).monospacedDigit().fixedSize()
         }
       }
-      .font(.caption.weight(.medium))
-      Text(run.displayNumber)
-        .font(.system(.callout, design: .monospaced).weight(.medium))
-        .lineLimit(2).multilineTextAlignment(.leading)
-      Text(
-        verified
-          ? run.result!.factorExpression
-          : needsVerification ? "旧记录未提供可验证的完整结果"
-          : AlgorithmDisplay.name(
-            run.activeAlgorithm, fallback: run.status.isTerminal ? "未记录执行详情" : "等待引擎")
-      )
-      .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-      Text(run.createdAt.formatted(date: .abbreviated, time: .shortened))
-        .font(.caption2).foregroundStyle(.secondary)
+      .font(.system(size: 10)).foregroundStyle(.secondary)
     }
-    .padding(12)
+    .padding(.horizontal, 10).padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      model.displayedRun?.id == run.id ? AppTheme.indigo.opacity(0.10) : Color.clear,
-      in: RoundedRectangle(cornerRadius: 10)
+      selected ? AppTheme.indigo.opacity(0.09) : Color.clear,
+      in: RoundedRectangle(cornerRadius: 6)
     )
-    .overlay {
-      RoundedRectangle(cornerRadius: 10)
-        .stroke(model.displayedRun?.id == run.id ? AppTheme.indigo.opacity(0.25) : Color.clear)
-    }
     .contentShape(Rectangle())
   }
 
@@ -155,7 +171,7 @@ struct HistoryView: View {
     switch status {
     case .running: AppTheme.indigo
     case .cancelling: AppTheme.warning
-    case .succeeded: AppTheme.success
+    case .succeeded: AppTheme.secondaryText
     case .failed: AppTheme.danger
     case .cancelled, .ready: AppTheme.secondaryText
     }
@@ -169,15 +185,6 @@ struct HistoryView: View {
     case .succeeded: "已完成"
     case .failed: "未完成"
     case .cancelled: "已取消"
-    }
-  }
-  private func statusIcon(_ status: RunStatus) -> String {
-    switch status {
-    case .ready: "circle"
-    case .running: "waveform.path.ecg"
-    case .cancelling, .cancelled: "stop.circle"
-    case .succeeded: "checkmark.circle.fill"
-    case .failed: "exclamationmark.circle.fill"
     }
   }
 }

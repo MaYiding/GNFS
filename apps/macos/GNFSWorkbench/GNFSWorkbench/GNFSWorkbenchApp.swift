@@ -51,6 +51,7 @@ struct GNFSWorkbenchApp: App {
         .frame(minWidth: 900, minHeight: 640)
     }
     .defaultSize(width: 1_240, height: 860)
+    .windowToolbarStyle(.unifiedCompact(showsTitle: false))
     .commands {
       CommandGroup(replacing: .newItem) {
         Button("新建分解") { Task { await model.newRun() } }

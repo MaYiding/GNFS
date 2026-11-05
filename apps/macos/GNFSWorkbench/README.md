@@ -1,6 +1,6 @@
 # GNFS Workbench for macOS
 
-GNFS Workbench is the native macOS interface for the GNFS command-line engine. It combines a searchable history sidebar, multiline integer input, algorithm-aware progress, structured logs, verified factors, and transactional parameter editing in one window. The interface follows the system light or dark appearance and supports windows down to `900 × 640` logical pixels.
+GNFS Workbench is the native macOS interface for the GNFS command-line engine. Its window toolbar and compact history sidebar frame a continuous workspace for integer input, algorithm-aware progress, verified factors, and structured statistics. Complete factor expressions wrap in place, and logs expand on demand. The interface follows the system light or dark appearance and supports windows down to `900 × 640` logical pixels.
 
 The app is built with SwiftUI and Swift Charts. It runs the bundled `gnfs` executable as an isolated child process and consumes the versioned `--event-stream` JSON Lines protocol. A failed engine process therefore does not take down the interface, and cancellation terminates the child process safely.
 

@@ -2,7 +2,7 @@
 
 ## Current Direction
 
-The interface uses native macOS controls and system light or dark appearance, with the information density of a computation workbench. A searchable history sidebar, compact run header, stage-aware metrics, and structured statistics replace the original fixed dark canvas.
+The interface uses a native macOS window toolbar and a continuous document surface. A compact history sidebar, restrained blue accent, and neutral light or dark palette organize the work without nested dashboard cards. The input page contains the composer, examples, and method selection; calculation details appear after a run starts.
 
 The earlier direction-2 comparison images in `evidence/` document the previous iteration. They are historical design material, not acceptance evidence for the current implementation.
 
@@ -17,7 +17,7 @@ Requested overrides and effective parameters have separate labels. Non-GNFS comp
 
 ## Layout and Interaction Coverage
 
-The native window supports a `900 × 640` minimum. The history sidebar can be hidden; the main area scrolls vertically. Metrics adapt to one or two columns, long integers wrap, and advanced parameters open in a transactional sheet.
+The native window supports a `900 × 640` minimum. The history sidebar can be hidden; the main area scrolls vertically. Long inputs and complete factor expressions wrap without horizontal scrolling. Verified repeated factors use superscript exponents while copy operations preserve the exact machine-readable expression. Statistics use aligned rows with adaptive columns, and advanced parameters open in a transactional sheet. Logs start collapsed and retain their search, severity, copy, and follow controls when expanded.
 
 Offscreen rendering tests cover ready, live, complete, failure, long-input, invalid-parameter, and full-sheet states. Light and dark captures include minimum-width windows and detailed GNFS statistics. These are deterministic fixtures for layout review, not performance measurements.
 

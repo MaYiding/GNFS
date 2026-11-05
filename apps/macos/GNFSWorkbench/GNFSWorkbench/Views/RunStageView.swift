@@ -13,9 +13,9 @@ struct RunStageView: View {
       if let run, run.status == .succeeded, run.hasVerifiedResult, let result = run.result {
         ResultSummaryView(result: result, canCreateRun: canCreateRun, copy: copy, newRun: newRun)
       } else if let run, run.needsResultVerification {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
           Label("历史结果未验证", systemImage: "exclamationmark.shield")
-            .font(.title3.weight(.semibold)).foregroundStyle(AppTheme.warning)
+            .font(.headline).foregroundStyle(AppTheme.warning)
           Text("这条记录未通过当前完整结果校验，不能确认质因数分解已完成。原记录已保留，可使用原参数重新运行。")
             .font(.callout).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -41,21 +41,20 @@ struct RunStageView: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .topLeading)
-
   }
 }
 
 private struct ReadyStateView: View {
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Label("每一步都有可核查的结果", systemImage: "checkmark.shield")
-        .font(.headline)
-      Text("从上方示例开始，或粘贴自己的整数。运行时可查看阶段和日志，完成后可复制分解式或修改参数重试。")
-        .font(.callout).foregroundStyle(.secondary)
+    VStack(alignment: .leading, spacing: 12) {
+      Text("计算说明")
+        .font(.callout.weight(.semibold))
+      Text("运行时可查看实际算法、阶段与日志。完成后，结果会经过素性与精确乘积校验，并保存在本机历史中。")
+        .font(.caption).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
       LazyVGrid(
         columns: [GridItem(.adaptive(minimum: 150), alignment: .leading)], alignment: .leading,
-        spacing: 12
+        spacing: 8
       ) {
         Label("完整质因数分解", systemImage: "function")
         Label("精确乘积校验", systemImage: "equal.circle")
@@ -83,15 +82,16 @@ private struct LiveMetricsView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 17) {
-      HStack {
+    VStack(alignment: .leading, spacing: 18) {
+      HStack(alignment: .firstTextBaseline, spacing: 16) {
         Label(run.activityTitle, systemImage: "waveform.path.ecg")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(AppTheme.cyan)
+          .font(.headline)
+          .foregroundStyle(AppTheme.primaryText)
         Spacer()
         TimelineView(.periodic(from: .now, by: 1)) { context in
           Text("已运行 \(DisplayFormat.duration(run.elapsed(at: context.date)))")
-            .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            .fixedSize()
         }
       }
 
@@ -102,140 +102,137 @@ private struct LiveMetricsView: View {
       }
 
       if !run.usesGNFSPipeline {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .top, spacing: 12) {
           ProgressView().controlSize(.small)
-          VStack(alignment: .leading, spacing: 8) {
+          VStack(alignment: .leading, spacing: 6) {
             Text(run.status == .cancelling ? "正在停止运算…" : "正在搜索质因数")
-              .font(.title3.weight(.medium))
+              .font(.callout.weight(.medium))
             Text("此算法无法可靠预估剩余时间。完成后会校验全部因子及其乘积。")
-              .font(.callout).foregroundStyle(.secondary)
+              .font(.caption).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
           }
         }
-        .padding(.vertical, 20)
+        .padding(.vertical, 6)
       } else if run.phase == .sieving {
         ViewThatFits(in: .horizontal) {
-          HStack(alignment: .top, spacing: 32) {
+          HStack(alignment: .top, spacing: 28) {
             relationPane
               .frame(maxWidth: .infinity, alignment: .leading)
-
-            Rectangle()
-              .fill(AppTheme.separatorStrong)
-              .frame(width: 1, height: 210)
 
             chartPane
               .frame(maxWidth: .infinity, alignment: .leading)
           }
-          .frame(minWidth: 780)
+          .frame(minWidth: 740)
 
-          VStack(alignment: .leading, spacing: 22) {
+          VStack(alignment: .leading, spacing: 20) {
             relationPane
-            Divider().overlay(AppTheme.separator)
             chartPane
           }
         }
 
         if run.matrixRows > 0 || run.matrixCols > 0 {
-          Divider().overlay(AppTheme.separator)
           Label("矩阵 \(run.matrixRows) × \(run.matrixCols)", systemImage: "square.grid.3x3")
-            .font(.callout).foregroundStyle(.secondary)
+            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
       } else {
-        HStack(spacing: 16) {
+        HStack(spacing: 12) {
           ProgressView().controlSize(.small)
-          VStack(alignment: .leading, spacing: 8) {
+          VStack(alignment: .leading, spacing: 6) {
             Text(run.progressFraction.map { "当前阶段 \(Int($0 * 100))%" } ?? "当前阶段未提供可预估进度")
               .font(.callout)
             if run.matrixRows > 0 || run.matrixCols > 0 {
               Text("矩阵 \(run.matrixRows) 行 × \(run.matrixCols) 列")
-                .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             if let tried = run.dependenciesTried, let total = run.dependenciesTotal, total > 0 {
               Text("已尝试依赖 \(tried) · 基础依赖 \(total)（可能继续尝试组合）")
                 .font(.caption).foregroundStyle(.secondary)
             }
           }
-        }.padding(.vertical, 12)
+        }.padding(.vertical, 6)
       }
       if let parameters = run.resolvedParameters {
+        Divider()
         EffectiveParametersView(parameters: parameters)
       }
     }
   }
 
   private var relationPane: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: 10) {
       Text(run.phase == .sieving ? "当前关系目标" : "当前阶段进度")
-        .font(.system(size: 12, weight: .semibold))
-        .tracking(0.55)
+        .font(.caption)
         .foregroundStyle(AppTheme.secondaryText)
 
       if run.phase == .sieving {
         HStack(alignment: .firstTextBaseline, spacing: 9) {
           Text(DisplayFormat.count(run.relationsFound))
-            .font(.gnfsMonospaced(size: 38, weight: .semibold))
-            .foregroundStyle(AppTheme.indigo)
+            .font(.gnfsMonospaced(size: 30, weight: .medium))
+            .foregroundStyle(AppTheme.primaryText)
             .accessibilityIdentifier("relationsMetric")
           if run.relationsTarget > 0 {
             Text("/ \(DisplayFormat.count(run.relationsTarget))")
-              .font(.gnfsMonospaced(size: 22, weight: .medium))
+              .font(.gnfsMonospaced(size: 17))
               .foregroundStyle(AppTheme.secondaryText)
           }
         }
       } else {
         Text(run.progressFraction.map { String(format: "%.0f%%", $0 * 100) } ?? "正在计算")
-          .font(.gnfsMonospaced(size: 38, weight: .semibold))
+          .font(.gnfsMonospaced(size: 30, weight: .medium))
           .foregroundStyle(AppTheme.primaryText)
       }
 
       if run.progressFraction != nil {
         HStack(spacing: 12) {
-          GradientProgressBar(value: progress)
-            .frame(height: 14)
+          ProgressView(value: progress)
+            .progressViewStyle(.linear)
+            .tint(AppTheme.indigo)
+            .accessibilityLabel("进度")
           Text(String(format: "%.2f%%", progress * 100))
-            .font(.gnfsMonospaced(size: 12, weight: .semibold))
-            .foregroundStyle(AppTheme.indigo)
-            .frame(width: 66, alignment: .trailing)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(AppTheme.secondaryText)
+            .frame(width: 58, alignment: .trailing)
         }
 
         if run.phase == .sieving, run.relationsTarget > 0 {
           Text("距当前目标 \(DisplayFormat.count(remainingRelations)) 条；过滤后目标可能调整。")
-            .font(.system(size: 12))
+            .font(.caption)
             .foregroundStyle(AppTheme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
         }
       } else {
         ProgressView()
           .controlSize(.small)
-          .tint(AppTheme.cyan)
+          .tint(AppTheme.indigo)
           .accessibilityLabel("当前阶段正在计算")
       }
 
-      HStack(spacing: 0) {
+      HStack(alignment: .top, spacing: 24) {
         metricBlock(
           label: "关系发现速率",
           value: run.samples.isEmpty ? "采样中" : DisplayFormat.rate(latestRate),
           detail: "本段格筛的平滑速率"
         )
-        metricDivider
         metricBlock(
           label: "Special-Q 数量",
           value: DisplayFormat.count(run.specialQDone),
           detail: run.relationsFound > 0 ? "已处理数量" : "等待格筛"
         )
       }
-      .padding(.top, 3)
+      .padding(.top, 4)
     }
   }
 
   private var chartPane: some View {
-    VStack(alignment: .leading, spacing: 9) {
+    VStack(alignment: .leading, spacing: 10) {
       HStack {
         Text("关系发现速率 · 当前拆分")
-          .font(.system(size: 12, weight: .semibold))
+          .font(.caption)
           .foregroundStyle(AppTheme.secondaryText)
         Spacer()
-        Text(DisplayFormat.rate(latestRate))
-          .font(.gnfsMonospaced(size: 12, weight: .semibold))
-          .foregroundStyle(AppTheme.indigo)
+        Text(run.samples.isEmpty ? "采样中" : DisplayFormat.rate(latestRate))
+          .font(.caption.monospacedDigit())
+          .foregroundStyle(AppTheme.secondaryText)
       }
 
       if run.samples.count >= 2 {
@@ -247,7 +244,7 @@ private struct LiveMetricsView: View {
           .interpolationMethod(.linear)
           .foregroundStyle(
             LinearGradient(
-              colors: [AppTheme.indigo.opacity(0.30), AppTheme.cyan.opacity(0.02)],
+              colors: [AppTheme.indigo.opacity(0.12), AppTheme.indigo.opacity(0.01)],
               startPoint: .top,
               endPoint: .bottom
             ))
@@ -257,8 +254,8 @@ private struct LiveMetricsView: View {
             y: .value("关系每秒", sample.rate)
           )
           .interpolationMethod(.linear)
-          .foregroundStyle(AppTheme.progressGradient)
-          .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+          .foregroundStyle(AppTheme.indigo)
+          .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
         }
         .chartXAxis {
           AxisMarks(values: .automatic(desiredCount: 5)) { _ in
@@ -273,64 +270,38 @@ private struct LiveMetricsView: View {
             AxisValueLabel().foregroundStyle(AppTheme.tertiaryText)
           }
         }
-        .chartPlotStyle { plot in
-          plot.background(AppTheme.canvas.opacity(0.23))
-        }
+        .chartXAxisLabel("任务用时（秒）")
+        .chartYAxisLabel("关系/秒")
         .chartYScale(domain: .automatic(includesZero: true))
-        .frame(minHeight: 190)
+        .frame(height: 150)
         .accessibilityLabel("关系收集速率图")
       } else {
-        ContentUnavailableView(
-          "等待速率样本",
-          systemImage: "chart.xyaxis.line",
-          description: Text("进入格筛并收集到关系后会显示实时曲线。")
-        )
-        .frame(maxWidth: .infinity, minHeight: 190)
+        VStack(spacing: 8) {
+          Image(systemName: "chart.xyaxis.line").font(.title3)
+          Text("等待速率样本").font(.caption.weight(.medium))
+          Text("收集到关系后显示实时曲线。")
+            .font(.caption).foregroundStyle(.tertiary)
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, minHeight: 150)
       }
     }
-  }
-
-  private var metricDivider: some View {
-    Rectangle()
-      .fill(AppTheme.separatorStrong)
-      .frame(width: 1, height: 58)
-      .padding(.horizontal, 20)
   }
 
   private func metricBlock(label: String, value: String, detail: String) -> some View {
     VStack(alignment: .leading, spacing: 4) {
       Text(label)
-        .font(.system(size: 10.5, weight: .medium))
+        .font(.caption)
         .foregroundStyle(AppTheme.tertiaryText)
       Text(value)
-        .font(.gnfsMonospaced(size: 17, weight: .semibold))
+        .font(.gnfsMonospaced(size: 16, weight: .medium))
         .foregroundStyle(AppTheme.primaryText)
       Text(detail)
-        .font(.system(size: 9.5))
+        .font(.caption2)
         .foregroundStyle(AppTheme.tertiaryText)
-        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-}
-
-private struct GradientProgressBar: View {
-  let value: Double
-
-  var body: some View {
-    GeometryReader { geometry in
-      ZStack(alignment: .leading) {
-        Capsule()
-          .fill(AppTheme.surfaceHover)
-        Capsule()
-          .fill(AppTheme.progressGradient)
-          .frame(width: max(0, geometry.size.width * min(max(value, 0), 1)))
-      }
-      .overlay { Capsule().stroke(AppTheme.separatorStrong, lineWidth: 1) }
-    }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel("进度")
-    .accessibilityValue("\(Int(min(max(value, 0), 1) * 100))%")
   }
 }
 
@@ -340,10 +311,9 @@ private struct ResultSummaryView: View {
   let copy: (String) -> Void
   let newRun: () -> Void
 
-  private struct PrimePower: Identifiable {
+  private struct PrimePower {
     let factor: String
     let exponent: Int
-    var id: String { factor }
   }
 
   private var primePowers: [PrimePower] {
@@ -356,116 +326,91 @@ private struct ResultSummaryView: View {
     return order.map { PrimePower(factor: $0, exponent: powers[$0, default: 1]) }
   }
 
+  private var displayedExpression: String {
+    let superscripts = Array("⁰¹²³⁴⁵⁶⁷⁸⁹")
+    return primePowers.map { power in
+      let exponent =
+        power.exponent > 1
+        ? String(power.exponent).compactMap { $0.wholeNumberValue }.map { String(superscripts[$0]) }
+          .joined()
+        : ""
+      return DecimalBigUInt.grouped(power.factor) + exponent
+    }.joined(separator: " × ")
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 19) {
-      VStack(alignment: .leading, spacing: 10) {
-        Label(
-          result.factors.count == 1 ? "N 本身是素数" : "完整质因数分解完成",
-          systemImage: "checkmark.seal.fill"
-        )
-        .font(.system(size: 18, weight: .semibold))
-        .foregroundStyle(AppTheme.success)
-
-        HStack(spacing: 14) {
-          Label("乘积精确校验", systemImage: "equal.circle.fill")
-          Label("全部因子通过素性检查", systemImage: "checkmark.shield.fill")
+    VStack(alignment: .leading, spacing: 20) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: "checkmark.circle.fill")
+          .font(.system(size: 18))
+          .foregroundStyle(AppTheme.indigo)
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 5) {
+          Text(result.factors.count == 1 ? "N 本身是素数" : "完整质因数分解完成")
+            .font(.headline)
+          Text("乘积精确校验 · 全部因子通过素性检查")
+            .font(.caption).foregroundStyle(.secondary)
         }
-        .font(.system(size: 11.5, weight: .semibold))
-        .foregroundStyle(AppTheme.success)
+        Spacer(minLength: 12)
+        Button("分解另一个整数", action: newRun)
+          .disabled(!canCreateRun)
+          .controlSize(.small)
+          .accessibilityIdentifier("resultNewRunButton")
       }
 
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 13) {
-          ForEach(Array(primePowers.enumerated()), id: \.element.id) { index, power in
-            if index > 0 {
-              Text("×")
-                .font(.system(size: 22, weight: .light))
-                .foregroundStyle(AppTheme.tertiaryText)
-            }
-
-            HStack(alignment: .top, spacing: 4) {
-              Text(DecimalBigUInt.grouped(power.factor))
-                .font(.gnfsMonospaced(size: 27, weight: .semibold))
-              if power.exponent > 1 {
-                Text("\(power.exponent)")
-                  .font(.gnfsMonospaced(size: 13, weight: .bold))
-                  .baselineOffset(10)
-              }
-            }
-            .foregroundStyle(index.isMultiple(of: 2) ? AppTheme.indigo : AppTheme.cyan)
-            .padding(.horizontal, 16)
-            .frame(height: 58)
-            .background(
-              AppTheme.surface.opacity(0.68),
-              in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-            )
-            .overlay {
-              RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(AppTheme.separator, lineWidth: 1)
-            }
-            .textSelection(.enabled)
+      VStack(alignment: .leading, spacing: 12) {
+        HStack {
+          Text("验证后的分解式")
+            .font(.caption).foregroundStyle(.secondary)
+          Spacer()
+          Button {
+            copy("\(result.number) = \(result.factorExpression)")
+          } label: {
+            Label("复制分解式", systemImage: "doc.on.doc")
           }
+          .buttonStyle(.borderless).controlSize(.small)
+          .accessibilityLabel("复制完整分解式")
         }
+        Text("N = " + displayedExpression)
+          .font(.gnfsMonospaced(size: 25, weight: .regular))
+          .foregroundStyle(AppTheme.primaryText)
+          .lineSpacing(6)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .textSelection(.enabled)
+          .accessibilityIdentifier("factorResult")
+          .accessibilityLabel("验证后的分解式")
+          .accessibilityValue("N = \(result.factorExpression)")
       }
-      .accessibilityIdentifier("factorResult")
 
       LazyVGrid(
-        columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading,
-        spacing: 18
+        columns: [GridItem(.flexible(), spacing: 28), GridItem(.flexible())],
+        alignment: .leading, spacing: 12
       ) {
-        resultMetric("质因数总数", "\(result.factors.count)")
-        resultMetric("不同质因数", "\(result.distinctPrimeCount)")
+        resultMetric("质因数", "\(result.factors.count) 个 · \(result.distinctPrimeCount) 种")
         resultMetric("完成算法", result.executionLabel)
         resultMetric("总用时", DisplayFormat.duration(result.timings.total))
         resultMetric("整数规模", "\(result.bitCount) bits · \(result.digitCount) 位")
       }
+      .frame(maxWidth: 680, alignment: .leading)
 
-      Divider().overlay(AppTheme.separator)
-
-      VStack(alignment: .leading, spacing: 16) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text("验证后的分解式")
-            .font(.system(size: 10.5, weight: .semibold))
-            .foregroundStyle(AppTheme.tertiaryText)
-          Text("N = \(result.factorExpression)")
-            .font(.gnfsMonospaced(size: 12.5, weight: .medium))
-            .foregroundStyle(AppTheme.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-        }
-
-        HStack {
-          Button("复制完整分解式") { copy("\(result.number) = \(result.factorExpression)") }
-          Button("分解另一个整数", action: newRun)
-            .disabled(!canCreateRun)
-            .buttonStyle(.borderedProminent)
-            .tint(AppTheme.indigo)
-            .accessibilityIdentifier("resultNewRunButton")
-        }
-      }
       Divider()
       RunStatisticsView(result: result)
     }
   }
 
-  private var metricDivider: some View {
-    Rectangle()
-      .fill(AppTheme.separatorStrong)
-      .frame(width: 1, height: 48)
-      .padding(.horizontal, 19)
-  }
-
   private func resultMetric(_ label: String, _ value: String) -> some View {
-    VStack(alignment: .leading, spacing: 5) {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
       Text(label)
-        .font(.system(size: 10.5, weight: .medium))
-        .foregroundStyle(AppTheme.tertiaryText)
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 4)
       Text(value)
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(AppTheme.primaryText)
-        .lineLimit(1)
+        .fontWeight(.medium).monospacedDigit()
+        .multilineTextAlignment(.trailing)
+        .fixedSize(horizontal: false, vertical: true)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .font(.caption)
+    .frame(maxWidth: .infinity)
   }
 }
 
@@ -476,39 +421,43 @@ private struct FailureStateView: View {
   let newRun: () -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
-      Image(systemName: run.status == .cancelled ? "stop.circle" : "exclamationmark.triangle")
-        .font(.system(size: 42, weight: .light))
-        .foregroundStyle(run.status == .cancelled ? AppTheme.secondaryText : AppTheme.danger)
-        .accessibilityHidden(true)
-
-      VStack(alignment: .leading, spacing: 9) {
-        Text(run.status == .cancelled ? "任务已取消" : "完整质因数分解未完成")
-          .font(.system(size: 22, weight: .semibold))
-          .foregroundStyle(AppTheme.primaryText)
+    VStack(alignment: .leading, spacing: 16) {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 9) {
+          Image(systemName: run.status == .cancelled ? "stop.circle" : "exclamationmark.triangle")
+            .foregroundStyle(run.status == .cancelled ? AppTheme.secondaryText : AppTheme.danger)
+            .accessibilityHidden(true)
+          Text(run.status == .cancelled ? "任务已取消" : "完整质因数分解未完成")
+            .foregroundStyle(AppTheme.primaryText)
+        }
+        .font(.headline)
         Text(run.errorMessage ?? "运算引擎没有返回可验证的完整质因数结果。")
-          .font(.system(size: 13.5))
+          .font(.callout)
           .foregroundStyle(AppTheme.secondaryText)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
         Text(finalizationMessage + " 可使用当前参数新建任务。")
-          .font(.system(size: 11.5))
+          .font(.caption)
           .foregroundStyle(AppTheme.tertiaryText)
+          .fixedSize(horizontal: false, vertical: true)
       }
 
-      Text("已运行 \(DisplayFormat.duration(run.elapsed)) · \(run.activityTitle)")
-        .font(.caption).foregroundStyle(.secondary)
+      HStack {
+        Text("已运行 \(DisplayFormat.duration(run.elapsed)) · \(run.activityTitle)")
+          .font(.caption).foregroundStyle(.secondary)
+        Spacer(minLength: 12)
+        Button("使用当前参数新建", action: newRun)
+          .disabled(!canCreateRun)
+          .controlSize(.small)
+          .accessibilityIdentifier("failureNewRunButton")
+      }
       if let result = run.result {
+        Divider()
         RunStatisticsView(result: result)
       } else if let parameters = run.resolvedParameters {
+        Divider()
         EffectiveParametersView(parameters: parameters)
       }
-
-      Button("使用当前参数新建", action: newRun)
-        .disabled(!canCreateRun)
-        .buttonStyle(.borderedProminent)
-        .tint(AppTheme.indigo)
-        .accessibilityIdentifier("failureNewRunButton")
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }

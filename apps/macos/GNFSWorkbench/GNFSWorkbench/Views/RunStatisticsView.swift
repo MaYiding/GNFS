@@ -11,11 +11,21 @@ struct RunStatisticsView: View {
     return attempts[selectedAttempt - 1]
   }
   private var isAggregate: Bool { selectedAttempt == 0 && attempts.count > 1 }
+  private var isSingleGroup: Bool {
+    selected.statistics.gnfsParametersApplied != true && (selected.statistics.siqsWorkers ?? 0) == 0
+  }
+  private var statisticColumns: [GridItem] {
+    if selected.statistics.gnfsParametersApplied != true {
+      let count = (selected.statistics.siqsWorkers ?? 0) > 0 ? 2 : 1
+      return Array(repeating: GridItem(.flexible(), spacing: 28, alignment: .top), count: count)
+    }
+    return [GridItem(.adaptive(minimum: 235), spacing: 28, alignment: .top)]
+  }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      HStack {
-        Label("计算统计", systemImage: "chart.bar.xaxis")
+    VStack(alignment: .leading, spacing: 18) {
+      HStack(alignment: .firstTextBaseline, spacing: 16) {
+        Text("计算统计")
           .font(.headline)
         Spacer()
         if !attempts.isEmpty {
@@ -25,23 +35,24 @@ struct RunStatisticsView: View {
               Text("第 \(index + 1) 次 · \(attempts[index].executionLabel)").tag(index + 1)
             }
           }
+          .pickerStyle(.menu).controlSize(.small)
           .labelsHidden().frame(maxWidth: 260)
           .accessibilityIdentifier("statisticsScopePicker")
         }
       }
       if selectedAttempt > 0 {
         Text("本次整数  \(selected.number)")
-          .font(.callout.monospaced()).textSelection(.enabled)
+          .font(.caption.monospaced()).textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }
       if let algorithms = selected.statistics.algorithmsExecuted, !algorithms.isEmpty {
-        Text("执行过的算法：" + algorithms.map { AlgorithmDisplay.name($0) }.joined(separator: " · "))
+        Text("执行过的算法  " + algorithms.map { AlgorithmDisplay.name($0) }.joined(separator: " · "))
           .font(.caption).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
       LazyVGrid(
-        columns: [GridItem(.adaptive(minimum: 235), alignment: .top)], alignment: .leading,
-        spacing: 16
+        columns: statisticColumns,
+        alignment: .leading, spacing: 24
       ) {
         timingsPanel
         if selected.statistics.gnfsParametersApplied == true {
@@ -56,6 +67,7 @@ struct RunStatisticsView: View {
           }
         }
       }
+      .frame(maxWidth: isSingleGroup ? 420 : .infinity, alignment: .leading)
       if selected.statistics.algorithmsExecuted?.contains("siqs") == true,
         selected.statistics.siqsWorkers == nil
       {
@@ -67,6 +79,7 @@ struct RunStatisticsView: View {
           Text("关系与计数按拆分累加；矩阵取行数最大的单个矩阵。生效参数请切换到具体拆分查看。")
             .font(.caption).foregroundStyle(.secondary)
         } else {
+          Divider()
           EffectiveParametersView(parameters: selected.statistics.effectiveParameters)
         }
       } else {
@@ -136,9 +149,13 @@ struct EffectiveParametersView: View {
 
   var body: some View {
     if let parameters {
-      VStack(alignment: .leading, spacing: 12) {
-        Label("实际生效的 GNFS 参数", systemImage: "slider.horizontal.3").font(.callout.weight(.semibold))
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 230))], alignment: .leading, spacing: 9) {
+      VStack(alignment: .leading, spacing: 10) {
+        Text("实际生效的 GNFS 参数")
+          .font(.callout.weight(.semibold))
+        LazyVGrid(
+          columns: [GridItem(.adaptive(minimum: 235), spacing: 28, alignment: .leading)],
+          alignment: .leading, spacing: 0
+        ) {
           StatisticRow("多项式次数", parameters.degree)
           StatisticRow("有理因子基上界", parameters.rationalBound)
           StatisticRow("代数因子基上界", parameters.algebraicBound)
@@ -147,9 +164,7 @@ struct EffectiveParametersView: View {
           StatisticRow("Special-Q 预算", parameters.maxSpecialQ)
         }
       }
-      .padding(14)
-      .background(AppTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
-      .overlay { RoundedRectangle(cornerRadius: 10).stroke(AppTheme.separator, lineWidth: 1) }
+      .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityIdentifier("effectiveParameters")
     } else {
       Text("此记录未提供完整的实际参数。")
@@ -162,14 +177,16 @@ private struct StatisticsPanel<Content: View>: View {
   let title: String
   @ViewBuilder let content: Content
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text(title).font(.caption.weight(.semibold)).foregroundStyle(AppTheme.indigo)
-      content
-      Spacer(minLength: 0)
+    VStack(alignment: .leading, spacing: 8) {
+      Text(title)
+        .font(.callout.weight(.semibold))
+        .foregroundStyle(AppTheme.primaryText)
+      Divider()
+      VStack(alignment: .leading, spacing: 0) {
+        content
+      }
     }
-    .padding(14).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(AppTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
-    .overlay { RoundedRectangle(cornerRadius: 10).stroke(AppTheme.separator, lineWidth: 1) }
+    .frame(maxWidth: .infinity, alignment: .topLeading)
   }
 }
 
@@ -188,11 +205,15 @@ private struct StatisticRow: View {
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 12) {
       Text(label).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 8)
       Text(value).fontWeight(emphasized ? .semibold : .regular)
         .monospacedDigit().textSelection(.enabled)
+        .multilineTextAlignment(.trailing)
+        .fixedSize(horizontal: false, vertical: true)
     }
     .font(.caption)
+    .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(label)
     .accessibilityValue(value)

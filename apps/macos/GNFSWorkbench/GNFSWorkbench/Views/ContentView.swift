@@ -5,38 +5,38 @@ struct ContentView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    VStack(spacing: 0) {
-      WorkbenchHeaderView(model: model)
-      HStack(spacing: 0) {
-        if model.isHistoryPresented {
-          HistoryView(model: model, embedded: true)
-            .frame(width: 236)
-          Divider()
-        }
-        ScrollView {
-          VStack(spacing: AppTheme.sectionSpacing) {
-            if model.historyRestorationState != .ready { historyRecovery }
-            if model.isRunning, model.displayedRun?.id != model.activeRun?.id {
-              HStack {
-                Label("另一个任务正在运行", systemImage: "waveform.path.ecg")
-                Spacer()
-                Button("返回当前任务") { model.selectedRunID = model.activeRun?.id }
-              }
-              .font(.callout)
-              .workbenchPanel(padding: 14)
+    HStack(spacing: 0) {
+      if model.isHistoryPresented {
+        HistoryView(model: model, embedded: true)
+          .frame(width: 224)
+        Divider()
+      }
+      ScrollView {
+        VStack(spacing: AppTheme.sectionSpacing) {
+          if model.historyRestorationState != .ready { historyRecovery }
+          if model.isRunning, model.displayedRun?.id != model.activeRun?.id {
+            HStack {
+              Label("另一个任务正在运行", systemImage: "waveform.path.ecg")
+              Spacer()
+              Button("返回当前任务") { model.selectedRunID = model.activeRun?.id }
             }
-            NumberHeroView(
-              configuration: $model.draftConfiguration,
-              run: model.displayedRun,
-              validationMessage: model.inputValidationMessage,
-              canSubmit: model.canStart,
-              submit: { Task { await model.startRun() } },
-              copy: model.copy
-            )
-            if model.displayedRun?.status.isTerminal != true {
-              PipelineRailView(run: model.displayedRun)
-                .workbenchPanel(padding: 18)
-            }
+            .font(.callout)
+            .workbenchPanel(padding: 14)
+          }
+          NumberHeroView(
+            configuration: $model.draftConfiguration,
+            run: model.displayedRun,
+            validationMessage: model.inputValidationMessage,
+            canSubmit: model.canStart,
+            submit: { Task { await model.startRun() } },
+            copy: model.copy
+          )
+          if let run = model.displayedRun, !run.status.isTerminal, run.usesGNFSPipeline {
+            PipelineRailView(run: model.displayedRun)
+              .padding(.vertical, 8)
+          }
+          if model.displayedRun != nil {
+            Divider()
             RunStageView(
               run: model.displayedRun,
               finalizationMessage: model.displayedRun.map(model.finalizationMessage(for:)) ?? "",
@@ -44,7 +44,6 @@ struct ContentView: View {
               copy: model.copy,
               newRun: { Task { await model.newRun() } }
             )
-            .workbenchPanel(padding: 20)
             .id(model.displayedRun?.id)
             RunLogsView(
               entries: model.displayedRun?.logs ?? [],
@@ -54,20 +53,21 @@ struct ContentView: View {
               clear: { Task { await model.clearDisplayedLogs() } }
             )
             .id(model.displayedRun?.id)
-            if let run = model.displayedRun, run.status.isTerminal {
-              Text(model.finalizationMessage(for: run))
-                .font(.caption).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
           }
-          .padding(AppTheme.contentPadding)
-          .frame(maxWidth: AppTheme.contentMaxWidth)
-          .frame(maxWidth: .infinity)
+          if let run = model.displayedRun, run.status.isTerminal {
+            Text(model.finalizationMessage(for: run))
+              .font(.caption).foregroundStyle(.secondary)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .background(AppTheme.canvas)
+        .padding(AppTheme.contentPadding)
+        .frame(maxWidth: AppTheme.contentMaxWidth)
+        .frame(maxWidth: .infinity)
       }
+      .scrollBounceBehavior(.basedOnSize)
+      .background(AppTheme.canvas)
     }
+    .modifier(WorkbenchToolbar(model: model))
     .foregroundStyle(AppTheme.primaryText)
     .tint(AppTheme.indigo)
     .overlay(alignment: .bottom) {
