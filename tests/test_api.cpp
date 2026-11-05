@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib> // setenv/unsetenv for V3 cascade test
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -504,6 +505,41 @@ bool test_config_from_file() {
     return true;
 }
 
+bool test_config_unsigned_parsing() {
+    bool passed = true;
+    for (const std::string_view prefix : {"", " ", "\t", "\r", "\n", "\f", "\v", " \t\r\n\f\v"}) {
+        for (const std::string_view negative : {"-0", "-1", "-18446744073709551615"}) {
+            const std::string text = std::string(prefix) + std::string(negative);
+            for (const bool wide : {false, true}) {
+                bool rejected = false;
+                try {
+                    if (wide)
+                        (void)Config::parse_uint64(text, "large_prime_bound");
+                    else
+                        (void)Config::parse_uint32(text, "rational_bound");
+                } catch (const std::exception&) {
+                    rejected = true;
+                }
+                if (!rejected) {
+                    std::cerr << "  Accepted negative uint" << (wide ? 64 : 32) << " value\n";
+                    passed = false;
+                }
+            }
+        }
+
+        // Keep the existing positive sign, whitespace, zero, and width contract.
+        for (const auto& [digits, expected] : std::array<std::pair<std::string_view, uint64_t>, 5>{
+                 {{"0", 0}, {"1", 1}, {"+1", 1}, {"0001", 1}, {"4294967295", UINT32_MAX}}}) {
+            const std::string text = std::string(prefix) + std::string(digits);
+            passed &= Config::parse_uint32(text, "rational_bound") == expected;
+            passed &= Config::parse_uint64(text, "large_prime_bound") == expected;
+        }
+        passed &= Config::parse_uint64(std::string(prefix) + "+18446744073709551615",
+                                       "large_prime_bound") == UINT64_MAX;
+    }
+    return passed;
+}
+
 bool test_config_from_file_integer_boundaries() {
     const std::string path = gnfs::util::temp_path("gnfs_test_config_boundaries.cfg");
     {
@@ -568,6 +604,8 @@ bool test_config_from_file_invalid() {
     invalid_cases_passed &= write_and_expect_throw("degree = 0\n", "zero degree");
     invalid_cases_passed &=
         write_and_expect_throw("rational_bound = -1\n", "negative rational bound");
+    invalid_cases_passed &= write_and_expect_throw("rational_bound = \v-18446744073709551615\n",
+                                                   "whitespace negative rational bound");
     invalid_cases_passed &= write_and_expect_throw("rational_bound = 0\n", "zero rational bound");
     invalid_cases_passed &=
         write_and_expect_throw("algebraic_bound = 4junk\n", "trailing algebraic bound characters");
@@ -578,6 +616,8 @@ bool test_config_from_file_invalid() {
         write_and_expect_throw("large_prime_bound = 0\n", "zero large-prime bound");
     invalid_cases_passed &=
         write_and_expect_throw("large_prime_bound = -1\n", "negative large-prime bound");
+    invalid_cases_passed &= write_and_expect_throw("large_prime_bound = \f-1\n",
+                                                   "whitespace negative large-prime bound");
     invalid_cases_passed &=
         write_and_expect_throw("large_prime_bound = -0\n", "signed zero large-prime bound");
     invalid_cases_passed &= write_and_expect_throw("large_prime_bound = 18446744073709551616\n",
@@ -5190,6 +5230,7 @@ int main() {
     TEST(config_merge);
     TEST(config_apply_to);
     TEST(config_from_file);
+    TEST(config_unsigned_parsing);
     TEST(config_from_file_integer_boundaries);
     TEST(config_from_file_invalid);
     TEST(config_output_contract);

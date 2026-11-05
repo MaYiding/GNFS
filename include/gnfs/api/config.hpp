@@ -56,9 +56,10 @@ struct Config {
     std::optional<std::string> output_format; // "text", "json", "csv", "report"
 
     /// Parse a complete unsigned 32-bit value without platform-dependent
-    /// narrowing from unsigned long. Explicit negative signs are rejected.
+    /// narrowing from unsigned long. Negative signs are rejected even after
+    /// whitespace that stoull would skip before unsigned negation.
     static uint32_t parse_uint32(std::string_view value, std::string_view key) {
-        if (value.empty() || value.front() == '-') {
+        if (value.empty() || value.find('-') != std::string_view::npos) {
             throw std::invalid_argument("Config: " + std::string(key) +
                                         " must be an unsigned uint32 value");
         }
@@ -72,9 +73,10 @@ struct Config {
     }
 
     /// Parse a complete unsigned 64-bit value rather than accepting a numeric
-    /// prefix followed by arbitrary text. Explicit negative signs are rejected.
+    /// prefix followed by arbitrary text. No valid unsigned decimal contains
+    /// a minus sign, including after leading whitespace.
     static uint64_t parse_uint64(std::string_view value, std::string_view key) {
-        if (value.empty() || value.front() == '-') {
+        if (value.empty() || value.find('-') != std::string_view::npos) {
             throw std::invalid_argument("Config: " + std::string(key) +
                                         " must be an unsigned uint64 value");
         }

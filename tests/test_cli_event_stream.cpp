@@ -576,6 +576,40 @@ void test_event_stream_token_used_as_value(const std::filesystem::path& executab
     CHECK_CONTEXT(result.stderr_bytes.find("--event-stream") != std::string::npos, context);
 }
 
+void test_unsigned_option_values(const std::filesystem::path& executable) {
+    for (const std::string option :
+         {"--degree", "--fb-rational", "--fb-algebraic", "--lp-bound", "--threads"}) {
+        const std::string error_code =
+            option == "--threads" ? "invalid_threads" : "invalid_option_value";
+        for (const std::string value : {"-18446744073709551615", " -18446744073709551615",
+                                        "\f-18446744073709551615", "\v-18446744073709551615"}) {
+            const auto run = validate_protocol(executable, {"--event-stream", option, value, "360"},
+                                               1, EventKind::error, false, option + " negative");
+            check_terminal_contains(run, "\"code\":\"" + error_code + "\"", option);
+        }
+    }
+    const auto negative_lp =
+        validate_protocol(executable, {"--event-stream", "--lp-bound", " -1", "360"}, 1,
+                          EventKind::error, false, "negative uint64 bound");
+    check_terminal_contains(negative_lp, "\"code\":\"invalid_option_value\"", "negative bound");
+
+    for (const std::string value : {"0", "4294967296", "3junk"}) {
+        const auto run =
+            validate_protocol(executable, {"--event-stream", "--threads", value, "360"}, 1,
+                              EventKind::error, false, "invalid thread budget");
+        check_terminal_contains(run, "\"code\":\"invalid_threads\"", "invalid thread budget");
+    }
+    for (const std::string value : {"1", "+3", " \t+3", "4294967295"}) {
+        (void)validate_protocol(executable, {"--event-stream", "--threads", value, "360"}, 0,
+                                EventKind::result, true, "valid uint32 thread budget");
+    }
+    for (const std::string value :
+         {"4294967296", "18446744073709551615", " \t+18446744073709551615"}) {
+        (void)validate_protocol(executable, {"--event-stream", "--lp-bound", value, "360"}, 0,
+                                EventKind::result, true, "valid uint64 bound");
+    }
+}
+
 void test_incompatible_options(const std::filesystem::path& executable,
                                const std::filesystem::path& temporary_root) {
     const std::filesystem::path output_path = temporary_root / "must-not-exist.jsonl";
@@ -632,6 +666,7 @@ int main(int argc, char* argv[]) {
         test_verbose_cases(executable, temporary.path());
         test_configured_output(executable, temporary.path());
         test_input_errors(executable);
+        test_unsigned_option_values(executable);
         test_event_stream_token_used_as_value(executable);
         test_incompatible_options(executable, temporary.path());
     } catch (const std::exception& error) {
