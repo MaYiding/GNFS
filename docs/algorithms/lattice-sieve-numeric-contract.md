@@ -83,6 +83,25 @@ The compact row-major path stores small-prime state in `int16_t`, making width
 prime set through the full region-bucket path. Width 32769 is therefore valid
 when the other geometry, projection, and allocation requirements hold.
 
+## Candidate Threshold Semantics
+
+The additive sieve stores each cell's accumulated score and applies the
+candidate predicate
+
+$$\text{accumulated} \ge I - T,$$
+
+where $I$ is the estimated initial log and $T$ is
+`SieveParams::combined_threshold()`. The predicate applies only when $I > T$.
+The candidate residual is `max(I - accumulated, 0)` and is clamped to
+`uint8_t`.
+
+For every $I \le T$, including $T = 0$, collection fails closed and returns no
+candidates. Without this guard, the clamped effective threshold would admit
+every cell when a low or non-finite initial estimate is unavailable, flooding
+downstream stages. A zero threshold therefore does not bypass this safety
+guard; it permits the normal predicate only after a positive initial estimate
+has been established.
+
 ## Factor-Base Admission
 
 Prime-entry state stores the modulus in `uint32_t`, carry-forward residues in
