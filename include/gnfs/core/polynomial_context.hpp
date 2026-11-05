@@ -261,8 +261,9 @@ public:
         return result;
     }
 
-    /// 计算有理侧值的绝对值 (int64 快路径)
-    /// 如果值 fits int64，返回 {abs_value, true}；否则返回 {0, false}
+    /// Try to compute the rational value's absolute value in uint64_t.
+    /// A false result requests the caller's GMP fallback; it does not imply
+    /// that the magnitude exceeds uint64_t.
     [[nodiscard]] std::pair<uint64_t, bool> rational_value_abs_u64(int64_t a, uint64_t b) const {
 #if defined(__SIZEOF_INT128__)
         if (m_.fits_uint64()) {

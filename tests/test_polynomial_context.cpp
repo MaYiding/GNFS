@@ -236,6 +236,38 @@ void test_uint64_portability_and_overflow_boundaries() {
     std::cout << "  uint64_t and modular overflow boundaries: PASS" << std::endl;
 }
 
+void test_rational_value_against_integer_oracle() {
+    std::cout << "Testing rational value against Integer oracle..." << std::endl;
+    const int64_t min_a = std::numeric_limits<int64_t>::min();
+    const int64_t max_a = std::numeric_limits<int64_t>::max();
+    const uint64_t max_b = std::numeric_limits<uint64_t>::max();
+    for (const char* m_text : {"-18446744073709551616", "-2", "0", "1", "18446744073709551615",
+                               "18446744073709551616"}) {
+        const Integer m(m_text);
+        std::vector<Integer> coeffs = {Integer(1)};
+        PolynomialContext ctx(Integer(3), std::move(coeffs), Integer(m));
+        for (const int64_t a : {min_a, int64_t{-1}, int64_t{0}, int64_t{1}, max_a}) {
+            for (const uint64_t b : {uint64_t{0}, uint64_t{1}, uint64_t{2}, max_b}) {
+                const Integer signed_expected = Integer(a) - Integer(b) * m;
+                GNFS_TEST_CHECK(ctx.rational_value(a, b) == signed_expected);
+                Integer magnitude = signed_expected;
+                magnitude.abs();
+                const auto [value, fits] = ctx.rational_value_abs_u64(a, b);
+                if (m.fits_uint64()) {
+                    GNFS_TEST_CHECK(fits == magnitude.fits_uint64());
+                }
+                if (fits) {
+                    GNFS_TEST_CHECK(magnitude.fits_uint64());
+                    GNFS_TEST_CHECK(Integer(value) == magnitude);
+                } else {
+                    GNFS_TEST_CHECK(value == 0);
+                }
+            }
+        }
+    }
+    std::cout << "  Rational value oracle: PASS" << std::endl;
+}
+
 void test_i128_norm_does_not_compute_unused_power() {
 #if defined(__SIZEOF_INT128__)
     std::cout << "Testing i128 norm power boundary..." << std::endl;
@@ -266,6 +298,42 @@ void test_i128_norm_does_not_compute_unused_power() {
 #endif
 }
 
+void test_i128_norm_against_integer_oracle() {
+#if defined(__SIZEOF_INT128__)
+    std::cout << "Testing i128 norm against Integer oracle..." << std::endl;
+    for (uint32_t degree = 0; degree <= 8; ++degree) {
+        std::vector<Integer> coeffs;
+        for (uint32_t i = 0; i <= degree; ++i) {
+            coeffs.emplace_back(i % 2 == 0 ? -3 : 2);
+        }
+        PolynomialContext ctx(Integer(11), std::move(coeffs), Integer(1));
+        for (int64_t a = -3; a <= 3; ++a) {
+            for (uint64_t b = 0; b <= 4; ++b) {
+                const auto [norm, accepted] = ctx.algebraic_norm_i128(a, b);
+                GNFS_TEST_CHECK(accepted == (b != 0));
+                if (!accepted) {
+                    continue;
+                }
+                const bool negative = norm < 0;
+                const __uint128_t magnitude = negative ? static_cast<__uint128_t>(-(norm + 1)) + 1
+                                                       : static_cast<__uint128_t>(norm);
+                Integer actual(static_cast<uint64_t>(magnitude >> 64));
+                mpz_mul_2exp(actual.get_mpz(), actual.get_mpz(), 64);
+                actual += static_cast<uint64_t>(magnitude);
+                if (negative) {
+                    actual.negate();
+                }
+                GNFS_TEST_CHECK(actual == ctx.algebraic_norm(a, b));
+            }
+        }
+    }
+    std::vector<Integer> wide_coeffs = {Integer(1), Integer("9223372036854775808")};
+    PolynomialContext wide(Integer(11), std::move(wide_coeffs), Integer(1));
+    GNFS_TEST_CHECK(!wide.algebraic_norm_i128(1, 1).second);
+    std::cout << "  i128 norm oracle: PASS" << std::endl;
+#endif
+}
+
 int main() {
     std::cout << "=== PolynomialContext Unit Tests ===" << std::endl;
 
@@ -284,6 +352,8 @@ int main() {
     test_n_digits();
     test_uint64_portability_and_overflow_boundaries();
     test_i128_norm_does_not_compute_unused_power();
+    test_rational_value_against_integer_oracle();
+    test_i128_norm_against_integer_oracle();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
