@@ -16,6 +16,13 @@ bool is_valid_string_base(int base) {
     return base >= 2 && base <= 62;
 }
 
+const char* checked_integer_string(const std::string& str) {
+    if (str.find('\0') != std::string::npos) {
+        throw std::invalid_argument("Integer string contains an embedded NUL");
+    }
+    return str.c_str();
+}
+
 void set_mpz_from_uint64(mpz_t dest, uint64_t value) {
     mpz_import(dest, 1, 1, sizeof(value), 0, 0, &value);
 }
@@ -123,7 +130,7 @@ Integer::Integer(const char* str, int base) {
     }
 }
 
-Integer::Integer(const std::string& str, int base) : Integer(str.c_str(), base) {}
+Integer::Integer(const std::string& str, int base) : Integer(checked_integer_string(str), base) {}
 
 Integer::Integer(const Integer& other) {
     mpz_init_set(value_, other.value_);
@@ -505,7 +512,20 @@ size_t Integer::num_digits(int base) const {
     if (!is_valid_string_base(base)) {
         throw std::invalid_argument("Integer digit-count base must be in [2,62]");
     }
-    return mpz_sizeinbase(value_, base);
+    // GMP is exact for powers of two, and otherwise overestimates by at most one.
+    const size_t estimate = mpz_sizeinbase(value_, base);
+    if ((base & (base - 1)) == 0 || estimate <= 1) {
+        return estimate;
+    }
+    // mpz_ui_pow_ui uses unsigned long, which is narrower than size_t on LLP64.
+    if (estimate - 1 > (std::numeric_limits<unsigned long>::max)()) {
+        const std::string digits = to_string(base);
+        return digits.size() - static_cast<size_t>(digits.front() == '-');
+    }
+    Integer boundary;
+    mpz_ui_pow_ui(boundary.value_, static_cast<unsigned long>(base),
+                  static_cast<unsigned long>(estimate - 1));
+    return estimate - static_cast<size_t>(mpz_cmpabs(value_, boundary.value_) < 0);
 }
 
 bool Integer::fits_uint64() const {

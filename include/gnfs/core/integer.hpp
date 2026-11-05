@@ -84,6 +84,7 @@ public:
     double to_double() const;
     std::string to_string(int base = 10) const;
     size_t bit_length() const;
+    /// Exact digit count of the magnitude (zero has one digit).
     size_t num_digits(int base = 10) const;
 
     // Fit checks

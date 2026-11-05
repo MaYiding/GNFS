@@ -1038,6 +1038,26 @@ bool test_factorize_small() {
 }
 
 bool test_factorize_string() {
+    const std::string malformed("143\0junk", 8);
+    bool factorize_rejected = false;
+    bool complete_rejected = false;
+    bool callback_called = false;
+    const Config cfg;
+    const auto progress = [&](const ProgressInfo&) { callback_called = true; };
+    const auto log = [&](const LogEntry&) { callback_called = true; };
+    try {
+        (void)factorize(malformed, cfg, progress);
+    } catch (const std::invalid_argument&) {
+        factorize_rejected = true;
+    }
+    try {
+        (void)factorize_completely(malformed, cfg, progress, log);
+    } catch (const std::invalid_argument&) {
+        complete_rejected = true;
+    }
+    if (!factorize_rejected || !complete_rejected || callback_called) {
+        return false;
+    }
     auto result = factorize(std::string("9991"));
     assert(result.success);
     assert(result.factors.size() == 2);
