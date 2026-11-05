@@ -62,7 +62,7 @@ Each test has a 120-second default execution allowance and a 300-second maximum.
 - The calculation statistics selector shows either the whole task or one composite split, including its actual algorithms, effective GNFS parameters, SIQS statistics, counters, and timings. Missing legacy telemetry is marked unavailable. See the [telemetry contract](../../../docs/apps/gnfs-workbench/telemetry.md).
 - Progress uses only measurements supplied for the current stage. Algorithms other than GNFS show their actual method rather than marking unused GNFS stages complete. Elapsed time continues updating between engine events.
 - Filter logs by text or severity, pause **Follow Latest** to read earlier entries, and copy either the filtered set or all retained entries. The buffer retains the latest 600 entries and continues following after the limit is reached.
-- Export a selected run with the share button. The JSON snapshot contains the original input, configuration, result, metrics, and retained logs. The native save dialog lets the user choose its destination.
+- Export a selected run with the share button. The JSON snapshot contains the normalized input, configuration, result, metrics, and retained logs. The native save dialog lets the user choose its destination.
 
 ## Runtime behavior
 

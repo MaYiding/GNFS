@@ -21,7 +21,7 @@ The native window supports a `900 × 640` minimum. The history sidebar can be hi
 
 Offscreen rendering tests cover ready, live, complete, failure, long-input, invalid-parameter, and full-sheet states. Light and dark captures include minimum-width windows and detailed GNFS statistics. These are deterministic fixtures for layout review, not performance measurements.
 
-UI tests exercise decimal input, running and cancellation states, parameter-sheet dismissal, malformed parameter validation, a real `360` factorization, configuration reuse, and history search. Process tests independently verify actual engine results, environment isolation, and subprocess cleanup.
+UI tests exercise initial launch, termination and relaunch, closing the final window and reopening, decimal input, running and cancellation states, parameter-sheet dismissal, malformed parameter validation, a real `360` factorization, configuration reuse, and history search. The main scene has a stable identifier and an explicit launch fallback for older, type-derived window restoration identifiers. Process tests independently verify actual engine results, environment isolation, and subprocess cleanup.
 
 ## Reproducing Evidence
 

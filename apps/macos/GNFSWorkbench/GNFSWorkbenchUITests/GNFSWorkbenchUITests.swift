@@ -10,6 +10,21 @@ final class GNFSWorkbenchUITests: XCTestCase {
     return app
   }
 
+  func testMainWindowAppearsAfterTerminationAndRelaunch() {
+    continueAfterFailure = false
+    let app = launchApp()
+    XCTAssertTrue(app.textFields["numberInput"].waitForExistence(timeout: 5))
+    app.terminate()
+    app.launch()
+    XCTAssertTrue(app.textFields["numberInput"].waitForExistence(timeout: 5))
+    XCTAssertEqual(app.windows.count, 1)
+    app.typeKey("w", modifierFlags: .command)
+    XCTAssertTrue(app.wait(for: .notRunning, timeout: 5))
+    app.launch()
+    XCTAssertTrue(app.textFields["numberInput"].waitForExistence(timeout: 5))
+    XCTAssertEqual(app.windows.count, 1)
+  }
+
   func testPrimaryRunAndCancellationFlow() {
     continueAfterFailure = false
     let app = launchApp()
@@ -89,7 +104,8 @@ final class GNFSWorkbenchUITests: XCTestCase {
     app.buttons["example-360"].click()
     app.buttons["startRunButton"].click()
     XCTAssertTrue(app.staticTexts["完整质因数分解完成"].waitForExistence(timeout: 10))
-    XCTAssertTrue(app.staticTexts["algorithmRoute"].exists)
+    XCTAssertTrue(app.staticTexts["完成算法"].exists)
+    XCTAssertFalse(app.staticTexts["GNFS 流水线"].exists)
     app.buttons["parametersButton"].click()
     XCTAssertTrue(app.buttons["editParameterCopyButton"].waitForExistence(timeout: 3))
     app.buttons["editParameterCopyButton"].click()
