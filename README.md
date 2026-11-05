@@ -296,6 +296,9 @@ verbose           = true
 在 special-Q 外层 workers 之间均衡分配这些计算通道。详细边界见
 [sieve 配置契约](docs/env-flags/sieve.md#special-q-local-compute-budget-config)。
 
+显式 `sieve_width`/`sieve_height` 组合还必须落在每个 sieve 实例的
+`SIEVE_MAX_REGION_CELLS` 物化上限内；超出时配置会在启动前拒绝，避免不可行的内存分配。
+
 ### C++ API
 
 一行调用：
@@ -503,6 +506,11 @@ GNFS/
 | `GNFS_OOC_RELATIONS` | `1` | 关系流式写盘（`.reldata` / `.relidx`），50 d Round 2 OOM 缓解 |
 | `GNFS_OOC_BASE_PATH` | `<path>` | 覆盖 OOC 文件路径前缀 |
 | `GNFS_SIEVE_RESUME` | `<base_path>` | 筛 mid-flight 检查点 + OOC 续写，支持 hours 级 sieve 崩溃恢复 |
+| `GNFS_DISTRIBUTED_SIEVE_WORKERS` | `1–64` | 启用 POSIX 多进程 special-Q wave；不能与 resume 变量同时设置 |
+| `GNFS_DISTRIBUTED_SIEVE_BASE_PATH` | `<path>` | 覆盖 distributed worker 私有 OOC 命名空间前缀 |
+| `GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER` | `N` | 限制每个 distributed worker 处理的 special-Q 数量 |
+| `GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL` | `1`（测试） | 覆盖 distributed route 的 30 位尺寸门槛 |
+| `GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS` | `N` | 设置单个 worker attempt 的 wall-clock 上限（毫秒） |
 | `GNFS_BW_KRYLOV_MMAP` | `1` | BW Phase 1 Krylov 序列 mmap，60 d n=1 M 节省 ~144 MB |
 | `GNFS_BW_KRYLOV_COMPRESS` | `1`（需同时启用 mmap） | Krylov scratch 分块压缩；Win32/POSIX 输出与内存路径逐位一致 |
 | `GNFS_NO_THIN_SOLVE` | `1` | 关闭 thin matrix BW solve（恢复 NO_EXCESS abort 旧行为） |

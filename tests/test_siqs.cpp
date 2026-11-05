@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cassert>
 #include <chrono>
@@ -406,6 +407,115 @@ void test_factor_base() {
     printf("  factor_base: PASS (%zu primes)\n", fb.size());
 }
 
+void test_factor_base_cooperative_stop() {
+    const auto same_base = [](const auto& lhs, const auto& rhs) {
+        return lhs.size() == rhs.size() &&
+               std::equal(lhs.begin(), lhs.end(), rhs.begin(),
+                          [](const FBPrime& a, const FBPrime& b) {
+                              return a.p == b.p && a.sqrt_n == b.sqrt_n && a.logp == b.logp;
+                          });
+    };
+    for (const char* input :
+         {"0", "1", "2", "-1", "143", "303", "15015", "100000000000000000000000000000000000039"}) {
+        for (size_t count : {size_t{0}, size_t{1}, size_t{10}, size_t{64}}) {
+            const Integer modulus(input);
+            const auto normal = build_factor_base(modulus, count);
+            size_t polls = 0;
+            const auto complete =
+                siqs_factor_base_detail::build_factor_base_until(modulus, count, [&]() noexcept {
+                    ++polls;
+                    return false;
+                });
+            require_test(complete && same_base(normal, *complete),
+                         "non-stopping predicate changed the complete factor base");
+            require_test(polls >= 2, "factor-base entry and publication were not polled");
+            const bool odd = mpz_odd_p(modulus.get_mpz()) != 0;
+            require_test(normal.size() == (odd && count == 0 ? 2 : count + 1),
+                         "factor-base count boundary changed");
+            for (size_t index = 1; index < normal.size(); ++index) {
+                const auto& entry = normal[index];
+                require_test(entry.p > normal[index - 1].p, "factor-base prime order changed");
+                for (uint32_t divisor = 2; divisor <= entry.p / divisor; ++divisor)
+                    require_test(entry.p % divisor != 0, "factor base contains a composite");
+                require_test(static_cast<uint64_t>(entry.sqrt_n) * entry.sqrt_n % entry.p ==
+                                 mpz_fdiv_ui(modulus.get_mpz(), entry.p),
+                             "factor-base square root is invalid");
+                require_test(entry.logp == std::bit_width(entry.p) - 1,
+                             "factor-base logarithm changed");
+            }
+        }
+    }
+
+    // For N=1, every prime is admissible and the first ten primes are known.
+    constexpr std::array<FBPrime, 11> expected{{{0, 0, 0},
+                                                {2, 1, 1},
+                                                {3, 1, 1},
+                                                {5, 1, 2},
+                                                {7, 1, 2},
+                                                {11, 1, 3},
+                                                {13, 1, 3},
+                                                {17, 1, 4},
+                                                {19, 1, 4},
+                                                {23, 1, 4},
+                                                {29, 1, 4}}};
+    const Integer one(1);
+    require_test(same_base(build_factor_base(one, 10), expected),
+                 "factor-base output differs from the known prime/root sequence");
+    // One entry poll, 14 odd candidate polls (3..29), two trial-divisor polls
+    // (i=5 for 25 and 29), and one publication poll. Poll 17 is inside the
+    // trial division for 29, so deleting inner-loop polling breaks this oracle.
+    constexpr size_t expected_polls = 18;
+    for (size_t stop_at = 1; stop_at <= expected_polls + 1; ++stop_at) {
+        size_t polls = 0;
+        const auto result = siqs_factor_base_detail::build_factor_base_until(
+            one, 10, [&]() noexcept { return ++polls == stop_at; });
+        if (stop_at <= expected_polls) {
+            require_test(!result, "cancelled factor-base construction published a partial result");
+            require_test(polls == stop_at,
+                         "factor-base construction kept polling after cancellation");
+        } else {
+            require_test(result && same_base(*result, expected),
+                         "late stop changed the complete factor-base result");
+            require_test(polls == expected_polls,
+                         "factor-base candidate/divisor poll count changed");
+        }
+    }
+
+    // This modulus also exercises primes dividing N (zero roots) and rejected
+    // nonresidues. Every reachable poll must independently stop construction.
+    const Integer composite(143);
+    size_t total_polls = 0;
+    const auto complete =
+        siqs_factor_base_detail::build_factor_base_until(composite, 10, [&]() noexcept {
+            ++total_polls;
+            return false;
+        });
+    require_test(complete.has_value(), "non-stopping composite factor base was cancelled");
+    for (size_t stop_at = 1; stop_at <= total_polls; ++stop_at) {
+        size_t polls = 0;
+        const auto result = siqs_factor_base_detail::build_factor_base_until(
+            composite, 10, [&]() noexcept { return ++polls == stop_at; });
+        require_test(!result && polls == stop_at,
+                     "factor-base cancellation failed across a rejected or zero-root candidate");
+    }
+
+    size_t invalid_polls = 0;
+    bool overflow_seen = false;
+    try {
+        (void)siqs_factor_base_detail::build_factor_base_until(
+            one, std::numeric_limits<size_t>::max(), [&]() noexcept {
+                ++invalid_polls;
+                return true;
+            });
+    } catch (const std::overflow_error&) {
+        overflow_seen = true;
+    }
+    require_test(overflow_seen && invalid_polls == 0,
+                 "stop predicate bypassed the factor-base count domain check");
+    std::printf("  factor_base cooperative stop: PASS (32 normal cases, %zu cancellation points)\n",
+                expected_polls + total_polls);
+}
+
 void test_factor_base_rejects_unrepresentable_count() {
     bool overflow_seen = false;
     try {
@@ -414,6 +524,384 @@ void test_factor_base_rejects_unrepresentable_count() {
         overflow_seen = true;
     }
     require_test(overflow_seen, "factor-base count overflow was not rejected");
+}
+
+void test_dense_gauss_kernel_oracle() {
+    size_t matrices_checked = 0;
+    // Exhaust all binary matrices with up to four relation rows and one to
+    // three columns. Column zero is the sign; exponent values 2/3 distinguish
+    // parity from the exponent itself. Enumerating the image and kernel does
+    // not reuse Gaussian elimination or its pivot choices.
+    for (size_t columns = 1; columns <= 3; ++columns) {
+        for (size_t rows = 0; rows <= 4; ++rows) {
+            const uint32_t vector_count = uint32_t{1} << rows;
+            const uint32_t column_mask = (uint32_t{1} << columns) - 1;
+            const uint32_t matrix_count = uint32_t{1} << (rows * columns);
+            for (uint32_t encoding = 0; encoding < matrix_count; ++encoding) {
+                std::vector<uint32_t> row_bits(rows);
+                std::vector<SIQSRelation> relations(rows);
+                for (size_t row = 0; row < rows; ++row) {
+                    row_bits[row] = (encoding >> (row * columns)) & column_mask;
+                    relations[row].negative = (row_bits[row] & 1) != 0;
+                    relations[row].exponents.resize(columns, 0);
+                    for (size_t column = 1; column < columns; ++column)
+                        relations[row].exponents[column] =
+                            static_cast<uint8_t>(2 + ((row_bits[row] >> column) & 1));
+                }
+                std::set<uint32_t> kernel;
+                std::set<uint32_t> image;
+                for (uint32_t vector = 0; vector < vector_count; ++vector) {
+                    uint32_t product = 0;
+                    for (size_t row = 0; row < rows; ++row)
+                        if ((vector >> row) & 1)
+                            product ^= row_bits[row];
+                    image.insert(product);
+                    if (product == 0)
+                        kernel.insert(vector);
+                }
+                require_test(std::has_single_bit(image.size()),
+                             "GF(2) image size is not a power of two");
+                const size_t rank = static_cast<size_t>(std::bit_width(image.size()) - 1);
+                const size_t nullity = rows - rank;
+                require_test(kernel.size() == (size_t{1} << nullity),
+                             "independent GF(2) rank/nullity oracle disagrees");
+                const auto complete = dense_gauss_left_nullspace(
+                    relations, columns, std::numeric_limits<size_t>::max());
+                require_test(complete.size() == nullity,
+                             "dense solver omitted a kernel basis vector");
+                const auto stoppable = siqs_dense_detail::dense_gauss_left_nullspace_until(
+                    relations, columns, std::numeric_limits<size_t>::max(),
+                    []() noexcept { return false; });
+                require_test(stoppable && *stoppable == complete,
+                             "non-cancelled dense helper changed the complete kernel sequence");
+                for (size_t limit : {size_t{0}, size_t{1}, size_t{2}, size_t{4}}) {
+                    const auto dependencies = dense_gauss_left_nullspace(relations, columns, limit);
+                    require_test(dependencies.size() == std::min(limit, nullity),
+                                 "dense solver ignored max_deps or lost a dependency");
+                    require_test(
+                        std::equal(dependencies.begin(), dependencies.end(), complete.begin()),
+                        "max_deps changed the dependency prefix");
+                    std::set<uint32_t> generated{0};
+                    for (const auto& dependency : dependencies) {
+                        require_test(!dependency.empty(), "dense solver returned the zero vector");
+                        uint32_t vector = 0;
+                        for (size_t row : dependency) {
+                            require_test(row < rows, "dense dependency has an out-of-range row");
+                            const uint32_t bit = uint32_t{1} << row;
+                            require_test((vector & bit) == 0, "dense dependency repeats a row");
+                            vector |= bit;
+                        }
+                        require_test(kernel.contains(vector),
+                                     "dense dependency is not in the GF(2) kernel");
+                        const auto previous = generated;
+                        for (uint32_t member : previous)
+                            generated.insert(member ^ vector);
+                    }
+                    require_test(generated.size() == (size_t{1} << dependencies.size()),
+                                 "dense kernel basis is linearly dependent");
+                    if (limit >= nullity)
+                        require_test(generated == kernel,
+                                     "dense basis does not span the complete kernel");
+                }
+                ++matrices_checked;
+            }
+        }
+    }
+
+    // Free-variable indices and sign dependencies must survive packed-word
+    // boundaries. A zero matrix has every unit vector; one sign row gives
+    // pairs with its first pivot and leaves the other unit vectors unchanged.
+    for (size_t rows : {size_t{63}, size_t{64}, size_t{65}, size_t{129}}) {
+        std::vector<SIQSRelation> relations(rows);
+        for (auto& relation : relations)
+            relation.exponents.resize(2, 0);
+        for (size_t limit :
+             {size_t{0}, size_t{1}, size_t{64}, std::numeric_limits<size_t>::max()}) {
+            const auto dependencies = dense_gauss_left_nullspace(relations, 2, limit);
+            require_test(dependencies.size() == std::min(rows, limit),
+                         "zero matrix lost singleton dependencies across a packed-word boundary");
+            for (size_t row = 0; row < dependencies.size(); ++row)
+                require_test(dependencies[row] == std::vector<size_t>{row},
+                             "zero matrix returned the wrong unit kernel vector");
+        }
+        relations.front().negative = true;
+        relations.back().negative = true;
+        const auto dependencies =
+            dense_gauss_left_nullspace(relations, 2, std::numeric_limits<size_t>::max());
+        require_test(dependencies.size() == rows - 1, "sign column lost its rank-one kernel");
+        for (size_t row = 1; row < rows; ++row) {
+            const std::vector<size_t> expected =
+                row + 1 == rows ? std::vector<size_t>{row, 0} : std::vector<size_t>{row};
+            require_test(dependencies[row - 1] == expected,
+                         "sign parity was not preserved across a packed-word boundary");
+        }
+    }
+    std::printf("  dense_gauss kernel oracle: PASS (%zu exhaustive matrices, 4 word boundaries)\n",
+                matrices_checked);
+}
+
+void test_dense_gauss_singleton_extraction() {
+    const Integer modulus(15);
+    const auto factor_base = build_factor_base(modulus, 1);
+    SIQSRelation relation{};
+    relation.value = Integer(4);
+    relation.exponents.resize(factor_base.size(), 0);
+    require_test(relation.value * relation.value - modulus == Integer(1),
+                 "singleton fixture is not the legal Q=1 relation");
+    const std::vector<SIQSRelation> relations{relation};
+    const std::vector<std::vector<size_t>> expected{{0}};
+    const auto dependencies = dense_gauss_left_nullspace(relations, factor_base.size());
+    require_test(dependencies == expected, "zero-parity relation lost its unit kernel vector");
+    require_test(solve_matrix(relations, factor_base.size()) == expected,
+                 "matrix dispatcher lost the singleton dependency");
+    const auto direct = try_extract(modulus, modulus, relations, dependencies.front(), factor_base);
+    require_test(direct && direct->first == Integer(3) && direct->second == Integer(5),
+                 "singleton dependency did not extract the factors 3 and 5");
+    const auto combined =
+        try_extract_with_combos(modulus, modulus, relations, dependencies, factor_base);
+    require_test(combined && combined->first == Integer(3) && combined->second == Integer(5),
+                 "production dependency consumer lost the singleton factorization");
+    std::puts("  dense_gauss singleton extraction: PASS (15 = 3 * 5)");
+}
+
+void test_dense_gauss_parallel_kernel() {
+    // Exceed the native parallel threshold with only six relations and three
+    // pivots. Repeated equation columns force actual parallel XOR work while
+    // keeping the mathematical kernel independently enumerable in 64 cases.
+    constexpr size_t columns = 20001;
+    constexpr std::array<uint32_t, 6> row_bits{1, 2, 3, 0, 4, 5};
+    std::vector<SIQSRelation> relations(row_bits.size());
+    for (size_t row = 0; row < relations.size(); ++row) {
+        relations[row].negative = (row_bits[row] & 1) != 0;
+        relations[row].exponents.resize(columns, 0);
+        for (size_t column = 1; column < columns; ++column)
+            relations[row].exponents[column] =
+                static_cast<uint8_t>(2 + ((row_bits[row] >> (column % 3)) & 1));
+    }
+    std::set<uint32_t> kernel;
+    for (uint32_t vector = 0; vector < (uint32_t{1} << row_bits.size()); ++vector) {
+        uint32_t product = 0;
+        for (size_t row = 0; row < row_bits.size(); ++row)
+            if ((vector >> row) & 1)
+                product ^= row_bits[row];
+        if (product == 0)
+            kernel.insert(vector);
+    }
+    require_test(kernel.size() == 8, "parallel fixture does not have a rank-three kernel");
+    const std::vector<std::vector<size_t>> expected{{2, 0, 1}, {3}, {5, 0, 4}};
+    for (size_t repeat = 0; repeat < 3; ++repeat) {
+        const auto dependencies = dense_gauss_left_nullspace(relations, columns);
+        require_test(dependencies == expected,
+                     "parallel elimination changed the complete dependency sequence");
+        std::set<uint32_t> generated{0};
+        for (const auto& dependency : dependencies) {
+            uint32_t vector = 0;
+            for (size_t row : dependency) {
+                require_test(row < row_bits.size(), "parallel dependency row is out of range");
+                const uint32_t bit = uint32_t{1} << row;
+                require_test((vector & bit) == 0, "parallel dependency repeats a row");
+                vector |= bit;
+            }
+            require_test(kernel.contains(vector), "parallel dependency failed the parity oracle");
+            const auto previous = generated;
+            for (uint32_t member : previous)
+                generated.insert(member ^ vector);
+        }
+        require_test(generated == kernel, "parallel dependencies do not span the complete kernel");
+    }
+    const auto prefix = dense_gauss_left_nullspace(relations, columns, 2);
+    require_test(prefix == std::vector<std::vector<size_t>>(expected.begin(), expected.begin() + 2),
+                 "parallel max_deps changed the deterministic dependency prefix");
+    std::puts("  dense_gauss parallel kernel: PASS (20001 columns, 6 rows, 3 pivots)");
+}
+
+struct DenseStopProbe {
+    std::thread::id caller = std::this_thread::get_id();
+    std::atomic<size_t> calls{0};
+    std::atomic<bool> caller_only{true};
+    size_t cancel_at = std::numeric_limits<size_t>::max();
+
+    bool operator()() noexcept {
+        if (std::this_thread::get_id() != caller)
+            caller_only.store(false, std::memory_order_relaxed);
+        return calls.fetch_add(1, std::memory_order_relaxed) + 1 == cancel_at;
+    }
+};
+
+std::vector<SIQSRelation> dense_stop_fixture(size_t columns) {
+    constexpr std::array<uint32_t, 6> row_bits{1, 2, 3, 0, 4, 5};
+    std::vector<SIQSRelation> relations(row_bits.size());
+    for (size_t row = 0; row < relations.size(); ++row) {
+        relations[row].negative = (row_bits[row] & 1) != 0;
+        relations[row].exponents.resize(columns, 0);
+        for (size_t column = 1; column < columns; ++column)
+            relations[row].exponents[column] =
+                static_cast<uint8_t>((row_bits[row] >> (column % 3)) & 1);
+    }
+    return relations;
+}
+
+void test_dense_gauss_cooperative_stop() {
+    using siqs_dense_detail::dense_gauss_left_nullspace_until;
+    const std::vector<std::vector<size_t>> expected{{2, 0, 1}, {3}, {5, 0, 4}};
+    size_t cancellation_cases = 0;
+    for (size_t columns : {size_t{3}, size_t{20001}}) {
+        const auto relations = dense_stop_fixture(columns);
+        DenseStopProbe complete_probe;
+        const auto complete =
+            dense_gauss_left_nullspace_until(relations, columns, 64, complete_probe);
+        require_test(complete && *complete == expected && complete_probe.caller_only.load(),
+                     "dense stop helper changed the kernel or polled outside its caller");
+        const size_t total_polls = complete_probe.calls.load();
+        std::set<size_t> cancel_points;
+        if (columns == 3) {
+            for (size_t point = 1; point <= total_polls; ++point)
+                cancel_points.insert(point);
+        } else {
+            // The first three equation rows are independent pivots. Cover all
+            // setup, prelaunch, and post-join polls for these real batches;
+            // sample the zero equations and every extraction/publication poll.
+            for (size_t point = 1; point <= 23; ++point)
+                cancel_points.insert(point);
+            cancel_points.insert(total_polls / 2);
+            for (size_t point = total_polls - expected.size(); point <= total_polls; ++point)
+                cancel_points.insert(point);
+        }
+        for (size_t point : cancel_points) {
+            DenseStopProbe probe;
+            probe.cancel_at = point;
+            const auto cancelled = dense_gauss_left_nullspace_until(relations, columns, 64, probe);
+            require_test(!cancelled && probe.calls.load() == point && probe.caller_only.load(),
+                         "dense cancellation published partial dependencies or kept polling");
+            ++cancellation_cases;
+        }
+        const auto prefix = dense_gauss_left_nullspace_until(relations, columns, 2,
+                                                             []() noexcept { return false; });
+        require_test(prefix && *prefix == std::vector<std::vector<size_t>>(expected.begin(),
+                                                                           expected.begin() + 2),
+                     "non-cancelled helper changed max_deps ordering");
+        const auto zero_limit = dense_gauss_left_nullspace_until(relations, columns, 0,
+                                                                 []() noexcept { return false; });
+        require_test(zero_limit && zero_limit->empty(),
+                     "zero dependency limit was confused with cancellation");
+    }
+    const auto empty = dense_gauss_left_nullspace_until({}, 3, 64, []() noexcept { return false; });
+    require_test(empty && empty->empty(), "empty input was confused with cancellation");
+    auto full_rank = dense_stop_fixture(3);
+    full_rank = {full_rank[0], full_rank[1], full_rank[4]};
+    const auto trivial_kernel =
+        dense_gauss_left_nullspace_until(full_rank, 3, 64, []() noexcept { return false; });
+    require_test(trivial_kernel && trivial_kernel->empty(),
+                 "normal zero-dimensional kernel was confused with cancellation");
+
+    DenseStopProbe immediate;
+    immediate.cancel_at = 1;
+    const auto before_allocation = dense_gauss_left_nullspace_until(
+        full_rank, std::numeric_limits<size_t>::max(), 64, immediate);
+    require_test(!before_allocation && immediate.calls.load() == 1,
+                 "initial cancellation did not precede workspace allocation");
+    DenseStopProbe allocation_probe;
+    bool allocation_threw = false;
+    try {
+        (void)dense_gauss_left_nullspace_until(full_rank, std::numeric_limits<size_t>::max(), 64,
+                                               allocation_probe);
+    } catch (const std::length_error&) {
+        allocation_threw = true;
+    }
+    require_test(allocation_threw && allocation_probe.calls.load() == 1,
+                 "dense helper converted an allocation exception into cancellation");
+    std::printf("  dense_gauss cooperative stop: PASS (%zu cancellation boundaries)\n",
+                cancellation_cases);
+}
+
+void test_native_dependency_budgets() {
+    using siqs_factor_detail::extract_native_dependencies;
+    const Integer modulus(77);
+    const std::vector<FBPrime> fb{{0, 0, 0}, {2, 1, 1}, {19, 1, 4}, {23, 10, 4}};
+    SIQSRelation unit{};
+    unit.value = Integer(39);
+    unit.exponents = {0, 2, 2, 0};
+    SIQSRelation first{};
+    first.value = Integer(10);
+    first.exponents = {0, 0, 0, 1};
+    SIQSRelation second{};
+    second.value = Integer(13);
+    second.exponents = {0, 2, 0, 1};
+    // These are exact Q=X^2-N identities, not merely synthetic parity rows.
+    require_test(unit.value * unit.value - modulus == Integer(1444) &&
+                     first.value * first.value - modulus == Integer(23) &&
+                     second.value * second.value - modulus == Integer(92),
+                 "dependency congestion fixtures lost their exact Q identities");
+    require_test(gnfs::core::gcd(unit.value - Integer(38), modulus) == Integer(1) &&
+                     gnfs::core::gcd(unit.value + Integer(38), modulus) == modulus,
+                 "unit fixture no longer has only trivial GCDs");
+
+    constexpr size_t unit_count = 80;
+    std::vector<SIQSRelation> relations(unit_count, unit);
+    relations.push_back(first);
+    relations.push_back(second);
+    const auto complete_prefix = dense_gauss_left_nullspace(relations, fb.size(), 64);
+    require_test(complete_prefix.size() == 64 &&
+                     std::all_of(complete_prefix.begin(), complete_prefix.end(),
+                                 [](const auto& dependency) { return dependency.size() == 1; }),
+                 "generic kernel no longer preserves its complete unit-vector prefix");
+    require_test(!try_extract_with_combos(modulus, modulus, relations, complete_prefix, fb),
+                 "trivial unit subspace unexpectedly extracted a factor");
+    const auto later = try_extract(modulus, modulus, relations, {unit_count + 1, unit_count}, fb);
+    require_test(later && later->first == Integer(7) && later->second == Integer(11),
+                 "late non-unit fixture no longer extracts 7 and 11");
+
+    const auto outcome = extract_native_dependencies(modulus, modulus, relations, fb);
+    require_test(outcome.factors && outcome.factors->first == Integer(7) &&
+                     outcome.factors->second == Integer(11) &&
+                     outcome.singleton_attempts == unit_count && outcome.matrix_rows == 2 &&
+                     outcome.non_singleton_dependencies == 1,
+                 "unit prechecks displaced the later non-unit factorization");
+    require_test(relations.size() == 2 && relations[0].value == first.value &&
+                     relations[1].value == second.value,
+                 "native dependency compaction changed survivor order");
+
+    // Retain the historical non-unit cap rather than materializing the entire
+    // kernel: the useful pair is now beyond 64 non-unit basis vectors.
+    relations.assign(unit_count, unit);
+    relations.insert(relations.end(), 65, first);
+    relations.push_back(second);
+    const auto capped = extract_native_dependencies(modulus, modulus, relations, fb);
+    require_test(!capped.factors && capped.singleton_attempts == unit_count &&
+                     capped.matrix_rows == 66 && capped.non_singleton_dependencies == 64,
+                 "native dependency consumer exceeded its non-unit storage/attempt budget");
+    const auto beyond_cap = try_extract(modulus, modulus, relations, {65, 0}, fb);
+    require_test(beyond_cap && beyond_cap->first == Integer(7) && beyond_cap->second == Integer(11),
+                 "non-unit budget fixture no longer distinguishes capped from full extraction");
+
+    relations.assign(unit_count, unit);
+    const auto only_units = extract_native_dependencies(modulus, modulus, relations, fb);
+    require_test(!only_units.factors && only_units.singleton_attempts == unit_count &&
+                     only_units.matrix_rows == 0 && only_units.non_singleton_dependencies == 0 &&
+                     relations.empty(),
+                 "unit-only corpus started matrix work or fabricated a factor");
+
+    // A useful singleton still gets its own opportunity and returns before
+    // compaction or linear algebra. For N=15, 8^2-15=7^2 is trivial, whereas
+    // 4^2-15=1 extracts 3*5.
+    const Integer small_modulus(15);
+    const std::vector<FBPrime> small_fb{{0, 0, 0}, {2, 1, 1}, {7, 1, 2}};
+    SIQSRelation trivial_unit{};
+    trivial_unit.value = Integer(8);
+    trivial_unit.exponents = {0, 0, 2};
+    SIQSRelation useful_unit{};
+    useful_unit.value = Integer(4);
+    useful_unit.exponents = {0, 0, 0};
+    std::vector<SIQSRelation> singleton_relations{trivial_unit, useful_unit};
+    const auto singleton =
+        extract_native_dependencies(small_modulus, small_modulus, singleton_relations, small_fb);
+    require_test(singleton.factors && singleton.factors->first == Integer(3) &&
+                     singleton.factors->second == Integer(5) && singleton.singleton_attempts == 2 &&
+                     singleton.matrix_rows == 0 && singleton.non_singleton_dependencies == 0 &&
+                     singleton_relations.size() == 2,
+                 "useful singleton lost its independent precheck or mutated the input early");
+    std::puts(
+        "  native dependency budgets: PASS (80 trivial units, late non-unit, cap, useful unit)");
 }
 
 void test_init_poly_handles_large_a_factor_count() {
@@ -858,7 +1346,13 @@ int main() {
     test_one_large_prime_rejects_strong_pseudoprimes();
     test_tonelli_shanks();
     test_factor_base();
+    test_factor_base_cooperative_stop();
     test_factor_base_rejects_unrepresentable_count();
+    test_dense_gauss_singleton_extraction();
+    test_dense_gauss_kernel_oracle();
+    test_dense_gauss_parallel_kernel();
+    test_dense_gauss_cooperative_stop();
+    test_native_dependency_budgets();
     test_init_poly_handles_large_a_factor_count();
     test_siqs_rejects_tiny_inputs_without_sieving();
     test_split_cofactor_edge();

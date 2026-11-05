@@ -126,6 +126,8 @@ public:
     relation::RelationReductionResult sieve_and_collect(const PolynomialContext& ctx,
                                                         const FactorBase& fb,
                                                         SieveCollectionOptions options = {});
+    /// Filter externally supplied relations. Callers are responsible for
+    /// ensuring those relations match the context and factor base used later.
     relation::RelationReductionResult filter(std::vector<Relation> relations);
 
     struct MatrixResult {
@@ -134,6 +136,7 @@ public:
         // Declared before the public payload so reverse destruction keeps the
         // structured corpus alive until matrix/dependency state is gone.
         std::unique_ptr<StructuredRelations> structured_relations_;
+        std::optional<relation::StageInputFingerprint> stage_input_fingerprint_;
 
     public:
         MatrixResult();
@@ -185,6 +188,10 @@ public:
                   std::optional<FactorizationMethod> override = std::nullopt);
 
     // Configuration
+    /// During sieving, matrix construction/solving, and factor extraction,
+    /// callbacks may copy this Pipeline, but must not assign to or move from
+    /// its active owner. Such operations invalidate those stages and are
+    /// rejected when control returns from the callback.
     void set_progress_callback(ProgressCallback cb) {
         progress_cb_ = std::move(cb);
     }
@@ -200,6 +207,74 @@ public:
     }
 
 private:
+    /// Exact identity of the polynomial inputs accepted by this Pipeline.
+    /// PolynomialContext is intentionally move-only, so retaining a compact
+    /// textual copy avoids borrowing caller-owned state while still detecting
+    /// same-N context substitution between phases.
+    struct PolynomialContextSignature final {
+        std::string n;
+        std::string m;
+        uint32_t degree = 0;
+        std::vector<std::string> coefficients;
+        uint64_t skewness_bits = 0;
+
+        [[nodiscard]] bool operator==(const PolynomialContextSignature&) const noexcept = default;
+    };
+
+    struct FactorBaseSignature final {
+        uint64_t fingerprint_lo = 0;
+        uint64_t fingerprint_hi = 0;
+
+        [[nodiscard]] bool operator==(const FactorBaseSignature&) const noexcept = default;
+    };
+
+    struct CallbackInputState final {
+        const PolynomialContext* context;
+        const FactorBase* factor_base;
+        relation::StageInputFingerprint fingerprint;
+        bool callback_seen = false;
+        bool owner_invalidated = false;
+        CallbackInputState* enclosing = nullptr;
+    };
+    // Active callback state belongs to one invocation's stack. Copying or
+    // moving a Pipeline must never transfer the borrowed stack pointer.
+    struct CallbackInputSlot final {
+        CallbackInputState* active = nullptr;
+        CallbackInputSlot() = default;
+        CallbackInputSlot(const CallbackInputSlot&) noexcept {}
+        CallbackInputSlot(CallbackInputSlot&& other) noexcept {
+            other.invalidate_owner();
+        }
+        // Keep the borrowed scope pointer in place, but reject replacement of
+        // its owner before any phase can use the replacement's N or tuning.
+        CallbackInputSlot& operator=(const CallbackInputSlot& other) noexcept {
+            if (this != &other)
+                invalidate_owner();
+            return *this;
+        }
+        CallbackInputSlot& operator=(CallbackInputSlot&& other) noexcept {
+            // Member self-moves need not preserve the enclosing object's value.
+            invalidate_owner();
+            if (this != &other)
+                other.invalidate_owner();
+            return *this;
+        }
+
+    private:
+        void invalidate_owner() noexcept {
+            // A nested invocation's exception may be caught by its caller.
+            // Invalidate every enclosing invocation as well as the innermost.
+            for (auto* scope = active; scope != nullptr; scope = scope->enclosing)
+                scope->owner_invalidated = true;
+        }
+    };
+    struct CallbackInputScope;
+    void verify_callback_inputs();
+    // Keep this the first per-instance member: generated assignment and move
+    // operations must invalidate active scopes before any other member changes
+    // or throws, even if the callback catches that exception.
+    CallbackInputSlot callback_input_state_;
+
     struct StructuredRouteSnapshot final {
         relation::StructuredFilterPolicyDecision policy{};
         std::string resume_base_path;
@@ -240,6 +315,12 @@ private:
     static void refresh_relation_corpus_checked(relation::RelationCorpus& corpus,
                                                 const relation::CorpusDigest& expected,
                                                 const char* mismatch_message);
+    [[nodiscard]] static PolynomialContextSignature
+    make_context_signature(const PolynomialContext& ctx);
+    void require_context_contract(const PolynomialContext& ctx, const char* phase,
+                                  bool bind_if_unbound);
+    void require_factor_base_contract(const PolynomialContext& ctx, const FactorBase& fb,
+                                      const char* phase, bool bind_if_unbound);
     MatrixResult matrix_phase(relation::RelationReductionResult& reduction, const FactorBase& fb,
                               const PolynomialContext& ctx, bool solve_dependencies);
     void emit_progress(Phase phase, const std::string& msg, double phase_progress = -1.0);
@@ -247,6 +328,8 @@ private:
     double elapsed_s() const;
 
     uint64_t next_relation_generation_ = 1;
+    std::optional<PolynomialContextSignature> polynomial_context_signature_;
+    std::optional<FactorBaseSignature> factor_base_signature_;
 };
 
 } // namespace gnfs::api

@@ -28,6 +28,10 @@
 #include <utility>
 #include <vector>
 
+namespace gnfs::api {
+class Pipeline;
+}
+
 namespace gnfs::relation {
 
 class CollectorUniqueOOCPrefixSource;
@@ -350,8 +354,23 @@ struct RelationReductionStats {
     [[nodiscard]] bool operator==(const RelationReductionStats&) const noexcept = default;
 };
 
+/// Fingerprint of the polynomial context and factor base used for a stage.
+struct StageInputFingerprint final {
+    uint64_t lo;
+    uint64_t hi;
+
+    [[nodiscard]] bool operator==(const StageInputFingerprint&) const noexcept = default;
+};
+
 /// A reduced corpus tied to the generation of its consumed raw snapshot.
+/// Pipeline-produced sieve results also carry input identity. External results
+/// do not; their callers remain responsible for matching their mathematical inputs.
 struct RelationReductionResult final {
+private:
+    std::optional<StageInputFingerprint> stage_input_fingerprint_;
+    friend class gnfs::api::Pipeline;
+
+public:
     uint64_t generation;
     RelationCorpus corpus;
     RelationReductionStats stats;

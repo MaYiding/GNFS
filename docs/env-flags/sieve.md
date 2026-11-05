@@ -38,9 +38,10 @@ MSVC ARM64 和无宽乘法 intrinsic 的 fallback 必须作出相同的规约与
 SkewLLL 的加权度量仍使用 `double`，不属于该 bit-for-bit 整数算术保证。
 
 `SieveRegion` 的 inclusive width/height 必须为正且各自可表示为 `int32_t`，面积必须
-可表示为 `size_t` 并可由 `vector<uint16_t>` 分配。默认 region 生成器另外把面积限制为
-256 Mi cells。宽度 32768 是 compact row-state 的上界；更宽的合法 region 把全部素数
-路由到 region-bucket 路径，而不是直接拒绝。每次初始或 adaptive sieve pass 之前都会
+可表示为 `size_t`、不超过共享的 `core::SIEVE_MAX_REGION_CELLS`（512 Mi cells，即
+1 GiB `uint16_t` score storage），并可由 `vector<uint16_t>` 分配。默认 region 生成器
+另外把面积限制为 256 Mi cells。宽度 32768 是 compact row-state 的上界；更宽的合法 region
+把全部素数路由到 region-bucket 路径，而不是直接拒绝。每次初始或 adaptive sieve pass 之前都会
 精确检查矩形的四个投影角点；任何 `(a,b)` 超出 `int64_t` 时 fail closed。SkewLLL
 还会在浮点转整数前拒绝不能保持有限 norm/dot/quotient 的 skew；分布式 identity
 仅接受平方在任意 rounding/FTZ 环境中都为 normal finite 的 binary64 指数域。进入
@@ -79,6 +80,53 @@ GNFS_SIEVE_ECORE_THREADS=6 ./gnfs <N>  # 最多 6 个 Utility QoS worker
 - `tests/test_sieve_ecore_qos.cpp`：默认值、负值、前缀、溢出和线程上限合同。
 
 该开关只改变调度提示，不改变 special-Q 顺序、sieve 分数、候选关系或停止条件。
+
+---
+
+## Adaptive Raw Target Multiplier (`GNFS_SIEVE_TARGET_MULT`)
+
+`GNFS_SIEVE_TARGET_MULT=X` scales the initial raw-relation target returned by
+`GNFSParams::raw_relation_target()`. The default is `1.0`; accepted values are
+finite decimal numbers in `[0.1, 100.0]`. Invalid, non-finite, prefixed, or
+out-of-range values fall back to `1.0`. Parsing uses the invariant C numeric
+locale, so the result is independent of the process `LC_NUMERIC` setting.
+
+The value is captured when `GNFSParams::compute()` runs, which is normally when
+a `Pipeline` is constructed. Existing parameter snapshots do not reread the
+process environment; applications that need different experiment values must
+construct separate instances under the desired environment. The multiplier is
+applied after the size-aware target has been calculated, and the existing
+saturating `size_t` conversion still governs overflow. A positive base target
+is clamped to at least one relation after scaling; an explicit zero-column input
+remains zero. When large primes are enabled, the automatic `max_special_q`
+budget is derived from the scaled estimated relation target, with saturating
+arithmetic. An explicit `max_special_q` override still sets the hard cap.
+
+```bash
+GNFS_SIEVE_TARGET_MULT=2 ./gnfs <N>       # double the initial target
+GNFS_SIEVE_TARGET_MULT=0.5 ./gnfs <N>     # halve it, within the accepted range
+unset GNFS_SIEVE_TARGET_MULT              # use the default target
+```
+
+This tuning switch scales the initial target and, when large primes are enabled,
+the derived automatic special-Q budget. It does not change relation encoding or
+the merge algorithm. Different targets or budgets can change the relations
+collected and the resulting matrix; bit-for-bit equality is not guaranteed.
+The frozen multiplier is included in the checkpoint run identity, so a
+checkpoint cannot be resumed under a different target strategy. The geometry helper
+`GNFSParams::sieve_i_bounds_for_width()` also keeps explicitly configured odd
+sieve widths exact; the default even widths retain their historical bounds.
+
+**Integration points**:
+
+- `include/gnfs/core/params.hpp`: strict snapshot parser, target scaling, and
+  exact/overflow-safe sieve geometry;
+- `include/gnfs/api/config.hpp`: shared geometry mapping for typed width
+  overrides;
+- `src/sieve/distributed_sieve_bound_work.cpp`: repeat the materialization cap
+  during distributed worker preflight;
+- `tests/test_params.cpp`: snapshot, invalid-value, odd-width, and extreme-width
+  contracts.
 
 ---
 
@@ -172,6 +220,25 @@ RSS 采样策略为 `first_max_candidates`。Pipeline 只在当前批次候选�
 但仍保留全部 `SieveResult`。`after_cofactor` 在 candidate workers、chunk scratch
 和 worker-local `Cofactorizer` 析构后采样，此时输入与归并前输出仍在内存。
 
+## Distributed Sieve Route (`GNFS_DISTRIBUTED_SIEVE_WORKERS`)
+
+`GNFS_DISTRIBUTED_SIEVE_WORKERS=N` 启用 POSIX 多进程 distributed sieve，`N` 的合法范围
+为 `[1, 64]`。`GNFS_DISTRIBUTED_SIEVE_BASE_PATH` 指定 worker 私有 OOC 命名空间，
+`GNFS_DISTRIBUTED_SIEVE_SQ_PER_WORKER` 限制每个 worker 的 special-Q 数量，未设置时由
+Pipeline 按 `max_special_q` 均分。`GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL=1` 仅供测试覆盖
+小于 30 位的尺寸门槛。
+
+该 route 当前是一次性 wave：worker 结果在父进程中完成校验、归并和清理，随后交给既有
+过滤合并阶段。它不写 `GNFS_RESUME` / `GNFS_SIEVE_RESUME` 所需的 paired sieve checkpoint。
+因此，只要 `GNFS_DISTRIBUTED_SIEVE_WORKERS` 为正且任一 resume 变量非空，Pipeline 会在
+preflight 抛出 `std::invalid_argument`。异常发生在 progress/log callback、checkpoint
+读写和 worker artifact 创建之前，不会静默改走本地 route。需要 checkpoint 恢复时应将
+`GNFS_DISTRIBUTED_SIEVE_WORKERS` 设为 `0`。
+
+当前 production route 尚未接入 durable WaveStore 的跨 master 崩溃接管；master 中断会使
+整轮 wave 失效，下一次运行重新计算全部 chunk。相关接管和缺失 chunk 语义由
+`test_distributed_sieve_resume` 的 source-private contract 覆盖。
+
 ## Distributed worker watchdog (`GNFS_DISTRIBUTED_SIEVE_WORKER_TIMEOUT_MS`)
 
 `DistributedSieveConfig::worker_timeout_ms` 和
@@ -255,9 +322,10 @@ GNFS_RESUME=/var/tmp/gnfs-session ./gnfs <N>
    suspended，并直接从同一 generation 发布 final magic。
 4. 重启先严格加载 V3 checkpoint，再比对 N、多项式、因子基和 sieve 参数的
    128-bit run fingerprint；不一致时在打开 OOC store 前 fail closed。当前 run
-   identity schema 3 还绑定 affine-only Special-Q 枚举规则，以及冻结后的 cascade
-   V3、3LP、V0 weight/cutoff/residual 和 structured/legacy reduction 选择，因此旧
-   schema 或不同语义策略不会跨 checkpoint 恢复。
+   identity schema 4 还绑定 affine-only Special-Q 枚举规则、冻结后的
+   `GNFS_SIEVE_TARGET_MULT`，以及 cascade V3、3LP、V0 weight/cutoff/residual 和
+   structured/legacy reduction 选择，因此旧 schema 或不同语义策略不会跨 checkpoint
+   恢复。
 5. identity 匹配后，再从同一次只读打开校验 OOC V3 index/data header、配对
    `store_id` 与 committed prefix，并重算 checkpoint prefix 的 sequence receipt；
    所有检查通过后才允许截断 checkpoint 之后的未提交 index/data tail。同尺寸改写
