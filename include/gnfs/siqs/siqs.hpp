@@ -22,6 +22,7 @@
 #include <gnfs/siqs/shadow_two_large_prime_capture.hpp>
 #include <gnfs/siqs/two_large_prime.hpp>
 #include <gnfs/util/bit_intrin.hpp>
+#include <gnfs/util/joining_thread.hpp>
 #include <gnfs/util/primes.hpp>
 
 #include <algorithm>
@@ -1671,7 +1672,9 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
                 }
             };
             size_t chunk = (ncols + nt - 1) / nt;
-            std::vector<std::thread> threads;
+            // Join earlier workers if a later thread constructor throws.
+            std::vector<gnfs::util::JoiningThread> threads;
+            threads.reserve(nt);
             for (unsigned t = 0; t < nt; t++) {
                 size_t s = t * chunk, e = std::min(s + chunk, ncols);
                 if (s < e)

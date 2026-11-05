@@ -658,6 +658,57 @@ void test_dense_gauss_singleton_extraction() {
     std::puts("  dense_gauss singleton extraction: PASS (15 = 3 * 5)");
 }
 
+void test_dense_gauss_parallel_kernel() {
+    // Exceed the native parallel threshold with only six relations and three
+    // pivots. Repeated equation columns force actual parallel XOR work while
+    // keeping the mathematical kernel independently enumerable in 64 cases.
+    constexpr size_t columns = 20001;
+    constexpr std::array<uint32_t, 6> row_bits{1, 2, 3, 0, 4, 5};
+    std::vector<SIQSRelation> relations(row_bits.size());
+    for (size_t row = 0; row < relations.size(); ++row) {
+        relations[row].negative = (row_bits[row] & 1) != 0;
+        relations[row].exponents.resize(columns, 0);
+        for (size_t column = 1; column < columns; ++column)
+            relations[row].exponents[column] =
+                static_cast<uint8_t>(2 + ((row_bits[row] >> (column % 3)) & 1));
+    }
+    std::set<uint32_t> kernel;
+    for (uint32_t vector = 0; vector < (uint32_t{1} << row_bits.size()); ++vector) {
+        uint32_t product = 0;
+        for (size_t row = 0; row < row_bits.size(); ++row)
+            if ((vector >> row) & 1)
+                product ^= row_bits[row];
+        if (product == 0)
+            kernel.insert(vector);
+    }
+    require_test(kernel.size() == 8, "parallel fixture does not have a rank-three kernel");
+    const std::vector<std::vector<size_t>> expected{{2, 0, 1}, {3}, {5, 0, 4}};
+    for (size_t repeat = 0; repeat < 3; ++repeat) {
+        const auto dependencies = dense_gauss_left_nullspace(relations, columns);
+        require_test(dependencies == expected,
+                     "parallel elimination changed the complete dependency sequence");
+        std::set<uint32_t> generated{0};
+        for (const auto& dependency : dependencies) {
+            uint32_t vector = 0;
+            for (size_t row : dependency) {
+                require_test(row < row_bits.size(), "parallel dependency row is out of range");
+                const uint32_t bit = uint32_t{1} << row;
+                require_test((vector & bit) == 0, "parallel dependency repeats a row");
+                vector |= bit;
+            }
+            require_test(kernel.contains(vector), "parallel dependency failed the parity oracle");
+            const auto previous = generated;
+            for (uint32_t member : previous)
+                generated.insert(member ^ vector);
+        }
+        require_test(generated == kernel, "parallel dependencies do not span the complete kernel");
+    }
+    const auto prefix = dense_gauss_left_nullspace(relations, columns, 2);
+    require_test(prefix == std::vector<std::vector<size_t>>(expected.begin(), expected.begin() + 2),
+                 "parallel max_deps changed the deterministic dependency prefix");
+    std::puts("  dense_gauss parallel kernel: PASS (20001 columns, 6 rows, 3 pivots)");
+}
+
 void test_init_poly_handles_large_a_factor_count() {
     // The production table currently uses at most 12 A factors, but this is
     // a valid runtime shape for the public helper.  It also covers the former
@@ -1104,6 +1155,7 @@ int main() {
     test_factor_base_rejects_unrepresentable_count();
     test_dense_gauss_singleton_extraction();
     test_dense_gauss_kernel_oracle();
+    test_dense_gauss_parallel_kernel();
     test_init_poly_handles_large_a_factor_count();
     test_siqs_rejects_tiny_inputs_without_sieving();
     test_split_cofactor_edge();
