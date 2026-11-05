@@ -2034,6 +2034,13 @@ static_assert(noexcept(siqs_factor_detail::commit_prefer_route(
 
 namespace siqs_factor_detail {
 
+/// Scores saturate at 255. Bound their threshold before narrowing, retaining
+/// the historical floor for low estimates and unordered (NaN) comparisons.
+inline uint8_t bounded_sieve_threshold(double estimate) noexcept {
+    constexpr double max_score = std::numeric_limits<uint8_t>::max();
+    return estimate > 10.0 ? static_cast<uint8_t>(std::min(estimate, max_score)) : uint8_t{10};
+}
+
 /// Prepared by the facade before starting one native attempt. The shared timer
 /// origin includes parameter and multiplier selection; it is not reset here.
 struct FactorAttemptContext {
@@ -2181,7 +2188,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     }
 
     double thr_d = log_Qmax_d - lp_bits - params.sieve_error - small_contrib;
-    uint8_t threshold = (thr_d > 10.0) ? static_cast<uint8_t>(thr_d) : 10;
+    const uint8_t threshold = bounded_sieve_threshold(thr_d);
 
     // 2LP: DISABLED entirely. 2LP cycles cause extraction failures for certain
     // multipliers (all 64 deps fail). 1LP merge provides enough usable relations.

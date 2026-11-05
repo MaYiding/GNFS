@@ -988,6 +988,49 @@ void test_siqs_rejects_tiny_inputs_without_sieving() {
     std::printf("  siqs tiny-input guards: PASS\n");
 }
 
+void test_sieve_threshold_range() {
+    using siqs_factor_detail::bounded_sieve_threshold;
+    for (unsigned value = 0; value <= 255; ++value) {
+        const auto expected = static_cast<uint8_t>(std::max(value, 10u));
+        require_test(bounded_sieve_threshold(static_cast<double>(value) + 0.75) == expected,
+                     "representable sieve threshold lost its historical floor or truncation");
+    }
+    for (const double estimate : {256.0, 480.461, std::numeric_limits<double>::max(),
+                                  std::numeric_limits<double>::infinity()}) {
+        require_test(bounded_sieve_threshold(estimate) == 255,
+                     "large sieve threshold escaped the saturated score range");
+    }
+    for (const double estimate : {-std::numeric_limits<double>::infinity(), -1.0,
+                                  std::numeric_limits<double>::quiet_NaN()}) {
+        require_test(bounded_sieve_threshold(estimate) == 10,
+                     "low or unordered sieve threshold lost its historical fallback");
+    }
+
+    // Exercise the native conversion with a large integer but a tiny factor
+    // base and an already expired sieve budget, without attempting to factor it.
+    Integer n;
+    mpz_set_ui(n.get_mpz(), 1);
+    mpz_mul_2exp(n.get_mpz(), n.get_mpz(), 1024);
+    mpz_add_ui(n.get_mpz(), n.get_mpz(), 51);
+    auto params = select_params(n.to_string().size());
+    params.fb_size = 64;
+    params.num_a_factors = 3;
+    params.sieve_half = 64;
+    const siqs_factor_detail::FactorAttemptContext context{std::chrono::steady_clock::now() -
+                                                               std::chrono::seconds(2),
+                                                           1, true, n.to_string().size(), params};
+    ScopedStderrCapture capture;
+    const auto outcome = siqs_factor_detail::factor_once(n, 1, SIQSShadowProofMode::off, context);
+    const auto diagnostic = capture.finish();
+    require_test(!outcome.result &&
+                     outcome.terminal ==
+                         siqs_factor_detail::FactorAttemptTerminal::insufficient_relations,
+                 "expired large-input threshold fixture changed its terminal outcome");
+    require_test(diagnostic.find("threshold=255,") != std::string::npos,
+                 "native sieve threshold did not saturate before narrowing");
+    std::puts("  sieve threshold range: PASS");
+}
+
 void test_siqs_native_attempt_entry() {
     using siqs_factor_detail::factor_once;
     using siqs_factor_detail::FactorAttemptContext;
@@ -1392,6 +1435,7 @@ int main() {
     test_split_cofactor_edge();
 
     printf("\n--- Factorization tests ---\n");
+    test_sieve_threshold_range();
     test_siqs_native_attempt_entry();
     test_siqs_small();
     test_siqs_prefer_candidate_route();
