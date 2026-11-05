@@ -406,6 +406,115 @@ void test_factor_base() {
     printf("  factor_base: PASS (%zu primes)\n", fb.size());
 }
 
+void test_factor_base_cooperative_stop() {
+    const auto same_base = [](const auto& lhs, const auto& rhs) {
+        return lhs.size() == rhs.size() &&
+               std::equal(lhs.begin(), lhs.end(), rhs.begin(),
+                          [](const FBPrime& a, const FBPrime& b) {
+                              return a.p == b.p && a.sqrt_n == b.sqrt_n && a.logp == b.logp;
+                          });
+    };
+    for (const char* input :
+         {"0", "1", "2", "-1", "143", "303", "15015", "100000000000000000000000000000000000039"}) {
+        for (size_t count : {size_t{0}, size_t{1}, size_t{10}, size_t{64}}) {
+            const Integer modulus(input);
+            const auto normal = build_factor_base(modulus, count);
+            size_t polls = 0;
+            const auto complete =
+                siqs_factor_base_detail::build_factor_base_until(modulus, count, [&]() noexcept {
+                    ++polls;
+                    return false;
+                });
+            require_test(complete && same_base(normal, *complete),
+                         "non-stopping predicate changed the complete factor base");
+            require_test(polls >= 2, "factor-base entry and publication were not polled");
+            const bool odd = mpz_odd_p(modulus.get_mpz()) != 0;
+            require_test(normal.size() == (odd && count == 0 ? 2 : count + 1),
+                         "factor-base count boundary changed");
+            for (size_t index = 1; index < normal.size(); ++index) {
+                const auto& entry = normal[index];
+                require_test(entry.p > normal[index - 1].p, "factor-base prime order changed");
+                for (uint32_t divisor = 2; divisor <= entry.p / divisor; ++divisor)
+                    require_test(entry.p % divisor != 0, "factor base contains a composite");
+                require_test(static_cast<uint64_t>(entry.sqrt_n) * entry.sqrt_n % entry.p ==
+                                 mpz_fdiv_ui(modulus.get_mpz(), entry.p),
+                             "factor-base square root is invalid");
+                require_test(entry.logp == std::bit_width(entry.p) - 1,
+                             "factor-base logarithm changed");
+            }
+        }
+    }
+
+    // For N=1, every prime is admissible and the first ten primes are known.
+    constexpr std::array<FBPrime, 11> expected{{{0, 0, 0},
+                                                {2, 1, 1},
+                                                {3, 1, 1},
+                                                {5, 1, 2},
+                                                {7, 1, 2},
+                                                {11, 1, 3},
+                                                {13, 1, 3},
+                                                {17, 1, 4},
+                                                {19, 1, 4},
+                                                {23, 1, 4},
+                                                {29, 1, 4}}};
+    const Integer one(1);
+    require_test(same_base(build_factor_base(one, 10), expected),
+                 "factor-base output differs from the known prime/root sequence");
+    // One entry poll, 14 odd candidate polls (3..29), two trial-divisor polls
+    // (i=5 for 25 and 29), and one publication poll. Poll 17 is inside the
+    // trial division for 29, so deleting inner-loop polling breaks this oracle.
+    constexpr size_t expected_polls = 18;
+    for (size_t stop_at = 1; stop_at <= expected_polls + 1; ++stop_at) {
+        size_t polls = 0;
+        const auto result = siqs_factor_base_detail::build_factor_base_until(
+            one, 10, [&]() noexcept { return ++polls == stop_at; });
+        if (stop_at <= expected_polls) {
+            require_test(!result, "cancelled factor-base construction published a partial result");
+            require_test(polls == stop_at,
+                         "factor-base construction kept polling after cancellation");
+        } else {
+            require_test(result && same_base(*result, expected),
+                         "late stop changed the complete factor-base result");
+            require_test(polls == expected_polls,
+                         "factor-base candidate/divisor poll count changed");
+        }
+    }
+
+    // This modulus also exercises primes dividing N (zero roots) and rejected
+    // nonresidues. Every reachable poll must independently stop construction.
+    const Integer composite(143);
+    size_t total_polls = 0;
+    const auto complete =
+        siqs_factor_base_detail::build_factor_base_until(composite, 10, [&]() noexcept {
+            ++total_polls;
+            return false;
+        });
+    require_test(complete.has_value(), "non-stopping composite factor base was cancelled");
+    for (size_t stop_at = 1; stop_at <= total_polls; ++stop_at) {
+        size_t polls = 0;
+        const auto result = siqs_factor_base_detail::build_factor_base_until(
+            composite, 10, [&]() noexcept { return ++polls == stop_at; });
+        require_test(!result && polls == stop_at,
+                     "factor-base cancellation failed across a rejected or zero-root candidate");
+    }
+
+    size_t invalid_polls = 0;
+    bool overflow_seen = false;
+    try {
+        (void)siqs_factor_base_detail::build_factor_base_until(
+            one, std::numeric_limits<size_t>::max(), [&]() noexcept {
+                ++invalid_polls;
+                return true;
+            });
+    } catch (const std::overflow_error&) {
+        overflow_seen = true;
+    }
+    require_test(overflow_seen && invalid_polls == 0,
+                 "stop predicate bypassed the factor-base count domain check");
+    std::printf("  factor_base cooperative stop: PASS (32 normal cases, %zu cancellation points)\n",
+                expected_polls + total_polls);
+}
+
 void test_factor_base_rejects_unrepresentable_count() {
     bool overflow_seen = false;
     try {
@@ -858,6 +967,7 @@ int main() {
     test_one_large_prime_rejects_strong_pseudoprimes();
     test_tonelli_shanks();
     test_factor_base();
+    test_factor_base_cooperative_stop();
     test_factor_base_rejects_unrepresentable_count();
     test_init_poly_handles_large_a_factor_count();
     test_siqs_rejects_tiny_inputs_without_sieving();

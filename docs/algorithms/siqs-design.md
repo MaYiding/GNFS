@@ -179,6 +179,30 @@ shadow work only on the first actual attempt. Factor-base construction, both
 linear-algebra backends, and the remaining long stages still require a coherent
 cooperative cancellation contract before an end-to-end deadline can be claimed.
 
+### Factor-Base Stop Helper
+
+The internal `siqs_factor_base_detail::build_factor_base_until` helper accepts
+a zero-argument `noexcept` stop predicate. It checks the predicate before
+reserving storage, before each odd candidate, before each trial-divisor
+iteration, and before returning the completed factor base. The existing count
+domain check runs first. A true predicate returns `std::nullopt` immediately
+and destroys the internal vector; neither partial entries nor an empty factor
+base represent cancellation. Allocation and domain errors retain their existing
+exception behavior.
+
+The public `build_factor_base(N, count)` wrapper uses the `nullptr` template
+specialization, which removes predicate calls at compile time. It preserves
+prime order, root choice, count boundaries, and the vector return type. Neither
+path reads a clock internally. A caller that supplies a predicate owns its
+state and synchronization, and must keep each predicate call bounded.
+
+This helper is not yet connected to `factor_once`, a coordinator, or shadow
+finalization. Cancelling construction grants no factor-result or shadow-return
+authority. One allocation, GMP operation, or `tonelli_shanks` invocation can
+still run between polls; dense elimination and the sparse solver also lack a
+native stop contract. This change therefore provides cooperative factor-base
+stopping, without establishing a wall-clock bound for a complete attempt.
+
 ## Parameter Calibration
 
 The `select_params` table is tuned against msieve, CADO-NFS, and YAFU defaults.
