@@ -134,12 +134,16 @@ PROJECT_ROOT=$PWD
 FAILED_TESTS=0
 SKIPPED_TESTS=0
 TOTAL_TESTS=0
+MODE=module
+SKIP_TEST=""
+typeset -a REPORT_ENTRIES=()
 log_header() { :; }
 log_section() { :; }
 log_info() { :; }
 log_warn() { :; }
 log_fail() { :; }
 log_success() { :; }
+log_skip() { :; }
 resolve_changed_base() { print fixture; }
 collect_changed_files() { print -r -- "$ROUTE_PATHS"; }
 run_ctest_contract_group() { :; }
@@ -148,6 +152,10 @@ do_smoke() { print 'SELECTED:smoke'; }
 run_single_test() {
     print -r -- "SELECTED:$1"
     (( TOTAL_TESTS += 1 ))
+    if [[ "$1" == "$SKIP_TEST" ]]; then
+        (( SKIPPED_TESTS += 1 ))
+        return 0
+    fi
     if [[ "$1" == "$FAIL_TEST" ]]; then
         (( FAILED_TESTS += 1 ))
         return 1
@@ -157,12 +165,13 @@ run_single_test() {
 '''
 
 
-def route(paths, options, expected_siqs, *, expected_gnfs=0, fail_test=''):
+def route(paths, options, expected_siqs, *, expected_gnfs=0, fail_test='', skip_test='', mode='changed'):
     script = (recorders + '\n' + definitions + '\n'
-              'ROUTE_PATHS=$1; FAIL_TEST=$2; shift 2\n'
-              'do_changed "$@"\n' + exit_status + '\n')
+              'ROUTE_PATHS=$1; FAIL_TEST=$2; SKIP_TEST=$3; MODE=$4; shift 4\n'
+              'do_changed "$@"\n'
+              'print -r -- "COUNTS:$FAILED_TESTS:$SKIPPED_TESTS"\n' + exit_status + '\n')
     result = subprocess.run(
-        ['zsh', '-s', '--', '\n'.join(paths), fail_test, *options],
+        ['zsh', '-s', '--', '\n'.join(paths), fail_test, skip_test, mode, *options],
         input=script, text=True, capture_output=True, cwd=root, check=False, timeout=10,
     )
     selected = [line.removeprefix('SELECTED:') for line in result.stdout.splitlines()
@@ -170,7 +179,8 @@ def route(paths, options, expected_siqs, *, expected_gnfs=0, fail_test=''):
     expected_status = int(bool(fail_test))
     if (result.returncode != expected_status
             or selected.count('test_siqs_e2e') != expected_siqs
-            or selected.count('test_gnfs_e2e') != expected_gnfs):
+            or selected.count('test_gnfs_e2e') != expected_gnfs
+            or f'COUNTS:{int(bool(fail_test))}:{int(bool(skip_test))}' not in result.stdout.splitlines()):
         raise SystemExit(f'Routing failed for {paths!r} {options!r}: '
                          f'exit={result.returncode}, selected={selected!r}\n'
                          f'{result.stderr}')
@@ -202,6 +212,123 @@ route([header], ['--deep'], 1, fail_test='test_siqs_e2e')
 if 'test_int_polynomial' not in route(['tests/test_int_polynomial.cpp'], [], 0):
     raise SystemExit('Catalog routing must use the real module iteration order')
 print('[PASS] changed selection, SIQS deep E2E, and failure propagation')
+
+# Module requests are the coverage oracle: changed selection may remove repeated
+# no-argument calls, but may not remove any member of the selected module union.
+def module_selection(modules):
+    result = subprocess.run(
+        ['zsh', '-s', '--', *modules], input=recorders + '\n' + definitions
+        + '\nFAIL_TEST=""\ndo_module "$@"\n' + exit_status,
+        text=True, capture_output=True, cwd=root, timeout=10, check=True)
+    return [line.removeprefix('SELECTED:') for line in result.stdout.splitlines()
+            if line.startswith('SELECTED:')]
+
+api = module_selection(['api'])
+for options in [[], ['--deep']]:
+    selected = route(['tests/test_api.cpp'], options, 0)
+    if set(selected) != set(api) or selected.count('test_api') != 1:
+        raise SystemExit('Direct API changes lost coverage or repeated the API suite')
+
+paths = ['include/gnfs/core/integer.hpp', 'tests/test_int_polynomial.cpp']
+ordinary = module_selection(['core', 'polynomial']) + ['test_gnfs_e2e']
+selected = route(paths, [], 0, expected_gnfs=1)
+if set(selected) != set(ordinary) or len(selected) != len(set(selected)):
+    raise SystemExit('Overlapping changed modules lost coverage or repeated a shared test')
+if ordinary.count('test_regressions') != 2:
+    raise SystemExit('Explicit module requests must preserve their existing repetition')
+
+paths = ['include/gnfs/core/integer.hpp', 'tests/test_api.cpp']
+ordinary = module_selection(['core', 'polynomial', 'factor_base', 'sieve', 'cofactor',
+                             'relation', 'linalg', 'sqrt', 'api']) + ['test_gnfs_e2e']
+for mode in ['changed', 'diff']:
+    selected = route(paths, ['--deep'], 0, expected_gnfs=1, mode=mode)
+    if set(selected) != set(ordinary) or len(selected) != len(set(selected)):
+        raise SystemExit(f'{mode} deep changed the module union or repeated shared tests')
+    for shared in ['test_api', 'test_edge_cases', 'test_regressions',
+                   'test_integration', 'test_relation_reduction_engine']:
+        if selected.count(shared) != 1:
+            raise SystemExit(f'{mode} did not select shared {shared} exactly once')
+route(paths, ['--deep'], 0, expected_gnfs=1, fail_test='test_integration')
+route(paths, ['--deep'], 0, expected_gnfs=1, skip_test='test_edge_cases')
+for path in ['include/gnfs/sieve/lattice_sieve.hpp', 'include/gnfs/relation/filter.hpp']:
+    selected = route([path], ['--deep'], 0, expected_gnfs=1)
+    if selected.count('test_api') != 1:
+        raise SystemExit('Cascaded API coverage must remain selected exactly once')
+
+# Each module must retain its own failure/skip outcome even when a shared binary
+# has only one execution and global report entry. Invalid modules remain errors.
+for mode, failure, skip, modules, expected in [
+        ('changed', '', '', ['left', 'right'], 'RESULT:0:1:0:0'),
+        ('changed', 'test_shared', '', ['left', 'right'], 'RESULT:2:1:1:0'),
+        ('diff', '', 'test_shared', ['left', 'right'], 'RESULT:0:1:0:1'),
+        ('changed', 'test_shared', '', ['left', 'missing', 'right', 'missing'], 'RESULT:4:3:3:0'),
+        ('module', 'test_shared', '', ['left', 'right'], 'RESULT:2:2:2:0')]:
+    driver = (recorders + '\n' + definitions + '\n'
+              'MODE=$1; FAIL_TEST=$2; SKIP_TEST=$3; shift 3\n'
+              'MODULE_TESTS=(left test_shared right test_shared)\n'
+              'log_info() { if [[ "$mod" == left || "$mod" == right ]] && (( mod_total == 1 )); '
+              'then print -r -- "SUMMARY:$mod:$mod_skip"; fi; }\n'
+              'if do_module "$@"; then module_exit=0; else module_exit=$?; fi\n'
+              'print -r -- "RESULT:$module_exit:$TOTAL_TESTS:$FAILED_TESTS:$SKIPPED_TESTS"\n')
+    result = subprocess.run(['zsh', '-s', '--', mode, failure, skip, *modules], input=driver,
+                            text=True, capture_output=True, cwd=root, timeout=10, check=True)
+    if expected not in result.stdout.splitlines():
+        raise SystemExit(f'Module result reuse changed accounting: {result.stdout}{result.stderr}')
+    if skip and not {'SUMMARY:left:1', 'SUMMARY:right:1'}.issubset(result.stdout.splitlines()):
+        raise SystemExit(f'Shared skip disappeared from a module summary: {result.stdout}')
+print('[PASS] changed module union, shared outcomes, and explicit repetitions')
+
+# Use the real binary-result/retry function with only its bounded process adapter
+# replaced. Reusing a module result must not replace the explicit retry policy or
+# let a fail-fast exit reach the result cache.
+retry_build = Path(sys.argv[2]) / 'retry build'
+retry_build.mkdir()
+retry_binary = retry_build / 'test_shared'
+retry_binary.write_text('#!/bin/sh\nexit 0\n')
+retry_binary.chmod(0o755)
+retry_driver = (recorders + '\n' + definitions + '\n'
+                + extract(r'^run_single_test\(\) \{\n.*?^\}') + r"""
+BUILD_DIR=$1; MODE=$2; ADAPTER_RESULT=$3; FAIL_FAST=$4; REPEAT_MODULES=$5
+PASSED_TESTS=0
+RETRY_COUNT=1
+(( FAIL_FAST )) && RETRY_COUNT=0
+TIMEOUT=3; TIMEOUT_EXPLICIT=0; QUIET=1; VERBOSE=0
+DIM=""; RESET=""; RED=""
+RUN_ATTEMPTS=0
+MODULE_TESTS=(left test_shared right test_shared)
+typeset -A TEST_TIMEOUT=(test_shared 3) TEST_TIER=(test_shared instant)
+timer_start_ms() { print 0; }
+format_duration() { print 0; }
+run_with_timeout() {
+    [[ $# == 2 && "$1" == 3 && "$2" == "$BUILD_DIR/test_shared" ]] || exit 21
+    (( RUN_ATTEMPTS += 1 ))
+    RUN_OUTPUT=""
+    case "$ADAPTER_RESULT" in
+        skip) return 77 ;;
+        fail) return 1 ;;
+        retry) (( RUN_ATTEMPTS >= 2 )) ;;
+    esac
+}
+finish_fail_fast() {
+    print -r -- "STOP:$RUN_ATTEMPTS:$TOTAL_TESTS:$FAILED_TESTS:${#REPORT_ENTRIES}"
+    exit 17
+}
+for (( repeat_module = 0; repeat_module < REPEAT_MODULES; repeat_module++ )); do
+    if do_module left right; then module_exit=0; else module_exit=$?; fi
+done
+print -r -- "RESULT:$RUN_ATTEMPTS:$module_exit:$TOTAL_TESTS:$PASSED_TESTS:$FAILED_TESTS:$SKIPPED_TESTS:${#REPORT_ENTRIES}"
+""")
+for mode, outcome, fail_fast, repeats, exit_code, expected in [
+        ('changed', 'retry', '0', '1', 0, 'RESULT:2:0:1:1:0:0:1'),
+        ('changed', 'retry', '0', '2', 0, 'RESULT:3:0:2:2:0:0:2'),
+        ('module', 'retry', '0', '1', 0, 'RESULT:3:0:2:2:0:0:2'),
+        ('diff', 'skip', '0', '1', 0, 'RESULT:1:0:1:0:0:1:1'),
+        ('changed', 'fail', '1', '1', 17, 'STOP:1:1:1:1')]:
+    result = subprocess.run(['zsh', '-s', '--', str(retry_build), mode, outcome, fail_fast, repeats],
+                            input=retry_driver, text=True, capture_output=True, cwd=root, timeout=10)
+    if result.returncode != exit_code or expected not in result.stdout.splitlines():
+        raise SystemExit(f'Retry/skip/fail-fast behavior changed: {result.stdout}{result.stderr}')
+print('[PASS] explicit retries, native exit-77 accounting, and fail-fast remain intact')
 
 # Exercise the full parser and dispatcher. A fake CMake terminates accepted
 # selections before any configuration, build, or mathematical test can run.
