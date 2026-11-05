@@ -512,7 +512,20 @@ size_t Integer::num_digits(int base) const {
     if (!is_valid_string_base(base)) {
         throw std::invalid_argument("Integer digit-count base must be in [2,62]");
     }
-    return mpz_sizeinbase(value_, base);
+    // GMP is exact for powers of two, and otherwise overestimates by at most one.
+    const size_t estimate = mpz_sizeinbase(value_, base);
+    if ((base & (base - 1)) == 0 || estimate <= 1) {
+        return estimate;
+    }
+    // mpz_ui_pow_ui uses unsigned long, which is narrower than size_t on LLP64.
+    if (estimate - 1 > (std::numeric_limits<unsigned long>::max)()) {
+        const std::string digits = to_string(base);
+        return digits.size() - static_cast<size_t>(digits.front() == '-');
+    }
+    Integer boundary;
+    mpz_ui_pow_ui(boundary.value_, static_cast<unsigned long>(base),
+                  static_cast<unsigned long>(estimate - 1));
+    return estimate - static_cast<size_t>(mpz_cmpabs(value_, boundary.value_) < 0);
 }
 
 bool Integer::fits_uint64() const {
