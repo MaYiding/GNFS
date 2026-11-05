@@ -8715,7 +8715,7 @@ case "$MODE" in
     L5) do_build; do_progressive 5 5; show_summary ;;
 
     changed|diff)
-        if (( ${#MODE_ARGS[@]} > 1 )) ||
+        if (( ${#MODE_ARGS[@]} > 1 || ${#BENCH_EXTRA_ARGS[@]} > 0 )) ||
             { (( ${#MODE_ARGS[@]} == 1 )) && [[ "${MODE_ARGS[1]}" != "--deep" ]]; }; then
             usage_error "用法: $0 ${MODE} [--deep] (--slow 仅用于 module)"
         fi
