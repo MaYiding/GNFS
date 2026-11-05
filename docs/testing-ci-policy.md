@@ -1433,3 +1433,11 @@ When adding or changing tests:
 - For candidate, structured-relation, or SIQS shadow concurrency changes, run
   `./scripts/test.sh tsan-relation` on a supported toolchain.
 - Re-run at least `./scripts/test.sh list`, `ctest --show-only=json-v1`, and the affected local test subset.
+
+## Protected Build Boundary
+
+The distributed-sieve receipt checker preserves the committed build commands that can change protected target sources, dependencies, compiler settings, include search, or generated code. It excludes independent test executables with literal `tests/*.cpp` sources, private links to project libraries or `Threads::Threads`, and ordinary CTest registration. Protected sources and targets, duplicate target or test names, dynamic source paths, and changes to shared build settings remain checked. The test-platform marker is accepted only when its content directly encodes the actual CMake `WIN32` condition. Literal overrides and other generated files remain checked because the runner consumes this marker when deciding which binaries are required.
+
+Adding an ordinary independent test does not require updating the checker. More complex build changes still require reviewing the retained command boundary and the existing target dependency and compiler provenance checks. The boundary digest is derived from the previously accepted build after the same projection; it is not regenerated from each proposed change.
+
+Runner catalog checks count each required binary in its actual binary, module, timeout, tier, and path-mapping declarations. Platform-support metadata may reference the same binary without registering it again. Duplicate declarations, appends, element overrides, and unexpected smoke registration remain failures.
