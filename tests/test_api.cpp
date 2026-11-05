@@ -1804,6 +1804,220 @@ bool test_cross_pipeline_stage_provenance() {
     return true;
 }
 
+bool callback_owner_operations_are_rejected(const Config& cfg,
+                                            const gnfs::core::PolynomialContext& ctx,
+                                            const gnfs::factor_base::FactorBase& fb) {
+    for (const int donor_n : {15, 143}) {
+        for (const bool use_log : {false, true}) {
+            for (const Phase phase : {Phase::SquareRoot, Phase::LinearAlgebra, Phase::Sieving}) {
+                for (int operation = 0; operation < 5; ++operation) {
+                    Pipeline active(Integer(143), cfg);
+                    Config other_config = cfg;
+                    other_config.set_max_special_q(2);
+                    Pipeline donor(Integer(donor_n), other_config);
+                    auto reduction = active.filter({});
+                    Pipeline::MatrixResult empty_matrix;
+                    std::optional<Pipeline> moved;
+                    bool invoked = false;
+                    auto mutate = [&] {
+                        if (invoked)
+                            return;
+                        invoked = true;
+                        // Capture everything before an operation can replace
+                        // or move the currently executing callback itself.
+                        auto* source = &active;
+                        auto* alternate = &donor;
+                        auto* destination = &moved;
+                        const int selected = operation;
+                        switch (selected) {
+                        case 0:
+                            *source = *alternate;
+                            break;
+                        case 1:
+                            *source = std::move(*alternate);
+                            break;
+                        case 2:
+                            destination->emplace(std::move(*source));
+                            break;
+                        case 3:
+                            *alternate = std::move(*source);
+                            break;
+                        case 4:
+                            *source = std::move(*source);
+                            break;
+                        }
+                    };
+                    if (use_log) {
+                        active.set_log_callback([&](const LogEntry& entry) {
+                            if (entry.phase == phase)
+                                mutate();
+                        });
+                    } else {
+                        active.set_progress_callback([&](const ProgressInfo& info) {
+                            if (info.phase == phase)
+                                mutate();
+                        });
+                    }
+                    bool rejected = false;
+                    try {
+                        if (phase == Phase::SquareRoot)
+                            (void)active.extract_factors(empty_matrix, fb, ctx);
+                        else if (phase == Phase::LinearAlgebra)
+                            (void)active.build_matrix(std::move(reduction), fb, ctx);
+                        else
+                            (void)active.sieve_and_collect(ctx, fb);
+                    } catch (const std::invalid_argument& error) {
+                        rejected = std::string_view(error.what()).find("active Pipeline owner") !=
+                                   std::string_view::npos;
+                    }
+                    if (!invoked || !rejected || !reduction.corpus.valid()) {
+                        std::cout << "(owner change accepted: operation=" << operation
+                                  << " donor_n=" << donor_n << " phase=" << static_cast<int>(phase)
+                                  << " log=" << use_log << ") ";
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    // Catching a nested invocation's rejection must not authorize the outer
+    // invocation to continue with its newly assigned owner.
+    Pipeline active(Integer(143), cfg);
+    Pipeline donor(Integer(15), cfg);
+    Pipeline::MatrixResult empty_matrix;
+    bool nested = false;
+    bool inner_rejected = false;
+    active.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message != "Starting factor extraction")
+            return;
+        auto* executing = &active;
+        auto* alternate = &donor;
+        auto* matrix = &empty_matrix;
+        auto* base = &fb;
+        auto* context = &ctx;
+        auto* nested_flag = &nested;
+        auto* rejected_flag = &inner_rejected;
+        if (*nested_flag) {
+            *executing = *alternate;
+            return;
+        }
+        *nested_flag = true;
+        try {
+            (void)executing->extract_factors(*matrix, *base, *context);
+        } catch (const std::invalid_argument&) {
+            *rejected_flag = true;
+        }
+    });
+    bool outer_rejected = false;
+    try {
+        (void)active.extract_factors(empty_matrix, fb, ctx);
+    } catch (const std::invalid_argument& error) {
+        outer_rejected =
+            std::string_view(error.what()).find("active Pipeline owner") != std::string_view::npos;
+    }
+    if (!inner_rejected || !outer_rejected) {
+        std::cout << "(nested owner invalidation did not reach its enclosing phase) ";
+        return false;
+    }
+
+    // A replacement can remove both callbacks. A new nested invocation must
+    // inherit invalidation and reject publication even without emitting one.
+    Pipeline callback_free_target(Integer(143), cfg);
+    Pipeline callback_free_donor(Integer(143), cfg);
+    bool callback_free_inner_rejected = false;
+    callback_free_target.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message != "Starting factor extraction")
+            return;
+        auto* target = &callback_free_target;
+        auto* source = &callback_free_donor;
+        auto* matrix = &empty_matrix;
+        auto* base = &fb;
+        auto* context = &ctx;
+        auto* rejected = &callback_free_inner_rejected;
+        *target = *source;
+        try {
+            (void)target->extract_factors(*matrix, *base, *context);
+        } catch (const std::invalid_argument& error) {
+            *rejected = std::string_view(error.what()).find("active Pipeline owner") !=
+                        std::string_view::npos;
+        }
+    });
+    bool callback_free_outer_rejected = false;
+    try {
+        (void)callback_free_target.extract_factors(empty_matrix, fb, ctx);
+    } catch (const std::invalid_argument& error) {
+        callback_free_outer_rejected =
+            std::string_view(error.what()).find("active Pipeline owner") != std::string_view::npos;
+    }
+    if (!callback_free_inner_rejected || !callback_free_outer_rejected) {
+        std::cout << "(callback-free nested phase published after owner invalidation) ";
+        return false;
+    }
+
+    // A callback can catch a partially completed owner assignment. Arrange a
+    // real std::function copy failure after N/config/params have been assigned.
+    struct ThrowingProgressCopy {
+        bool* enabled;
+        explicit ThrowingProgressCopy(bool* value) : enabled(value) {}
+        ThrowingProgressCopy(const ThrowingProgressCopy& other) : enabled(other.enabled) {
+            if (*enabled)
+                throw std::runtime_error("controlled callback copy failure");
+        }
+        ThrowingProgressCopy(ThrowingProgressCopy&&) noexcept = default;
+        void operator()(const ProgressInfo&) const {}
+    };
+    Pipeline partial(Integer(143), cfg);
+    Pipeline throwing_donor(Integer(15), cfg);
+    bool throw_on_copy = false;
+    bool copy_failed = false;
+    throwing_donor.set_progress_callback(ThrowingProgressCopy(&throw_on_copy));
+    throw_on_copy = true;
+    partial.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message == "Starting factor extraction") {
+            auto* target = &partial;
+            auto* source = &throwing_donor;
+            auto* observed = &copy_failed;
+            try {
+                *target = *source;
+            } catch (const std::runtime_error& error) {
+                *observed = std::string_view(error.what()) == "controlled callback copy failure";
+            }
+        }
+    });
+    bool partial_rejected = false;
+    try {
+        (void)partial.extract_factors(empty_matrix, fb, ctx);
+    } catch (const std::invalid_argument& error) {
+        partial_rejected =
+            std::string_view(error.what()).find("active Pipeline owner") != std::string_view::npos;
+    }
+    if (!copy_failed || !partial_rejected) {
+        std::cout << "(caught partial owner assignment bypassed callback guard) ";
+        return false;
+    }
+
+    // Copy self-assignment and ordinary reentrant calls leave the owner intact.
+    Pipeline stable(Integer(143), cfg);
+    bool inside = false;
+    bool nested_completed = false;
+    stable.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message == "Starting factor extraction" && !inside) {
+            inside = true;
+            auto* same = &stable;
+            auto* matrix = &empty_matrix;
+            auto* base = &fb;
+            auto* context = &ctx;
+            auto* completed = &nested_completed;
+            *same = *same;
+            const auto result = same->extract_factors(*matrix, *base, *context);
+            *completed = result.n == Integer(143);
+        }
+    });
+    const auto result = stable.extract_factors(empty_matrix, fb, ctx);
+    return nested_completed && result.n == Integer(143);
+}
+
 bool test_callback_input_mutation_rejected() {
     Config cfg;
     cfg.verbose = false;
@@ -1947,7 +2161,7 @@ bool test_callback_input_mutation_rejected() {
             return false;
         }
     }
-    return true;
+    return callback_owner_operations_are_rejected(cfg, ctx, original_fb);
 }
 
 bool test_v3_cascade_pipeline_integration() {
