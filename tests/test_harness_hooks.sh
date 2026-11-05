@@ -282,7 +282,8 @@ if '--build' not in args:
     build.mkdir(parents=True, exist_ok=True)
     build_type = next(a.split('=', 1)[1] for a in args if a.startswith('-DCMAKE_BUILD_TYPE='))
     (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=' + build_type + '\\n')
-raise SystemExit(int(os.environ.get('GNFS_STUB_BUILD_EXIT', '0')) if '--build' in args else 0)
+exit_variable = 'GNFS_STUB_CHECK_EXIT' if 'cmake_check_build_system' in args else 'GNFS_STUB_BUILD_EXIT'
+raise SystemExit(int(os.environ.get(exit_variable, '0')) if '--build' in args else 0)
 """)
 env = os.environ.copy()
 env.update(PATH=str(bin_dir) + os.pathsep + env['PATH'], GNFS_STUB_LOG=str(log))
@@ -292,7 +293,8 @@ env.pop('GNFS_TSAN_BUILD_DIR', None)
 case_index = 0
 
 def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
-           relative_build=False, tsan=False):
+           relative_build=False, tsan=False, check_target=False, check_exit=0,
+           generator='Unix Makefiles'):
     global case_index
     case_index += 1
     build = fixture / str(case_index) / "build with spaces"
@@ -300,12 +302,17 @@ def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
     caller = fixture / str(case_index) / "caller directory"
     caller.mkdir()
     build_value = os.path.relpath(build, caller) if relative_build else str(build)
-    run_env = {**env, 'GNFS_BUILD_DIR': build_value, 'GNFS_STUB_BUILD_EXIT': str(build_exit)}
+    run_env = {**env, 'GNFS_BUILD_DIR': build_value, 'GNFS_STUB_BUILD_EXIT': str(build_exit),
+               'GNFS_STUB_CHECK_EXIT': str(check_exit)}
     if tsan:
         run_env['GNFS_BUILD_DIR'] = str(fixture / 'unused normal build')
         run_env['GNFS_TSAN_BUILD_DIR'] = build_value
     if cached:
-        (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Debug\n')
+        (build / 'CMakeCache.txt').write_text(
+            'CMAKE_BUILD_TYPE:STRING=Debug\nCMAKE_GENERATOR:INTERNAL=' + generator + '\n')
+    if check_target:
+        (build / 'Makefile').write_text(
+            'cmake_check_build_system: \n' if check_target is True else check_target)
     if not missing_binary:
         executable(build / 'test_integer', "raise SystemExit(0)\n")
     executable(build / 'gnfs_test_process_supervisor',
@@ -323,13 +330,21 @@ def require(condition, detail):
     if not condition:
         raise SystemExit(detail)
 
-for options, cached in [(['run', 'integer', '--suite', 'value with spaces'], False),
-                        (['-v', 'run', 'test_integer'], True)]:
-    result, calls, build = invoke(options, cached=cached)
+build_cases = [(['run', 'integer', '--suite', 'value with spaces'], False, 'Unix Makefiles')]
+build_cases += [(['-v', 'run', 'test_integer'], True, generator) for generator in
+                ['Unix Makefiles', 'MSYS Makefiles', 'MinGW Makefiles',
+                 'NMake Makefiles', 'NMake Makefiles JOM', 'Watcom WMake']]
+for options, cached, generator in build_cases:
+    result, calls, build = invoke(options, cached=cached, check_target=cached, generator=generator)
     require(result.returncode == 0, result.stdout)
     builds = [c for c in calls if c[:2] == ['cmake', '--build']]
-    require(len(builds) == 1, f'expected one build: {calls!r}')
-    command = builds[0]
+    require(len(builds) == (2 if cached else 1), f'unexpected builds: {calls!r}')
+    command = builds[-1]
+    if cached:
+        check = builds[0]
+        require(check == command[:command.index('--target')] +
+                ['--target', 'cmake_check_build_system'],
+                f'check lost build directory/jobs/verbosity or ordering: {calls!r}')
     if '-v' in options:
         require('--verbose' in command and '--' not in command,
                 f'verbose build depends on generator-specific flags: {command!r}')
@@ -353,14 +368,33 @@ for name in ['does_not_exist', '../test_integer', 'integer*', 'integer"']:
     require(result.returncode != 0 and not calls,
             f'invalid test reached a command: {name!r}, {calls!r}, {result.stdout}')
 
-result, calls, _ = invoke(['--no-build', 'run', 'integer'])
+result, calls, _ = invoke(['--no-build', 'run', 'integer'], cached=True, check_target=True)
 require(result.returncode == 0 and not any(c[0] == 'cmake' for c in calls),
         f'--no-build invoked CMake: {calls!r}, {result.stdout}')
 require(any(c[0] == 'test_integer' for c in calls), '--no-build did not execute the test')
 
-result, calls, _ = invoke(['run', 'integer'], build_exit=41)
+result, calls, _ = invoke(['run', 'integer'], cached=True, check_target=True, build_exit=41)
 require(result.returncode != 0 and not any(c[0] == 'test_integer' for c in calls),
         f'failed build continued into tests: {calls!r}, {result.stdout}')
+require(len([c for c in calls if c[0] == 'cmake']) == 2,
+        f'failed user target was retried: {calls!r}')
+
+result, calls, _ = invoke(['run', 'integer'], cached=True, check_target=True, check_exit=42)
+require(result.returncode != 0 and len(calls) == 1 and
+        calls[0][-1] == 'cmake_check_build_system',
+        f'failed dependency check continued into build/tests: {calls!r}, {result.stdout}')
+
+result, calls, _ = invoke(['run', 'integer'], cached=True, check_target=True, generator='Ninja')
+require(result.returncode == 0 and
+        not any('cmake_check_build_system' in c for c in calls),
+        f'non-Make generator used a stale Makefile: {calls!r}, {result.stdout}')
+
+result, calls, _ = invoke(['run', 'integer'], cached=True,
+                         check_target='# cmake_check_build_system: comment\n'
+                                      'prefix_cmake_check_build_system: \n')
+require(result.returncode == 0 and
+        not any('cmake_check_build_system' in c for c in calls),
+        f'comment or target substring was treated as a check target: {calls!r}, {result.stdout}')
 
 for options in [['run', 'integer'], ['--no-build', 'run', 'integer']]:
     result, calls, build = invoke(options, missing_binary=True)
@@ -397,9 +431,97 @@ for command in cmake_calls:
             f'TSAN override was not normalized: {command!r}')
 require('-DGNFS_ENABLE_TSAN=ON' in cmake_calls[0], 'TSAN instrumentation option was lost')
 
-result, calls, _ = invoke(['build'], cached=True)
+result, calls, _ = invoke(['build'], cached=True, check_target=True)
 require(result.returncode == 0 and not any('--target' in c for c in calls),
         f'build mode no longer builds the full catalog: {calls!r}, {result.stdout}')
+
+# Exercise CMake's actual dependency tracking without compiling any language or
+# GNFS library. The recorder above remains available without Make installed.
+import re
+import shutil
+cmake = shutil.which('cmake')
+make = shutil.which('make')
+if cmake and make:
+    source = fixture / 'real CMake source'
+    source.mkdir()
+    build = fixture / 'real CMake build'
+    (source / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.16)\n'
+        'project(RunnerRefresh NONE)\n'
+        'file(APPEND "${CMAKE_BINARY_DIR}/configures" "configured\n")\n'
+        'include(targets.cmake)\n')
+    targets = source / 'targets.cmake'
+    old_target = ('add_custom_target(old_target COMMAND "${CMAKE_COMMAND}" -E touch '
+                  '"${CMAKE_BINARY_DIR}/old-ran")\n')
+    new_target = ('add_custom_target(new_target COMMAND "${CMAKE_COMMAND}" -E touch '
+                  '"${CMAKE_BINARY_DIR}/new-ran")\n')
+    targets.write_text(old_target)
+    body = re.search(r'(?ms)^do_build\(\) \{\n.*?^\}',
+                     (project / 'scripts/test.sh').read_text()).group()
+    driver = fixture / 'real-build.zsh'
+    driver.write_text(
+        'set -e\nset -o pipefail\nPROJECT_ROOT=$1\nBUILD_DIR=$2\nshift 2\n'
+        'BUILD_TYPE=Release\nPARALLEL_JOBS=2\nSKIP_BUILD=0\nVERBOSE=0\nQUIET=1\n'
+        'log_header() { :; }; log_info() { :; }; log_warn() { :; }; '
+        'log_fail() { print -r -- "$*"; }; log_success() { :; }\n'
+        'timer_start_ms() { print 1; }; format_duration() { print "$1"; }\n'
+        + body + '\nif ! do_build "$@"; then exit 29; fi\n')
+
+    def run(command, expected=0):
+        result = subprocess.run(command, cwd=fixture, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=10)
+        require(result.returncode == expected,
+                f'{command!r} returned {result.returncode}: {result.stdout}')
+        return result.stdout
+
+    def configure(build_dir, *options):
+        run([cmake, '-S', str(source), '-B', str(build_dir), '-G', 'Unix Makefiles',
+             '-DCMAKE_BUILD_TYPE=Release', *options])
+
+    def build_target(name, expected=0, build_dir=build):
+        return run([zsh, str(driver), str(source), str(build_dir), name], expected)
+
+    def configure_count(build_dir=build):
+        return len((build_dir / 'configures').read_text().splitlines())
+
+    configure(build, '-DKEEP_CACHE:STRING=preserved')
+    build_target('old_target')
+    require(configure_count() == 1 and (build / 'old-ran').exists(),
+            'unchanged CMake input reconfigured or failed to build')
+    targets.write_text(old_target + new_target)
+    build_target('new_target')
+    require(configure_count() == 2 and (build / 'new-ran').exists(),
+            'included CMake target was not regenerated before lookup')
+    build_target('new_target')
+    require(configure_count() == 2 and
+            'KEEP_CACHE:STRING=preserved' in (build / 'CMakeCache.txt').read_text(),
+            'unchanged input reconfigured or lost the existing cache')
+
+    (build / 'old-ran').unlink()
+    targets.write_text(old_target + new_target + 'message(FATAL_ERROR "refresh failed")\n')
+    output = build_target('old_target', expected=29)
+    require('refresh failed' in output and not (build / 'old-ran').exists(),
+            'dependency check failure was hidden or continued into a stale target')
+
+    (source / 'fail.cmake').write_text(
+        'file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/failed-builds" "failed\n")\n'
+        'message(FATAL_ERROR "target failed")\n')
+    targets.write_text(old_target + new_target +
+        'add_custom_target(broken COMMAND "${CMAKE_COMMAND}" -P '
+        '"${CMAKE_SOURCE_DIR}/fail.cmake")\n')
+    output = build_target('broken', expected=29)
+    require('target failed' in output and
+            (build / 'failed-builds').read_text().splitlines() == ['failed'],
+            'user target failure was hidden or retried')
+
+    suppressed = fixture / 'suppressed CMake build'
+    configure(suppressed, '-DCMAKE_SUPPRESS_REGENERATION:BOOL=ON')
+    build_target('old_target', build_dir=suppressed)
+    require(configure_count(suppressed) == 1 and (suppressed / 'old-ran').exists(),
+            'explicitly suppressed regeneration was invoked')
+    print('[PASS] real CMake included-target refresh, incremental cache, and errors')
+else:
+    print('[SKIP] real Make regeneration fixture requires cmake and make')
 PYTEST
     pass "single-test builds select only their target and supervisor"
 }
