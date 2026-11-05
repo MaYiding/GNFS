@@ -319,6 +319,10 @@ struct FbCheckpoint {
             if (!algebraic_keys.insert(key).second) {
                 throw std::runtime_error("FbCheckpoint::load: duplicate algebraic-prime key");
             }
+            if (!ck.algebraic.empty() && ap.p < ck.algebraic.back().p) {
+                throw std::runtime_error(
+                    "FbCheckpoint::load: algebraic primes are not nondecreasing");
+            }
             ck.algebraic.push_back(ap);
         }
 
