@@ -12,8 +12,10 @@
 #include <initializer_list>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -865,6 +867,41 @@ void test_little_endian_serialization() {
     std::cout << "  Little-endian serialization: PASS" << std::endl;
 }
 
+void test_serialized_rational_order() {
+    std::cout << "Testing serialized rational-prime order..." << std::endl;
+    for (const auto& primes : {std::vector<uint32_t>{2, 3, 5, 7}, std::vector<uint32_t>{2, 7, 3, 5},
+                               std::vector<uint32_t>{2, 3, 3, 5}}) {
+        FactorBase source(FactorBaseParams{97, 97, 10000});
+        for (uint32_t prime : primes) {
+            source.add_rational(prime, 1);
+        }
+        std::stringstream stream;
+        source.save(stream);
+        const std::string original = stream.str();
+        stream.seekg(0);
+        std::optional<FactorBase> loaded;
+        std::string rejection;
+        try {
+            loaded.emplace(FactorBase::load(stream));
+        } catch (const std::runtime_error& error) {
+            rejection = error.what();
+        }
+        GNFS_TEST_CHECK(loaded.has_value() == (primes == std::vector<uint32_t>{2, 3, 5, 7}));
+        if (!loaded) {
+            const char* expected = primes[1] == 7 ? "not strictly increasing" : "duplicate";
+            GNFS_TEST_CHECK(rejection.find(expected) != std::string::npos);
+        }
+        if (loaded) {
+            GNFS_TEST_CHECK(loaded->rational_count() == primes.size());
+            for (size_t i = 0; i < primes.size(); ++i) {
+                GNFS_TEST_CHECK(loaded->rational()[i].p == primes[i]);
+            }
+        }
+        GNFS_TEST_CHECK(stream.str() == original);
+    }
+    std::cout << "  Serialized rational-prime order: PASS" << std::endl;
+}
+
 void test_serialization_invalid() {
     std::cout << "Testing serialization error handling..." << std::endl;
 
@@ -1198,6 +1235,7 @@ int main() {
     test_serialization_roundtrip();
     test_little_endian_serialization();
     test_serialization_invalid();
+    test_serialized_rational_order();
     test_count_width_guards();
 
     std::cout << "\nAll tests passed!" << std::endl;

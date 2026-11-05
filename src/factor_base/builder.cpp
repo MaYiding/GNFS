@@ -324,6 +324,10 @@ FactorBase FactorBase::load(std::istream& is) {
         if (!rational_keys.insert(rp.p).second) {
             throw std::runtime_error("FactorBase::load: duplicate rational-prime value");
         }
+        if (!fb.rational_.empty() && rp.p < fb.rational_.back().p) {
+            throw std::runtime_error(
+                "FactorBase::load: rational primes are not strictly increasing");
+        }
         fb.rational_.push_back(rp);
     }
 
