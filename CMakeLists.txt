@@ -3096,6 +3096,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsPostMergeRow COMMAND test_siqs_post_merge_row)
     set_tests_properties(SiqsPostMergeRow PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_post_merge_row_wire
+        tests/test_siqs_post_merge_row_wire.cpp
+    )
+    target_link_libraries(test_siqs_post_merge_row_wire PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsPostMergeRowWire COMMAND test_siqs_post_merge_row_wire)
+    set_tests_properties(SiqsPostMergeRowWire PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_assembly
         tests/test_siqs_shadow_assembly.cpp
     )
