@@ -7540,7 +7540,7 @@ do_ctest() {
     local elapsed=$((end_ms - start_ms))
 
     if (( exit_code == 0 )); then
-        log_success "CTest 全部通过 ($(format_duration $elapsed))"
+        log_success "CTest 执行完成（无失败） ($(format_duration $elapsed))"
     else
         log_fail "CTest 有失败项 ($(format_duration $elapsed))"
     fi
