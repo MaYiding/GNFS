@@ -5197,6 +5197,22 @@ bool test_owner_replacement_preserves_replacement_state() {
             std::cout << "(owner replacement restored stale stats: phase=" << phase << ") ";
             return false;
         }
+        // Probe the donor's factor-base binding before any call can rebuild
+        // it. The context matches, and the empty legacy fixture is accepted
+        // only when no real factor base has been bound.
+        gnfs::factor_base::FactorBase empty_factor_base;
+        bool factor_base_rejected = false;
+        try {
+            (void)active.extract_factors(empty_matrix, empty_factor_base, replacement_ctx);
+        } catch (const std::invalid_argument& error) {
+            factor_base_rejected =
+                std::string_view(error.what()).find("factor base different from the bound base") !=
+                std::string_view::npos;
+        }
+        if (!factor_base_rejected) {
+            std::cout << "(owner replacement lost factor-base binding: phase=" << phase << ") ";
+            return false;
+        }
         bool original_rejected = false;
         try {
             (void)active.build_factor_base(original);
