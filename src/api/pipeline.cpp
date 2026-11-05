@@ -1517,25 +1517,28 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
     if (!resume_base.empty()) {
         const std::string poly_ckpt = resume_base + ".poly_ckpt";
         if (polynomial::PolyCheckpoint::exists_and_valid(poly_ckpt)) {
+            std::optional<PolynomialContext> resumed;
             try {
                 auto ck = polynomial::PolyCheckpoint::load_for(poly_ckpt, n_);
-                auto ctx_resumed = ck.to_context();
-                require_context_contract(ctx_resumed, "select_polynomial", true);
-
-                auto t1 = std::chrono::high_resolution_clock::now();
-                stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
-
-                emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                         "checkpoint hit: m=" + ctx_resumed.m().to_string() + " degree=" +
-                             std::to_string(ctx_resumed.degree()) + " (skipped Kleinjung search)");
-                std::fprintf(stderr, "[poly-resume] ckpt=%s degree=%u skew=%g\n", poly_ckpt.c_str(),
-                             ctx_resumed.degree(), ctx_resumed.skewness());
-                emit_progress(Phase::PolynomialSelection, "Polynomial loaded from checkpoint", 1.0);
-                return ctx_resumed;
+                auto candidate = ck.to_context();
+                require_context_contract(candidate, "select_polynomial", false);
+                resumed.emplace(std::move(candidate));
             } catch (const std::exception& e) {
                 emit_log(LogLevel::Warn, Phase::PolynomialSelection,
                          std::string("poly checkpoint load failed (") + e.what() +
                              ") — falling through to fresh selection");
+            }
+            if (resumed.has_value()) {
+                require_context_contract(*resumed, "select_polynomial", true);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
+                emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                         "checkpoint hit: m=" + resumed->m().to_string() + " degree=" +
+                             std::to_string(resumed->degree()) + " (skipped Kleinjung search)");
+                std::fprintf(stderr, "[poly-resume] ckpt=%s degree=%u skew=%g\n", poly_ckpt.c_str(),
+                             resumed->degree(), resumed->skewness());
+                emit_progress(Phase::PolynomialSelection, "Polynomial loaded from checkpoint", 1.0);
+                return std::move(*resumed);
             }
         }
     }
@@ -1550,14 +1553,18 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
     // Persist Phase 1 result so a follow-up run can skip it.
     if (!resume_base.empty()) {
         const std::string poly_ckpt = resume_base + ".poly_ckpt";
+        bool saved = false;
         try {
             auto ck = polynomial::PolyCheckpoint::from_context(ctx);
             ck.save(poly_ckpt);
-            emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                     "poly checkpoint saved: " + poly_ckpt);
+            saved = true;
         } catch (const std::exception& e) {
             emit_log(LogLevel::Warn, Phase::PolynomialSelection,
                      std::string("poly checkpoint save failed: ") + e.what());
+        }
+        if (saved) {
+            emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                     "poly checkpoint saved: " + poly_ckpt);
         }
     }
 
@@ -1607,30 +1614,17 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
     if (!resume_base.empty()) {
         const std::string fb_ckpt = resume_base + ".fb_ckpt";
         if (factor_base::FbCheckpoint::exists_and_valid(fb_ckpt)) {
+            std::optional<FactorBase> resumed;
+            std::string diagnostic;
             try {
                 auto ck = factor_base::FbCheckpoint::load(fb_ckpt);
                 auto status = ck.matches(ctx, fb_opts.rational_bound, fb_opts.algebraic_bound,
                                          fb_opts.special_q_bound, fb_opts.large_prime_bound,
                                          fb_opts.log_scale);
                 if (status == factor_base::FbCheckpoint::MatchStatus::Ok) {
-                    auto fb_resumed = ck.to_factor_base();
-                    require_factor_base_contract(ctx, fb_resumed, "build_factor_base", true);
-
-                    auto t1 = std::chrono::high_resolution_clock::now();
-                    stats_.timings.fb_s = std::chrono::duration<double>(t1 - t0).count();
-                    stats_.rational_primes = fb_resumed.rational_count();
-                    stats_.algebraic_primes = fb_resumed.algebraic_count();
-
-                    emit_log(
-                        LogLevel::Info, Phase::FactorBase,
-                        "checkpoint hit: rational=" + std::to_string(fb_resumed.rational_count()) +
-                            " algebraic=" + std::to_string(fb_resumed.algebraic_count()) +
-                            " (skipped Cantor-Zassenhaus)");
-                    std::fprintf(stderr, "[fb-resume] ckpt=%s rat=%zu alg=%zu sieve_alg=%zu\n",
-                                 fb_ckpt.c_str(), fb_resumed.rational_count(),
-                                 fb_resumed.algebraic_count(), fb_resumed.sieve_algebraic_count());
-                    emit_progress(Phase::FactorBase, "Factor base loaded from checkpoint", 1.0);
-                    return fb_resumed;
+                    auto candidate = ck.to_factor_base();
+                    require_factor_base_contract(ctx, candidate, "build_factor_base", false);
+                    resumed.emplace(std::move(candidate));
                 } else {
                     const char* reason =
                         (status == factor_base::FbCheckpoint::MatchStatus::NMismatch) ? "N mismatch"
@@ -1639,12 +1633,30 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                         : (status == factor_base::FbCheckpoint::MatchStatus::ContextMismatch)
                             ? "context mismatch"
                             : "params mismatch";
-                    emit_log(LogLevel::Warn, Phase::FactorBase,
-                             std::string("fb checkpoint stale (") + reason + ") — rebuilding");
+                    diagnostic = std::string("fb checkpoint stale (") + reason + ") — rebuilding";
                 }
             } catch (const std::exception& e) {
-                emit_log(LogLevel::Warn, Phase::FactorBase,
-                         std::string("fb checkpoint load failed (") + e.what() + ") — rebuilding");
+                diagnostic =
+                    std::string("fb checkpoint load failed (") + e.what() + ") — rebuilding";
+            }
+            if (!diagnostic.empty()) {
+                emit_log(LogLevel::Warn, Phase::FactorBase, diagnostic);
+            }
+            if (resumed.has_value()) {
+                require_factor_base_contract(ctx, *resumed, "build_factor_base", true);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                stats_.timings.fb_s = std::chrono::duration<double>(t1 - t0).count();
+                stats_.rational_primes = resumed->rational_count();
+                stats_.algebraic_primes = resumed->algebraic_count();
+                emit_log(LogLevel::Info, Phase::FactorBase,
+                         "checkpoint hit: rational=" + std::to_string(resumed->rational_count()) +
+                             " algebraic=" + std::to_string(resumed->algebraic_count()) +
+                             " (skipped Cantor-Zassenhaus)");
+                std::fprintf(stderr, "[fb-resume] ckpt=%s rat=%zu alg=%zu sieve_alg=%zu\n",
+                             fb_ckpt.c_str(), resumed->rational_count(), resumed->algebraic_count(),
+                             resumed->sieve_algebraic_count());
+                emit_progress(Phase::FactorBase, "Factor base loaded from checkpoint", 1.0);
+                return std::move(*resumed);
             }
         }
     }
@@ -1660,13 +1672,17 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
     // Persist Phase 2 result for follow-up runs.
     if (!resume_base.empty()) {
         const std::string fb_ckpt = resume_base + ".fb_ckpt";
+        bool saved = false;
         try {
             auto ck = factor_base::FbCheckpoint::from_factor_base(fb, ctx, fb_opts.special_q_bound);
             ck.save(fb_ckpt);
-            emit_log(LogLevel::Info, Phase::FactorBase, "fb checkpoint saved: " + fb_ckpt);
+            saved = true;
         } catch (const std::exception& e) {
             emit_log(LogLevel::Warn, Phase::FactorBase,
                      std::string("fb checkpoint save failed: ") + e.what());
+        }
+        if (saved) {
+            emit_log(LogLevel::Info, Phase::FactorBase, "fb checkpoint saved: " + fb_ckpt);
         }
     }
 
