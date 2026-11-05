@@ -451,7 +451,7 @@ void test_dense_gauss_kernel_oracle() {
                 }
                 require_test(std::has_single_bit(image.size()),
                              "GF(2) image size is not a power of two");
-                const size_t rank = std::bit_width(image.size()) - 1;
+                const size_t rank = static_cast<size_t>(std::bit_width(image.size()) - 1);
                 const size_t nullity = rows - rank;
                 require_test(kernel.size() == (size_t{1} << nullity),
                              "independent GF(2) rank/nullity oracle disagrees");
