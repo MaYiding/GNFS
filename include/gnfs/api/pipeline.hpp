@@ -126,6 +126,8 @@ public:
     relation::RelationReductionResult sieve_and_collect(const PolynomialContext& ctx,
                                                         const FactorBase& fb,
                                                         SieveCollectionOptions options = {});
+    /// Filter externally supplied relations. Callers are responsible for
+    /// ensuring those relations match the context and factor base used later.
     relation::RelationReductionResult filter(std::vector<Relation> relations);
 
     struct MatrixResult {
@@ -134,6 +136,7 @@ public:
         // Declared before the public payload so reverse destruction keeps the
         // structured corpus alive until matrix/dependency state is gone.
         std::unique_ptr<StructuredRelations> structured_relations_;
+        std::optional<relation::StageInputFingerprint> stage_input_fingerprint_;
 
     public:
         MatrixResult();
@@ -220,6 +223,32 @@ private:
 
         [[nodiscard]] bool operator==(const FactorBaseSignature&) const noexcept = default;
     };
+
+    struct CallbackInputState final {
+        const PolynomialContext* context;
+        const FactorBase* factor_base;
+        relation::StageInputFingerprint fingerprint;
+        bool callback_seen = false;
+    };
+    // Active callback state belongs to one invocation's stack. Copying or
+    // moving a Pipeline must never transfer the borrowed stack pointer.
+    struct CallbackInputSlot final {
+        CallbackInputState* active = nullptr;
+        CallbackInputSlot() = default;
+        CallbackInputSlot(const CallbackInputSlot&) noexcept {}
+        CallbackInputSlot(CallbackInputSlot&&) noexcept {}
+        // Assignment does not disrupt an invocation already executing on
+        // the destination; only its scope may restore that pointer.
+        CallbackInputSlot& operator=(const CallbackInputSlot&) noexcept {
+            return *this;
+        }
+        CallbackInputSlot& operator=(CallbackInputSlot&&) noexcept {
+            return *this;
+        }
+    };
+    struct CallbackInputScope;
+    void verify_callback_inputs();
+    CallbackInputSlot callback_input_state_;
 
     struct StructuredRouteSnapshot final {
         relation::StructuredFilterPolicyDecision policy{};
