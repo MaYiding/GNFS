@@ -1,4 +1,5 @@
 #include "gnfs/core/integer.hpp"
+#include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/core/relation.hpp"
 #include "gnfs/util/safe_math.hpp"
 #include "support/test_check.hpp"
@@ -7,9 +8,12 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace gnfs::core;
 
@@ -359,6 +363,42 @@ void test_string_conversion_base_boundaries() {
     std::cout << "  String conversion bases: PASS" << std::endl;
 }
 
+void test_exact_digit_counts() {
+    std::cout << "Testing exact digit counts..." << std::endl;
+    const auto check = [](uint64_t value, int base) {
+        size_t expected = 1;
+        for (uint64_t n = value; n >= static_cast<uint64_t>(base); ++expected) {
+            n /= static_cast<uint64_t>(base);
+        }
+        const Integer number(value);
+        GNFS_TEST_CHECK(number.num_digits(base) == expected);
+        GNFS_TEST_CHECK((-number).num_digits(base) == expected);
+    };
+    for (int base = 2; base <= 62; ++base) {
+        for (uint64_t value = 0; value <= 256; ++value) {
+            check(value, base);
+        }
+        uint64_t power = 1;
+        while (power <= std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(base)) {
+            power *= static_cast<uint64_t>(base);
+            check(power - 1, base);
+            check(power, base);
+            if (power < std::numeric_limits<uint64_t>::max()) {
+                check(power + 1, base);
+            }
+        }
+        check(std::numeric_limits<uint64_t>::max(), base);
+    }
+    const Integer below_power("99999999999999999999999999999999999999999999999999");
+    GNFS_TEST_CHECK(below_power.num_digits() == 50);
+    GNFS_TEST_CHECK((below_power + Integer(1)).num_digits() == 51);
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(1);
+    const PolynomialContext ctx(Integer(8), std::move(coefficients), Integer(0));
+    GNFS_TEST_CHECK(ctx.n_digits() == 1);
+    std::cout << "  Exact digit counts: PASS" << std::endl;
+}
+
 void test_uint64_construction() {
     std::cout << "Testing uint64_t construction..." << std::endl;
 
@@ -685,6 +725,7 @@ int main() {
     test_primality();
     test_stream_output();
     test_string_conversion_base_boundaries();
+    test_exact_digit_counts();
     test_uint64_construction();
     test_safe_abs();
     test_relation_ab_int64_min();
