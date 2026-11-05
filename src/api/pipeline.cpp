@@ -248,6 +248,7 @@ Pipeline::MatrixResult& Pipeline::MatrixResult::operator=(MatrixResult&& other) 
     matrix = std::move(other.matrix);
     dependencies = std::move(other.dependencies);
     relations = std::move(other.relations);
+    stage_input_fingerprint_ = std::move(other.stage_input_fingerprint_);
     structured_relations_ = std::move(other.structured_relations_);
     return *this;
 }
@@ -1153,6 +1154,47 @@ Pipeline::Pipeline(const Integer& n, const Config& config)
     stats_.large_prime_bound = params_.large_prime_bound;
 }
 
+namespace {
+[[nodiscard]] relation::StageInputFingerprint stage_input_fingerprint(const PolynomialContext& ctx,
+                                                                      const FactorBase& fb) {
+    // Keep the stage identity independent of the Pipeline's sieve tuning.
+    const auto identity = sieve::make_sieve_run_identity(ctx, fb, GNFSParams{});
+    return {identity.fingerprint_lo, identity.fingerprint_hi};
+}
+} // namespace
+
+struct Pipeline::CallbackInputScope final {
+    Pipeline& pipeline;
+    CallbackInputState state;
+    CallbackInputState* previous;
+
+    CallbackInputScope(Pipeline& owner, const PolynomialContext& ctx, const FactorBase& fb,
+                       relation::StageInputFingerprint fingerprint) noexcept
+        : pipeline(owner), state{&ctx, &fb, fingerprint, false},
+          previous(owner.callback_input_state_.active) {
+        pipeline.callback_input_state_.active = &state;
+    }
+    CallbackInputScope(const CallbackInputScope&) = delete;
+    CallbackInputScope& operator=(const CallbackInputScope&) = delete;
+    ~CallbackInputScope() noexcept {
+        pipeline.callback_input_state_.active = previous;
+    }
+    void verify_before_publish() {
+        if (state.callback_seen)
+            pipeline.verify_callback_inputs();
+    }
+};
+
+void Pipeline::verify_callback_inputs() {
+    if (callback_input_state_.active == nullptr)
+        return;
+    if (stage_input_fingerprint(*callback_input_state_.active->context,
+                                *callback_input_state_.active->factor_base) !=
+        callback_input_state_.active->fingerprint) {
+        throw std::invalid_argument("pipeline callback changed polynomial context or factor base");
+    }
+}
+
 Pipeline::PolynomialContextSignature
 Pipeline::make_context_signature(const PolynomialContext& ctx) {
     PolynomialContextSignature signature;
@@ -1421,7 +1463,10 @@ void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_p
     case Phase::Done:
         break;
     }
+    if (callback_input_state_.active != nullptr)
+        callback_input_state_.active->callback_seen = true;
     progress_cb_(info);
+    verify_callback_inputs();
 }
 
 void Pipeline::emit_log(LogLevel level, Phase phase, const std::string& msg) {
@@ -1432,7 +1477,10 @@ void Pipeline::emit_log(LogLevel level, Phase phase, const std::string& msg) {
     entry.phase = phase;
     entry.timestamp_s = elapsed_s();
     entry.message = msg;
+    if (callback_input_state_.active != nullptr)
+        callback_input_state_.active->callback_seen = true;
     log_cb_(entry);
+    verify_callback_inputs();
 }
 
 // ============================================================
@@ -1669,6 +1717,8 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
                                                       factor_base_signature_);
     require_factor_base_contract(ctx, fb, "sieve_and_collect", true);
+    const auto input_fingerprint = stage_input_fingerprint(ctx, fb);
+    CallbackInputScope callback_inputs(*this, ctx, fb, input_fingerprint);
     auto t0 = std::chrono::high_resolution_clock::now();
     FactorStatsRollback stats_rollback(stats_);
     const int adaptive_round_limit = static_cast<int>(options.adaptive_round_limit);
@@ -2164,6 +2214,8 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                          stats_.relations_found, dist_reduction.size(), sq_count);
             emit_progress(Phase::Sieving, "Sieving complete (distributed)", 1.0);
 
+            callback_inputs.verify_before_publish();
+            dist_reduction.stage_input_fingerprint_ = input_fingerprint;
             stats_rollback.commit();
             return dist_reduction;
         }
@@ -2827,6 +2879,8 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                          "checkpoint did not carry deletion authority\n");
         }
     }
+    callback_inputs.verify_before_publish();
+    last_reduction->stage_input_fingerprint_ = input_fingerprint;
     stats_rollback.commit();
     return std::move(*last_reduction);
 }
@@ -3058,6 +3112,15 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
     }
     const bool structured_ooc =
         structured_route && reduction.storage_kind() == relation::RelationStorageKind::FinalizedOOC;
+    const auto input_fingerprint = stage_input_fingerprint(ctx, fb);
+    if (reduction.stage_input_fingerprint_.has_value() &&
+        *reduction.stage_input_fingerprint_ != input_fingerprint) {
+        throw std::invalid_argument("matrix phase inputs differ from sieve reduction inputs");
+    }
+    // Validate caller inputs before replacing an OOC reader, but defer binding
+    // until the reader and its digest have also passed preflight.
+    require_factor_base_contract(ctx, fb, solve_dependencies ? "solve_matrix" : "build_matrix",
+                                 false);
     if (structured_ooc) {
         refresh_relation_corpus_checked(
             reduction.corpus, reduction.stats.output_digest,
@@ -3065,6 +3128,7 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
     }
     require_factor_base_contract(ctx, fb, solve_dependencies ? "solve_matrix" : "build_matrix",
                                  true);
+    CallbackInputScope callback_inputs(*this, ctx, fb, input_fingerprint);
     const bool verify_ooc_payload_after_callbacks =
         structured_ooc && (static_cast<bool>(progress_cb_) || static_cast<bool>(log_cb_));
     FactorStatsRollback stats_rollback(stats_);
@@ -3150,7 +3214,9 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                 reduction.corpus, reduction.stats.output_digest,
                 "structured OOC reduction changed after the matrix build snapshot");
         }
+        callback_inputs.verify_before_publish();
         MatrixResult result;
+        result.stage_input_fingerprint_ = input_fingerprint;
         result.matrix = std::move(build_result.matrix);
         result.dependencies = std::move(dependencies);
         if (structured_route) {
@@ -3516,7 +3582,12 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
                                        const PolynomialContext& ctx) {
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
                                                       factor_base_signature_);
+    if (mr.stage_input_fingerprint_.has_value() &&
+        *mr.stage_input_fingerprint_ != stage_input_fingerprint(ctx, fb)) {
+        throw std::invalid_argument("factor extraction inputs differ from matrix inputs");
+    }
     require_factor_base_contract(ctx, fb, "extract_factors", true);
+    CallbackInputScope callback_inputs(*this, ctx, fb, stage_input_fingerprint(ctx, fb));
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     emit_progress(Phase::SquareRoot, "Starting factor extraction");
 
@@ -3530,6 +3601,7 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
     if (mr.dependencies.empty()) {
         emit_log(LogLevel::Error, Phase::SquareRoot, "No dependencies to try");
         result.stats.timings.total_s = elapsed_s();
+        callback_inputs.verify_before_publish();
         return result;
     }
 
@@ -3691,6 +3763,7 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         emit_log(LogLevel::Warn, Phase::FactorExtraction, "No non-trivial factor found");
     }
     emit_progress(Phase::Done, result.success ? "Factorization succeeded" : "Failed", 1.0);
+    callback_inputs.verify_before_publish();
 
     return result;
 }
