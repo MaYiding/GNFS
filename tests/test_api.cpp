@@ -4810,6 +4810,279 @@ bool test_sieve_schema3_checkpoint_is_preserved_then_schema4_recovers() {
     return true;
 }
 
+bool test_early_phase_callback_guards() {
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline setup(Integer(143), cfg);
+    const auto original = setup.select_polynomial();
+    ScopedEnvironmentVariable resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable sieve_resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+
+    // Changing the borrowed context before or after construction must reject
+    // the invocation before it can return a factor base for stale inputs.
+    for (const bool at_end : {false, true}) {
+        auto ctx = original.clone();
+        Pipeline builder(Integer(143), cfg);
+        bool changed = false;
+        builder.set_progress_callback([&](const ProgressInfo& info) {
+            if (info.message == (at_end ? "Factor base built" : "Building factor base")) {
+                ctx = alternate_same_n_context(ctx);
+                changed = true;
+            }
+        });
+        bool rejected = false;
+        try {
+            (void)builder.build_factor_base(ctx);
+        } catch (const std::invalid_argument& error) {
+            rejected = std::string_view(error.what()).find("callback changed polynomial context") !=
+                       std::string_view::npos;
+        }
+        if (!changed || !rejected) {
+            std::cout << "(factor-base callback changed context without rejection) ";
+            return false;
+        }
+    }
+
+    {
+        SieveResumeArtifacts files(gnfs::util::temp_path("gnfs_test_callback_context_resume_" +
+                                                         std::to_string(gnfs::util::process_id())));
+        ScopedEnvironmentVariable resumed("GNFS_RESUME", files.base);
+        Pipeline producer(Integer(143), cfg);
+        (void)producer.build_factor_base(original);
+        const auto before = read_test_file(files.base + ".fb_ckpt");
+        auto ctx = original.clone();
+        Pipeline reader(Integer(143), cfg);
+        bool changed = false;
+        size_t warnings = 0;
+        reader.set_log_callback([&](const LogEntry& entry) {
+            if (entry.level == LogLevel::Warn)
+                ++warnings;
+        });
+        reader.set_progress_callback([&](const ProgressInfo& info) {
+            if (info.message == "Factor base loaded from checkpoint") {
+                ctx = alternate_same_n_context(ctx);
+                changed = true;
+            }
+        });
+        bool rejected = false;
+        try {
+            (void)reader.build_factor_base(ctx);
+        } catch (const std::invalid_argument& error) {
+            rejected = std::string_view(error.what()).find("callback changed polynomial context") !=
+                       std::string_view::npos;
+        }
+        if (!changed || !rejected || warnings != 0 ||
+            read_test_file(files.base + ".fb_ckpt") != before) {
+            std::cout << "(checkpoint context mutation was accepted or changed its artifact) ";
+            return false;
+        }
+    }
+
+    // Validate enclosing borrowed inputs before a callback-free nested phase,
+    // even when the callback catches the nested rejection.
+    {
+        auto ctx = original.clone();
+        Pipeline builder(Integer(143), cfg);
+        bool inner_rejected = false;
+        builder.set_progress_callback([&](const ProgressInfo& info) {
+            if (info.message != "Building factor base")
+                return;
+            auto* active = &builder;
+            auto* context = &ctx;
+            auto* observed = &inner_rejected;
+            *context = alternate_same_n_context(*context);
+            active->set_progress_callback({});
+            try {
+                (void)active->filter({});
+            } catch (const std::invalid_argument& error) {
+                *observed =
+                    std::string_view(error.what()).find("callback changed polynomial context") !=
+                    std::string_view::npos;
+            }
+        });
+        bool outer_rejected = false;
+        try {
+            (void)builder.build_factor_base(ctx);
+        } catch (const std::invalid_argument& error) {
+            outer_rejected =
+                std::string_view(error.what()).find("callback changed polynomial context") !=
+                std::string_view::npos;
+        }
+        if (!inner_rejected || !outer_rejected) {
+            std::cout << "(callback-free nested phase ignored enclosing context drift) ";
+            return false;
+        }
+    }
+
+    // Replacement or moving an active owner is rejected in early phases just
+    // as in sieve/matrix/sqrt; copying an owner is tested separately below.
+    for (const int phase : {0, 1, 2, 3}) {
+        for (const bool use_log : {false, true}) {
+            if (phase == 3 && !use_log)
+                continue; // small run exits before a progress event
+            for (int operation = 0; operation < 5; ++operation) {
+                Pipeline active(Integer(143), cfg);
+                Pipeline donor(Integer(221), cfg);
+                std::optional<Pipeline> moved;
+                bool invoked = false;
+                auto mutate = [&] {
+                    if (invoked)
+                        return;
+                    invoked = true;
+                    auto* source = &active;
+                    auto* alternate = &donor;
+                    auto* destination = &moved;
+                    const int selected = operation;
+                    switch (selected) {
+                    case 0:
+                        *source = *alternate;
+                        break;
+                    case 1:
+                        *source = std::move(*alternate);
+                        break;
+                    case 2:
+                        destination->emplace(std::move(*source));
+                        break;
+                    case 3:
+                        *alternate = std::move(*source);
+                        break;
+                    case 4:
+                        *source = std::move(*source);
+                        break;
+                    }
+                };
+                if (use_log) {
+                    active.set_log_callback([&](const LogEntry& entry) {
+                        if ((phase == 0 && entry.message.starts_with("N=")) ||
+                            (phase == 1 && entry.message.starts_with("rational=")) ||
+                            (phase == 2 && entry.message.starts_with("after filter:")) ||
+                            (phase == 3 && entry.message.starts_with("Method:")))
+                            mutate();
+                    });
+                } else {
+                    active.set_progress_callback([&](const ProgressInfo& info) {
+                        if ((phase == 0 && info.message == "Starting polynomial selection") ||
+                            (phase == 1 && info.message == "Factor base built") ||
+                            (phase == 2 && info.message == "Filtering relations"))
+                            mutate();
+                    });
+                }
+                bool rejected = false;
+                try {
+                    if (phase == 0)
+                        (void)active.select_polynomial();
+                    else if (phase == 1)
+                        (void)active.build_factor_base(original);
+                    else if (phase == 2)
+                        (void)active.filter({});
+                    else
+                        (void)active.run();
+                } catch (const std::invalid_argument& error) {
+                    rejected = std::string_view(error.what()).find("active Pipeline owner") !=
+                               std::string_view::npos;
+                }
+                if (!invoked || !rejected) {
+                    std::cout << "(early owner mutation accepted: phase=" << phase
+                              << " operation=" << operation << " log=" << use_log << ") ";
+                    return false;
+                }
+            }
+        }
+    }
+    Pipeline stable(Integer(143), cfg);
+    bool inside = false;
+    uint64_t nested_generation = 0;
+    std::optional<Pipeline> copy;
+    stable.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message == "Filtering relations" && !inside) {
+            auto* active = &stable;
+            auto* destination = &copy;
+            auto* nested_flag = &inside;
+            auto* observed = &nested_generation;
+            *nested_flag = true;
+            destination->emplace(*active);
+            *active = *active; // copy self-assignment is allowed
+            *observed = active->filter({}).generation;
+        }
+    });
+    const auto outer = stable.filter({});
+    if (!copy || nested_generation != 1 || outer.generation != 2) {
+        std::cout << "(normal copy or nested filtering changed generation behavior) ";
+        return false;
+    }
+
+    // Catching an inner rejection cannot authorize the outer phase to return.
+    Pipeline nested_owner(Integer(143), cfg);
+    Pipeline nested_donor(Integer(221), cfg);
+    bool nested_entered = false;
+    bool inner_rejected = false;
+    nested_owner.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message != "Filtering relations")
+            return;
+        auto* active = &nested_owner;
+        auto* donor = &nested_donor;
+        auto* entered = &nested_entered;
+        auto* observed = &inner_rejected;
+        if (*entered) {
+            *active = *donor;
+            return;
+        }
+        *entered = true;
+        try {
+            (void)active->filter({});
+        } catch (const std::invalid_argument&) {
+            *observed = true;
+        }
+    });
+    bool outer_rejected = false;
+    try {
+        (void)nested_owner.filter({});
+    } catch (const std::invalid_argument& error) {
+        outer_rejected =
+            std::string_view(error.what()).find("active Pipeline owner") != std::string_view::npos;
+    }
+    if (!inner_rejected || !outer_rejected) {
+        std::cout << "(nested early owner invalidation did not reach outer filter) ";
+        return false;
+    }
+
+    // Replacing the owner removes its callbacks. A nested callback-free run
+    // must still inherit and reject the active owner's invalidation.
+    Pipeline callback_free(Integer(143), cfg);
+    Pipeline callback_free_donor(Integer(221), cfg);
+    bool nested_run_rejected = false;
+    callback_free.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message != "Filtering relations")
+            return;
+        auto* active = &callback_free;
+        auto* donor = &callback_free_donor;
+        auto* observed = &nested_run_rejected;
+        *active = *donor;
+        try {
+            (void)active->run();
+        } catch (const std::invalid_argument& error) {
+            *observed = std::string_view(error.what()).find("active Pipeline owner") !=
+                        std::string_view::npos;
+        }
+    });
+    bool filter_rejected = false;
+    try {
+        (void)callback_free.filter({});
+    } catch (const std::invalid_argument& error) {
+        filter_rejected =
+            std::string_view(error.what()).find("active Pipeline owner") != std::string_view::npos;
+    }
+    if (!nested_run_rejected || !filter_rejected) {
+        std::cout << "(callback-free nested run escaped owner invalidation) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_checkpoint_callback_exceptions_propagate() {
     SieveResumeArtifacts files(gnfs::util::temp_path("gnfs_test_checkpoint_callback_" +
                                                      std::to_string(gnfs::util::process_id())));
@@ -4904,7 +5177,15 @@ bool test_checkpoint_callback_exceptions_propagate() {
             std::cout << "(checkpoint save callback was swallowed or save was misreported) ";
             return false;
         }
-        writer.set_log_callback({});
+        const auto saved_bytes = read_test_file(path);
+        size_t hits = 0;
+        size_t retry_warnings = 0;
+        writer.set_log_callback([&](const LogEntry& entry) {
+            if (entry.message.starts_with("checkpoint hit:"))
+                ++hits;
+            if (entry.level == LogLevel::Warn)
+                ++retry_warnings;
+        });
         try {
             if (factor_base)
                 (void)writer.build_factor_base(*selected);
@@ -4912,6 +5193,10 @@ bool test_checkpoint_callback_exceptions_propagate() {
                 (void)writer.select_polynomial();
         } catch (const std::exception& error) {
             std::cout << "(checkpoint save retry failed: " << error.what() << ") ";
+            return false;
+        }
+        if (hits != 1 || retry_warnings != 0 || read_test_file(path) != saved_bytes) {
+            std::cout << "(published checkpoint was rebuilt or changed on retry) ";
             return false;
         }
     }
@@ -5372,6 +5657,7 @@ int main() {
     TEST(sieve_resume_round_limit_preflight);
     TEST(sieve_resume_policy_identity_preflight);
     TEST(checkpoint_callback_exceptions_propagate);
+    TEST(early_phase_callback_guards);
     TEST(sieve_schema3_checkpoint_is_preserved_then_schema4_recovers);
     TEST(target_environment_callback_preserves_stage_identity);
     TEST(sieve_resume_with_paired_checkpoint);
