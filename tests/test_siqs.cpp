@@ -4,6 +4,7 @@
 #include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/siqs/siqs.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -17,6 +18,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using gnfs::core::Integer;
 using gnfs::tests::siqs_live_sieve_fixture_v1;
@@ -270,6 +272,49 @@ void test_init_poly_handles_large_a_factor_count() {
     std::printf("  init_poly large A-factor boundary (17 factors): PASS\n");
 }
 
+void test_multiplier_candidate_ranking() {
+    const Integer N("1000000007");
+    require_test(rank_multiplier_candidates(N, 0).empty(),
+                 "zero multiplier ranking limit was not empty");
+
+    const auto ranked = rank_multiplier_candidates(N, 64);
+    require_test(!ranked.empty(), "multiplier ranking returned no candidates");
+    require_test(ranked.front() == select_multiplier(N),
+                 "top ranked multiplier changed select_multiplier compatibility");
+    require_test(ranked == rank_multiplier_candidates(N, 64),
+                 "multiplier ranking was not deterministic");
+
+    for (size_t i = 0; i < ranked.size(); ++i) {
+        require_test(std::find(ranked.begin(), ranked.begin() + static_cast<std::ptrdiff_t>(i),
+                               ranked[i]) == ranked.begin() + static_cast<std::ptrdiff_t>(i),
+                     "multiplier ranking returned duplicate candidates");
+    }
+
+    const auto top_three = rank_multiplier_candidates(N, 3);
+    require_test(top_three.size() == 3, "positive multiplier ranking limit was not respected");
+    require_test(std::equal(top_three.begin(), top_three.end(), ranked.begin()),
+                 "multiplier ranking limit did not preserve the sorted prefix");
+    require_test(rank_multiplier_candidates(N, std::numeric_limits<size_t>::max()) == ranked,
+                 "oversized multiplier ranking limit was not clamped");
+
+    bool invalid_zero_thrown = false;
+    try {
+        (void)rank_multiplier_candidates(Integer(0), 1);
+    } catch (const std::invalid_argument&) {
+        invalid_zero_thrown = true;
+    }
+    require_test(invalid_zero_thrown, "zero N did not fail closed for multiplier ranking");
+
+    bool invalid_negative_thrown = false;
+    try {
+        (void)rank_multiplier_candidates(Integer(-1), 1);
+    } catch (const std::invalid_argument&) {
+        invalid_negative_thrown = true;
+    }
+    require_test(invalid_negative_thrown, "negative N did not fail closed for multiplier ranking");
+    std::printf("  multiplier candidate ranking: PASS (%zu candidates)\n", ranked.size());
+}
+
 void test_siqs_rejects_tiny_inputs_without_sieving() {
     const auto trivial = factor(Integer("2"), 1, false);
     require_test(!trivial.has_value(), "SIQS accepted the trivial prime 2");
@@ -287,6 +332,97 @@ void test_siqs_rejects_tiny_inputs_without_sieving() {
                      "SIQS even fast path returned invalid factors");
     }
     std::printf("  siqs tiny-input guards: PASS\n");
+}
+
+void test_siqs_multiplier_shared_factor_guard() {
+    // The top Knuth-Schroeppel candidate for this composite is a divisor of
+    // N. Ranking remains a raw score API, while production must skip that k
+    // before constructing the repeated-factor modulus kN.
+    const Integer modulus("303");
+    const auto ranked = rank_multiplier_candidates(modulus, std::numeric_limits<size_t>::max());
+    require_test(!ranked.empty(), "shared-factor guard fixture produced no multiplier candidates");
+    const auto top_shared = siqs_factor_detail::shared_multiplier_divisor(modulus, ranked.front());
+    require_test(top_shared.has_value() && *top_shared > Integer(1) && *top_shared < modulus,
+                 "shared-factor guard fixture did not place a non-coprime candidate first");
+    require_test(!siqs_factor_detail::shared_multiplier_divisor(modulus, 1).has_value(),
+                 "unit multiplier was incorrectly classified as non-coprime");
+    const Integer equal_candidate("17");
+    require_test(siqs_factor_detail::shared_multiplier_divisor(equal_candidate, 17).has_value(),
+                 "candidate equal to N was not classified as non-coprime");
+
+    ScopedEnvironmentVariable shadow_mode(SIQS_SHADOW_PROOF_ENV, "observe");
+    ScopedStderrCapture capture;
+    const auto result = factor(modulus, 0, true);
+    const std::string log = capture.finish();
+    require_test(!result.has_value(), "zero-budget shared-factor probe unexpectedly factored N");
+
+    const std::string skip_marker =
+        "[SIQS] skipping non-coprime multiplier k=" + std::to_string(ranked.front());
+    require_test(log.find(skip_marker) != std::string::npos,
+                 "production portfolio did not log its shared-factor skip");
+    require_test(count_occurrences(log, "[SIQS] multiplier attempt ") == 1,
+                 "shared-factor skips were counted as portfolio attempts");
+    require_test(count_occurrences(log, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 1,
+                 "shared-factor guard changed single-record observe semantics");
+    require_test(count_occurrences(log, SIQS_SHADOW_PROOF_PREFER_DECISION_PREFIX) == 0,
+                 "shared-factor skip emitted an unexpected prefer decision");
+    std::printf("  siqs multiplier shared-factor guard: PASS (k=%u)\n", ranked.front());
+}
+
+void test_siqs_multiplier_portfolio_retry() {
+    // A prime cannot produce a non-trivial factor, so this exercises the
+    // bounded retry path without depending on extraction luck for a composite.
+    const Integer prime("1000000007");
+    ScopedEnvironmentVariable shadow_mode(SIQS_SHADOW_PROOF_ENV, "0");
+    ScopedStderrCapture capture;
+    const auto result = factor(prime, 1, true);
+    const std::string attempt_log = capture.finish();
+
+    require_test(!result.has_value(), "SIQS unexpectedly factored a known prime");
+    const size_t attempt_count = count_occurrences(attempt_log, "[SIQS] multiplier attempt ");
+    require_test(attempt_count >= 1 && attempt_count <= 3,
+                 "multiplier portfolio did not stay within its three-attempt bound");
+
+    const size_t first_marker = attempt_log.find("remaining=");
+    require_test(first_marker != std::string::npos,
+                 "multiplier portfolio did not log the first remaining budget");
+    const size_t second_marker = attempt_log.find("remaining=", first_marker + 1);
+    if (second_marker != std::string::npos) {
+        const size_t first_end = attempt_log.find('s', first_marker);
+        const size_t second_end = attempt_log.find('s', second_marker);
+        require_test(first_end != std::string::npos && second_end != std::string::npos,
+                     "multiplier portfolio emitted malformed remaining budgets");
+        const double first_remaining = std::stod(
+            attempt_log.substr(first_marker + std::string("remaining=").size(),
+                               first_end - first_marker - std::string("remaining=").size()));
+        const double second_remaining = std::stod(
+            attempt_log.substr(second_marker + std::string("remaining=").size(),
+                               second_end - second_marker - std::string("remaining=").size()));
+        require_test(first_remaining > second_remaining && second_remaining >= 0.0,
+                     "multiplier retry did not use a monotonically decreasing budget");
+    }
+
+    ScopedEnvironmentVariable observe_mode(SIQS_SHADOW_PROOF_ENV, "observe");
+    ScopedStderrCapture observe_capture;
+    const auto observed_result = factor(prime, 1, false);
+    const std::string observe_log = observe_capture.finish();
+    require_test(!observed_result.has_value(), "observe-mode prime unexpectedly produced a factor");
+    require_test(count_occurrences(observe_log, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 1,
+                 "portfolio retries emitted more than one observe record");
+    require_test(count_occurrences(observe_log, SIQS_SHADOW_PROOF_PREFER_DECISION_PREFIX) == 0,
+                 "observe-mode portfolio emitted a prefer decision");
+
+    ScopedEnvironmentVariable zero_budget_mode(SIQS_SHADOW_PROOF_ENV, "observe");
+    ScopedStderrCapture zero_budget_capture;
+    const auto zero_budget_result = factor(prime, 0, true);
+    const std::string zero_budget_log = zero_budget_capture.finish();
+    require_test(!zero_budget_result.has_value(),
+                 "zero-budget prime unexpectedly produced a factor");
+    require_test(count_occurrences(zero_budget_log, "[SIQS] multiplier attempt ") == 1,
+                 "zero-budget portfolio performed more than its compatibility attempt");
+    require_test(count_occurrences(zero_budget_log, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 1,
+                 "zero-budget observe mode did not emit its compatibility record");
+    std::printf("  siqs multiplier portfolio retry/budget: PASS (%zu attempts)\n", attempt_count);
 }
 
 void test_siqs_small() {
@@ -551,7 +687,10 @@ int main() {
     test_factor_base();
     test_factor_base_rejects_unrepresentable_count();
     test_init_poly_handles_large_a_factor_count();
+    test_multiplier_candidate_ranking();
     test_siqs_rejects_tiny_inputs_without_sieving();
+    test_siqs_multiplier_shared_factor_guard();
+    test_siqs_multiplier_portfolio_retry();
     test_split_cofactor_edge();
 
     printf("\n--- Factorization tests ---\n");

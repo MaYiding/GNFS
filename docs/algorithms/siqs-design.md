@@ -59,7 +59,7 @@ finite bound while allowing LP components deeper than the former fixed
 | Component | Header | Role |
 |-----------|--------|------|
 | `select_params(digits)` | `siqs.hpp` lines 53-75 | Calibrated table (FB size, M, LP multiplier, # A factors, error budget) |
-| `select_multiplier` | `siqs.hpp` ~line 252 | Knuth-Schroeppel; picks `k` so `kN` has a denser FB |
+| `rank_multiplier_candidates` / `select_multiplier` | `siqs.hpp` ~line 314 | Deterministic Knuth-Schroeppel ranking; the legacy selector keeps the top `k` |
 | `build_factor_base` | `siqs.hpp` ~line 310 | Adds the sign sentinel at slot 0, then primes including `p=2` |
 | `choose_A` / `init_poly` | `siqs.hpp` ~line 386 | Target `A ≈ sqrt(2N)/M`, then build B and prime sieve offsets |
 | `next_poly_B` | `siqs.hpp` ~line 591 | Gray-code switch: one bit flip rotates offsets in O(FB) |
@@ -84,7 +84,7 @@ finite bound while allowing LP components deeper than the former fixed
 | `dense_gauss_left_nullspace` | `siqs.hpp` ~line 1130 | Word-packed dense GF(2) Gaussian elimination |
 | `solve_matrix` | `siqs.hpp` ~line 1231 | Dense path ≤100K cols, otherwise `linalg::BlockLanczos` |
 | `try_extract` / `try_extract_with_combos` | `siqs.hpp` ~line 1270 | Per-dependency factor extraction with random XOR retry |
-| `factor(N, max_seconds, verbose)` | `siqs.hpp` ~line 1392 | Main entry: threads, adaptive stop, merge, LA, extraction |
+| `factor(N, max_seconds, verbose)` | `siqs.hpp` ~line 2343 | Main entry: multiplier portfolio, shared deadline, threads, adaptive stop, merge, LA, extraction |
 
 ## Integration Points
 
@@ -170,7 +170,9 @@ always continues through the legacy path. Prefer may return a revalidated
 shadow factor only after a complete V2 pre-route record passes its stdio gate;
 every fallback continues the untouched legacy corpus. Neither mode enables 2LP
 collection. Explicit records are attempted even when `verbose=false`; unset or
-`0` performs no shadow work and adds no output. See
+`0` performs no shadow work and emits no shadow telemetry. With `verbose=true`,
+the live multiplier portfolio may still emit ordinary candidate-skip and attempt
+diagnostics. See
 [SIQS Runtime Flags](../env-flags/siqs.md) for the strict parser and
 failure-transparency contract.
 
@@ -549,12 +551,14 @@ during emission; concurrent `freopen`, `dup2`, `fclose`, `clearerr`, or writes
 that bypass the same `FILE*` are outside the pre/post-`ferror` guarantee. For a
 shadow return, `SIQSResult::relations_found` is the selected row count actually
 submitted to the shadow matrix and equals the matrix row count.
-`polynomials_used` remains the production sieve counter sampled after all
-workers join. `time_seconds` is derived from the same pre-emit decision
-wall-time sample measured from the existing SIQS timer start. The caller
-samples after pure proof/factor/evidence evaluation and complete `SIQSResult`
-preparation, but before finalization and emitter I/O; the returned `SIQSResult`
-copies this value without resampling.
+For a single attempt, `polynomials_used` remains the production sieve counter
+sampled after all workers join. In the multiplier portfolio, it describes the
+winning attempt and is not an aggregate across retries. Ordinary results report
+portfolio wall time; a first-attempt `prefer` shadow return keeps the pre-emit
+decision wall-time sample measured from the existing SIQS timer start. The
+caller samples that value after pure proof/factor/evidence evaluation and
+complete `SIQSResult` preparation, but before finalization and emitter I/O; the
+returned `SIQSResult` copies it without resampling.
 
 A fixed constructed corpus exercises the full chain at the live 50-, 70-, and
 90-digit factor-base column counts with stable fingerprints and dependencies
@@ -676,9 +680,21 @@ SIQS's `L_N(1/2, 1)`.
   production-ready. Use GNFS for ≥60 digits until then
 - **No checkpointing**: each SIQS run starts from scratch. Acceptable since the
   whole algorithm completes inside the GNFS Phase 2 budget
-- **Single multiplier per run**: `select_multiplier` runs once on input N; for
-  unlucky N where the Knuth-Schroeppel score is misleading, the only recourse
-  today is to let SIQS fail and fall through to GNFS
+- **Multiplier portfolio is bounded and live**: production `factor()` ranks the
+  deterministic candidate order, skips candidates that share a factor with `N`,
+  and tries up to three coprime multipliers under one caller-wide monotonic
+  deadline. Sieve, merge, linear algebra, and extraction stop at cooperative
+  phase boundaries once that deadline expires. A non-cancellable phase may
+  finish slightly past the deadline, but no later attempt starts. The bounded shadow finalization
+  may still run after expiry so its established observe/prefer terminal record
+  remains auditable; legacy mutation is fail-closed in that case. The first
+  actual attempt retains the requested shadow mode, while retries disable
+  shadow telemetry so one invocation emits at most one observe/prefer record.
+  Tiny/even inputs keep their legacy single-attempt fast paths, and a zero
+  budget still permits the first compatibility probe. Ranking scores use the
+  existing floating-point formula and are deterministic for a fixed
+  floating-point implementation; cross-platform near-ties are not a golden
+  ordering contract.
 
 ## References
 

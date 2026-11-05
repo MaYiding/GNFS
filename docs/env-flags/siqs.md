@@ -28,8 +28,9 @@ pre-route 记录。
 ### Default 与 bit-for-bit 契约
 
 Default 是未设置，即 `off`。未设置和 `0` 都不运行 shadow proof、不做 shadow
-动态分配，也不新增 stderr 输出；它们保留原有 legacy merge、linear algebra 和
-extraction 控制流及 factor/relation 结果语义。现有的 `time_seconds` 是墙钟测量，
+动态分配，也不新增 shadow telemetry；`verbose=true` 时，multiplier portfolio 仍可
+输出普通的候选跳过和尝试诊断行。除这些显式诊断外，它们保留原有 legacy merge、
+linear algebra 和 extraction 控制流及 factor/relation 结果语义。现有的 `time_seconds` 是墙钟测量，
 本身不承诺不同进程或重复运行之间逐位一致。
 
 `observe` 和 `prefer` 都不是零开销模式。shadow proof 位于
@@ -37,6 +38,16 @@ extraction 控制流及 factor/relation 结果语义。现有的 `time_seconds` 
 调度下的运行统计。两者都不修改 raw relations。`observe` 无条件继续同一个 legacy
 merge、solve 和 extract 路径；`prefer` 的任意 fallback 或普通 emitter 错误也继续
 该路径。
+
+生产 `factor()` 对固定候选集做确定性 multiplier ranking，然后最多尝试 3 个与 `N`
+互素的候选。共享因子的候选会在构造 `kN` 前跳过，不计入尝试次数。所有实际尝试共享
+一个 `steady_clock` deadline，并在 sieve、merge、linear algebra 和 extraction 的协作边界
+检查；正在运行的单个阶段不会被异步强制中断。deadline 到期后，已收集的有界 shadow
+finalization 仍可完成，以保留 observe/prefer 的终态审计记录，但 legacy merge、linear
+algebra 和 extraction 会 fail-closed。`max_seconds=0` 的首个实际候选保留为显式 shadow
+fallback 兼容探测；重试关闭 shadow telemetry，因此一次调用最多写出一条 observe 或
+prefer 记录。不可取消的单个阶段可以使实际返回时间略超出预算，但到期后不会启动
+下一个 attempt。
 
 ### 集成点与输出
 
@@ -432,13 +443,14 @@ Shadow `SIQSResult` 的指标语义固定如下：
 
 - `relations_found` 等于实际送入 shadow matrix 的 selected row 数，并且必须与
   matrix row count 一致；它不是 raw、pretrim 或 graph edge 数。
-- `polynomials_used` 复用所有 production sieve workers join 后的 polynomial
-  counter，不使用 shadow 内部计数。
-- `time_seconds` 由同一份 pre-emit decision wall-time 样本派生。它从现有 SIQS
-  timer 起点计到 pure evaluation 完成，包含 shadow proof、factor / evidence
-  验证和完整 `SIQSResult` preparation；样本在
-  `finalize_siqs_shadow_proof_prefer` 和 emitter I/O 之前取得。返回的
-  `SIQSResult` 直接复用该值，不重新采样。
+- `polynomials_used` 对单次 attempt 复用所有 production sieve workers join 后的
+  polynomial counter；在 multiplier portfolio 中它只描述获胜 attempt，不跨重试累加，
+  也不使用 shadow 内部计数。
+- 普通结果的 `time_seconds` 是整个 portfolio 的墙钟耗时。首个 attempt 的 prefer
+  shadow return 则由同一份 pre-emit decision wall-time 样本派生。该样本从现有 SIQS
+  timer 起点计到 pure evaluation 完成，包含 shadow proof、factor / evidence 验证和
+  完整 `SIQSResult` preparation；样本在 `finalize_siqs_shadow_proof_prefer` 和 emitter
+  I/O 之前取得。返回的 `SIQSResult` 直接复用该值，不重新采样。
 
 当前显式实验采用 emit-before-route：先完整构造 shadow `SIQSResult`，再取得一次
 wall sample、finalize V2 decision，并重新比对 factors、relations 和 polynomials。

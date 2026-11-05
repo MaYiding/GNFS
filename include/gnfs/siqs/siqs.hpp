@@ -40,6 +40,7 @@
 #include <random>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -309,9 +310,23 @@ struct FBPrime {
 // Knuth-Schroeppel multiplier selection
 // ================================================================
 
-/// Select optimal multiplier k for N. Returns k such that kN has a dense factor base.
-/// Score = -0.5*log(kN) + Σ_{p small, kN is QR mod p} log(p)/(p-1)
-inline uint32_t select_multiplier(const Integer& N) {
+/// Rank deterministic multiplier candidates for N by the Knuth-Schroeppel score.
+///
+/// A zero limit returns an empty vector. Positive limits require a positive N;
+/// invalid N values throw std::invalid_argument. Limits larger than the fixed
+/// candidate set are clamped to the number of unique candidates. Equal scores
+/// retain the historical candidate order, so the first result is compatible
+/// with select_multiplier(). The ordering is deterministic for a fixed
+/// floating-point implementation; the explicit ordinal tie-break keeps the
+/// contract independent of the sorting library's stability details.
+/// The returned ranking is intentionally not filtered by gcd(N, k); production
+/// callers apply that safety guard at the attempt boundary.
+inline std::vector<uint32_t> rank_multiplier_candidates(const Integer& N, size_t limit) {
+    if (limit == 0)
+        return {};
+    if (mpz_sgn(N.get_mpz()) <= 0)
+        throw std::invalid_argument("SIQS multiplier ranking requires a positive N");
+
     static const uint32_t candidates[] = {1,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31,
                                           37, 41, 43, 47, 53, 59, 61, 67, 71, 73};
     // Small primes for scoring
@@ -320,8 +335,14 @@ inline uint32_t select_multiplier(const Integer& N) {
         59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131,
         137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199};
 
-    double best_score = -1e30;
-    uint32_t best_k = 1;
+    struct ScoredCandidate {
+        uint32_t multiplier;
+        double score;
+        size_t ordinal;
+    };
+    const size_t candidate_count = sizeof(candidates) / sizeof(candidates[0]);
+    std::vector<ScoredCandidate> scored;
+    scored.reserve(candidate_count);
 
     for (uint32_t k : candidates) {
         Integer kN;
@@ -361,12 +382,36 @@ inline uint32_t select_multiplier(const Integer& N) {
             }
         }
 
-        if (score > best_score) {
-            best_score = score;
-            best_k = k;
-        }
+        scored.push_back({k, score, scored.size()});
     }
-    return best_k;
+
+    // The ordinal explicitly preserves the strict-greater tie behavior of the
+    // legacy selector, including on standard-library implementations whose
+    // stable_sort details differ.
+    std::stable_sort(scored.begin(), scored.end(),
+                     [](const ScoredCandidate& lhs, const ScoredCandidate& rhs) {
+                         if (lhs.score == rhs.score)
+                             return lhs.ordinal < rhs.ordinal;
+                         return lhs.score > rhs.score;
+                     });
+
+    const size_t result_count = std::min(limit, scored.size());
+    std::vector<uint32_t> ranked;
+    ranked.reserve(result_count);
+    for (size_t i = 0; i < result_count; ++i) {
+        const uint32_t multiplier = scored[i].multiplier;
+        if (std::find(ranked.begin(), ranked.end(), multiplier) == ranked.end())
+            ranked.push_back(multiplier);
+    }
+    return ranked;
+}
+
+/// Select the top-ranked multiplier k for N. Returns k such that kN has a
+/// dense factor base. The first ranked candidate is kept as the compatibility
+/// contract for existing callers.
+inline uint32_t select_multiplier(const Integer& N) {
+    const auto ranked = rank_multiplier_candidates(N, 1);
+    return ranked.front();
 }
 
 /// Build factor base: primes p where Legendre(N, p) = 1
@@ -1846,10 +1891,41 @@ static_assert(noexcept(siqs_factor_detail::commit_prefer_route(
     nullptr, std::declval<const Integer&>(), std::declval<const SIQSShadowProofPreferDecision&>(),
     std::nullopt)));
 
-inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3600,
-                                        bool verbose = true) {
-    const SIQSShadowProofMode shadow_proof_mode =
-        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
+namespace siqs_factor_detail {
+
+/// Return a non-trivial common divisor between N and a candidate multiplier.
+/// A non-coprime k makes kN non-squarefree at the shared prime and cannot be
+/// used safely by the SIQS polynomial setup. The original N is returned as
+/// well for the degenerate N == k case, which must also be skipped.
+[[nodiscard]] inline std::optional<Integer> shared_multiplier_divisor(const Integer& N,
+                                                                      uint32_t multiplier) {
+    if (multiplier <= 1)
+        return std::nullopt;
+
+    Integer candidate(static_cast<uint64_t>(multiplier));
+    Integer divisor;
+    mpz_gcd(divisor.get_mpz(), N.get_mpz(), candidate.get_mpz());
+    if (mpz_cmp_ui(divisor.get_mpz(), 1) > 0)
+        return divisor;
+    return std::nullopt;
+}
+
+inline std::optional<SIQSResult> factor_once(
+    const Integer& N, double max_seconds, bool verbose, uint32_t multiplier,
+    SIQSShadowProofMode shadow_proof_mode,
+    bool* shadow_proof_observe_record_committed_out = nullptr,
+    bool* shadow_proof_prefer_returned_out = nullptr,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
+    bool allow_zero_budget_probe = false,
+    std::chrono::steady_clock::time_point timing_origin =
+        std::chrono::steady_clock::time_point::min()) {
+
+    if (shadow_proof_observe_record_committed_out != nullptr)
+        *shadow_proof_observe_record_committed_out = false;
+    if (shadow_proof_prefer_returned_out != nullptr)
+        *shadow_proof_prefer_returned_out = false;
+    if (multiplier == 0)
+        throw std::invalid_argument("SIQS multiplier must be positive");
 
     // SIQS is a medium-size composite factorer. Reject non-positive and
     // tiny odd inputs before parameter selection; handle even composites
@@ -1873,16 +1949,37 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         return std::nullopt;
     }
 
-    auto start = std::chrono::steady_clock::now();
+    const auto attempt_start = std::chrono::steady_clock::now();
+    const auto timer_start = timing_origin == std::chrono::steady_clock::time_point::min()
+                                 ? attempt_start
+                                 : timing_origin;
     auto elapsed = [&]() {
-        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - attempt_start)
+            .count();
     };
+    auto timer_elapsed = [&]() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - timer_start)
+            .count();
+    };
+    // A zero-budget first attempt is retained as a compatibility probe for
+    // explicit shadow fallback decisions. Every other attempt first checks
+    // the caller's absolute deadline, then enforces it at each cooperative
+    // phase boundary.
+    const bool enforce_deadline =
+        deadline != std::chrono::steady_clock::time_point::max() && !allow_zero_budget_probe;
+    const auto budget_available = [&]() noexcept {
+        return !enforce_deadline || std::chrono::steady_clock::now() < deadline;
+    };
+
+    // Avoid parameter and factor-base allocations when a retry inherits an
+    // already-expired caller deadline. The explicit zero-budget compatibility
+    // probe bypasses this guard through allow_zero_budget_probe.
+    if (!budget_available())
+        return std::nullopt;
 
     size_t digits = N.to_string().size();
     auto params = select_params(digits);
 
-    // Knuth-Schroeppel multiplier selection
-    uint32_t multiplier = select_multiplier(N);
     Integer kN;
     if (multiplier > 1) {
         mpz_mul_ui(kN.get_mpz(), N.get_mpz(), multiplier); // kN = N * k (skip source copy)
@@ -1897,6 +1994,8 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
 
     // Build factor base for kN (not N)
     auto fb = build_factor_base(kN, params.fb_size);
+    if (!budget_available())
+        return std::nullopt;
     size_t fb_size = fb.size();
 
     size_t odd_factor_base_primes = 0;
@@ -1999,7 +2098,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         size_t local_full = 0, local_1lp = 0, local_2lp = 0;
 
         while (!enough.load(std::memory_order_relaxed) &&
-               elapsed() < static_cast<double>(max_seconds)) {
+               elapsed() < static_cast<double>(max_seconds) && budget_available()) {
             SIQSPoly poly;
             choose_A(kN, params.sieve_half, params.num_a_factors, fb, local_rng, poly.a_indices,
                      poly.A);
@@ -2054,7 +2153,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
 
                 if (enough.load(std::memory_order_relaxed))
                     break;
-                if (elapsed() >= static_cast<double>(max_seconds))
+                if (elapsed() >= static_cast<double>(max_seconds) || !budget_available())
                     break;
 
                 // Gray code switch to next B
@@ -2082,10 +2181,15 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         }
     };
 
-    // Launch threads
+    // Do not allocate a worker team after a positive caller deadline has
+    // already expired. The explicit zero-budget compatibility probe is the
+    // only path that is allowed to reach this point with no live budget.
     std::vector<std::thread> threads;
-    for (unsigned t = 0; t < num_threads; t++) {
-        threads.emplace_back(sieve_worker, t);
+    if (allow_zero_budget_probe || budget_available()) {
+        threads.reserve(num_threads);
+        for (unsigned t = 0; t < num_threads; t++) {
+            threads.emplace_back(sieve_worker, t);
+        }
     }
     for (auto& t : threads)
         t.join();
@@ -2104,7 +2208,10 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     }
 
     // Both explicit shadow modes read the post-join raw corpus before legacy
-    // merge mutation. Observe always continues. Prefer may return a fully
+    // merge mutation. Shadow finalization is a bounded exception to the
+    // caller deadline so observe/prefer can preserve their existing terminal
+    // telemetry contract; legacy merge, linear algebra, and extraction remain
+    // fail-closed when the deadline has elapsed. Prefer may return a fully
     // revalidated candidate only after its V2 pre-route decision is written,
     // flushed, and stream-error free on the caller's stderr stream.
     bool shadow_proof_observe_record_committed = false;
@@ -2147,9 +2254,9 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
             }
 
             const auto decision_wall_end = std::chrono::steady_clock::now();
-            const auto decision_wall_count =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(decision_wall_end - start)
-                    .count();
+            const auto decision_wall_count = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 decision_wall_end - timer_start)
+                                                 .count();
             const uint64_t decision_wall_ns =
                 decision_wall_count > 0 && std::in_range<uint64_t>(decision_wall_count)
                     ? static_cast<uint64_t>(decision_wall_count)
@@ -2161,12 +2268,19 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
                 siqs_factor_detail::commit_prefer_route(stderr, N, decision,
                                                         std::move(prepared_shadow_result));
             if (routed_shadow_result.has_value()) {
+                if (shadow_proof_prefer_returned_out != nullptr)
+                    *shadow_proof_prefer_returned_out = true;
                 return routed_shadow_result;
             }
         } catch (...) {
             // Explicit prefer never prevents the untouched legacy path.
         }
     }
+    if (shadow_proof_observe_record_committed_out != nullptr)
+        *shadow_proof_observe_record_committed_out = shadow_proof_observe_record_committed;
+
+    if (!budget_available())
+        return std::nullopt;
 
     // Merge partials
     auto relations = merge_partials(all_relations, fb_size, verbose);
@@ -2184,6 +2298,9 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         return std::nullopt;
     }
 
+    if (!budget_available())
+        return std::nullopt;
+
     // Trim excess relations to reduce LA cost.
     // O(n²) Gaussian: halving rows gives ~4× speedup.
     // Keep fb_size + 100 relations (enough for ~64 dependencies).
@@ -2200,6 +2317,9 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
 
     auto deps = solve_matrix(relations, fb_size);
 
+    if (!budget_available())
+        return std::nullopt;
+
     if (verbose) {
         fprintf(stderr, "[SIQS] Found %zu dependencies (%.3fs)\n", deps.size(), elapsed());
     }
@@ -2208,11 +2328,13 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     // Since kN | (X²-Y²), we have N | (X²-Y²), so gcd(X-Y, N) works directly.
     // Compute X,Y mod kN (for correct arithmetic), but gcd against N.
     auto result = try_extract_with_combos(kN, N, relations, deps, fb);
+    if (!budget_available())
+        return std::nullopt;
     if (result) {
         SIQSResult sr;
         sr.factor1 = std::move(result->first);
         sr.factor2 = std::move(result->second);
-        sr.time_seconds = elapsed();
+        sr.time_seconds = timer_elapsed();
         sr.relations_found = relations.size();
         sr.polynomials_used = num_polys;
         sr.resolved_sieve_workers = num_threads;
@@ -2228,6 +2350,102 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
 
     if (verbose) {
         fprintf(stderr, "[SIQS] All dependencies + combos failed\n");
+    }
+    return std::nullopt;
+}
+
+} // namespace siqs_factor_detail
+
+/// Run a bounded multiplier portfolio with one caller-wide time budget.
+/// The first actual attempt retains the requested shadow mode. Retries disable
+/// shadow telemetry so one invocation cannot emit duplicate observe or prefer
+/// records.
+inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3600,
+                                        bool verbose = true) {
+    const SIQSShadowProofMode shadow_proof_mode =
+        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
+    const auto started = std::chrono::steady_clock::now();
+    const auto elapsed = [&]() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    };
+    // Clamp the requested span before converting it to the clock's integral
+    // duration representation. A public size_t budget may be larger than the
+    // range representable by steady_clock::duration on a given platform.
+    const auto deadline = [&]() {
+        using Clock = std::chrono::steady_clock;
+        const auto max_span = Clock::time_point::max() - started;
+        const long double max_span_seconds =
+            static_cast<long double>(max_span.count()) *
+            static_cast<long double>(Clock::duration::period::num) /
+            static_cast<long double>(Clock::duration::period::den);
+        const long double requested_seconds = static_cast<long double>(max_seconds);
+        if (requested_seconds >= max_span_seconds)
+            return Clock::time_point::max();
+        return started + std::chrono::duration_cast<Clock::duration>(
+                             std::chrono::duration<long double>(requested_seconds));
+    }();
+
+    // Preserve the fast paths for tiny and even inputs before ranking, which
+    // intentionally rejects non-positive moduli.
+    if (mpz_cmp_ui(N.get_mpz(), 15) < 0 || mpz_even_p(N.get_mpz())) {
+        return siqs_factor_detail::factor_once(N, static_cast<double>(max_seconds), verbose, 1,
+                                               shadow_proof_mode, nullptr, nullptr, deadline, false,
+                                               started);
+    }
+
+    constexpr size_t max_multiplier_attempts = 3;
+    // Rank the complete fixed candidate set, then count only candidates that
+    // are coprime to N toward the three-attempt portfolio bound. Keeping the
+    // ranking API unfiltered preserves its historical score contract while
+    // ensuring a shared prime never reaches the kN polynomial setup.
+    const auto ranked = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
+    bool shadow_proof_observe_record_committed = false;
+    size_t attempts_started = 0;
+    for (const uint32_t multiplier : ranked) {
+        if (attempts_started >= max_multiplier_attempts)
+            break;
+
+        if (const auto shared = siqs_factor_detail::shared_multiplier_divisor(N, multiplier);
+            shared.has_value()) {
+            if (verbose) {
+                const std::string shared_text = shared->to_string();
+                std::fprintf(stderr, "[SIQS] skipping non-coprime multiplier k=%u (gcd=%s)\n",
+                             multiplier, shared_text.c_str());
+            }
+            continue;
+        }
+
+        const size_t attempt = attempts_started++;
+        const double remaining = static_cast<double>(max_seconds) - elapsed();
+        // Preserve the legacy zero-budget probe semantics: the first actual
+        // candidate still performs one bounded attempt so explicit shadow
+        // modes can emit their terminal decision. Retries require budget.
+        if (!(remaining > 0.0) && attempt != 0)
+            break;
+
+        if (verbose) {
+            std::fprintf(stderr, "[SIQS] multiplier attempt %zu/%zu: k=%u, remaining=%.3fs\n",
+                         attempt + 1, max_multiplier_attempts, multiplier, remaining);
+        }
+
+        const SIQSShadowProofMode attempt_mode =
+            attempt == 0 ? shadow_proof_mode : SIQSShadowProofMode::off;
+        bool attempt_observe_record_committed = false;
+        bool attempt_prefer_returned = false;
+        auto result = siqs_factor_detail::factor_once(
+            N, remaining, verbose, multiplier, attempt_mode, &attempt_observe_record_committed,
+            &attempt_prefer_returned, deadline, max_seconds == 0 && attempt == 0, started);
+        shadow_proof_observe_record_committed |= attempt_observe_record_committed;
+        if (result)
+            result->shadow_proof_observe_record_committed = shadow_proof_observe_record_committed;
+        if (result) {
+            // A prefer candidate's time is bound to the single pre-emit
+            // decision wall sample. Preserve that exact value on the first
+            // attempt; ordinary and retry results report portfolio duration.
+            if (!(attempt == 0 && attempt_prefer_returned))
+                result->time_seconds = elapsed();
+            return result;
+        }
     }
     return std::nullopt;
 }
