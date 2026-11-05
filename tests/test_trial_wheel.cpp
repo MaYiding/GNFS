@@ -4,11 +4,11 @@
 // Tier 2: bit-for-bit equivalence between TrialDivider with wheel optimization
 //         and a synthetic naive baseline iterating the rational FB only.
 
-#include <gnfs/cofactor/wheel235.hpp>
 #include <gnfs/cofactor/trial_division.hpp>
-#include <gnfs/factor_base/builder.hpp>
-#include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/cofactor/wheel235.hpp>
 #include <gnfs/core/integer.hpp>
+#include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/factor_base/builder.hpp>
 
 #include <array>
 #include <cassert>
@@ -20,15 +20,14 @@
 #include <vector>
 
 using gnfs::cofactor::wheel::strip_2;
+using gnfs::cofactor::wheel::strip_235;
 using gnfs::cofactor::wheel::strip_3;
 using gnfs::cofactor::wheel::strip_5;
-using gnfs::cofactor::wheel::strip_235;
 
 namespace {
 
 // Naive "while % == 0" loop matching the original trial-division pattern.
-template <typename T>
-T naive_strip(T v, T p, uint8_t& exp) noexcept {
+template <typename T> T naive_strip(T v, T p, uint8_t& exp) noexcept {
     exp = 0;
     while (v != 0 && v % p == T(0) && exp < 255u) {
         v /= p;
@@ -55,9 +54,9 @@ void test_strip_2_basic() {
     assert(strip_2(uint64_t{8}, exp) == 1 && exp == 3);
     assert(strip_2(uint64_t{1024}, exp) == 1 && exp == 10);
     // mixed
-    assert(strip_2(uint64_t{12}, exp) == 3 && exp == 2);   // 12 = 4 * 3
-    assert(strip_2(uint64_t{40}, exp) == 5 && exp == 3);   // 40 = 8 * 5
-    assert(strip_2(uint64_t{96}, exp) == 3 && exp == 5);   // 96 = 32 * 3
+    assert(strip_2(uint64_t{12}, exp) == 3 && exp == 2); // 12 = 4 * 3
+    assert(strip_2(uint64_t{40}, exp) == 5 && exp == 3); // 40 = 8 * 5
+    assert(strip_2(uint64_t{96}, exp) == 3 && exp == 5); // 96 = 32 * 3
     // boundary: 2^63
     assert(strip_2(uint64_t{1ULL << 63}, exp) == 1 && exp == 63);
     std::cout << " PASS\n";
@@ -264,9 +263,8 @@ void test_divider_smoke() {
 void test_divider_random_vs_reference() {
     std::cout << "  divide_rational randomized equivalence..." << std::flush;
     // Build FB with standard primes 2..97.
-    std::vector<uint32_t> primes = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29,
-                                    31, 37, 41, 43, 47, 53, 59, 61, 67,
-                                    71, 73, 79, 83, 89, 97};
+    std::vector<uint32_t> primes = {2,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31, 37, 41,
+                                    43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97};
     auto fb = make_synthetic_fb(primes, 100);
     gnfs::cofactor::TrialDivider d(fb);
 
@@ -274,7 +272,8 @@ void test_divider_random_vs_reference() {
     for (int i = 0; i < 5000; ++i) {
         // sample value in [1, 2^60)
         uint64_t v = (rng() & ((1ULL << 60) - 1));
-        if (v == 0) v = 1;
+        if (v == 0)
+            v = 1;
 
         // Reference: pure naive trial division over the same prime list.
         uint64_t ref = v;
@@ -329,7 +328,8 @@ void test_divider_random_vs_reference() {
                 // mirror the "cofactor < next_p" early exit
                 if (idx + 1 < primes.size()) {
                     uint64_t next_p = primes[idx + 1];
-                    if (ref2 < next_p) break;
+                    if (ref2 < next_p)
+                        break;
                 }
                 // mirror "p² early stop"
                 uint64_t bound = fb.params().rational_bound;
@@ -337,7 +337,8 @@ void test_divider_random_vs_reference() {
                     break;
                 }
             }
-            if (ref2 == 1) smooth2 = true;
+            if (ref2 == 1)
+                smooth2 = true;
         }
 
         if (r.is_smooth != smooth2 || r.factor_indices != ref_idx2 || r.exponents != ref_exp2) {
@@ -345,9 +346,9 @@ void test_divider_random_vs_reference() {
                          "Equivalence MISMATCH v=%llu\n"
                          "  wheel  is_smooth=%d size=%zu cof=%s\n"
                          "  refer  is_smooth=%d size=%zu cof=%llu\n",
-                         (unsigned long long)v, int(r.is_smooth),
-                         r.factor_indices.size(), r.cofactor.to_string().c_str(),
-                         int(smooth2), ref_idx2.size(), (unsigned long long)ref2);
+                         (unsigned long long)v, int(r.is_smooth), r.factor_indices.size(),
+                         r.cofactor.to_string().c_str(), int(smooth2), ref_idx2.size(),
+                         (unsigned long long)ref2);
             assert(false);
         }
         // also compare cofactor
@@ -391,9 +392,8 @@ void test_divider_u128_full_width() {
 #if defined(__SIZEOF_INT128__)
 void test_divider_u128_path() {
     std::cout << "  divide_rational uint128 equivalence..." << std::flush;
-    std::vector<uint32_t> primes = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29,
-                                    31, 37, 41, 43, 47, 53, 59, 61, 67,
-                                    71, 73, 79, 83, 89, 97};
+    std::vector<uint32_t> primes = {2,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31, 37, 41,
+                                    43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97};
     auto fb = make_synthetic_fb(primes, 100);
     gnfs::cofactor::TrialDivider d(fb);
 
@@ -406,14 +406,19 @@ void test_divider_u128_path() {
         unsigned b = 5 + (rng() % 20);
         unsigned c = 3 + (rng() % 15);
         __uint128_t v = 1;
-        for (unsigned k = 0; k < a; ++k) v *= 2;
-        for (unsigned k = 0; k < b; ++k) v *= 3;
-        for (unsigned k = 0; k < c; ++k) v *= 5;
-        uint64_t tail = (rng() | 1ULL);  // odd tail
+        for (unsigned k = 0; k < a; ++k)
+            v *= 2;
+        for (unsigned k = 0; k < b; ++k)
+            v *= 3;
+        for (unsigned k = 0; k < c; ++k)
+            v *= 5;
+        uint64_t tail = (rng() | 1ULL); // odd tail
         v *= tail;
         // Cap to ~120 bits
-        if ((v >> 120) != 0) v &= ((__uint128_t{1} << 120) - 1);
-        if (v == 0) v = 1;
+        if ((v >> 120) != 0)
+            v &= ((__uint128_t{1} << 120) - 1);
+        if (v == 0)
+            v = 1;
 
         // Convert to Integer (we know v < 2^128)
         gnfs::core::Integer big;
@@ -431,19 +436,22 @@ void test_divider_u128_path() {
         bool smooth = false;
         for (uint32_t idx = 0; idx < primes.size() && ref > 1; ++idx) {
             uint32_t p = primes[idx];
-            if (ref % p != 0) continue;
+            if (ref % p != 0)
+                continue;
             uint8_t e = 0;
-            do { ref /= p; ++e; } while (ref % p == 0 && e < 255);
+            do {
+                ref /= p;
+                ++e;
+            } while (ref % p == 0 && e < 255);
             ref_idx.push_back(idx);
             ref_exp.push_back(e);
         }
-        if (ref == 1) smooth = true;
+        if (ref == 1)
+            smooth = true;
 
         if (r.is_smooth != smooth || r.factor_indices != ref_idx || r.exponents != ref_exp) {
-            std::fprintf(stderr,
-                         "U128 MISMATCH idx=%d wheel=(sm=%d,sz=%zu) ref=(sm=%d,sz=%zu)\n",
-                         i, int(r.is_smooth), r.factor_indices.size(),
-                         int(smooth), ref_idx.size());
+            std::fprintf(stderr, "U128 MISMATCH idx=%d wheel=(sm=%d,sz=%zu) ref=(sm=%d,sz=%zu)\n",
+                         i, int(r.is_smooth), r.factor_indices.size(), int(smooth), ref_idx.size());
             assert(false);
         }
     }

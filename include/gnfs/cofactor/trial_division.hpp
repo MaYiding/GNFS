@@ -36,10 +36,10 @@ inline void trial_integer_from_u128(Integer& out, __uint128_t value) {
 
 /// 试除结果
 struct TrialDivisionResult {
-    std::vector<uint32_t> factor_indices;   // 因子基中的索引
-    std::vector<uint8_t> exponents;         // 对应的指数
-    Integer cofactor;                        // 剩余的未分解部分
-    bool is_smooth = false;                  // cofactor == 1?
+    std::vector<uint32_t> factor_indices; // 因子基中的索引
+    std::vector<uint8_t> exponents;       // 对应的指数
+    Integer cofactor;                     // 剩余的未分解部分
+    bool is_smooth = false;               // cofactor == 1?
 
     /// 是否完全分解
     [[nodiscard]] bool fully_factored() const noexcept {
@@ -68,11 +68,12 @@ public:
         // Reserve: typical relation has 8-15 distinct rat FB factors.
         result.factor_indices.reserve(16);
         result.exponents.reserve(16);
-        if (value.is_negative()) value.negate();
+        if (value.is_negative())
+            value.negate();
 
         if (value.is_zero()) {
             result.is_smooth = true;
-            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
+            result.cofactor = int64_t(1); // mpz_set_si on default-init buffer
             return result;
         }
 
@@ -87,27 +88,40 @@ public:
             // of the per-prime % cost. Only fires when FB starts at 2,3,5 in
             // that order (the standard layout for any real factor base).
             uint32_t start = 0;
-            if (rationals.size() >= 3 &&
-                rationals[0].p == 2 && rationals[1].p == 3 && rationals[2].p == 5) {
+            if (rationals.size() >= 3 && rationals[0].p == 2 && rationals[1].p == 3 &&
+                rationals[2].p == 5) {
                 uint8_t e2 = 0, e3 = 0, e5 = 0;
                 v128 = wheel::strip_235(v128, e2, e3, e5);
-                if (e2 > 0) { result.factor_indices.push_back(0); result.exponents.push_back(e2); }
-                if (e3 > 0) { result.factor_indices.push_back(1); result.exponents.push_back(e3); }
-                if (e5 > 0) { result.factor_indices.push_back(2); result.exponents.push_back(e5); }
+                if (e2 > 0) {
+                    result.factor_indices.push_back(0);
+                    result.exponents.push_back(e2);
+                }
+                if (e3 > 0) {
+                    result.factor_indices.push_back(1);
+                    result.exponents.push_back(e3);
+                }
+                if (e5 > 0) {
+                    result.factor_indices.push_back(2);
+                    result.exponents.push_back(e5);
+                }
                 start = 3;
             }
             for (uint32_t idx = start; idx < rationals.size() && v128 > 1; ++idx) {
                 uint32_t p = rationals[idx].p;
-                if (v128 % p != 0) continue;
+                if (v128 % p != 0)
+                    continue;
                 uint8_t exp = 0;
-                do { v128 /= p; ++exp; } while (v128 % p == 0 && exp < 255);
+                do {
+                    v128 /= p;
+                    ++exp;
+                } while (v128 % p == 0 && exp < 255);
                 result.factor_indices.push_back(idx);
                 result.exponents.push_back(exp);
             }
 
             if (v128 == 1) {
                 result.is_smooth = true;
-                result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
+                result.cofactor = int64_t(1); // mpz_set_si on default-init buffer
             } else if (v128 <= UINT64_MAX) {
                 result.cofactor = static_cast<uint64_t>(v128);
             } else {
@@ -138,9 +152,10 @@ public:
             if (value.fits_uint64()) {
                 auto tail = divide_rational_u64_from(value.to_uint64(), idx + 1);
                 result.factor_indices.insert(result.factor_indices.end(),
-                    tail.factor_indices.begin(), tail.factor_indices.end());
-                result.exponents.insert(result.exponents.end(),
-                    tail.exponents.begin(), tail.exponents.end());
+                                             tail.factor_indices.begin(),
+                                             tail.factor_indices.end());
+                result.exponents.insert(result.exponents.end(), tail.exponents.begin(),
+                                        tail.exponents.end());
                 result.cofactor = std::move(tail.cofactor);
                 result.is_smooth = tail.is_smooth;
                 return result;
@@ -165,8 +180,8 @@ public:
     /// @param max_entries 最大遍历条目数 (0 = all)。传 sieve_algebraic_count()
     ///   可跳过 SQ 范围条目，让 classify_cofactor 处理它们。
     /// @return 试除结果
-    [[nodiscard]] TrialDivisionResult divide_algebraic(
-            Integer norm, int64_t a, uint64_t b, size_t max_entries = 0) const {
+    [[nodiscard]] TrialDivisionResult divide_algebraic(Integer norm, int64_t a, uint64_t b,
+                                                       size_t max_entries = 0) const {
 
         TrialDivisionResult result;
         // Reserve: typical relation has 8-15 distinct alg FB factors.
@@ -180,14 +195,14 @@ public:
 
         if (norm.is_zero()) {
             result.is_smooth = true;
-            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
+            result.cofactor = int64_t(1); // mpz_set_si on default-init buffer
             return result;
         }
 
         // 对每个代数因子基素理想进行试除
         const auto& algebraics = fb_.algebraic();
-        size_t alg_limit = (max_entries > 0 && max_entries < algebraics.size())
-                         ? max_entries : algebraics.size();
+        size_t alg_limit =
+            (max_entries > 0 && max_entries < algebraics.size()) ? max_entries : algebraics.size();
 
         // Three-tier fast path: uint64 → uint128 → GMP
         bool use_u64 = norm.fits_uint64();
@@ -208,13 +223,16 @@ public:
             // Fast pre-check: skip primes that don't divide the norm.
             // Three-tier: uint64 % p, uint128 % p, or GMP mpz_divisible_ui_p.
             if (use_u64) {
-                if (norm_u64 % p != 0) continue;
+                if (norm_u64 % p != 0)
+                    continue;
 #if defined(__SIZEOF_INT128__)
             } else if (use_u128) {
-                if (norm_u128 % p != 0) continue;
+                if (norm_u128 % p != 0)
+                    continue;
 #endif
             } else {
-                if (mpz_divisible_ui_p(norm.get_mpz(), p) == 0) continue;
+                if (mpz_divisible_ui_p(norm.get_mpz(), p) == 0)
+                    continue;
             }
 
             // 检查 P | (a - bα):
@@ -225,10 +243,13 @@ public:
                 uint64_t b_mod = b % p64;
                 uint64_t br_mod = (b_mod * static_cast<uint64_t>(r)) % p64;
                 int64_t a_mod = a % static_cast<int64_t>(p);
-                if (a_mod < 0) a_mod += p;
-                if (static_cast<uint64_t>(a_mod) != br_mod) continue;
+                if (a_mod < 0)
+                    a_mod += p;
+                if (static_cast<uint64_t>(a_mod) != br_mod)
+                    continue;
             } else {
-                if (b % p != 0) continue;
+                if (b % p != 0)
+                    continue;
             }
 
             // 试除 — uint64 / uint128 / GMP 快路径
@@ -298,7 +319,8 @@ public:
 
         if (use_u64) {
             result.cofactor = norm_u64;
-            if (norm_u64 == 1) result.is_smooth = true;
+            if (norm_u64 == 1)
+                result.is_smooth = true;
 #if defined(__SIZEOF_INT128__)
         } else if (use_u128) {
             // Convert uint128 back to Integer
@@ -307,7 +329,8 @@ public:
             } else {
                 detail::trial_integer_from_u128(result.cofactor, norm_u128);
             }
-            if (norm_u128 == 1) result.is_smooth = true;
+            if (norm_u128 == 1)
+                result.is_smooth = true;
 #endif
         } else {
             result.cofactor = std::move(norm);
@@ -371,7 +394,8 @@ private:
 
     /// 纯 uint64 有理试除（从指定 FB 索引开始）
     /// 零 GMP 分配——整个流程在原生 uint64 算术内完成
-    [[nodiscard]] TrialDivisionResult divide_rational_u64_from(uint64_t value, uint32_t start_idx) const {
+    [[nodiscard]] TrialDivisionResult divide_rational_u64_from(uint64_t value,
+                                                               uint32_t start_idx) const {
         TrialDivisionResult result;
         // Reserve: typical relation has 8-15 distinct rat FB factors.
         result.factor_indices.reserve(16);
@@ -379,7 +403,7 @@ private:
 
         if (value == 0) {
             result.is_smooth = true;
-            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
+            result.cofactor = int64_t(1); // mpz_set_si on default-init buffer
             return result;
         }
 
@@ -388,13 +412,22 @@ private:
         // Wheel-2-3-5 fast prefix: only safe to apply when entering at index 0
         // and the FB really begins with 2,3,5 in that order.
         uint32_t idx_start = start_idx;
-        if (start_idx == 0 && rationals.size() >= 3 &&
-            rationals[0].p == 2 && rationals[1].p == 3 && rationals[2].p == 5) {
+        if (start_idx == 0 && rationals.size() >= 3 && rationals[0].p == 2 && rationals[1].p == 3 &&
+            rationals[2].p == 5) {
             uint8_t e2 = 0, e3 = 0, e5 = 0;
             value = wheel::strip_235(value, e2, e3, e5);
-            if (e2 > 0) { result.factor_indices.push_back(0); result.exponents.push_back(e2); }
-            if (e3 > 0) { result.factor_indices.push_back(1); result.exponents.push_back(e3); }
-            if (e5 > 0) { result.factor_indices.push_back(2); result.exponents.push_back(e5); }
+            if (e2 > 0) {
+                result.factor_indices.push_back(0);
+                result.exponents.push_back(e2);
+            }
+            if (e3 > 0) {
+                result.factor_indices.push_back(1);
+                result.exponents.push_back(e3);
+            }
+            if (e5 > 0) {
+                result.factor_indices.push_back(2);
+                result.exponents.push_back(e5);
+            }
             idx_start = 3;
 
             // Re-check early termination opportunities after wheel.
@@ -443,14 +476,14 @@ private:
             }
             // p² 早停: cofactor < p² 且 cofactor > rational_bound
             // cofactor 是素数且不在 FB 中 → 安全退出
-            if (value > fb_.params().rational_bound &&
-                value < static_cast<uint64_t>(p) * p) {
+            if (value > fb_.params().rational_bound && value < static_cast<uint64_t>(p) * p) {
                 break;
             }
         }
 
         result.cofactor = value;
-        if (value == 1) result.is_smooth = true;
+        if (value == 1)
+            result.is_smooth = true;
         return result;
     }
 };
