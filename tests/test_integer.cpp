@@ -10,6 +10,7 @@
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 using namespace gnfs::core;
 
@@ -359,6 +360,27 @@ void test_string_conversion_base_boundaries() {
     std::cout << "  String conversion bases: PASS" << std::endl;
 }
 
+void test_string_embedded_nul() {
+    std::cout << "Testing complete string parsing..." << std::endl;
+    for (const auto& input : {std::string({'\0', '1', '4', '3'}), std::string("143\0junk", 8),
+                              std::string("143\0", 4)}) {
+        for (const int base : {2, 10, 62}) {
+            bool rejected = false;
+            try {
+                (void)Integer(input, base);
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            }
+            GNFS_TEST_CHECK(rejected);
+        }
+    }
+    GNFS_TEST_CHECK(Integer(std::string("101"), 2) == Integer(5));
+    GNFS_TEST_CHECK(Integer(std::string("Z"), 62) == Integer(35));
+    const char terminated[] = {'1', '4', '3', '\0', '9', '\0'};
+    GNFS_TEST_CHECK(Integer(terminated) == Integer(143));
+    std::cout << "  Complete string parsing: PASS" << std::endl;
+}
+
 void test_uint64_construction() {
     std::cout << "Testing uint64_t construction..." << std::endl;
 
@@ -685,6 +707,7 @@ int main() {
     test_primality();
     test_stream_output();
     test_string_conversion_base_boundaries();
+    test_string_embedded_nul();
     test_uint64_construction();
     test_safe_abs();
     test_relation_ab_int64_min();
