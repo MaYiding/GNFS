@@ -121,6 +121,7 @@ definitions = '\n'.join(
     for name in ['MODULE_TESTS', 'MODULE_SLOW_TESTS', 'MODULE_CTEST_CONTRACTS',
                  'MODULE_DESC', 'MODULE_DEPS']
 )
+definitions += '\n' + extract(r'^typeset -a MODULE_ORDER\nMODULE_ORDER=\(.*?\)$')
 definitions += '\n' + '\n'.join(
     extract(rf'^{name}\(\) \{{\n.*?^\}}')
     for name in ['path_to_module', 'do_module', 'do_changed']
@@ -198,6 +199,8 @@ if route(['docs/algorithms/siqs-design.md'], ['--deep'], 0) != ['smoke']:
 if route([], ['--deep'], 0) != ['smoke']:
     raise SystemExit('No changes must retain the smoke fallback')
 route([header], ['--deep'], 1, fail_test='test_siqs_e2e')
+if 'test_int_polynomial' not in route(['tests/test_int_polynomial.cpp'], [], 0):
+    raise SystemExit('Catalog routing must use the real module iteration order')
 print('[PASS] changed selection, SIQS deep E2E, and failure propagation')
 
 # Exercise the full parser and dispatcher. A fake CMake terminates accepted
@@ -217,10 +220,16 @@ invalid = [
     ['changed', '--slow', '--deep'], ['diff', '--slow'],
     ['changed', '--deep', '--deep'], ['changed', 'siqs'],
     ['changed', '--depe'], ['--no-build', 'changed', '--slow'],
+    ['changed', '--save'], ['changed', '--compare'],
+    ['changed', '--deep', '--save'], ['changed', '--compare', '--deep'],
+    ['diff', '--save'], ['diff', '--deep', '--compare'],
+    ['--save', 'changed'], ['--compare', 'diff'],
+    ['--no-build', 'changed', '--save'], ['--no-build', 'diff', '--compare'],
 ]
 valid = [
     ['changed'], ['changed', '--deep'], ['--deep', 'changed'],
     ['diff', '--deep'], ['module', 'siqs', '--slow'],
+    ['bench', '--save'], ['bench', '--compare'],
 ]
 for options in invalid + valid:
     if marker.exists():
