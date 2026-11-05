@@ -38,7 +38,7 @@ SHELL_FUNCTION_SHA256 = {
         "4597d13f41083f419ba7d8b436e3cf592de6fcf86ec0acf339d4cbdfeac1719b"
     ),
     ("scripts/lib/process_tree_timeout.zsh", "gnfs_run_process_supervisor"): (
-        "1b2095568ca914b93a46d54d4fc4c1b448fc151a201744fbe109ce8c82eac339"
+        "4d1ff858acabc97120b1042a1b8a052d805aee86aabe0dc55f860e4c93cd9a46"
     ),
     ("scripts/lib/process_tree_timeout.zsh", "run_with_timeout"): (
         "d5e06613c0728fe7a3d8a55b53ffa544d8e5d25438f352169a41c991ae550837"
