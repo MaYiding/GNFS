@@ -239,9 +239,34 @@ state and synchronization, and must keep each predicate call bounded.
 This helper is not yet connected to `factor_once`, a coordinator, or shadow
 finalization. Cancelling construction grants no factor-result or shadow-return
 authority. One allocation, GMP operation, or `tonelli_shanks` invocation can
-still run between polls; dense elimination and the sparse solver also lack a
-native stop contract. This change therefore provides cooperative factor-base
-stopping, without establishing a wall-clock bound for a complete attempt.
+still run between polls; the sparse solver also lacks a native stop contract.
+This change therefore provides cooperative factor-base stopping, without
+establishing a wall-clock bound for a complete attempt.
+
+### Dense Elimination Stop Helper
+
+The internal `siqs_dense_detail::dense_gauss_left_nullspace_until` helper returns
+an optional dependency list. `nullopt` means cancellation; an engaged empty list
+means normal completion with no returned dependencies. A zero-argument `noexcept`
+predicate runs only on the calling thread. The helper checks it around dense
+workspace allocation, before each relation fill and pivot, before each serial
+target row, around parallel launch preparation, after all workers join, before
+each free column, and before publishing the result. Cancellation destroys the
+internal matrix and partial dependency list. Allocation and thread-launch
+exceptions continue to propagate after any accepted workers have joined.
+
+The parallel XOR batch runs to completion before the next poll. Workers receive
+no predicate, clock, or cancellation state. One allocation, row fill, packed row
+XOR, free-column extraction, or parallel batch can therefore delay cancellation.
+The predicate owner must keep calls bounded. This is cooperative stopping, not
+a hard deadline.
+
+The existing `dense_gauss_left_nullspace` wrapper passes `nullptr`, which removes
+predicate branches at compile time. Its return type, pivot order, dependency
+prefix, parallel threshold, partitions, and normal join order remain unchanged.
+No hot-path performance measurement is claimed. Only the explicit internal entry
+accepts cancellation; `solve_matrix`, `factor_once`, shadow finalization, and the
+multiplier coordinator retain their existing behavior and supply no stop predicate.
 
 ## Parameter Calibration
 

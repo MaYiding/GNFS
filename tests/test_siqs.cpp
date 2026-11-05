@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cassert>
 #include <chrono>
@@ -568,6 +569,11 @@ void test_dense_gauss_kernel_oracle() {
                     relations, columns, std::numeric_limits<size_t>::max());
                 require_test(complete.size() == nullity,
                              "dense solver omitted a kernel basis vector");
+                const auto stoppable = siqs_dense_detail::dense_gauss_left_nullspace_until(
+                    relations, columns, std::numeric_limits<size_t>::max(),
+                    []() noexcept { return false; });
+                require_test(stoppable && *stoppable == complete,
+                             "non-cancelled dense helper changed the complete kernel sequence");
                 for (size_t limit : {size_t{0}, size_t{1}, size_t{2}, size_t{4}}) {
                     const auto dependencies = dense_gauss_left_nullspace(relations, columns, limit);
                     require_test(dependencies.size() == std::min(limit, nullity),
@@ -707,6 +713,105 @@ void test_dense_gauss_parallel_kernel() {
     require_test(prefix == std::vector<std::vector<size_t>>(expected.begin(), expected.begin() + 2),
                  "parallel max_deps changed the deterministic dependency prefix");
     std::puts("  dense_gauss parallel kernel: PASS (20001 columns, 6 rows, 3 pivots)");
+}
+
+struct DenseStopProbe {
+    std::thread::id caller = std::this_thread::get_id();
+    std::atomic<size_t> calls{0};
+    std::atomic<bool> caller_only{true};
+    size_t cancel_at = std::numeric_limits<size_t>::max();
+
+    bool operator()() noexcept {
+        if (std::this_thread::get_id() != caller)
+            caller_only.store(false, std::memory_order_relaxed);
+        return calls.fetch_add(1, std::memory_order_relaxed) + 1 == cancel_at;
+    }
+};
+
+std::vector<SIQSRelation> dense_stop_fixture(size_t columns) {
+    constexpr std::array<uint32_t, 6> row_bits{1, 2, 3, 0, 4, 5};
+    std::vector<SIQSRelation> relations(row_bits.size());
+    for (size_t row = 0; row < relations.size(); ++row) {
+        relations[row].negative = (row_bits[row] & 1) != 0;
+        relations[row].exponents.resize(columns, 0);
+        for (size_t column = 1; column < columns; ++column)
+            relations[row].exponents[column] =
+                static_cast<uint8_t>((row_bits[row] >> (column % 3)) & 1);
+    }
+    return relations;
+}
+
+void test_dense_gauss_cooperative_stop() {
+    using siqs_dense_detail::dense_gauss_left_nullspace_until;
+    const std::vector<std::vector<size_t>> expected{{2, 0, 1}, {3}, {5, 0, 4}};
+    size_t cancellation_cases = 0;
+    for (size_t columns : {size_t{3}, size_t{20001}}) {
+        const auto relations = dense_stop_fixture(columns);
+        DenseStopProbe complete_probe;
+        const auto complete =
+            dense_gauss_left_nullspace_until(relations, columns, 64, complete_probe);
+        require_test(complete && *complete == expected && complete_probe.caller_only.load(),
+                     "dense stop helper changed the kernel or polled outside its caller");
+        const size_t total_polls = complete_probe.calls.load();
+        std::set<size_t> cancel_points;
+        if (columns == 3) {
+            for (size_t point = 1; point <= total_polls; ++point)
+                cancel_points.insert(point);
+        } else {
+            // The first three equation rows are independent pivots. Cover all
+            // setup, prelaunch, and post-join polls for these real batches;
+            // sample the zero equations and every extraction/publication poll.
+            for (size_t point = 1; point <= 23; ++point)
+                cancel_points.insert(point);
+            cancel_points.insert(total_polls / 2);
+            for (size_t point = total_polls - expected.size(); point <= total_polls; ++point)
+                cancel_points.insert(point);
+        }
+        for (size_t point : cancel_points) {
+            DenseStopProbe probe;
+            probe.cancel_at = point;
+            const auto cancelled = dense_gauss_left_nullspace_until(relations, columns, 64, probe);
+            require_test(!cancelled && probe.calls.load() == point && probe.caller_only.load(),
+                         "dense cancellation published partial dependencies or kept polling");
+            ++cancellation_cases;
+        }
+        const auto prefix = dense_gauss_left_nullspace_until(relations, columns, 2,
+                                                             []() noexcept { return false; });
+        require_test(prefix && *prefix == std::vector<std::vector<size_t>>(expected.begin(),
+                                                                           expected.begin() + 2),
+                     "non-cancelled helper changed max_deps ordering");
+        const auto zero_limit = dense_gauss_left_nullspace_until(relations, columns, 0,
+                                                                 []() noexcept { return false; });
+        require_test(zero_limit && zero_limit->empty(),
+                     "zero dependency limit was confused with cancellation");
+    }
+    const auto empty = dense_gauss_left_nullspace_until({}, 3, 64, []() noexcept { return false; });
+    require_test(empty && empty->empty(), "empty input was confused with cancellation");
+    auto full_rank = dense_stop_fixture(3);
+    full_rank = {full_rank[0], full_rank[1], full_rank[4]};
+    const auto trivial_kernel =
+        dense_gauss_left_nullspace_until(full_rank, 3, 64, []() noexcept { return false; });
+    require_test(trivial_kernel && trivial_kernel->empty(),
+                 "normal zero-dimensional kernel was confused with cancellation");
+
+    DenseStopProbe immediate;
+    immediate.cancel_at = 1;
+    const auto before_allocation = dense_gauss_left_nullspace_until(
+        full_rank, std::numeric_limits<size_t>::max(), 64, immediate);
+    require_test(!before_allocation && immediate.calls.load() == 1,
+                 "initial cancellation did not precede workspace allocation");
+    DenseStopProbe allocation_probe;
+    bool allocation_threw = false;
+    try {
+        (void)dense_gauss_left_nullspace_until(full_rank, std::numeric_limits<size_t>::max(), 64,
+                                               allocation_probe);
+    } catch (const std::length_error&) {
+        allocation_threw = true;
+    }
+    require_test(allocation_threw && allocation_probe.calls.load() == 1,
+                 "dense helper converted an allocation exception into cancellation");
+    std::printf("  dense_gauss cooperative stop: PASS (%zu cancellation boundaries)\n",
+                cancellation_cases);
 }
 
 void test_init_poly_handles_large_a_factor_count() {
@@ -1156,6 +1261,7 @@ int main() {
     test_dense_gauss_singleton_extraction();
     test_dense_gauss_kernel_oracle();
     test_dense_gauss_parallel_kernel();
+    test_dense_gauss_cooperative_stop();
     test_init_poly_handles_large_a_factor_count();
     test_siqs_rejects_tiny_inputs_without_sieving();
     test_split_cofactor_edge();

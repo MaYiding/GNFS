@@ -1609,18 +1609,40 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
 /// Dense GF(2) Gaussian elimination — much faster than sparse for SIQS matrices
 /// Finds the left null space of M (row dependencies).
 /// Matrix layout: ncols rows × nrows cols (transposed), packed in 64-bit words
-inline std::vector<std::vector<size_t>>
-dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb_size,
-                           size_t max_deps = 64) {
+namespace siqs_dense_detail {
+
+/// Cooperative cancellation discards all intermediate state and returns nullopt.
+/// Only the calling thread invokes the noexcept predicate. nullptr disables polling.
+template <typename StopPredicate>
+inline std::optional<std::vector<std::vector<size_t>>>
+dense_gauss_left_nullspace_until(const std::vector<SIQSRelation>& relations, size_t fb_size,
+                                 size_t max_deps, StopPredicate&& stop) {
+    constexpr bool cancellable =
+        !std::is_same_v<std::remove_cvref_t<StopPredicate>, std::nullptr_t>;
+    static_assert(!cancellable || std::is_nothrow_invocable_r_v<bool, StopPredicate&>);
     size_t nrows = relations.size();
     size_t ncols = fb_size;
 
     // Build M^T as dense packed matrix (ncols rows × nrows columns)
     // Each row is a word-packed bit vector of nrows bits
     size_t words_per_row = (nrows + 63) / 64;
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     std::vector<std::vector<uint64_t>> M(ncols, std::vector<uint64_t>(words_per_row, 0));
 
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
+
     for (size_t r = 0; r < nrows; r++) {
+        if constexpr (cancellable) {
+            if (stop())
+                return std::nullopt;
+        }
+
         const auto& rel = relations[r];
         size_t word = r / 64, bit = r % 64;
         if (rel.negative)
@@ -1634,10 +1656,28 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
 
     // Gaussian elimination on M^T (ncols × nrows)
     // Find pivot in each row (column of M^T = relation index)
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     std::vector<size_t> pivot_col(ncols, SIZE_MAX);
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     std::vector<bool> is_pivot(nrows, false);
 
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
+
     for (size_t row = 0; row < ncols; row++) {
+        if constexpr (cancellable) {
+            if (stop())
+                return std::nullopt;
+        }
+
         // Find leftmost set bit
         size_t pc = SIZE_MAX;
         for (size_t w = 0; w < words_per_row; w++) {
@@ -1657,6 +1697,11 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
         const uint64_t* pivot_row_data = M[row].data();
 
         if (ncols > 20000) {
+            if constexpr (cancellable) {
+                if (stop())
+                    return std::nullopt;
+            }
+
             // Parallel elimination only for very large matrices
             // (thread creation per pivot: ~70μs overhead vs ~10μs work for ncols<10K)
             unsigned nt = std::max(1u, std::thread::hardware_concurrency());
@@ -1675,6 +1720,11 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
             // Join earlier workers if a later thread constructor throws.
             std::vector<gnfs::util::JoiningThread> threads;
             threads.reserve(nt);
+            if constexpr (cancellable) {
+                if (stop())
+                    return std::nullopt;
+            }
+
             for (unsigned t = 0; t < nt; t++) {
                 size_t s = t * chunk, e = std::min(s + chunk, ncols);
                 if (s < e)
@@ -1682,8 +1732,17 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
             }
             for (auto& t : threads)
                 t.join();
+            if constexpr (cancellable) {
+                if (stop())
+                    return std::nullopt;
+            }
+
         } else {
             for (size_t other = 0; other < ncols; other++) {
+                if constexpr (cancellable) {
+                    if (stop())
+                        return std::nullopt;
+                }
                 if (other == row)
                     continue;
                 if (M[other][w_pc] & mask) {
@@ -1700,6 +1759,10 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
     for (size_t col = 0; col < nrows && deps.size() < max_deps; col++) {
         if (is_pivot[col])
             continue;
+        if constexpr (cancellable) {
+            if (stop())
+                return std::nullopt;
+        }
         // Free variable col → null vector
         std::vector<size_t> dep;
         dep.push_back(col);
@@ -1716,7 +1779,20 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
         // already yield a nontrivial factor from its square congruence.
         deps.push_back(std::move(dep));
     }
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     return deps;
+}
+
+} // namespace siqs_dense_detail
+
+inline std::vector<std::vector<size_t>>
+dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb_size,
+                           size_t max_deps = 64) {
+    return std::move(*siqs_dense_detail::dense_gauss_left_nullspace_until(relations, fb_size,
+                                                                          max_deps, nullptr));
 }
 
 /// Build GF(2) matrix from relations and find null space
