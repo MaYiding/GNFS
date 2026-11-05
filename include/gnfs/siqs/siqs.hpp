@@ -2340,13 +2340,39 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
         }
     };
 
-    // Launch threads
-    std::vector<std::thread> threads;
-    for (unsigned t = 0; t < num_threads && elapsed() < static_cast<double>(max_seconds); t++) {
-        threads.emplace_back(sieve_worker, t);
+    // Each worker owns its exception slot; the caller reads only after join.
+    std::vector<std::exception_ptr> worker_failures;
+    auto guarded_sieve_worker = [&](unsigned thread_id) noexcept {
+        try {
+            sieve_worker(thread_id);
+        } catch (...) {
+            worker_failures[thread_id] = std::current_exception();
+            enough.store(true, std::memory_order_relaxed);
+        }
+    };
+
+    // Keep thread owners after every captured object so failed launches drain
+    // their workers before any referenced state is destroyed.
+    std::vector<util::JoiningThread> threads;
+    if (elapsed() < static_cast<double>(max_seconds)) {
+        worker_failures.resize(num_threads);
+        threads.reserve(num_threads);
+    }
+    try {
+        for (unsigned t = 0; t < num_threads && elapsed() < static_cast<double>(max_seconds); t++) {
+            threads.emplace_back(guarded_sieve_worker, t);
+        }
+    } catch (...) {
+        enough.store(true, std::memory_order_relaxed);
+        throw;
     }
     for (auto& t : threads)
         t.join();
+    // Resource failures must not publish a partial corpus or a shadow record.
+    for (const auto& failure : worker_failures) {
+        if (failure)
+            std::rethrow_exception(failure);
+    }
     num_polys = atomic_polys.load();
 
     if (verbose) {

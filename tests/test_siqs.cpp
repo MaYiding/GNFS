@@ -8,7 +8,6 @@
 #include <array>
 #include <atomic>
 #include <bit>
-#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -327,20 +326,21 @@ void test_one_large_prime_rejects_strong_pseudoprimes() {
 void test_tonelli_shanks() {
     // sqrt(2) mod 7 = 3 (since 3^2 = 9 ≡ 2 mod 7)
     uint32_t r = tonelli_shanks(2, 7);
-    assert(r == 3 || r == 4); // 3 or 7-3=4
-    assert((uint64_t)r * r % 7 == 2);
+    require_test(r == 3 || r == 4,
+                 "tonelli_shanks returned an incorrect root for 2 mod 7"); // 3 or 7-3=4
+    require_test((uint64_t)r * r % 7 == 2, "tonelli_shanks root failed for 2 mod 7");
 
     // sqrt(2) mod 17 = 6 (since 6^2 = 36 ≡ 2 mod 17)
     r = tonelli_shanks(2, 17);
-    assert((uint64_t)r * r % 17 == 2);
+    require_test((uint64_t)r * r % 17 == 2, "tonelli_shanks root failed for 2 mod 17");
 
     // sqrt(3) mod 13 = 4 (since 4^2 = 16 ≡ 3 mod 13)
     r = tonelli_shanks(3, 13);
-    assert((uint64_t)r * r % 13 == 3);
+    require_test((uint64_t)r * r % 13 == 3, "tonelli_shanks root failed for 3 mod 13");
 
     // Non-QR: 2 mod 5 (Legendre = -1)
     r = tonelli_shanks(2, 5);
-    assert(r == 0);
+    require_test(r == 0, "tonelli_shanks accepted a non-residue");
 
     printf("  tonelli_shanks: PASS\n");
 }
@@ -351,12 +351,12 @@ void test_split_cofactor_edge() {
     // 1. n=1: 无意义
     {
         auto [p1, p2] = split_cofactor_64(1);
-        assert(p1 == 0 && p2 == 0);
+        require_test(p1 == 0 && p2 == 0, "split_cofactor accepted a trivial input");
     }
     // 2. n=0: 无意义
     {
         auto [p1, p2] = split_cofactor_64(0);
-        assert(p1 == 0 && p2 == 0);
+        require_test(p1 == 0 && p2 == 0, "split_cofactor accepted a trivial input");
     }
     // 3. 大素数(无法分解 — 所有方法应失败)
     // 1099511627791 是素数(2^40 + 15)
@@ -365,28 +365,30 @@ void test_split_cofactor_edge() {
         // 素数情况下 trial division 和 Pollard rho 都应失败,返回 {0, 0}
         // 注:也可能因为是边界数,SQUFOF 会循环退出 — 关键是返回的不应是 {p, n/p}
         // 因为素数无非平凡因子。
-        assert(p1 == 0 || p1 * p2 == 1099511627791ULL);
+        require_test(p1 == 0 || p1 * p2 == 1099511627791ULL,
+                     "split_cofactor returned an incorrect prime split");
         if (p1 != 0) {
             // 若声称分解了,验证 p1 * p2 == n
-            assert(p1 > 1 && p1 < 1099511627791ULL);
+            require_test(p1 > 1 && p1 < 1099511627791ULL,
+                         "split_cofactor returned a trivial prime factor");
         }
     }
     // 4. 平方数:n=p²,split 应返回 {p, p}
     {
         // 1009² = 1018081
         auto [p1, p2] = split_cofactor_64(1018081ULL);
-        assert(p1 == 1009 && p2 == 1009);
+        require_test(p1 == 1009 && p2 == 1009, "split_cofactor failed for a square");
     }
     // 5. 简单半素数:7 * 13 = 91
     {
         auto [p1, p2] = split_cofactor_64(91);
-        assert(p1 == 7 && p2 == 13);
+        require_test(p1 == 7 && p2 == 13, "split_cofactor failed for 91");
     }
     // 6. 三因子合数:2 * 3 * 5 = 30 → split 应返回某对 (a, b) 满足 a*b=30
     {
         auto [p1, p2] = split_cofactor_64(30);
-        assert(p1 * p2 == 30);
-        assert(p1 > 1 && p2 > 1);
+        require_test(p1 * p2 == 30, "split_cofactor returned an incorrect product for 30");
+        require_test(p1 > 1 && p2 > 1, "split_cofactor returned a trivial factor for 30");
     }
 
     printf("  split_cofactor edge cases: PASS\n");
@@ -395,14 +397,15 @@ void test_split_cofactor_edge() {
 void test_factor_base() {
     Integer N("1000000007"); // prime, but we're testing FB construction
     auto fb = build_factor_base(N, 20);
-    assert(fb.size() >= 20);
+    require_test(fb.size() >= 20, "factor base has too few entries");
 
     // Verify sqrt(N) mod p is correct for each FB prime
     for (size_t i = 1; i < fb.size(); i++) {
         uint32_t p = fb[i].p;
         uint32_t sq = fb[i].sqrt_n;
         uint64_t n_mod = mpz_fdiv_ui(N.get_mpz(), p);
-        assert(((uint64_t)sq * sq) % p == n_mod % p);
+        require_test(((uint64_t)sq * sq) % p == n_mod % p,
+                     "factor base root does not square to N modulo p");
     }
 
     printf("  factor_base: PASS (%zu primes)\n", fb.size());
@@ -1373,11 +1376,11 @@ void test_siqs_20digit() {
         auto f1 = result->factor1, f2 = result->factor2;
         if (f1 > f2)
             std::swap(f1, f2);
-        assert(f1 * f2 == N);
+        require_test(f1 * f2 == N, "19-digit SIQS factors do not multiply to N");
         printf("  siqs_20digit: PASS (%.3fs, %zu polys)\n", elapsed, result->polynomials_used);
     } else {
         printf("  siqs_20digit: FAIL — no factor found (%.3fs)\n", elapsed);
-        assert(false);
+        require_test(false, "19-digit SIQS found no factor");
     }
 }
 
@@ -1389,7 +1392,7 @@ void test_siqs_30digit() {
 
     auto result = factor(N, 60, true);
     if (result) {
-        assert(result->factor1 * result->factor2 == N);
+        require_test(result->factor1 * result->factor2 == N, "SIQS factors do not multiply to N");
         printf("  siqs_30digit: PASS (%.3fs, %zu polys)\n", result->time_seconds,
                result->polynomials_used);
     } else {
@@ -1406,7 +1409,7 @@ void test_siqs_40digit() {
 
     auto result = factor(N, 120, true);
     if (result) {
-        assert(result->factor1 * result->factor2 == N);
+        require_test(result->factor1 * result->factor2 == N, "SIQS factors do not multiply to N");
         printf("  siqs_40digit: PASS (%.3fs, %zu polys)\n", result->time_seconds,
                result->polynomials_used);
     } else {

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <initializer_list>
 #include <new>
 #include <string>
@@ -19,6 +20,8 @@ namespace {
 std::atomic<bool> observing{false};
 std::atomic<size_t> caller_requests{0};
 std::atomic<size_t> worker_requests{0};
+std::atomic<size_t> failing_worker_bytes{0};
+std::atomic<bool> allocation_failure_triggered{false};
 std::thread::id caller;
 size_t caller_bytes = 0;
 size_t worker_bytes = 0;
@@ -28,8 +31,15 @@ void* allocate(size_t bytes) {
         if (std::this_thread::get_id() == caller) {
             if (bytes == caller_bytes)
                 caller_requests.fetch_add(1, std::memory_order_relaxed);
-        } else if (bytes == worker_bytes) {
-            worker_requests.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            if (bytes == worker_bytes)
+                worker_requests.fetch_add(1, std::memory_order_relaxed);
+            size_t expected = bytes;
+            if (bytes != 0 && failing_worker_bytes.compare_exchange_strong(
+                                  expected, 0, std::memory_order_relaxed)) {
+                allocation_failure_triggered.store(true, std::memory_order_relaxed);
+                throw std::bad_alloc{};
+            }
         }
     }
     if (void* pointer = std::malloc(bytes == 0 ? 1 : bytes))
@@ -39,10 +49,12 @@ void* allocate(size_t bytes) {
 
 class ScopedObserver final {
 public:
-    ScopedObserver() noexcept {
+    explicit ScopedObserver(size_t fail_bytes = 0) noexcept {
         caller = std::this_thread::get_id();
         caller_requests.store(0, std::memory_order_relaxed);
         worker_requests.store(0, std::memory_order_relaxed);
+        failing_worker_bytes.store(fail_bytes, std::memory_order_relaxed);
+        allocation_failure_triggered.store(false, std::memory_order_relaxed);
         observing.store(true, std::memory_order_relaxed);
     }
     ~ScopedObserver() {
@@ -63,8 +75,8 @@ size_t occurrences(std::string_view text, std::string_view token) {
 }
 } // namespace
 
-// Keep replacement symbols under Release LTO. This isolated executable only
-// observes requests; it never injects an allocation failure into native workers.
+// Keep replacement symbols under Release LTO. Faults are one-shot and target
+// native worker buffer sizes, never a platform-specific allocation ordinal.
 #if defined(__GNUC__) || defined(__clang__)
 #define GNFS_TEST_ALLOCATION_REPLACEMENT __attribute__((used))
 #else
@@ -114,6 +126,24 @@ int main() {
     }
     GNFS_TEST_CHECK(caller_requests.load() > 0 && worker_requests.load() > 0);
 
+    // Prove the failure injector independently of native code or allocation
+    // elision, then require each real worker fault below to trigger as well.
+    std::atomic<bool> self_check_caught{false};
+    {
+        ScopedObserver observer(worker_bytes);
+        std::thread worker([&] {
+            void* (*volatile forced_allocate)(size_t) = &::operator new;
+            try {
+                void* memory = forced_allocate(worker_bytes);
+                ::operator delete(memory);
+            } catch (const std::bad_alloc&) {
+                self_check_caught.store(true, std::memory_order_relaxed);
+            }
+        });
+        worker.join();
+    }
+    GNFS_TEST_CHECK(self_check_caught.load() && allocation_failure_triggered.load());
+
     for (const size_t seconds : {size_t(0), size_t(1)}) {
         for (const auto mode : {SIQSShadowProofMode::off, SIQSShadowProofMode::observe,
                                 SIQSShadowProofMode::prefer}) {
@@ -139,6 +169,32 @@ int main() {
         }
     }
 
+    // The independent test process must catch actual native worker allocation
+    // failures before any observe/prefer terminal record is committed. Each
+    // size is derived from the fixture; no hardware worker count is assumed.
+    for (const size_t failure_bytes :
+         {(static_cast<size_t>(params.fb_size) + 1 + 50) * sizeof(SIQSRelation), worker_bytes,
+          static_cast<size_t>(params.fb_size) + 100}) {
+        for (const auto mode : {SIQSShadowProofMode::off, SIQSShadowProofMode::observe,
+                                SIQSShadowProofMode::prefer}) {
+            const FactorAttemptContext context{Clock::now(), 30, false, 3, params};
+            ScopedStderrCapture capture;
+            bool caught = false;
+            {
+                ScopedObserver observer(failure_bytes);
+                try {
+                    (void)factor_once(n, 1, mode, context);
+                } catch (const std::bad_alloc&) {
+                    caught = true;
+                }
+            }
+            const auto record = capture.finish();
+            GNFS_TEST_CHECK(caught && allocation_failure_triggered.load());
+            GNFS_TEST_CHECK(occurrences(record, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 0);
+            GNFS_TEST_CHECK(occurrences(record, SIQS_SHADOW_PROOF_PREFER_DECISION_PREFIX) == 0);
+        }
+    }
+
     // Exercise the real unexpired path rather than trusting only synthetic
     // allocation controls. No exact hardware-worker or allocation count is pinned.
     const FactorAttemptContext context{Clock::now(), 30, false, 3, params};
@@ -158,5 +214,6 @@ int main() {
     GNFS_TEST_CHECK(!outcome.observe_record_committed &&
                     !outcome.result->shadow_proof_observe_record_committed);
     std::puts(
-        "SIQS sieve budget admission: PASS (expired buffers, shadow terminals, native control)");
+        "SIQS sieve budget admission: PASS (expired buffers, worker failures, shadow terminals, "
+        "native control)");
 }

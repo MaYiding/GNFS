@@ -187,6 +187,14 @@ Expiration between a check and an operation is still possible; factor-base,
 individual polynomial, shadow, merge, solver, and extraction work do not acquire
 a hard deadline from these admission checks.
 
+Native sieve workers capture exceptions in separate per-worker slots. Every
+started worker is joined before the caller rethrows a worker failure, before
+shadow records, merging, or factor extraction can publish a partial result.
+If thread launch fails, joining owners drain the already started workers while
+their captured state remains alive. Both failure paths request stopping through
+the existing polynomial boundaries; successful worker computation is unchanged.
+Thread and exception storage is prepared only while sieve admission is open.
+
 ## Explicit Multiplier Coordination
 
 `siqs_factor_detail::factor_multiplier_portfolio` is an internal, explicitly

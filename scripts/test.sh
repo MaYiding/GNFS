@@ -1471,6 +1471,25 @@ do_build() {
     # Let CMake select the generator's verbose option. Native Make -v prints
     # its version and exits without building any target.
     (( VERBOSE )) && build_command+=(--verbose)
+    # Make looks up a requested target before checking CMake dependencies. A new
+    # target may therefore need regeneration first. Use the generated check only
+    # when present (it is absent when regeneration is explicitly suppressed).
+    local cached_generator
+    cached_generator=$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "${BUILD_DIR}/CMakeCache.txt")
+    if (( $# > 0 )) &&
+       [[ "$cached_generator" == *Makefiles* || "$cached_generator" == "Watcom WMake" ]] &&
+       [[ -f "${BUILD_DIR}/Makefile" ]] &&
+       grep -q '^cmake_check_build_system[[:space:]]*:' "${BUILD_DIR}/Makefile"; then
+        local check_output
+        if ! check_output=$("${build_command[@]}" --target cmake_check_build_system 2>&1); then
+            echo "$check_output"
+            log_fail "CMake 构建系统检查失败"
+            return 1
+        fi
+        if (( VERBOSE )) && [[ -n "$check_output" ]]; then
+            echo "$check_output"
+        fi
+    fi
     if (( $# > 0 )); then
         build_command+=(--target "$@")
         log_info "构建目标: $*"
