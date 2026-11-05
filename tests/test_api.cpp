@@ -1992,8 +1992,9 @@ bool callback_owner_operations_are_rejected(const Config& cfg,
         partial_rejected =
             std::string_view(error.what()).find("active Pipeline owner") != std::string_view::npos;
     }
-    if (!copy_failed || !partial_rejected) {
-        std::cout << "(caught partial owner assignment bypassed callback guard) ";
+    if (!copy_failed || !partial_rejected ||
+        partial.stats().n_bits != throwing_donor.stats().n_bits) {
+        std::cout << "(caught partial owner assignment bypassed guard or restored stale stats) ";
         return false;
     }
 
@@ -5083,6 +5084,155 @@ bool test_early_phase_callback_guards() {
     return true;
 }
 
+bool test_owner_replacement_preserves_replacement_state() {
+    ScopedEnvironmentVariable resume("GNFS_RESUME", std::nullopt);
+    ScopedEnvironmentVariable sieve_resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline setup(Integer(143), cfg);
+    auto original = setup.select_polynomial();
+    auto original_fb = setup.build_factor_base(original);
+    auto replacement_ctx = alternate_same_n_context(original);
+    Pipeline donor(Integer(143), cfg);
+    (void)donor.build_factor_base(replacement_ctx);
+    const auto donor_rational_count = donor.stats().rational_primes;
+    if (donor_rational_count == 0) {
+        std::cout << "(replacement owner did not establish observable stats) ";
+        return false;
+    }
+
+    for (const int phase : {0, 1, 2, 3, 4, 5, 6}) {
+        Pipeline active(Integer(143), cfg);
+        auto reduction = active.filter({});
+        Pipeline::MatrixResult empty_matrix;
+        bool invoked = false;
+        auto replace_owner = [&] {
+            auto* target = &active;
+            auto* replacement = &donor;
+            auto* observed = &invoked;
+            *observed = true;
+            *target = *replacement;
+        };
+        if (phase == 6) {
+            active.set_log_callback([&](const LogEntry& entry) {
+                if (entry.message.starts_with("Method:"))
+                    replace_owner();
+            });
+        } else {
+            active.set_progress_callback([&](const ProgressInfo& info) {
+                if ((phase == 0 && info.message == "Starting polynomial selection") ||
+                    (phase == 1 && info.message == "Building factor base") ||
+                    (phase == 2 && info.message == "Filtering relations") ||
+                    (phase == 3 && info.message == "Starting sieve") ||
+                    (phase == 4 && info.message == "Building matrix") ||
+                    (phase == 5 && info.message == "Starting factor extraction"))
+                    replace_owner();
+            });
+        }
+        bool rejected = false;
+        try {
+            if (phase == 0)
+                (void)active.select_polynomial();
+            else if (phase == 1)
+                (void)active.build_factor_base(original);
+            else if (phase == 2)
+                (void)active.filter({});
+            else if (phase == 3)
+                (void)active.sieve_and_collect(original, original_fb);
+            else if (phase == 4)
+                (void)active.build_matrix(std::move(reduction), original_fb, original);
+            else if (phase == 5)
+                (void)active.extract_factors(empty_matrix, original_fb, original);
+            else
+                (void)active.run();
+        } catch (const std::invalid_argument& error) {
+            rejected = std::string_view(error.what()).find("active Pipeline owner") !=
+                       std::string_view::npos;
+        }
+        if (!invoked || !rejected || active.stats().rational_primes != donor_rational_count) {
+            std::cout << "(owner replacement restored stale stats: phase=" << phase << ") ";
+            return false;
+        }
+        bool original_rejected = false;
+        try {
+            (void)active.build_factor_base(original);
+        } catch (const std::invalid_argument& error) {
+            original_rejected =
+                std::string_view(error.what()).find("different polynomial context") !=
+                std::string_view::npos;
+        }
+        if (!original_rejected) {
+            std::cout << "(owner replacement lost binding: phase=" << phase << ") ";
+            return false;
+        }
+        try {
+            (void)active.build_factor_base(replacement_ctx);
+        } catch (const std::exception& error) {
+            std::cout << "(replacement binding failed: phase=" << phase << " " << error.what()
+                      << ") ";
+            return false;
+        }
+    }
+    // The replaced owner's modulus metadata must not be overwritten by the
+    // prior invocation's statistics, even when the moduli have different sizes.
+    Pipeline active(Integer(143), cfg);
+    Pipeline different_n(Integer("1000036000099"), cfg);
+    const auto replacement_bits = different_n.stats().n_bits;
+    active.set_log_callback([&](const LogEntry& entry) {
+        if (entry.message.starts_with("Method:")) {
+            auto* target = &active;
+            auto* replacement = &different_n;
+            *target = *replacement;
+        }
+    });
+    bool different_n_rejected = false;
+    try {
+        (void)active.run();
+    } catch (const std::invalid_argument& error) {
+        different_n_rejected =
+            std::string_view(error.what()).find("active Pipeline owner") != std::string_view::npos;
+    }
+    if (!different_n_rejected || active.stats().n_bits != replacement_bits) {
+        std::cout << "(owner replacement mixed stats from different moduli) ";
+        return false;
+    }
+
+    Pipeline moving(Integer(143), cfg);
+    (void)moving.build_factor_base(original);
+    const auto moved_count = moving.stats().rational_primes;
+    std::optional<Pipeline> moved;
+    moving.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message == "Filtering relations") {
+            auto* source = &moving;
+            auto* destination = &moved;
+            destination->emplace(std::move(*source));
+        }
+    });
+    bool move_rejected = false;
+    try {
+        (void)moving.filter({});
+    } catch (const std::invalid_argument& error) {
+        move_rejected =
+            std::string_view(error.what()).find("active Pipeline owner") != std::string_view::npos;
+    }
+    if (!move_rejected || !moved || moved->stats().rational_primes != moved_count) {
+        std::cout << "(moving an active owner damaged the moved-to state) ";
+        return false;
+    }
+    moved->set_progress_callback({});
+    try {
+        (void)moved->build_factor_base(original);
+    } catch (const std::exception& error) {
+        std::cout << "(moved-to owner lost its binding: " << error.what() << ") ";
+        return false;
+    }
+    return true;
+}
+
 bool test_checkpoint_callback_exceptions_propagate() {
     SieveResumeArtifacts files(gnfs::util::temp_path("gnfs_test_checkpoint_callback_" +
                                                      std::to_string(gnfs::util::process_id())));
@@ -5658,6 +5808,7 @@ int main() {
     TEST(sieve_resume_policy_identity_preflight);
     TEST(checkpoint_callback_exceptions_propagate);
     TEST(early_phase_callback_guards);
+    TEST(owner_replacement_preserves_replacement_state);
     TEST(sieve_schema3_checkpoint_is_preserved_then_schema4_recovers);
     TEST(target_environment_callback_preserves_stage_identity);
     TEST(sieve_resume_with_paired_checkpoint);
