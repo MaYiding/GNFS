@@ -2997,6 +2997,11 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SIQS COMMAND test_siqs)
     set_tests_properties(SIQS PROPERTIES LABELS "fast" TIMEOUT 180)
 
+    add_executable(test_siqs_budget_admission tests/test_siqs_budget_admission.cpp)
+    target_link_libraries(test_siqs_budget_admission PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsBudgetAdmission COMMAND test_siqs_budget_admission)
+    set_tests_properties(SiqsBudgetAdmission PROPERTIES LABELS "fast" TIMEOUT 60)
+
     add_executable(test_siqs_multiplier_coordinator
         tests/test_siqs_multiplier_coordinator.cpp
     )

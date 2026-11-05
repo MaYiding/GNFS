@@ -178,6 +178,15 @@ Factor-base construction, both linear-algebra backends, and the remaining long
 stages still require a coherent cooperative cancellation contract before an
 end-to-end deadline can be claimed.
 
+Before reserving the native relation buffer, admitting each sieve worker, and
+allocating a worker's local buffers, the attempt checks its existing shared
+elapsed budget. An already expired attempt skips that sieve work and continues
+through the ordinary empty-corpus shadow and terminal handling. Zero-budget
+observe/prefer records and committed-result authority remain unchanged.
+Expiration between a check and an operation is still possible; factor-base,
+individual polynomial, shadow, merge, solver, and extraction work do not acquire
+a hard deadline from these admission checks.
+
 ## Explicit Multiplier Coordination
 
 `siqs_factor_detail::factor_multiplier_portfolio` is an internal, explicitly
