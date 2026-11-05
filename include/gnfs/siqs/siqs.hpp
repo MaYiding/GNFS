@@ -437,14 +437,28 @@ inline uint32_t select_multiplier(const Integer& N) {
         ->multiplier;
 }
 
-/// Build factor base: primes p where Legendre(N, p) = 1
-inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
+namespace siqs_factor_base_detail {
+
+/// A true stop predicate discards the internal factor base and returns nullopt.
+/// The zero-argument predicate must not throw. nullptr removes polling at compile time.
+template <typename StopPredicate>
+inline std::optional<std::vector<FBPrime>> build_factor_base_until(const Integer& N, size_t count,
+                                                                   StopPredicate&& stop) {
+    constexpr bool cancellable =
+        !std::is_same_v<std::remove_cvref_t<StopPredicate>, std::nullptr_t>;
+    static_assert(!cancellable || std::is_nothrow_invocable_r_v<bool, StopPredicate&>);
+
     // FB entries use uint32_t prime values.  There are at most one sentinel,
     // p=2, and one entry for each odd uint32_t candidate.
     constexpr size_t max_factor_base_entries =
         static_cast<size_t>(std::numeric_limits<uint32_t>::max() / 2u) + 2;
     if (count >= max_factor_base_entries) {
         throw std::overflow_error("SIQS factor-base count exceeds uint32_t prime domain");
+    }
+
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
     }
 
     std::vector<FBPrime> fb;
@@ -456,16 +470,21 @@ inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
     // N mod p for small primes — use GMP
     mpz_srcptr nz = N.get_mpz();
 
-    auto is_prime = [](uint32_t n) -> bool {
+    auto is_prime = [&](uint32_t n) -> std::optional<bool> {
         if (n < 2)
             return false;
         if (n < 4)
             return true;
         if (n % 2 == 0 || n % 3 == 0)
             return false;
-        for (uint32_t i = 5; i <= n / i; i += 6)
+        for (uint32_t i = 5; i <= n / i; i += 6) {
+            if constexpr (cancellable) {
+                if (stop())
+                    return std::nullopt;
+            }
             if (n % i == 0 || n % (i + 2) == 0)
                 return false;
+        }
         return true;
     };
 
@@ -478,11 +497,18 @@ inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
     }
 
     for (uint64_t candidate = 3; fb.size() <= count; candidate += 2) {
+        if constexpr (cancellable) {
+            if (stop())
+                return std::nullopt;
+        }
         if (candidate > std::numeric_limits<uint32_t>::max()) {
             throw std::overflow_error("SIQS factor-base prime candidate exceeds uint32_t");
         }
         const uint32_t p = static_cast<uint32_t>(candidate);
-        if (!is_prime(p))
+        const auto prime = is_prime(p);
+        if (!prime.has_value())
+            return std::nullopt;
+        if (!*prime)
             continue;
 
         uint64_t n_mod_p = mpz_fdiv_ui(nz, p);
@@ -500,7 +526,19 @@ inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
         fb.push_back({p, sq, logp});
     }
 
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     return fb;
+}
+
+} // namespace siqs_factor_base_detail
+
+/// Build factor base: primes p where Legendre(N, p) = 1
+inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
+    auto result = siqs_factor_base_detail::build_factor_base_until(N, count, nullptr);
+    return std::move(*result);
 }
 
 // ================================================================
