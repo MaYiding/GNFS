@@ -5,6 +5,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "wheel235.hpp"
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -13,6 +14,25 @@ namespace gnfs::cofactor {
 using core::Integer;
 using core::PrimePower;
 using factor_base::FactorBase;
+
+#if defined(__SIZEOF_INT128__)
+namespace detail {
+// GMP limbs and unsigned long need not be 64 bits (for example on LLP64).
+// Import/export fixed-width words instead of assuming either representation.
+// Callers ensure that the nonnegative input fits in 127 bits.
+[[nodiscard]] inline __uint128_t trial_u128_from_integer(const Integer& value) {
+    std::array<uint64_t, 2> words{};
+    mpz_export(words.data(), nullptr, -1, sizeof(uint64_t), 0, 0, value.get_mpz());
+    return (static_cast<__uint128_t>(words[1]) << 64) | words[0];
+}
+
+inline void trial_integer_from_u128(Integer& out, __uint128_t value) {
+    const std::array<uint64_t, 2> words{static_cast<uint64_t>(value),
+                                        static_cast<uint64_t>(value >> 64)};
+    mpz_import(out.get_mpz(), words.size(), -1, sizeof(uint64_t), 0, 0, words.data());
+}
+} // namespace detail
+#endif
 
 /// 试除结果
 struct TrialDivisionResult {
@@ -59,10 +79,8 @@ public:
         // uint128 快路径: |a - b*m| often fits 65-127 bits for 40-65 digit N
 #if defined(__SIZEOF_INT128__)
         if (value.bit_length() <= 127) {
-            // Zero-alloc limb access (same pattern as divide_algebraic line 182)
-            uint64_t lo = mpz_getlimbn(value.get_mpz(), 0);
-            uint64_t hi = mpz_getlimbn(value.get_mpz(), 1);
-            __uint128_t v128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+            // Export into two fixed-width words without relying on GMP limb width.
+            __uint128_t v128 = detail::trial_u128_from_integer(value);
 
             const auto& rationals = fb_.rational();
             // Wheel-2-3-5 fast prefix: strip 2/3/5 in O(1)+small-loop instead
@@ -93,12 +111,7 @@ public:
             } else if (v128 <= UINT64_MAX) {
                 result.cofactor = static_cast<uint64_t>(v128);
             } else {
-                // u128 → Integer: write hi limb, shift, add lo (zero tmp alloc)
-                uint64_t rhi = static_cast<uint64_t>(v128 >> 64);
-                uint64_t rlo = static_cast<uint64_t>(v128);
-                mpz_set_ui(result.cofactor.get_mpz(), rhi);
-                mpz_mul_2exp(result.cofactor.get_mpz(), result.cofactor.get_mpz(), 64);
-                mpz_add_ui(result.cofactor.get_mpz(), result.cofactor.get_mpz(), rlo);
+                detail::trial_integer_from_u128(result.cofactor, v128);
             }
             return result;
         }
@@ -184,12 +197,7 @@ public:
         __uint128_t norm_u128 = 0;
         if (!use_u64 && norm.bit_length() <= 127) {
             use_u128 = true;
-            // mpz_getlimbn(_, 0/1) reads limbs directly (zero alloc on LP64
-            // where mp_limb_t == uint64_t). Non-negative norm guaranteed by
-            // compute_algebraic_norm.
-            uint64_t lo = mpz_getlimbn(norm.get_mpz(), 0);
-            uint64_t hi = mpz_getlimbn(norm.get_mpz(), 1);
-            norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+            norm_u128 = detail::trial_u128_from_integer(norm);
         }
 #endif
 
@@ -255,10 +263,7 @@ public:
 #if defined(__SIZEOF_INT128__)
                 } else if (norm.bit_length() <= 127) {
                     use_u128 = true;
-                    // Zero-alloc limb access (same pattern as line 182 init path)
-                    uint64_t lo = mpz_getlimbn(norm.get_mpz(), 0);
-                    uint64_t hi = mpz_getlimbn(norm.get_mpz(), 1);
-                    norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+                    norm_u128 = detail::trial_u128_from_integer(norm);
 #endif
                 }
             }
@@ -300,12 +305,7 @@ public:
             if (norm_u128 <= UINT64_MAX) {
                 result.cofactor = static_cast<uint64_t>(norm_u128);
             } else {
-                uint64_t hi = static_cast<uint64_t>(norm_u128 >> 64);
-                uint64_t lo = static_cast<uint64_t>(norm_u128);
-                mpz_ptr cof = result.cofactor.get_mpz();
-                mpz_set_ui(cof, hi);
-                mpz_mul_2exp(cof, cof, 64);
-                mpz_add_ui(cof, cof, lo);
+                detail::trial_integer_from_u128(result.cofactor, norm_u128);
             }
             if (norm_u128 == 1) result.is_smooth = true;
 #endif

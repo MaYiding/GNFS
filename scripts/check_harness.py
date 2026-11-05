@@ -324,8 +324,8 @@ class Checks:
         for marker in (
             "Verify MinGW process-tree supervisor",
             "-DGNFS_BUILD_TESTS=ON",
-            "--target gnfs_test_process_supervisor",
-            "-R '^ProcessSupervisor$'",
+            "--target gnfs_test_process_supervisor test_trial_wheel",
+            "-R '^(ProcessSupervisor|TrialWheel)$'",
         ):
             if marker not in release_readiness:
                 self.fail(

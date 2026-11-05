@@ -10,6 +10,7 @@
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -358,6 +359,36 @@ void test_divider_random_vs_reference() {
 }
 
 #if defined(__SIZEOF_INT128__)
+void test_divider_u128_full_width() {
+    using gnfs::core::Integer;
+    gnfs::factor_base::FactorBase fb;
+    fb.add_rational(2, 1);
+    fb.add_algebraic(2, 0, 1);
+    gnfs::cofactor::TrialDivider divider(fb);
+    // Both 64-bit halves contain bits above bit 31. This decimal value is
+    // 2^96 + 2^32 + 1; GMP parses it independently of the conversion under test.
+    const Integer expected("79228162514264337597838917633");
+    for (unsigned shift : {0U, 1U, 40U}) {
+        Integer input(expected);
+        mpz_mul_2exp(input.get_mpz(), input.get_mpz(), shift);
+        const auto rat = divider.divide_rational(input);
+        const auto alg = divider.divide_algebraic(input, 0, 1);
+        const std::vector<uint32_t> indices =
+            shift ? std::vector<uint32_t>{0} : std::vector<uint32_t>{};
+        const std::vector<uint8_t> exponents =
+            shift ? std::vector<uint8_t>{static_cast<uint8_t>(shift)} : std::vector<uint8_t>{};
+        if (rat.cofactor != expected || alg.cofactor != expected || rat.is_smooth ||
+            alg.is_smooth || rat.factor_indices != indices || alg.factor_indices != indices ||
+            rat.exponents != exponents || alg.exponents != exponents) {
+            std::fprintf(stderr, "full-width trial division mismatch at shift %u\n", shift);
+            std::exit(1);
+        }
+    }
+    std::cout << "  divide_rational and divide_algebraic full-width uint128... PASS\n";
+}
+#endif
+
+#if defined(__SIZEOF_INT128__)
 void test_divider_u128_path() {
     std::cout << "  divide_rational uint128 equivalence..." << std::flush;
     std::vector<uint32_t> primes = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29,
@@ -386,11 +417,9 @@ void test_divider_u128_path() {
 
         // Convert to Integer (we know v < 2^128)
         gnfs::core::Integer big;
-        uint64_t hi = static_cast<uint64_t>(v >> 64);
-        uint64_t lo = static_cast<uint64_t>(v);
-        mpz_set_ui(big.get_mpz(), hi);
-        mpz_mul_2exp(big.get_mpz(), big.get_mpz(), 64);
-        mpz_add_ui(big.get_mpz(), big.get_mpz(), lo);
+        const std::array<uint64_t, 2> words{static_cast<uint64_t>(v),
+                                            static_cast<uint64_t>(v >> 64)};
+        mpz_import(big.get_mpz(), words.size(), -1, sizeof(uint64_t), 0, 0, words.data());
 
         // Run TrialDivider
         auto r = d.divide_rational(std::move(big));
@@ -485,6 +514,7 @@ int main() {
     test_divider_smoke();
     test_divider_random_vs_reference();
 #if defined(__SIZEOF_INT128__)
+    test_divider_u128_full_width();
     test_divider_u128_path();
 #endif
     test_divider_without_235_in_fb();
