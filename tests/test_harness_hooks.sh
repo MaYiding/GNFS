@@ -526,6 +526,107 @@ PYTEST
     pass "single-test builds select only their target and supervisor"
 }
 
+assert_runner_ctest_results() {
+    "${PYTHON}" - "${PROJECT_ROOT}" "${TEST_TMPDIR}/ctest runner" "${ZSH_EXECUTABLE}" <<'PYTEST'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+project, fixture, zsh = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+cmake, ctest = shutil.which('cmake'), shutil.which('ctest')
+if not cmake or not ctest:
+    print('[SKIP] real CTest result fixture requires cmake and ctest')
+    raise SystemExit(0)
+fixture.mkdir()
+source = fixture / 'source'
+source.mkdir()
+(source / 'skip.py').write_text('import sys\nraise SystemExit(77)\n')
+(source / 'CMakeLists.txt').write_text(
+    'cmake_minimum_required(VERSION 3.20)\nproject(RunnerCTest NONE)\nenable_testing()\n'
+    'if(NOT FIXTURE_CASE STREQUAL "empty")\n'
+    '  add_test(NAME "name with spaces" COMMAND "${CMAKE_COMMAND}" -E touch '
+    '"${CMAKE_BINARY_DIR}/space-ran")\n'
+    '  add_test(NAME "name;with;semicolons" COMMAND "${CMAKE_COMMAND}" -E touch '
+    '"${CMAKE_BINARY_DIR}/semicolon-ran")\n'
+    '  add_test(NAME configuration_selected COMMAND "${CMAKE_COMMAND}" -E touch '
+    '"${CMAKE_BINARY_DIR}/release-ran" CONFIGURATIONS Release)\n'
+    '  add_test(NAME skipped COMMAND "' + Path(sys.executable).as_posix() + '" '
+    '"${CMAKE_SOURCE_DIR}/skip.py")\n'
+    '  set_tests_properties(skipped PROPERTIES SKIP_RETURN_CODE 77)\n'
+    '  add_test(NAME disabled COMMAND "${CMAKE_COMMAND}" -E touch '
+    '"${CMAKE_BINARY_DIR}/disabled-ran")\n'
+    '  set_tests_properties(disabled PROPERTIES DISABLED TRUE)\n'
+    'endif()\n'
+    'if(FIXTURE_CASE STREQUAL "fail")\n'
+    '  add_test(NAME failed COMMAND "${CMAKE_COMMAND}" -E false)\n'
+    '  add_test(NAME after_failure COMMAND "${CMAKE_COMMAND}" -E touch '
+    '"${CMAKE_BINARY_DIR}/after-failure-ran")\n'
+    'endif()\n')
+
+def require(condition, detail):
+    if not condition:
+        raise SystemExit(detail)
+
+cases = [(mode, case, expected, False) for mode, case, expected in [
+        ('unit', 'empty', 1), ('ctest', 'empty', 1), ('unit', 'pass', 0),
+        ('ctest', 'fail', 1), ('full', 'fail', 1), ('full', 'empty', 1),
+        ('full', 'pass', 0), ('report', 'fail', 1)]]
+cases += [('full', 'fail', 1, True), ('report', 'fail', 1, True), ('full', 'pass', 0, True)]
+for index, (mode, case, expected, fail_fast) in enumerate(cases):
+    build = fixture / f'build {index}'
+    configured = subprocess.run([cmake, '-S', str(source), '-B', str(build),
+                                 '-DFIXTURE_CASE=' + case], cwd=fixture, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+    require(configured.returncode == 0, configured.stdout)
+    # These executable stubs validate aggregation only. No GNFS E2E or
+    # progressive mathematics is executed by this orchestration fixture.
+    for name in ['test_gnfs_e2e', 'test_gnfs_progressive']:
+        binary = build / name
+        binary.write_text('#!' + sys.executable + '\nfrom pathlib import Path\n'
+                          'Path(__file__).with_suffix(".ran").touch()\nraise SystemExit(0)\n')
+        binary.chmod(0o755)
+    supervisor = build / 'gnfs_test_process_supervisor'
+    supervisor.write_text('#!' + sys.executable + '\nimport subprocess, sys\n'
+                          'raise SystemExit(subprocess.call(sys.argv[sys.argv.index("--") + 1:]))\n')
+    supervisor.chmod(0o755)
+    report_path = build / 'test_report.json'
+    report_path.write_text('{"stale":true,"passed":99,"failed":0}\n')
+    result = subprocess.run([zsh, str(project / 'scripts/test.sh'), '--no-build',
+                             '-t', 'Release', mode, *(['--fail-fast'] if fail_fast else [])],
+                            cwd=fixture, env={**os.environ, 'GNFS_BUILD_DIR': str(build),
+                                              'CTEST_PARALLEL_LEVEL': '1'},
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+    require(result.returncode == expected,
+            f'{mode}/{case}: expected exit {expected}, got {result.returncode}: {result.stdout}')
+    # Serial execution makes the post-failure admission deterministic; the
+    # production runner keeps CTest's existing parallelism and drain behavior.
+    require((build / 'after-failure-ran').exists() == (case == 'fail' and not fail_fast),
+            f'{mode}/{case}/fail-fast={fail_fast}: CTest did not stop/continue as requested: {result.stdout}')
+    report = json.loads(report_path.read_text())
+    followups = 2 if mode in {'full', 'report'} and not (fail_fast and expected) else 0
+    for name in ['test_gnfs_e2e', 'test_gnfs_progressive']:
+        require((build / (name + '.ran')).exists() == bool(followups),
+                f'{mode}/{case}/fail-fast={fail_fast}: unexpected followup execution: {result.stdout}')
+    require('stale' not in report and report['total'] == 1 + followups and
+            report['failed'] == expected and report['passed'] == followups + (not expected) and
+            report['skipped'] == 0, f'{mode}/{case}: wrong aggregate report: {report!r}')
+    groups = [entry for entry in report['tests'] if entry['detail'] == 'ctest-contract']
+    require(len(groups) == 1 and groups[0]['status'] == ('fail' if expected else 'pass'),
+            f'{mode}/{case}: missing or duplicate CTest suite: {report!r}')
+    if case != 'empty':
+        require((build / 'space-ran').exists() and (build / 'semicolon-ran').exists() and
+                (build / 'release-ran').exists(),
+                f'{mode}/{case}: suite omitted a legal name or requested configuration: {result.stdout}')
+        require(not (build / 'disabled-ran').exists() and
+                'Skipped' in result.stdout and 'Not Run (Disabled)' in result.stdout,
+                f'{mode}/{case}: CTest skip/disabled semantics changed: {result.stdout}')
+print('[PASS] CTest empty/pass/fail suites preserve aggregate results and native skips')
+PYTEST
+}
+
 assert_runner_required_binaries() {
     "${PYTHON}" - "${PROJECT_ROOT}" "${TEST_TMPDIR}/required runner" "${ZSH_EXECUTABLE}" <<'PYTEST'
 from concurrent.futures import ThreadPoolExecutor
@@ -765,6 +866,7 @@ assert_empty "malformed input fails open" "${PROJECT_ROOT}" 'not-json'
 
 if [[ -n "${ZSH_EXECUTABLE}" ]]; then
     assert_runner_target_builds
+    assert_runner_ctest_results
     assert_runner_required_binaries
     assert_runner_argument_error "missing timeout value is rejected" "--timeout" --timeout
     assert_runner_argument_error "negative timeout value is rejected" "--timeout" --timeout -1

@@ -153,6 +153,12 @@ Failed gate stages still write the JSON report, including ordinary test failures
 and timeouts that stop immediately with `--fail-fast`. Ordinary test-mode results use
 exit status 1 for failures; the report retains the full failure count.
 
+`unit` and its `ctest` alias require CTest to discover at least one test and
+select the requested build configuration. The runner records the complete CTest
+suite as one result group, while CTest retains individual test details. `full`
+and `report` preserve that group's failure when continuing to later stages;
+passing later tests cannot turn a failed CTest suite into a successful run.
+
 These modes retain their existing build scope. Verbose builds use CMake's
 `--verbose` option so Make and Ninja both build their targets. Before a targeted
 Makefile build, the runner invokes the generated `cmake_check_build_system`
