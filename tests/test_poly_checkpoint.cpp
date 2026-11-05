@@ -458,8 +458,72 @@ void test_allow_incomplete_force() {
     std::cout << "  Force-load INCOMPLETE: PASS" << std::endl;
 }
 
+void test_integer_length_preflight() {
+    std::cout << "Testing corrupt integer lengths..." << std::endl;
+    const auto path = tmp_ckpt_path("integer_length");
+    CkptCleanup c{path};
+
+    // Exercise N, m, and a coefficient without allocating the declared 64 MiB body.
+    for (int field = 0; field < 3; ++field) {
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            write_u64_le(out, PolyCheckpoint::MAGIC);
+            write_u64_le(out, PolyCheckpoint::VERSION);
+            if (field > 0) {
+                write_u32_le(out, 0);
+                write_u32_le(out, 0);
+            }
+            if (field > 1) {
+                write_u32_le(out, 0);
+                write_u32_le(out, 0);
+                write_u32_le(out, 0);
+                write_u32_le(out, 1);
+            }
+            write_u32_le(out, 1);
+            write_u32_le(out, 64U * 1024U * 1024U);
+        }
+        bool rejected_before_allocation = false;
+        try {
+            (void)PolyCheckpoint::load(path);
+        } catch (const std::runtime_error& e) {
+            rejected_before_allocation =
+                std::string(e.what()).find("declared body exceeds remaining file") !=
+                std::string::npos;
+        }
+        GNFS_TEST_CHECK(rejected_before_allocation);
+    }
+
+    PolyCheckpoint original;
+    original.m = Integer("-12345678901234567890");
+    original.f_coeffs.emplace_back(Integer("98765432109876543210"));
+    original.f_coeffs.emplace_back(Integer(static_cast<int64_t>(0)));
+    original.save(path);
+    auto valid = PolyCheckpoint::load(path);
+    GNFS_TEST_CHECK(valid.n.is_zero());
+    GNFS_TEST_CHECK(valid.m == original.m);
+    GNFS_TEST_CHECK(valid.f_coeffs.size() == 2);
+    GNFS_TEST_CHECK(valid.f_coeffs[0] == original.f_coeffs[0]);
+    GNFS_TEST_CHECK(valid.f_coeffs[1].is_zero());
+    {
+        std::fstream out(path, std::ios::binary | std::ios::in | std::ios::out);
+        out.seekp(20); // N byte count; the writer emitted zero for zero N.
+        const char byte = 1;
+        out.write(&byte, 1);
+    }
+    bool rejected_zero = false;
+    try {
+        (void)PolyCheckpoint::load(path);
+    } catch (const std::runtime_error& e) {
+        rejected_zero =
+            std::string(e.what()).find("zero integer has non-zero byte count") != std::string::npos;
+    }
+    GNFS_TEST_CHECK(rejected_zero);
+    std::cout << "  Corrupt integer lengths: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "===== PolyCheckpoint Tests =====" << std::endl;
+    test_integer_length_preflight();
     test_roundtrip_small();
     test_roundtrip_large();
     test_negative_coefficients();
