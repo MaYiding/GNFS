@@ -154,7 +154,14 @@ and timeouts that stop immediately with `--fail-fast`. Ordinary test-mode result
 exit status 1 for failures; the report retains the full failure count.
 
 These modes retain their existing build scope. Verbose builds use CMake's
-`--verbose` option so Make and Ninja both build their targets.
+`--verbose` option so Make and Ninja both build their targets. Before a targeted
+Makefile build, the runner invokes the generated `cmake_check_build_system`
+target when present. CMake then refreshes changed configuration dependencies,
+including included files, before Make looks up a newly registered target.
+Unchanged configuration retains its cache without another configure pass.
+Other generators, explicitly suppressed regeneration, and `--no-build` retain
+their existing behavior. A failed dependency check stops the build, and a failed
+user target is not retried.
 
 `scripts/test.sh module <name>` treats an unknown module as a failed selection.
 The runner records that invalid request in `test_report.json` and exits non-zero;
