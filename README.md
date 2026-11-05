@@ -296,6 +296,9 @@ verbose           = true
 在 special-Q 外层 workers 之间均衡分配这些计算通道。详细边界见
 [sieve 配置契约](docs/env-flags/sieve.md#special-q-local-compute-budget-config)。
 
+显式 `sieve_width`/`sieve_height` 组合还必须落在每个 sieve 实例的
+`SIEVE_MAX_REGION_CELLS` 物化上限内；超出时配置会在启动前拒绝，避免不可行的内存分配。
+
 ### C++ API
 
 一行调用：
