@@ -1603,7 +1603,65 @@ bool test_pipeline_rejects_foreign_context() {
            callbacks == 0;
 }
 
+bool test_rational_factor_base_order_preflight() {
+    Config cfg;
+    cfg.verbose = false;
+    cfg.degree = 2;
+    cfg.rational_bound = 97;
+    cfg.algebraic_bound = 97;
+    cfg.large_prime_bound = 10000;
+    Pipeline pipeline(Integer(143), cfg);
+    const auto& params = pipeline.params();
+    const gnfs::core::FactorBaseParams fb_params{params.rational_bound, params.algebraic_bound,
+                                                 params.large_prime_bound};
+    PolynomialContext ctx(Integer(143), {Integer(-1), Integer(0), Integer(1)}, Integer(1));
+    size_t callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) {
+        ++callbacks;
+        throw std::runtime_error("ordered base passed preflight");
+    });
+    pipeline.set_log_callback([&](const LogEntry&) { ++callbacks; });
+
+    for (const auto& primes :
+         {std::vector<uint32_t>{2, 7, 3, 5}, std::vector<uint32_t>{2, 3, 3, 5}}) {
+        gnfs::factor_base::FactorBase fb(fb_params);
+        for (uint32_t prime : primes) {
+            fb.add_rational(prime, 1);
+        }
+        bool rejected = false;
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb);
+        } catch (const std::invalid_argument& error) {
+            rejected = std::string_view(error.what()).find("strictly increasing") !=
+                       std::string_view::npos;
+        }
+        if (!rejected || callbacks != 0) {
+            std::cout << "(unordered rational base accepted or emitted a callback) ";
+            return false;
+        }
+    }
+
+    gnfs::factor_base::FactorBase ordered(fb_params);
+    for (uint32_t prime : {2u, 3u, 5u, 7u}) {
+        ordered.add_rational(prime, 1);
+    }
+    bool reached_sieve = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, ordered);
+    } catch (const std::runtime_error& error) {
+        reached_sieve = std::string_view(error.what()) == "ordered base passed preflight";
+    }
+    if (!reached_sieve || callbacks != 1) {
+        std::cout << "(ordered rational base did not pass preflight) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_pipeline_context_and_factor_base_contract() {
+    if (!test_rational_factor_base_order_preflight()) {
+        return false;
+    }
     Config cfg;
     cfg.verbose = false;
 
