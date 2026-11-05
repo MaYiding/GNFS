@@ -2060,6 +2060,56 @@ struct FactorAttemptOutcome {
     bool observe_record_committed;
 };
 
+struct DependencyExtractionOutcome {
+    std::optional<std::pair<Integer, Integer>> factors;
+    size_t singleton_attempts = 0;
+    size_t matrix_rows = 0;
+    size_t non_singleton_dependencies = 0;
+};
+
+/// Consume an already admitted and trimmed native relation corpus. Try each
+/// zero-parity row once, then compact it away before the existing 64-vector
+/// matrix budget. This keeps unit vectors from displacing non-unit attempts.
+inline DependencyExtractionOutcome extract_native_dependencies(const Integer& mod_N,
+                                                               const Integer& gcd_N,
+                                                               std::vector<SIQSRelation>& relations,
+                                                               const std::vector<FBPrime>& fb) {
+    DependencyExtractionOutcome outcome;
+    const auto zero_parity = [fb_size = fb.size()](const SIQSRelation& relation) noexcept {
+        if (relation.negative)
+            return false;
+        for (size_t column = 1; column < fb_size && column < relation.exponents.size(); ++column)
+            if (relation.exponents[column] & 1u)
+                return false;
+        return true;
+    };
+    std::vector<size_t> singleton{0};
+    for (size_t row = 0; row < relations.size(); ++row) {
+        if (!zero_parity(relations[row]))
+            continue;
+        singleton[0] = row;
+        ++outcome.singleton_attempts;
+        outcome.factors = try_extract(mod_N, gcd_N, relations, singleton, fb);
+        if (outcome.factors)
+            return outcome;
+    }
+
+    // Admitted native relations satisfy the square congruence. For a valid
+    // unit dependency, failure to extract leaves X == +/-Y (mod gcd_N), which
+    // cannot improve a later +/-GCD attempt. try_extract still rejects malformed
+    // parity or square congruences; no rejected row authorizes a factor result.
+    // Preserve survivor order and avoid copying the corpus or storing its full
+    // nullspace: the existing solver still retains at most 64 dependencies.
+    std::erase_if(relations, zero_parity);
+    outcome.matrix_rows = relations.size();
+    if (relations.empty())
+        return outcome;
+    const auto dependencies = solve_matrix(relations, fb.size());
+    outcome.non_singleton_dependencies = dependencies.size();
+    outcome.factors = try_extract_with_combos(mod_N, gcd_N, relations, dependencies, fb);
+    return outcome;
+}
+
 /// Run one explicit multiplier for facade-validated input. Multiplier
 /// admission belongs to the caller; the default facade retains its historical
 /// single selection. The caller supplies parameters and the shared timer origin.
@@ -2393,27 +2443,30 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
         relations.resize(max_rels);
     }
 
-    // Linear algebra
+    const size_t admitted_relation_count = relations.size();
     if (verbose) {
-        fprintf(stderr, "[SIQS] Starting linear algebra (%zux%zu)...\n", relations.size(), fb_size);
+        fprintf(stderr, "[SIQS] Preparing dependencies (%zux%zu)...\n", relations.size(), fb_size);
     }
 
-    auto deps = solve_matrix(relations, fb_size);
+    // Use ORIGINAL N for GCD (not kN), retaining the complete kN congruence
+    // check. Unit prechecks have a separate budget from the 64 matrix vectors.
+    auto extraction = extract_native_dependencies(kN, N, relations, fb);
 
     if (verbose) {
-        fprintf(stderr, "[SIQS] Found %zu dependencies (%.3fs)\n", deps.size(), elapsed());
+        fprintf(stderr,
+                "[SIQS] Dependency extraction: %zu singleton attempts, %zu non-singleton "
+                "dependencies (%zu matrix rows, %.3fs)\n",
+                extraction.singleton_attempts, extraction.non_singleton_dependencies,
+                extraction.matrix_rows, elapsed());
     }
 
-    // Try dependencies — use ORIGINAL N for GCD (not kN)
-    // Since kN | (X²-Y²), we have N | (X²-Y²), so gcd(X-Y, N) works directly.
-    // Compute X,Y mod kN (for correct arithmetic), but gcd against N.
-    auto result = try_extract_with_combos(kN, N, relations, deps, fb);
+    auto result = std::move(extraction.factors);
     if (result) {
         SIQSResult sr;
         sr.factor1 = std::move(result->first);
         sr.factor2 = std::move(result->second);
         sr.time_seconds = elapsed();
-        sr.relations_found = relations.size();
+        sr.relations_found = admitted_relation_count;
         sr.polynomials_used = num_polys;
         sr.resolved_sieve_workers = num_threads;
         sr.shadow_proof_observe_record_committed = shadow_proof_observe_record_committed;
