@@ -3,9 +3,13 @@
 #include "support/test_check.hpp"
 
 #include <cassert>
+#include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace gnfs::core;
 
@@ -232,6 +236,36 @@ void test_uint64_portability_and_overflow_boundaries() {
     std::cout << "  uint64_t and modular overflow boundaries: PASS" << std::endl;
 }
 
+void test_i128_norm_does_not_compute_unused_power() {
+#if defined(__SIZEOF_INT128__)
+    std::cout << "Testing i128 norm power boundary..." << std::endl;
+    for (const uint32_t degree : {2u, 4u, 6u}) {
+        std::vector<Integer> coeffs;
+        for (uint32_t i = 0; i <= degree; ++i) {
+            coeffs.emplace_back(1);
+        }
+        PolynomialContext ctx(Integer(degree + 1), std::move(coeffs), Integer(1));
+        const int exponent = degree == 2 ? 43 : degree == 4 ? 27 : 20;
+        const int64_t wide_a = int64_t{1} << exponent;
+        for (const int64_t a : {-wide_a, int64_t{-7}, int64_t{0}, int64_t{7}, wide_a}) {
+            const auto [norm, accepted] = ctx.algebraic_norm_i128(a, 1);
+            GNFS_TEST_CHECK(accepted);
+            GNFS_TEST_CHECK(norm >= 0);
+            const auto bits = static_cast<__uint128_t>(norm);
+            Integer actual(static_cast<uint64_t>(bits >> 64));
+            mpz_mul_2exp(actual.get_mpz(), actual.get_mpz(), 64);
+            actual += static_cast<uint64_t>(bits);
+            GNFS_TEST_CHECK(actual == ctx.algebraic_norm(a, 1));
+        }
+        const auto [unused, accepted] =
+            ctx.algebraic_norm_i128(std::numeric_limits<int64_t>::max(), 1);
+        (void)unused;
+        GNFS_TEST_CHECK(!accepted);
+    }
+    std::cout << "  i128 norm power boundary: PASS" << std::endl;
+#endif
+}
+
 int main() {
     std::cout << "=== PolynomialContext Unit Tests ===" << std::endl;
 
@@ -249,6 +283,7 @@ int main() {
     test_empty_poly_throws();
     test_n_digits();
     test_uint64_portability_and_overflow_boundaries();
+    test_i128_norm_does_not_compute_unused_power();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
