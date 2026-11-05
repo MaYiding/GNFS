@@ -384,6 +384,7 @@ void test_divider_u128_full_width() {
             std::exit(1);
         }
     }
+    std::cout << "  divide_rational and divide_algebraic full-width uint128... PASS\n";
 }
 #endif
 
@@ -417,7 +418,7 @@ void test_divider_u128_path() {
         // Convert to Integer (we know v < 2^128)
         gnfs::core::Integer big;
         const std::array<uint64_t, 2> words{static_cast<uint64_t>(v),
-                                             static_cast<uint64_t>(v >> 64)};
+                                            static_cast<uint64_t>(v >> 64)};
         mpz_import(big.get_mpz(), words.size(), -1, sizeof(uint64_t), 0, 0, words.data());
 
         // Run TrialDivider
