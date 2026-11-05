@@ -35,6 +35,7 @@
 #include <gnfs/sqrt/rational_sqrt.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/ordered_parallel_map.hpp>
+#include <gnfs/util/primes.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/process_memory.hpp>
 #include <gnfs/util/safe_math.hpp>
@@ -43,7 +44,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>  // fprintf for V3 cascade stderr signal
 #include <cstdlib> // getenv for GNFS_CASCADE_V3 flag
@@ -122,6 +125,34 @@ public:
 private:
     FactorStats* target_;
     FactorStats snapshot_;
+    int uncaught_at_entry_;
+};
+
+// A rejected or failed phase must not leave newly bound inputs behind.
+// Existing bindings are immutable, so only bindings created by this scope
+// need to be cleared when an exception escapes.
+template <typename ContextSignature, typename BaseSignature>
+class PipelineBindingExceptionRollback final {
+public:
+    PipelineBindingExceptionRollback(std::optional<ContextSignature>& context,
+                                     std::optional<BaseSignature>& base) noexcept
+        : context_(context), base_(base), had_context_(context.has_value()),
+          had_base_(base.has_value()), uncaught_at_entry_(std::uncaught_exceptions()) {}
+
+    ~PipelineBindingExceptionRollback() noexcept {
+        if (std::uncaught_exceptions() > uncaught_at_entry_) {
+            if (!had_context_)
+                context_.reset();
+            if (!had_base_)
+                base_.reset();
+        }
+    }
+
+private:
+    std::optional<ContextSignature>& context_;
+    std::optional<BaseSignature>& base_;
+    bool had_context_;
+    bool had_base_;
     int uncaught_at_entry_;
 };
 
@@ -716,6 +747,25 @@ inline std::string pipeline_resume_base_path() {
     return {};
 }
 
+void reject_distributed_resume_combination(std::string_view resume_base,
+                                           size_t distributed_workers) {
+    if (distributed_workers == 0 || resume_base.empty()) {
+        return;
+    }
+    throw std::invalid_argument(
+        "GNFS_DISTRIBUTED_SIEVE_WORKERS cannot be combined with GNFS_RESUME or "
+        "GNFS_SIEVE_RESUME; distributed sieve is one-shot and does not support checkpoint "
+        "resume");
+}
+
+void reject_distributed_resume_combination(std::string_view resume_base) {
+    if (resume_base.empty()) {
+        return;
+    }
+    reject_distributed_resume_combination(resume_base,
+                                          sieve::parse_distributed_sieve_env().num_workers);
+}
+
 std::string allocate_structured_ooc_run_identity() {
     static std::atomic<uint64_t> next_run_ordinal{1};
     uint64_t run_ordinal = next_run_ordinal.load(std::memory_order_relaxed);
@@ -1103,6 +1153,154 @@ Pipeline::Pipeline(const Integer& n, const Config& config)
     stats_.large_prime_bound = params_.large_prime_bound;
 }
 
+Pipeline::PolynomialContextSignature
+Pipeline::make_context_signature(const PolynomialContext& ctx) {
+    PolynomialContextSignature signature;
+    signature.n = ctx.n().to_string();
+    signature.m = ctx.m().to_string();
+    signature.degree = ctx.degree();
+    signature.coefficients.reserve(ctx.coefficients().size());
+    for (const auto& coefficient : ctx.coefficients()) {
+        signature.coefficients.push_back(coefficient.to_string());
+    }
+    signature.skewness_bits = std::bit_cast<uint64_t>(ctx.skewness());
+    return signature;
+}
+
+void Pipeline::require_context_contract(const PolynomialContext& ctx, const char* phase,
+                                        bool bind_if_unbound) {
+    // Keep the historical N check first: callers and tests rely on the more
+    // specific cross-Pipeline diagnostic when the modulus is wrong.
+    require_pipeline_context(n_, ctx, phase);
+
+    const std::string prefix = "Pipeline::" + std::string(phase);
+    if (!ctx.n().is_positive()) {
+        throw std::invalid_argument(prefix + " requires a positive N");
+    }
+    if (ctx.coefficients().empty()) {
+        throw std::invalid_argument(prefix + " received an empty polynomial");
+    }
+    if (ctx.degree() != params_.degree) {
+        throw std::invalid_argument(prefix +
+                                    " polynomial degree does not match Pipeline parameters");
+    }
+    if (ctx.leading_coeff().is_zero()) {
+        throw std::invalid_argument(prefix +
+                                    " received a polynomial with zero leading coefficient");
+    }
+    if (!std::isfinite(ctx.skewness()) || ctx.skewness() <= 0.0) {
+        throw std::invalid_argument(prefix + " requires finite positive skewness");
+    }
+
+    bool verified = false;
+    try {
+        verified = ctx.verify();
+    } catch (const std::exception& error) {
+        throw std::invalid_argument(prefix + " polynomial verification failed: " + error.what());
+    } catch (...) {
+        throw std::invalid_argument(prefix + " polynomial verification failed");
+    }
+    if (!verified) {
+        throw std::invalid_argument(prefix + " polynomial does not satisfy f(m) = 0 mod N");
+    }
+
+    auto signature = make_context_signature(ctx);
+    if (polynomial_context_signature_.has_value()) {
+        if (*polynomial_context_signature_ != signature) {
+            throw std::invalid_argument(prefix +
+                                        " received a different polynomial context for the same N");
+        }
+    } else if (bind_if_unbound) {
+        polynomial_context_signature_ = std::move(signature);
+    }
+}
+
+void Pipeline::require_factor_base_contract(const PolynomialContext& ctx, const FactorBase& fb,
+                                            const char* phase, bool bind_if_unbound) {
+    require_context_contract(ctx, phase, false);
+
+    const auto& fb_params = fb.params();
+    const bool legacy_empty_fixture =
+        fb.rational_count() == 0 && fb.algebraic_count() == 0 && fb_params.rational_bound == 0 &&
+        fb_params.algebraic_bound == 0 && fb_params.large_prime_bound == 0 &&
+        fb_params.log_scale == core::SIEVE_LOG_SCALE && !fb.has_explicit_sieve_algebraic_count();
+
+    // A handful of public API shape tests intentionally use the default,
+    // empty FactorBase only to exercise matrix/sqrt error handling. Preserve
+    // that legacy fixture while rejecting it once a real base was bound.
+    if (legacy_empty_fixture) {
+        if (factor_base_signature_.has_value()) {
+            throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                        " received a factor base different from the bound base");
+        }
+        require_context_contract(ctx, phase, bind_if_unbound);
+        return;
+    }
+
+    // GNFSParams::log_scale is a diagnostic tuning hint; Pipeline's builder
+    // and LatticeSieve intentionally use the compile-time shared scale.
+    if (fb_params.rational_bound != params_.rational_bound ||
+        fb_params.algebraic_bound != params_.algebraic_bound ||
+        fb_params.large_prime_bound != params_.large_prime_bound ||
+        fb_params.log_scale != core::SIEVE_LOG_SCALE) {
+        throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                    " factor-base parameters do not match Pipeline parameters");
+    }
+    if (fb.sieve_algebraic_count() > fb.algebraic_count()) {
+        throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                    " factor-base sieve count exceeds algebraic count");
+    }
+
+    if (factor_base_signature_.has_value()) {
+        const auto identity = sieve::make_sieve_run_identity(ctx, fb, params_);
+        const FactorBaseSignature signature{identity.fingerprint_lo, identity.fingerprint_hi};
+        if (*factor_base_signature_ != signature) {
+            throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                        " received a factor base different from the bound base");
+        }
+        return;
+    }
+
+    // Validate the mathematical identity once before binding. Subsequent
+    // phases compare the stable digest, avoiding repeated root/primality scans
+    // while still detecting a caller that substitutes or mutates a base.
+    for (const auto& prime : fb.rational()) {
+        if (prime.p < 2 || prime.p > params_.rational_bound || !gnfs::util::is_prime_u32(prime.p) ||
+            mpz_divisible_ui_p(ctx.n().get_mpz(), prime.p) != 0) {
+            throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                        " factor base contains an invalid rational prime");
+        }
+    }
+    const uint32_t max_algebraic_prime = std::max(params_.algebraic_bound, params_.special_q_max);
+    for (const auto& prime : fb.algebraic()) {
+        if (prime.p < 2 || prime.p > max_algebraic_prime || !gnfs::util::is_prime_u32(prime.p) ||
+            mpz_divisible_ui_p(ctx.n().get_mpz(), prime.p) != 0) {
+            throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                        " factor base contains an invalid algebraic prime");
+        }
+        if (prime.degree == 0) {
+            throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                        " factor base contains an algebraic prime of degree zero");
+        }
+        if (!prime.is_projective()) {
+            if (prime.r >= prime.p || ctx.evaluate_mod(prime.r, prime.p) != 0) {
+                throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                            " factor base contains a non-root algebraic entry");
+            }
+        } else if (mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), prime.p) == 0) {
+            throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                        " factor base contains an invalid projective root");
+        }
+    }
+
+    const auto identity = sieve::make_sieve_run_identity(ctx, fb, params_);
+    const FactorBaseSignature signature{identity.fingerprint_lo, identity.fingerprint_hi};
+    if (bind_if_unbound) {
+        require_context_contract(ctx, phase, true);
+        factor_base_signature_ = signature;
+    }
+}
+
 Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() const {
     const bool stage_telemetry_enabled = detail::parse_structured_filter_stage_telemetry(
         std::getenv("GNFS_STRUCTURED_FILTER_STAGE_TELEMETRY"));
@@ -1123,6 +1321,12 @@ Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() 
     const bool large_primes_enabled = params_.large_prime_bound > params_.algebraic_bound;
     auto distributed_config = sieve::parse_distributed_sieve_env();
     const size_t distributed_workers = distributed_config.num_workers;
+    // A distributed wave is currently a one-shot transaction.  It does not
+    // emit the paired sieve checkpoints required by GNFS_RESUME or its legacy
+    // GNFS_SIEVE_RESUME alias.  Do not silently fall back to the local route:
+    // that would make a requested process topology disappear while leaving
+    // the caller believing that the resumable distributed path was active.
+    reject_distributed_resume_combination(resume_base_path, distributed_workers);
     if (distributed_workers > 0) {
         distributed_config.base_path =
             relation::relation_corpus_detail::freeze_ooc_path(distributed_config.base_path);
@@ -1236,10 +1440,14 @@ void Pipeline::emit_log(LogLevel level, Phase phase, const std::string& msg) {
 // ============================================================
 
 PolynomialContext Pipeline::select_polynomial() {
-    return select_polynomial_impl(pipeline_resume_base_path());
+    const std::string resume_base = pipeline_resume_base_path();
+    reject_distributed_resume_combination(resume_base);
+    return select_polynomial_impl(resume_base);
 }
 
 PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_base) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     emit_progress(Phase::PolynomialSelection, "Starting polynomial selection");
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
@@ -1259,6 +1467,7 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
             try {
                 auto ck = polynomial::PolyCheckpoint::load_for(poly_ckpt, n_);
                 auto ctx_resumed = ck.to_context();
+                require_context_contract(ctx_resumed, "select_polynomial", true);
 
                 auto t1 = std::chrono::high_resolution_clock::now();
                 stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
@@ -1280,6 +1489,7 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
 
     bool verbose = config_.verbose.value_or(false);
     auto ctx = polynomial::SelectorDispatch::select(n_, params_.degree, verbose);
+    require_context_contract(ctx, "select_polynomial", true);
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
@@ -1310,12 +1520,19 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
 // ============================================================
 
 FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
-    require_pipeline_context(n_, ctx, "build_factor_base");
-    return build_factor_base_impl(ctx, pipeline_resume_base_path());
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
+    const std::string resume_base = pipeline_resume_base_path();
+    reject_distributed_resume_combination(resume_base);
+    require_context_contract(ctx, "build_factor_base", true);
+    return build_factor_base_impl(ctx, resume_base);
 }
 
 FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                                             const std::string& resume_base) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
+    require_context_contract(ctx, "build_factor_base", true);
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     emit_progress(Phase::FactorBase, "Building factor base");
 
@@ -1326,6 +1543,7 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
     fb_opts.algebraic_bound = params_.algebraic_bound;
     fb_opts.special_q_bound = params_.special_q_max;
     fb_opts.large_prime_bound = params_.large_prime_bound;
+    fb_opts.log_scale = core::SIEVE_LOG_SCALE;
     fb_opts.parallel = true;
 
     // ── Phase 2 checkpoint resume (GNFS_RESUME / GNFS_SIEVE_RESUME, 2026-05-21) ──
@@ -1343,6 +1561,7 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                                          fb_opts.log_scale);
                 if (status == factor_base::FbCheckpoint::MatchStatus::Ok) {
                     auto fb_resumed = ck.to_factor_base();
+                    require_factor_base_contract(ctx, fb_resumed, "build_factor_base", true);
 
                     auto t1 = std::chrono::high_resolution_clock::now();
                     stats_.timings.fb_s = std::chrono::duration<double>(t1 - t0).count();
@@ -1378,6 +1597,7 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
     }
 
     auto fb = factor_base::FactorBaseBuilder::build(ctx, fb_opts);
+    require_factor_base_contract(ctx, fb, "build_factor_base", true);
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.fb_s = std::chrono::duration<double>(t1 - t0).count();
@@ -1413,7 +1633,10 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
 relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                                                               const FactorBase& fb,
                                                               SieveCollectionOptions options) {
-    require_pipeline_context(n_, ctx, "sieve_and_collect");
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
+    const std::string resume_base = pipeline_resume_base_path();
+    reject_distributed_resume_combination(resume_base);
     if (options.adaptive_round_limit == 0 ||
         options.adaptive_round_limit > DEFAULT_ADAPTIVE_SIEVE_ROUND_LIMIT) {
         throw std::out_of_range("adaptive_round_limit must be in [1, 10]");
@@ -1432,6 +1655,10 @@ relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialCo
         throw std::invalid_argument(
             "bounded local sieve collection options are incompatible with distributed sieving");
     }
+    // Bind caller-owned mathematical identities only after every option and
+    // route preflight has succeeded.  A rejected invocation must not poison a
+    // later corrected call with a different factor base.
+    require_factor_base_contract(ctx, fb, "sieve_and_collect", true);
     return sieve_and_collect_impl(ctx, fb, structured_route, options);
 }
 
@@ -1439,6 +1666,9 @@ relation::RelationReductionResult
 Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
                                  const StructuredRouteSnapshot& structured_preflight,
                                  SieveCollectionOptions options) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
+    require_factor_base_contract(ctx, fb, "sieve_and_collect", true);
     auto t0 = std::chrono::high_resolution_clock::now();
     FactorStatsRollback stats_rollback(stats_);
     const int adaptive_round_limit = static_cast<int>(options.adaptive_round_limit);
@@ -1480,6 +1710,7 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
 
     // Sieve params
     sieve::SieveParams sieve_params;
+    sieve_params.log_scale = core::SIEVE_LOG_SCALE;
     sieve_params.rational_threshold = params_.rational_threshold;
     sieve_params.algebraic_threshold = params_.algebraic_threshold;
 
@@ -2797,7 +3028,8 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult&
 Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult& reduction,
                                               const FactorBase& fb, const PolynomialContext& ctx,
                                               bool solve_dependencies) {
-    require_pipeline_context(n_, ctx, solve_dependencies ? "solve_matrix" : "build_matrix");
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     if (reduction.generation == 0 || !reduction.corpus.valid()) {
         throw std::invalid_argument("matrix phase requires a valid reduction owner");
     }
@@ -2831,6 +3063,8 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
             reduction.corpus, reduction.stats.output_digest,
             "structured OOC reduction does not match its matrix-phase digest");
     }
+    require_factor_base_contract(ctx, fb, solve_dependencies ? "solve_matrix" : "build_matrix",
+                                 true);
     const bool verify_ooc_payload_after_callbacks =
         structured_ooc && (static_cast<bool>(progress_cb_) || static_cast<bool>(log_cb_));
     FactorStatsRollback stats_rollback(stats_);
@@ -3280,8 +3514,10 @@ static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 
 FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase& fb,
                                        const PolynomialContext& ctx) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
+    require_factor_base_contract(ctx, fb, "extract_factors", true);
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
-    require_pipeline_context(n_, ctx, "extract_factors");
     emit_progress(Phase::SquareRoot, "Starting factor extraction");
 
     auto t0_sqrt = std::chrono::high_resolution_clock::now();
@@ -3464,6 +3700,8 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
 // ============================================================
 
 FactorResult Pipeline::run() {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     // Validate the relation-filter route before any progress/log callback,
     // checkpoint read/write, fast-method probe, or generation allocation. The

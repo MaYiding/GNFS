@@ -1527,6 +1527,171 @@ bool test_pipeline_rejects_foreign_context() {
            callbacks == 0;
 }
 
+bool test_pipeline_context_and_factor_base_contract() {
+    Config cfg;
+    cfg.verbose = false;
+
+    Pipeline owner(Integer(143), cfg);
+    const auto selected = owner.select_polynomial();
+
+    // Preserve the modular root while changing the exact polynomial
+    // coefficients.  N-only validation must not accept this substitution.
+    std::vector<Integer> foreign_coefficients;
+    foreign_coefficients.reserve(selected.coefficients().size());
+    for (const auto& coefficient : selected.coefficients()) {
+        foreign_coefficients.emplace_back(coefficient);
+    }
+    foreign_coefficients.front() += Integer(143);
+    PolynomialContext same_n_foreign(Integer(143), std::move(foreign_coefficients),
+                                     Integer(selected.m()), selected.skewness());
+
+    size_t callbacks = 0;
+    owner.set_progress_callback([&](const ProgressInfo&) { ++callbacks; });
+
+    bool same_n_rejected = false;
+    try {
+        (void)owner.build_factor_base(same_n_foreign);
+    } catch (const std::invalid_argument& error) {
+        same_n_rejected = std::string_view(error.what()).find("different polynomial context") !=
+                          std::string_view::npos;
+    }
+    if (!same_n_rejected || callbacks != 0) {
+        std::cout << "(same-N polynomial context substitution was accepted or emitted a callback) ";
+        return false;
+    }
+
+    auto factor_base = owner.build_factor_base(selected);
+    const size_t callbacks_after_build = callbacks;
+
+    // A bound factor base must remain immutable from the Pipeline's point of
+    // view.  This deliberately uses a valid prime so the identity mismatch,
+    // rather than a malformed-entry check, is the observed failure.
+    factor_base.add_rational(3, 0);
+    bool foreign_factor_base_rejected = false;
+    try {
+        (void)owner.sieve_and_collect(selected, factor_base);
+    } catch (const std::invalid_argument& error) {
+        foreign_factor_base_rejected =
+            std::string_view(error.what()).find("factor base different") != std::string_view::npos;
+    }
+    if (!foreign_factor_base_rejected || callbacks != callbacks_after_build) {
+        // The rejected call must not add another event beyond the successful
+        // factor-base build.
+        std::cout << "(foreign factor base was accepted or callback preflight changed) ";
+        return false;
+    }
+
+    Pipeline degree_owner(Integer(143), cfg);
+    PolynomialContext degree_mismatch(Integer(143), {Integer(0), Integer(0), Integer(1)},
+                                      Integer(0));
+    bool degree_rejected = false;
+    try {
+        (void)degree_owner.build_factor_base(degree_mismatch);
+    } catch (const std::invalid_argument& error) {
+        degree_rejected =
+            std::string_view(error.what()).find("degree does not match") != std::string_view::npos;
+    }
+
+    std::vector<Integer> invalid_coefficients;
+    invalid_coefficients.reserve(selected.coefficients().size());
+    for (const auto& coefficient : selected.coefficients()) {
+        invalid_coefficients.emplace_back(coefficient);
+    }
+    invalid_coefficients.front() += Integer(1);
+    Pipeline invalid_owner(Integer(143), cfg);
+    PolynomialContext invalid_root(Integer(143), std::move(invalid_coefficients),
+                                   Integer(selected.m()), selected.skewness());
+    bool invalid_root_rejected = false;
+    try {
+        (void)invalid_owner.build_factor_base(invalid_root);
+    } catch (const std::invalid_argument& error) {
+        invalid_root_rejected =
+            std::string_view(error.what()).find("does not satisfy f(m)") != std::string_view::npos;
+    }
+
+    if (!degree_rejected || !invalid_root_rejected) {
+        std::cout << "(invalid degree or modular-root context was accepted) ";
+        return false;
+    }
+    return true;
+}
+
+gnfs::core::PolynomialContext
+alternate_same_n_context(const gnfs::core::PolynomialContext& selected) {
+    std::vector<Integer> coefficients;
+    for (const auto& coefficient : selected.coefficients()) {
+        coefficients.emplace_back(coefficient);
+    }
+    coefficients.front() += selected.n();
+    return gnfs::core::PolynomialContext(Integer(selected.n()), std::move(coefficients),
+                                         Integer(selected.m()), selected.skewness());
+}
+
+bool test_failed_phase_preflight_does_not_bind() {
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline source(Integer(143), cfg);
+    auto ctx = source.select_polynomial();
+    auto other = alternate_same_n_context(ctx);
+    auto fb = source.build_factor_base(ctx);
+
+    Pipeline matrix_target(Integer(143), cfg);
+    RelationReductionResult invalid_reduction(1, {}, {});
+    invalid_reduction.generation = 0;
+    try {
+        (void)matrix_target.build_matrix(std::move(invalid_reduction), fb, ctx);
+        std::cout << "(invalid reduction accepted) ";
+        return false;
+    } catch (const std::invalid_argument&) {
+    }
+    try {
+        (void)matrix_target.build_factor_base(other);
+    } catch (const std::exception& error) {
+        std::cout << "(invalid reduction bound inputs: " << error.what() << ") ";
+        return false;
+    }
+
+    Pipeline sieve_target(Integer(143), cfg);
+    gnfs::factor_base::FactorBase invalid_fb;
+    invalid_fb.add_rational(4, 0);
+    try {
+        (void)sieve_target.sieve_and_collect(ctx, invalid_fb);
+        std::cout << "(invalid factor base accepted) ";
+        return false;
+    } catch (const std::invalid_argument&) {
+    }
+    try {
+        (void)sieve_target.build_factor_base(other);
+    } catch (const std::exception& error) {
+        std::cout << "(invalid factor base bound context: " << error.what() << ") ";
+        return false;
+    }
+    Pipeline callback_target(Integer(143), cfg);
+    auto valid_reduction = callback_target.filter({});
+    callback_target.set_progress_callback([](const ProgressInfo& info) {
+        if (info.message == "Building matrix")
+            throw std::runtime_error("injected failure");
+    });
+    bool callback_failed = false;
+    try {
+        (void)callback_target.build_matrix(std::move(valid_reduction), fb, ctx);
+    } catch (const std::runtime_error& error) {
+        callback_failed = std::string_view(error.what()) == "injected failure";
+    }
+    if (!callback_failed) {
+        std::cout << "(matrix callback did not fail) ";
+        return false;
+    }
+    callback_target.set_progress_callback({});
+    try {
+        (void)callback_target.build_factor_base(other);
+    } catch (const std::exception& error) {
+        std::cout << "(failed matrix callback bound inputs: " << error.what() << ") ";
+        return false;
+    }
+    return true;
+}
+
 bool test_v3_cascade_pipeline_integration() {
     // Verify GNFS_CASCADE_V3 ENV actually fires V3 cascade in Pipeline path.
     // Uses 12-digit N (~40-bit, lp_bits=17 → LP enabled) so V3 cascade branch
@@ -2359,6 +2524,44 @@ bool test_sieve_collection_options_preflight() {
     return true;
 }
 
+bool test_sieve_option_preflight_does_not_bind_factor_base() {
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+
+    Pipeline source(Integer(143), cfg);
+    auto ctx = source.select_polynomial();
+    auto alternate_factor_base = source.build_factor_base(ctx);
+    // Keep the alternate base mathematically admissible but distinguishable
+    // from the canonical base that a fresh Pipeline will build later.
+    alternate_factor_base.add_rational(3, 0);
+
+    Pipeline target(Integer(143), cfg);
+    SieveCollectionOptions invalid_options;
+    invalid_options.adaptive_round_limit = 0;
+    bool rejected = false;
+    try {
+        (void)target.sieve_and_collect(ctx, alternate_factor_base, invalid_options);
+    } catch (const std::out_of_range&) {
+        rejected = true;
+    } catch (...) {
+    }
+    if (!rejected) {
+        std::cout << "(invalid sieve options were not rejected) ";
+        return false;
+    }
+
+    try {
+        (void)target.build_factor_base(ctx);
+    } catch (const std::exception& error) {
+        std::cout << "(invalid sieve preflight bound factor-base state: " << error.what() << ") ";
+        return false;
+    }
+    return true;
+}
+
 bool test_structured_filter_adaptive_route() {
     ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "1");
     ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
@@ -2936,6 +3139,136 @@ bool test_structured_filter_run_preflight_preserves_resume_artifacts() {
             std::cout << "(run preflight consumed a relation generation) ";
             return false;
         }
+    }
+    return true;
+}
+
+bool test_distributed_resume_conflict_rejected_before_side_effects() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_distributed_resume_conflict_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts artifacts(base);
+    const std::vector<std::pair<std::string, std::string>> sentinels{
+        {base + ".poly_ckpt", "distributed-conflict-poly"},
+        {base + ".fb_ckpt", "distributed-conflict-fb"},
+        {base + ".sieve_ckpt", "distributed-conflict-sieve"},
+        {base + ".reldata", "distributed-conflict-data"},
+        {base + ".relidx", "distributed-conflict-index"},
+    };
+    for (const auto& [path, contents] : sentinels) {
+        write_test_file(path, contents);
+    }
+
+    ScopedTestFiles worker_sentinels;
+    for (size_t worker = 0; worker < 2; ++worker) {
+        const std::string worker_base = base + ".worker_" + std::to_string(worker);
+        worker_sentinels.paths.push_back(worker_base + ".reldata");
+        worker_sentinels.paths.push_back(worker_base + ".relidx");
+        worker_sentinels.paths.push_back(worker_base + ".attempts");
+    }
+    for (size_t index = 0; index < worker_sentinels.paths.size(); ++index) {
+        write_test_file(worker_sentinels.paths[index],
+                        "distributed-conflict-worker-" + std::to_string(index));
+    }
+
+    const auto exercise = [&](const char* resume_name) {
+        Config cfg;
+        cfg.method = FactorizationMethod::GNFS;
+        cfg.rational_bound = 5;
+        cfg.algebraic_bound = 5;
+        cfg.large_prime_bound = 101;
+        cfg.verbose = false;
+        Pipeline pipeline(Integer(143), cfg);
+        size_t progress_callbacks = 0;
+        size_t log_callbacks = 0;
+        pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+        pipeline.set_log_callback([&](const LogEntry&) { ++log_callbacks; });
+
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+        ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
+        ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "2");
+        ScopedEnvironmentVariable distributed_base("GNFS_DISTRIBUTED_SIEVE_BASE_PATH", base);
+        ScopedEnvironmentVariable force_small("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", "1");
+        ScopedEnvironmentVariable full_resume(
+            "GNFS_RESUME", std::string(resume_name) == "GNFS_RESUME" ? base : "");
+        ScopedEnvironmentVariable legacy_resume(
+            "GNFS_SIEVE_RESUME", std::string(resume_name) == "GNFS_SIEVE_RESUME" ? base : "");
+
+        bool rejected = false;
+        std::string diagnostic;
+        try {
+            (void)pipeline.run();
+        } catch (const std::invalid_argument& error) {
+            diagnostic = error.what();
+            rejected = diagnostic.find("GNFS_DISTRIBUTED_SIEVE_WORKERS") != std::string::npos &&
+                       diagnostic.find("GNFS_RESUME") != std::string::npos &&
+                       diagnostic.find("GNFS_SIEVE_RESUME") != std::string::npos;
+        }
+        if (!rejected || progress_callbacks != 0 || log_callbacks != 0 ||
+            pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted) {
+            std::cout << "(distributed+resume conflict crossed the preflight boundary: "
+                      << diagnostic << ") ";
+            return false;
+        }
+        for (const auto& [path, contents] : sentinels) {
+            if (read_test_file(path) != contents) {
+                std::cout << "(distributed+resume conflict changed a resume artifact) ";
+                return false;
+            }
+        }
+        for (size_t index = 0; index < worker_sentinels.paths.size(); ++index) {
+            if (read_test_file(worker_sentinels.paths[index]) !=
+                "distributed-conflict-worker-" + std::to_string(index)) {
+                std::cout << "(distributed+resume conflict changed a worker artifact) ";
+                return false;
+            }
+        }
+        return true;
+    };
+
+    return exercise("GNFS_RESUME") && exercise("GNFS_SIEVE_RESUME");
+}
+
+bool test_distributed_resume_conflict_rejected_by_phase_entrypoints() {
+    Config cfg;
+    cfg.method = FactorizationMethod::GNFS;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    gnfs::core::PolynomialContext invalid_context;
+    gnfs::factor_base::FactorBase empty_factor_base;
+    size_t callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++callbacks; });
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "2");
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", "phase-entrypoint-conflict");
+    ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", "");
+
+    const auto is_conflict = [](const auto& operation) {
+        try {
+            operation();
+        } catch (const std::invalid_argument& error) {
+            return std::string_view(error.what()).find("GNFS_DISTRIBUTED_SIEVE_WORKERS") !=
+                       std::string_view::npos &&
+                   std::string_view(error.what()).find("GNFS_RESUME") != std::string_view::npos;
+        } catch (...) {
+        }
+        return false;
+    };
+
+    const bool select_rejected = is_conflict([&] { (void)pipeline.select_polynomial(); });
+    const bool build_rejected =
+        is_conflict([&] { (void)pipeline.build_factor_base(invalid_context); });
+    const bool sieve_rejected =
+        is_conflict([&] { (void)pipeline.sieve_and_collect(invalid_context, empty_factor_base); });
+
+    if (!select_rejected || !build_rejected || !sieve_rejected || callbacks != 0 ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted) {
+        std::cout << "(distributed+resume conflict crossed a public phase preflight) ";
+        return false;
     }
     return true;
 }
@@ -4306,6 +4639,9 @@ int main() {
     TEST(pipeline_stats);
     TEST(pipeline_relation_generations);
     TEST(pipeline_rejects_foreign_context);
+    TEST(pipeline_context_and_factor_base_contract);
+    TEST(failed_phase_preflight_does_not_bind);
+    TEST(sieve_option_preflight_does_not_bind_factor_base);
     TEST(pipeline_progress_callback);
     TEST(structured_filter_stage_telemetry_parser);
     TEST(structured_ooc_path_namespace_contract);
@@ -4320,6 +4656,8 @@ int main() {
     TEST(structured_ooc_callback_failure_cleans_fresh_raw);
     TEST(legacy_ooc_explicit_terminal_cleanup);
     TEST(structured_filter_run_preflight_preserves_resume_artifacts);
+    TEST(distributed_resume_conflict_rejected_before_side_effects);
+    TEST(distributed_resume_conflict_rejected_by_phase_entrypoints);
     TEST(structured_filter_run_freezes_route_before_callbacks);
     TEST(structured_filter_sieve_freezes_route_before_callbacks);
     TEST(structured_filter_size_aware_ooc_run_preflight);
