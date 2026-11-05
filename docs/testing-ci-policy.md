@@ -61,6 +61,10 @@ when a changed path maps directly to the `siqs` module, including
 list does not select this E2E test. Ordinary `changed` and `smoke` keep their
 existing selection.
 
+The `changed` mode and its `diff` alias accept only one optional `--deep` mode
+argument. Unsupported or repeated arguments fail before CMake configuration.
+`--slow` belongs to `module`; passing it to `changed` is an error.
+
 The SIQS E2E includes a native attempt with a 600-second budget; its runner and
 CTest timeout remains 700 seconds to accommodate the other cases and setup.
 Use `scripts/test.sh run test_siqs_e2e` or `scripts/test.sh module siqs --slow`
