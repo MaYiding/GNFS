@@ -479,7 +479,16 @@ void test_success_cases(const std::filesystem::path& executable) {
         CHECK_CONTEXT(prime.lines.front().find("\"method\":\"trial\"") != std::string::npos,
                       "prime 127 started method");
     }
-    check_terminal_contains(prime, "\"method\":\"trial\"", "prime 127 result method");
+    check_terminal_contains(prime, "\"method\":\"auto\"", "prime 127 result method");
+    check_terminal_contains(prime, "\"executed_algorithm\":\"primality\"",
+                            "prime 127 actual algorithm");
+    check_terminal_contains(prime, "\"gnfs_parameters_applied\":false", "prime no GNFS parameters");
+    const auto mixed =
+        validate_protocol(executable, {"--event-stream", "--complete", "2000072000198"}, 0,
+                          EventKind::result, true, "mixed trial rho");
+    check_terminal_contains(mixed, "\"executed_algorithm\":\"mixed\"", "mixed algorithm summary");
+    check_terminal_contains(mixed, "\"attempts\":[{", "individual split telemetry");
+    check_terminal_contains(mixed, "\"factors\":[\"2\",\"1000003\",\"1000033\"]", "mixed factors");
 
     const auto hexadecimal =
         validate_protocol(executable, {"0x168", "--complete", "--event-stream"}, 0,

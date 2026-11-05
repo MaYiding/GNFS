@@ -49,6 +49,9 @@ inline constexpr int schema_version = 1;
 }
 
 [[nodiscard]] inline std::string progress_event(const ProgressInfo& info) {
+    if (!is_valid_factorization_method(info.method)) {
+        throw std::invalid_argument("event_stream::progress_event received an invalid method");
+    }
     if (!is_valid_phase(info.phase)) {
         throw std::invalid_argument("event_stream::progress_event received an invalid phase");
     }
@@ -74,7 +77,22 @@ inline constexpr int schema_version = 1;
     } else {
         os << info.dependency_index;
     }
-    os << ",\"dependencies_total\":" << info.dependencies_total << "}";
+    os << ",\"dependencies_total\":" << info.dependencies_total
+       << ",\"method\":" << quote_json(method_tag(info.method))
+       << ",\"algorithm\":" << quote_json(info.algorithm)
+       << ",\"current_number\":" << quote_json(info.current_number)
+       << ",\"attempt_index\":" << info.attempt_index << ",\"effective_parameters\":";
+    if (info.effective_parameters) {
+        const auto& p = *info.effective_parameters;
+        os << "{\"degree\":" << p.degree << ",\"rational_bound\":" << p.rational_bound
+           << ",\"algebraic_bound\":" << p.algebraic_bound
+           << ",\"large_prime_bound\":" << p.large_prime_bound
+           << ",\"sieve_width\":" << p.sieve_width << ",\"sieve_height\":" << p.sieve_height
+           << ",\"max_special_q\":" << p.max_special_q << "}";
+    } else {
+        os << "null";
+    }
+    os << "}";
     return os.str();
 }
 

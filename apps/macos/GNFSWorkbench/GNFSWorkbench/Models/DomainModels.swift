@@ -24,8 +24,8 @@ enum FactorMethod: String, Codable, CaseIterable, Identifiable, Sendable {
     case .auto: "根据整数规模自动选择合适方法"
     case .trial: "适用于包含小因子的整数"
     case .rho: "适用于中小规模整数"
-    case .siqs: "适用于约 25 至 100 位十进制整数"
-    case .gnfs: "强制运行完整一般数域筛流水线"
+    case .siqs: "优先使用 SIQS；仍会先检查完全幂和小因子"
+    case .gnfs: "优先 GNFS 路线；预检查或 SIQS 可能提前找到因子"
     }
   }
 }
@@ -166,6 +166,7 @@ struct RunLogEntry: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct FactorTimings: Codable, Equatable, Sendable {
+  let nonGNFS: Double?
   let total: Double
   let polynomial: Double
   let factorBase: Double
@@ -176,6 +177,7 @@ struct FactorTimings: Codable, Equatable, Sendable {
   let extraction: Double
 
   enum CodingKeys: String, CodingKey {
+    case nonGNFS = "non_gnfs_s"
     case total = "total_s"
     case polynomial = "poly_s"
     case factorBase = "fb_s"
@@ -188,6 +190,18 @@ struct FactorTimings: Codable, Equatable, Sendable {
 }
 
 struct FactorStatistics: Codable, Equatable, Sendable {
+  let executedAlgorithm: String?
+  let algorithmsExecuted: [String]?
+  let gnfsParametersApplied: Bool?
+  let sieveWidth: UInt64?
+  let sieveHeight: UInt64?
+  let maxSpecialQ: UInt64?
+  let siqsRelations: UInt64?
+  let siqsPolynomials: UInt64?
+  let siqsWorkers: UInt64?
+  let sieveRounds: UInt64?
+  let sieveStopReason: String?
+  let matrixWeight: UInt64?
   let degree: UInt64
   let rationalBound: UInt64
   let algebraicBound: UInt64
@@ -195,7 +209,8 @@ struct FactorStatistics: Codable, Equatable, Sendable {
   let rationalPrimes: UInt64
   let algebraicPrimes: UInt64
   let specialQProcessed: UInt64
-  let candidatesTotal: UInt64
+  let candidatesTotal: UInt64?
+  let candidatesStatisticsComplete: Bool?
   let relationsFound: UInt64
   let fullRelations: UInt64
   let partial1LP: UInt64
@@ -207,9 +222,21 @@ struct FactorStatistics: Codable, Equatable, Sendable {
   let matrixCols: UInt64
   let matrixExcess: Int64
   let dependenciesFound: UInt64
-  let dependenciesTried: Int64
+  let dependenciesTried: UInt64
 
   enum CodingKeys: String, CodingKey {
+    case executedAlgorithm = "executed_algorithm"
+    case algorithmsExecuted = "algorithms_executed"
+    case gnfsParametersApplied = "gnfs_parameters_applied"
+    case sieveWidth = "sieve_width"
+    case sieveHeight = "sieve_height"
+    case maxSpecialQ = "max_special_q"
+    case siqsRelations = "siqs_relations"
+    case siqsPolynomials = "siqs_polynomials"
+    case siqsWorkers = "siqs_workers"
+    case sieveRounds = "sieve_rounds_completed"
+    case sieveStopReason = "sieve_stop_reason"
+    case matrixWeight = "matrix_weight"
     case degree
     case rationalBound = "rational_bound"
     case algebraicBound = "algebraic_bound"
@@ -218,6 +245,7 @@ struct FactorStatistics: Codable, Equatable, Sendable {
     case algebraicPrimes = "algebraic_primes"
     case specialQProcessed = "special_q_processed"
     case candidatesTotal = "candidates_total"
+    case candidatesStatisticsComplete = "candidates_statistics_complete"
     case relationsFound = "relations_found"
     case fullRelations = "full_relations"
     case partial1LP = "partial_1lp"
@@ -246,6 +274,7 @@ struct FactorizationResult: Codable, Equatable, Sendable {
   let factors: [String]
   let timings: FactorTimings
   let statistics: FactorStatistics
+  let attempts: [FactorizationResult]?
 
   enum CodingKeys: String, CodingKey {
     case success
@@ -260,10 +289,29 @@ struct FactorizationResult: Codable, Equatable, Sendable {
     case factors
     case timings
     case statistics = "stats"
+    case attempts
+  }
+
+  var executionLabel: String {
+    let names = (attempts?.isEmpty == false ? attempts! : [self]).map {
+      AlgorithmDisplay.name($0.statistics.executedAlgorithm, fallback: "未记录")
+    }
+    var unique: [String] = []
+    for name in names where !unique.contains(name) { unique.append(name) }
+    return unique.joined(separator: " · ")
   }
 
   var hasVerifiedProduct: Bool {
     guard success, !factors.isEmpty else { return false }
+    guard
+      factors.allSatisfy({ factor in
+        guard !factor.isEmpty, factor.utf8.allSatisfy({ (48...57).contains($0) }) else {
+          return false
+        }
+        let value = DecimalBigUInt.normalized(factor)
+        return value.count > 1 || value > "1"
+      })
+    else { return false }
     return factors.reduce("1") { DecimalBigUInt.multiply($0, $1) }
       == DecimalBigUInt.normalized(number)
   }
@@ -313,6 +361,13 @@ struct RunRecord: Identifiable, Codable, Equatable, Sendable {
   var samples: [ProgressSample]
   var result: FactorizationResult?
   var errorMessage: String?
+  var activeAlgorithm: String?
+  var attemptIndex: UInt64?
+  var currentNumber: String?
+  var resolvedParameters: EffectiveGNFSParameters?
+  var rateBaseline: ProgressSample?
+  var dependenciesTried: UInt64?
+  var dependenciesTotal: UInt64?
 
   init(id: UUID = UUID(), configuration: RunConfiguration, createdAt: Date = Date()) {
     self.id = id
@@ -341,8 +396,62 @@ struct RunRecord: Identifiable, Codable, Equatable, Sendable {
   }
 
   var progressFraction: Double? {
-    if let phaseProgress { return min(max(phaseProgress, 0), 1) }
-    guard relationsTarget > 0 else { return nil }
-    return min(Double(relationsFound) / Double(relationsTarget), 1)
+    if phase == .sieving, relationsTarget > 0 {
+      return min(Double(relationsFound) / Double(relationsTarget), 1)
+    }
+    guard let phaseProgress, phaseProgress.isFinite else { return nil }
+    return min(max(phaseProgress, 0), 1)
+  }
+
+  var usesGNFSPipeline: Bool {
+    if let result {
+      return result.statistics.gnfsParametersApplied == true && (result.attempts?.count ?? 1) <= 1
+    }
+    return activeAlgorithm == "gnfs"
+  }
+
+  var activityTitle: String {
+    if usesGNFSPipeline { return phase.displayName }
+    return AlgorithmDisplay.name(activeAlgorithm, fallback: "准备计算")
+  }
+
+  func elapsed(at date: Date) -> Double {
+    guard status == .running || status == .cancelling else { return elapsed }
+    return max(elapsed, date.timeIntervalSince(createdAt))
+  }
+}
+
+struct EffectiveGNFSParameters: Codable, Equatable, Sendable {
+  let degree: UInt64
+  let rationalBound: UInt64
+  let algebraicBound: UInt64
+  let largePrimeBound: UInt64
+  let sieveWidth: UInt64
+  let sieveHeight: UInt64
+  let maxSpecialQ: UInt64
+  enum CodingKeys: String, CodingKey {
+    case degree
+    case rationalBound = "rational_bound"
+    case algebraicBound = "algebraic_bound"
+    case largePrimeBound = "large_prime_bound"
+    case sieveWidth = "sieve_width"
+    case sieveHeight = "sieve_height"
+    case maxSpecialQ = "max_special_q"
+  }
+}
+
+enum AlgorithmDisplay {
+  static func name(_ algorithm: String?, fallback: String = "未提供") -> String {
+    switch algorithm {
+    case "primality": "素性检查"
+    case "perfect_power": "完全幂检查"
+    case "trial": "试除"
+    case "rho": "Pollard Rho"
+    case "ecm": "ECM"
+    case "siqs": "SIQS"
+    case "gnfs": "GNFS"
+    case "mixed": "多算法分解"
+    default: fallback
+    }
   }
 }

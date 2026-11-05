@@ -389,7 +389,7 @@ struct Config {
         if (sieve_width.has_value()) {
             require_positive_dimension(*sieve_width, "sieve_width");
             params.sieve_i_min = -(*sieve_width / 2);
-            params.sieve_i_max = *sieve_width / 2 - 1;
+            params.sieve_i_max = params.sieve_i_min + *sieve_width - 1;
         }
         if (sieve_height.has_value()) {
             require_positive_dimension(*sieve_height, "sieve_height");

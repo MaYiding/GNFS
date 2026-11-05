@@ -6,12 +6,13 @@ enum DisplayFormat {
     if seconds < 0.001 { return "< 1 ms" }
     if seconds < 1 { return String(format: "%.0f ms", seconds * 1_000) }
     if seconds < 60 { return String(format: "%.2f s", seconds) }
+    guard seconds < Double(Int.max) else { return String(format: "%.2e s", seconds) }
     let minutes = Int(seconds) / 60
     if minutes < 60 {
-      return String(format: "%d m %.0f s", minutes, seconds.truncatingRemainder(dividingBy: 60))
+      return "\(minutes) m \(Int(seconds) % 60) s"
     }
     let hours = minutes / 60
-    return String(format: "%d h %d m", hours, minutes % 60)
+    return "\(hours) h \(minutes % 60) m"
   }
 
   static func count(_ value: UInt64) -> String {

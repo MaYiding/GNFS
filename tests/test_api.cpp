@@ -1058,7 +1058,9 @@ bool test_factorize_completely_multiprime() {
 bool test_factorize_completely_prime_input() {
     auto result = factorize_completely(Integer(127));
     return result.success && result.factorization_complete && result.factors_prime &&
-           result.stats.method_used == FactorizationMethod::TrialDivision &&
+           result.stats.method_used == FactorizationMethod::Auto &&
+           result.stats.executed_algorithm == "primality" &&
+           !result.stats.gnfs_parameters_applied && result.attempts.empty() &&
            result.factors.size() == 1 && result.factors[0].compare(Integer(127)) == 0;
 }
 
@@ -1250,6 +1252,14 @@ bool test_pipeline_step_by_step() {
     assert(fb.algebraic_count() > 0);
 
     auto reduction = pipeline.sieve_and_collect(ctx, fb);
+    if (pipeline.stats().relations_after_filter != reduction.stats.output_relations ||
+        pipeline.stats().singletons_removed != reduction.stats.singleton_rows_removed ||
+        pipeline.stats().merged_relations != reduction.stats.merged_relations ||
+        pipeline.stats().timings.filter_s <= 0 || pipeline.stats().timings.sieve_s < 0) {
+        std::cout << "(collection reduction telemetry differs from actual output) ";
+        return false;
+    }
+
     assert(!reduction.empty());
     if (reduction.generation == 0) {
         std::cout << "(sieve reduction generation was zero) ";
@@ -1395,7 +1405,10 @@ bool test_structured_xor_pair_fallback() {
             }
         }
         matrix_result.dependencies = {candidates[mask]};
+        Phase terminal_phase = Phase::PolynomialSelection;
+        pipeline.set_progress_callback([&](const ProgressInfo& info) { terminal_phase = info.phase; });
         succeeds[mask] = pipeline.extract_factors(matrix_result, fb, ctx).success;
+        if (!succeeds[mask] && terminal_phase == Phase::Done) return false;
     }
 
     size_t lhs_mask = 0;
@@ -1424,14 +1437,17 @@ bool test_structured_xor_pair_fallback() {
     }
 
     size_t xor_progress_events = 0;
+    bool saw_xor_counts = false;
     pipeline.set_progress_callback([&](const ProgressInfo& info) {
         if (info.phase == Phase::FactorExtraction && info.message == "Trying XOR combinations") {
             ++xor_progress_events;
         }
+        if (info.phase == Phase::FactorExtraction && info.dependency_index == 3 && info.dependencies_total == 2) saw_xor_counts = true;
     });
     matrix_result.dependencies = {candidates[lhs_mask], candidates[rhs_mask]};
     const auto result = pipeline.extract_factors(matrix_result, fb, ctx);
-    if (!result.success || result.factors.size() != 2 || xor_progress_events != 1) {
+    if (!result.success || result.factors.size() != 2 || xor_progress_events != 1 ||
+        result.stats.dependencies_tried != 3 || result.stats.timings.extract_s <= 0 || !saw_xor_counts) {
         std::cout << "(structured extract_factors did not succeed through XOR fallback) ";
         return false;
     }
@@ -1443,6 +1459,53 @@ bool test_structured_xor_pair_fallback() {
         return false;
     }
     return true;
+}
+
+bool test_telemetry_exact_inputs_and_parameters() {
+    for (const int32_t width :
+         {int32_t{1}, int32_t{2}, int32_t{17}, std::numeric_limits<int32_t>::max()}) {
+        Config cfg;
+        cfg.sieve_width = width;
+        const auto params = cfg.apply_to(Integer(143));
+        if (static_cast<int64_t>(params.sieve_i_max) - params.sieve_i_min + 1 != width)
+            return false;
+    }
+    for (const auto& input : {std::string("8"), std::string("999"), std::string(100, '9')}) {
+        Pipeline pipeline{Integer(input)};
+        if (pipeline.stats().n_digits != input.size())
+            return false;
+    }
+    Config cfg;
+    cfg.method = FactorizationMethod::GNFS;
+    cfg.degree = 4;
+    cfg.rational_bound = 5000;
+    const auto result = factorize(Integer(143), cfg);
+    return result.success && result.stats.executed_algorithm == "trial" &&
+           !result.stats.gnfs_parameters_applied && result.stats.degree == 0 &&
+           result.stats.rational_bound == 0 && result.stats.timings.non_gnfs_s > 0;
+}
+
+bool test_complete_factorization_attempt_telemetry() {
+    std::vector<ProgressInfo> events;
+    const auto result =
+        factorize_completely(Integer("2000072000198"), Config::auto_detect(),
+                             [&](const ProgressInfo& info) { events.push_back(info); }, {});
+    if (!result.success || result.attempts.size() != 2 ||
+        result.stats.method_used != FactorizationMethod::PollardRho ||
+        result.stats.executed_algorithm != "mixed" || result.stats.timings.non_gnfs_s <= 0)
+        return false;
+    if (result.attempts[0].n.to_string() != "2000072000198" ||
+        result.attempts[0].stats.executed_algorithm != "trial" ||
+        result.attempts[1].n.to_string() != "1000036000099" ||
+        result.attempts[1].stats.executed_algorithm != "rho")
+        return false;
+    bool saw_second_rho = false;
+    for (const auto& event : events) {
+        if (event.attempt_index == 2 && event.algorithm == "rho" &&
+            event.current_number == "1000036000099" && !event.effective_parameters)
+            saw_second_rho = true;
+    }
+    return saw_second_rho;
 }
 
 bool test_pipeline_stats() {
@@ -2391,6 +2454,14 @@ bool test_structured_filter_adaptive_route() {
     auto ctx = pipeline.select_polynomial();
     auto fb = pipeline.build_factor_base(ctx);
     auto reduction = pipeline.sieve_and_collect(ctx, fb);
+    if (pipeline.stats().relations_after_filter != reduction.stats.output_relations ||
+        pipeline.stats().singletons_removed != reduction.stats.singleton_rows_removed ||
+        pipeline.stats().merged_relations != reduction.stats.merged_relations ||
+        pipeline.stats().timings.filter_s <= 0 || pipeline.stats().timings.sieve_s < 0) {
+        std::cout << "(collection reduction telemetry differs from actual output) ";
+        return false;
+    }
+
     if (reduction.empty() ||
         reduction.stats.strategy != gnfs::relation::ReductionStrategy::Structured ||
         reduction.stats.structured.budgeted_runs != 1 ||
@@ -3259,6 +3330,12 @@ bool test_distributed_sieve_removes_unused_master_ooc_pair() {
             reduction.emplace(pipeline.sieve_and_collect(ctx, fb));
         }
         pipeline.set_progress_callback({});
+        const auto& telemetry = pipeline.stats();
+        if (telemetry.relations_found !=
+                telemetry.full_relations + telemetry.partial_1lp + telemetry.partial_2lp ||
+            telemetry.candidates_statistics_complete || telemetry.timings.filter_s <= 0 ||
+            telemetry.relations_after_filter != reduction->size())
+            return false;
         if (!callback_drift_injected || reduction->generation == 0 ||
             pipeline.stats().sieve_stop_reason != SieveStopReason::DistributedWaveComplete) {
             std::cout << "(distributed OOC fixture did not retain its entry config) ";
@@ -4270,6 +4347,8 @@ int main() {
     TEST(config_builder);
     TEST(config_merge);
     TEST(config_apply_to);
+    TEST(config_apply_to_rejects_invalid_ranges);
+    TEST(telemetry_exact_inputs_and_parameters);
     TEST(config_from_file);
     TEST(config_from_file_integer_boundaries);
     TEST(config_from_file_invalid);
@@ -4292,6 +4371,7 @@ int main() {
     TEST(factorize_with_progress);
     TEST(factorize_prime_input);
     TEST(factorize_completely_multiprime);
+    TEST(complete_factorization_attempt_telemetry);
     TEST(factorize_completely_prime_input);
     TEST(factorize_completely_validates_config_for_prime_fast_path);
     TEST(factorize_completely_validates_config_for_nonpositive_fast_path);

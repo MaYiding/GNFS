@@ -10,122 +10,119 @@ struct NumberHeroView: View {
   @FocusState private var isNumberFocused: Bool
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 15) {
-      Text("要分解的整数 N")
-        .font(.system(size: 13, weight: .semibold))
-        .tracking(0.7)
-        .foregroundStyle(AppTheme.secondaryText)
-
-      if let run {
-        HStack(spacing: 12) {
-          Text(run.displayNumber)
-            .font(.gnfsMonospaced(size: 50, weight: .medium))
-            .foregroundStyle(AppTheme.primaryText)
-            .lineLimit(1)
-            .minimumScaleFactor(0.42)
-            .textSelection(.enabled)
-            .accessibilityIdentifier("numberDisplay")
-          Spacer(minLength: 8)
-          copyButton(run.configuration.number)
+    VStack(alignment: .leading, spacing: run == nil ? 18 : 10) {
+      HStack {
+        VStack(alignment: .leading, spacing: 6) {
+          Text(run == nil ? "从一个整数开始" : "分解任务")
+            .font(run == nil ? .title2.weight(.semibold) : .headline)
+          if run == nil {
+            Text("输入 N，得到经过校验的完整质因数分解。")
+              .font(.subheadline).foregroundStyle(.secondary)
+          }
         }
-      } else {
-        HStack(spacing: 12) {
-          TextField("例如 1000036000099", text: $configuration.number)
+        Spacer()
+        if let run {
+          Text(run.createdAt.formatted(date: .abbreviated, time: .shortened))
+            .font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      VStack(alignment: .leading, spacing: 10) {
+        HStack {
+          Text("待分解整数 N").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+          Spacer()
+          Text(inputDescription).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+          Button {
+            copy(run?.configuration.number ?? configuration.number)
+          } label: {
+            Image(systemName: "doc.on.doc")
+          }
+          .buttonStyle(.borderless).help("复制整数")
+          .accessibilityLabel("复制待分解整数")
+        }
+        if let run {
+          Text(run.displayNumber)
+            .font(.system(size: 20, weight: .medium, design: .monospaced))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("numberDisplay")
+        } else {
+          TextField("例如 1000036000099", text: $configuration.number, axis: .vertical)
             .textFieldStyle(.plain)
-            .font(.gnfsMonospaced(size: 50, weight: .medium))
-            .foregroundStyle(AppTheme.primaryText)
+            .font(.system(size: 28, weight: .medium, design: .monospaced))
+            .lineLimit(2...5)
             .focused($isNumberFocused)
             .accessibilityLabel("待分解整数")
-            .accessibilityHint("支持十进制或以 0x 开头的十六进制整数，按回车开始")
+            .accessibilityHint("支持十进制与 0x 十六进制，按回车开始")
             .accessibilityIdentifier("numberInput")
-            .onSubmit {
-              if canSubmit { submit() }
-            }
-          copyButton(configuration.number)
+            .onSubmit { if canSubmit { submit() } }
         }
       }
+      .padding(run == nil ? 18 : 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(AppTheme.canvas, in: RoundedRectangle(cornerRadius: 10))
+      .overlay {
+        RoundedRectangle(cornerRadius: 10)
+          .stroke(isNumberFocused ? AppTheme.indigo : AppTheme.separatorStrong, lineWidth: 1)
+      }
 
-      Rectangle()
-        .fill(AppTheme.separatorStrong)
-        .frame(height: 1)
-
-      HStack(spacing: 11) {
-        Image(systemName: "checkmark.circle.fill")
-          .font(.system(size: 16, weight: .semibold))
-          .foregroundStyle(AppTheme.indigo)
-
-        Text("完整质因数分解")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(AppTheme.primaryText)
-
-        Rectangle()
-          .fill(AppTheme.separatorStrong)
-          .frame(width: 1, height: 16)
-
-        if let run {
-          Text(run.selectedMethod?.displayName ?? run.configuration.method.displayName)
-            .font(.system(size: 13, weight: .semibold))
-          Text(run.methodReason ?? run.configuration.method.explanation)
-            .foregroundStyle(AppTheme.secondaryText)
-            .lineLimit(1)
-        } else {
-          Picker("方法", selection: $configuration.method) {
-            ForEach(FactorMethod.allCases) { method in
-              Text(method.displayName).tag(method)
-            }
+      if run == nil {
+        HStack(spacing: 10) {
+          Text("试一试").font(.caption).foregroundStyle(.secondary)
+          example("360", caption: "重复因子")
+          example("10403", caption: "小半素数")
+          example("1000036000099", caption: "较大整数")
+          Spacer(minLength: 0)
+        }
+        HStack(alignment: .top, spacing: 12) {
+          Picker("算法", selection: $configuration.method) {
+            ForEach(FactorMethod.allCases) { Text($0.displayName).tag($0) }
           }
-          .labelsHidden()
-          .pickerStyle(.menu)
-          .fixedSize()
+          .frame(width: 180)
           .accessibilityIdentifier("methodPicker")
-
           Text(configuration.method.explanation)
-            .font(.system(size: 12.5))
-            .foregroundStyle(AppTheme.secondaryText)
-            .lineLimit(1)
+            .font(.callout).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-
-        Spacer()
-
-        if run == nil, let validationMessage {
-          Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
-            .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(AppTheme.danger)
-            .fixedSize(horizontal: false, vertical: true)
+        if let validationMessage {
+          Label(validationMessage, systemImage: "exclamationmark.circle")
+            .font(.callout).foregroundStyle(AppTheme.danger)
             .accessibilityIdentifier("validationMessage")
-        } else if run == nil {
-          Label("回车开始", systemImage: "return")
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(AppTheme.tertiaryText)
+        } else {
+          Text("支持十进制、0x 十六进制，以及带空格或逗号的数字。回车或 ⌘R 开始。")
+            .font(.caption).foregroundStyle(.secondary)
         }
+      } else if let run {
+        HStack(spacing: 12) {
+          Label(
+            run.result?.executionLabel
+              ?? AlgorithmDisplay.name(run.activeAlgorithm, fallback: "准备计算"),
+            systemImage: "cpu")
+          Text(run.configuration.parameters.isAutomatic ? "请求自动参数" : "请求自定义参数")
+          Spacer()
+          Label("完整分解", systemImage: "checkmark.shield")
+        }
+        .font(.callout).foregroundStyle(.secondary)
       }
-      .frame(minHeight: 28)
     }
-    .padding(.horizontal, 1)
-    .onAppear {
-      if run == nil { isNumberFocused = true }
-    }
+    .workbenchPanel()
+    .onAppear { isNumberFocused = run == nil }
+    .onChange(of: run?.id) { isNumberFocused = run == nil }
   }
 
-  private func copyButton(_ value: String) -> some View {
-    Button {
-      copy(value)
-    } label: {
-      Image(systemName: "doc.on.doc")
-        .font(.system(size: 14, weight: .medium))
-        .frame(width: 36, height: 36)
+  private var inputDescription: String {
+    let input = run?.configuration.number ?? configuration.number
+    guard case .valid(let value) = IntegerInputValidator.validate(input) else { return "" }
+    return value.hasPrefix("0x") ? "\(value.count - 2) 位十六进制" : "\(value.count) 位十进制"
+  }
+
+  private func example(_ number: String, caption: String) -> some View {
+    Button(caption) {
+      configuration.number = number
+      isNumberFocused = true
     }
-    .buttonStyle(.borderless)
-    .foregroundStyle(AppTheme.secondaryText)
-    .background(
-      AppTheme.surface.opacity(0.7),
-      in: RoundedRectangle(
-        cornerRadius: 8,
-        style: .continuous
-      )
-    )
-    .help("复制整数")
-    .accessibilityLabel("复制待分解整数")
-    .disabled(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    .buttonStyle(.bordered)
+    .controlSize(.small)
+    .help(number)
+    .accessibilityIdentifier("example-\(number)")
   }
 }

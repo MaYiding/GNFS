@@ -25,26 +25,26 @@ struct GNFSWorkbenchApp: App {
   @State private var model = AppModel()
 
   var body: some Scene {
-    WindowGroup("GNFS Workbench") {
+    Window("GNFS Workbench", id: "workbench") {
       ContentView(model: model)
-        .preferredColorScheme(.dark)
-        .frame(minWidth: 1_000, minHeight: 740)
+        .frame(minWidth: 900, minHeight: 640)
         .onAppear { appDelegate.model = model }
     }
-    .defaultSize(width: 1_320, height: 940)
-    .windowStyle(.hiddenTitleBar)
+    .defaultSize(width: 1_240, height: 860)
     .commands {
       CommandGroup(replacing: .newItem) {
         Button("新建分解") { Task { await model.newRun() } }
           .keyboardShortcut("n", modifiers: .command)
-          .disabled(model.isRunTaskActive)
+          .disabled(!model.canEdit || model.isParametersPresented)
       }
       CommandMenu("运行") {
         Button("开始完整质因数分解") {
-          Task { await model.startRun() }
+          Task { await model.runOrRepeat() }
         }
         .keyboardShortcut("r", modifiers: .command)
-        .disabled(!model.canStart)
+        .disabled(
+          !model.canEdit || (model.displayedRun == nil && !model.canStart)
+            || model.isParametersPresented)
 
         Button("取消当前任务") { model.cancelRun() }
           .keyboardShortcut(".", modifiers: .command)
@@ -54,6 +54,8 @@ struct GNFSWorkbenchApp: App {
 
         Button("参数设置") { model.isParametersPresented.toggle() }
           .keyboardShortcut(",", modifiers: [.command, .shift])
+        Button("显示运行历史") { model.isHistoryPresented.toggle() }
+          .keyboardShortcut("s", modifiers: [.command, .control])
       }
     }
   }

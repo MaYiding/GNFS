@@ -8,167 +8,144 @@ struct RunLogsView: View {
   let clear: () -> Void
   @State private var query = ""
   @State private var severityFilter: LogSeverity?
+  @State private var followsLatest = true
 
   private var visibleEntries: [RunLogEntry] {
-    return entries.filter {
-      let severityMatches = severityFilter == nil || $0.severity == severityFilter
-      let queryMatches =
-        query.isEmpty
-        || $0.message.localizedCaseInsensitiveContains(query)
-        || $0.severity.rawValue.localizedCaseInsensitiveContains(query)
-        || ($0.phase?.displayName.localizedCaseInsensitiveContains(query) ?? false)
-      return severityMatches && queryMatches
+    entries.filter {
+      (severityFilter == nil || $0.severity == severityFilter)
+        && (query.isEmpty || $0.message.localizedCaseInsensitiveContains(query)
+          || $0.severity.rawValue.localizedCaseInsensitiveContains(query)
+          || ($0.phase?.displayName.localizedCaseInsensitiveContains(query) ?? false))
     }
   }
 
   var body: some View {
-    DisclosureGroup(isExpanded: $isExpanded) {
-      VStack(spacing: 11) {
+    VStack(alignment: .leading, spacing: 14) {
+      Button {
+        isExpanded.toggle()
+      } label: {
+        HStack {
+          Label("运行日志", systemImage: "terminal").font(.headline)
+          Text("\(entries.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+          Spacer()
+          Image(systemName: isExpanded ? "chevron.up" : "chevron.down").font(.caption)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityIdentifier("toggleLogsButton")
+      if isExpanded {
+        HStack(spacing: 12) {
+          TextField("搜索日志", text: $query)
+            .textFieldStyle(.roundedBorder)
+            .accessibilityLabel("搜索运行日志")
+            .accessibilityIdentifier("logSearch")
+          Picker("级别", selection: $severityFilter) {
+            Text("全部级别").tag(nil as LogSeverity?)
+            ForEach([LogSeverity.info, .warning, .error, .debug, .trace], id: \.rawValue) {
+              Text($0.rawValue).tag(Optional($0))
+            }
+          }
+          .labelsHidden().frame(width: 112)
+          Menu {
+            Button("复制筛选结果") { copy(visibleEntries.map(Self.plainText).joined(separator: "\n")) }
+              .disabled(visibleEntries.isEmpty)
+            Button("复制全部日志") { copy(entries.map(Self.plainText).joined(separator: "\n")) }
+              .disabled(entries.isEmpty)
+            Divider()
+            Button("清除日志", role: .destructive, action: clear)
+              .disabled(entries.isEmpty || !canClear)
+          } label: {
+            Image(systemName: "ellipsis.circle")
+          }
+          .menuIndicator(.hidden).menuStyle(.borderlessButton).fixedSize()
+          .accessibilityLabel("日志操作")
+        }
+        HStack {
+          Text("显示 \(visibleEntries.count) 条 · 最多保留最近 600 条")
+            .font(.caption).foregroundStyle(.secondary)
+          Spacer()
+          Toggle("跟随最新", isOn: $followsLatest)
+            .toggleStyle(.checkbox).font(.caption)
+            .accessibilityIdentifier("followLogsToggle")
+        }
         if entries.isEmpty {
-          ContentUnavailableView(
-            "暂无运行日志",
-            systemImage: "terminal",
-            description: Text("任务开始后，结构化事件会实时显示在这里。")
-          )
-          .frame(maxWidth: .infinity, minHeight: 154)
+          emptyState("暂无日志", detail: "开始运行后，事件和诊断信息将显示在这里。")
         } else if visibleEntries.isEmpty {
-          if query.isEmpty, let severityFilter {
-            ContentUnavailableView(
-              "没有 \(severityFilter.rawValue) 日志",
-              systemImage: "line.3.horizontal.decrease.circle",
-              description: Text("请选择其他日志级别或恢复显示全部级别。")
-            )
-            .frame(maxWidth: .infinity, minHeight: 154)
-          } else {
-            ContentUnavailableView.search(text: query)
-              .frame(maxWidth: .infinity, minHeight: 154)
+          VStack(spacing: 10) {
+            emptyState("没有匹配的日志", detail: "试试其他关键词或级别。")
+            Button("重置筛选") {
+              query = ""
+              severityFilter = nil
+            }
           }
         } else {
           ScrollViewReader { proxy in
             ScrollView {
               LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(visibleEntries) { entry in
-                  logRow(entry)
-                    .id(entry.id)
-                }
+                ForEach(visibleEntries) { entry in logRow(entry).id(entry.id) }
               }
-              .padding(.vertical, 4)
+              .padding(.vertical, 6)
             }
-            .frame(height: 196)
-            .background(
-              AppTheme.canvas.opacity(0.48),
-              in: RoundedRectangle(
-                cornerRadius: 6,
-                style: .continuous
-              )
-            )
-            .onChange(of: entries.count) {
-              guard query.isEmpty, severityFilter == nil, let last = entries.last else {
-                return
+            .frame(height: 220)
+            .background(AppTheme.canvas, in: RoundedRectangle(cornerRadius: 8))
+            .onChange(of: visibleEntries.last?.id) {
+              if followsLatest, let last = visibleEntries.last {
+                proxy.scrollTo(last.id, anchor: .bottom)
               }
-              proxy.scrollTo(last.id, anchor: .bottom)
+            }
+            .onChange(of: followsLatest) {
+              if followsLatest, let last = visibleEntries.last {
+                proxy.scrollTo(last.id, anchor: .bottom)
+              }
+            }
+            .onAppear {
+              if followsLatest, let last = visibleEntries.last {
+                proxy.scrollTo(last.id, anchor: .bottom)
+              }
             }
           }
         }
       }
-      .padding(.top, 12)
-    } label: {
-      HStack(spacing: 11) {
-        Image(systemName: "terminal")
-          .foregroundStyle(AppTheme.cyan)
-        Text("运行日志")
-          .font(.system(size: 13, weight: .semibold))
-        Text("\(entries.count)")
-          .font(.gnfsMonospaced(size: 10, weight: .medium))
-          .foregroundStyle(AppTheme.tertiaryText)
-
-        Spacer()
-
-        if isExpanded {
-          Button("清除", action: clear)
-            .buttonStyle(.borderless)
-            .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(AppTheme.secondaryText)
-            .disabled(entries.isEmpty || !canClear)
-
-          Menu {
-            Button("全部级别") { severityFilter = nil }
-            Divider()
-            ForEach(
-              [LogSeverity.info, .warning, .error, .debug, .trace],
-              id: \.rawValue
-            ) { severity in
-              Button(severity.rawValue) { severityFilter = severity }
-            }
-          } label: {
-            Label(
-              severityFilter?.rawValue ?? "全部",
-              systemImage: "line.3.horizontal.decrease.circle"
-            )
-          }
-          .menuStyle(.borderlessButton)
-          .fixedSize()
-          .font(.system(size: 11.5))
-
-          TextField("筛选", text: $query)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 168)
-            .font(.system(size: 11.5))
-            .accessibilityIdentifier("logSearch")
-
-          Button {
-            copy(entries.map(Self.plainText).joined(separator: "\n"))
-          } label: {
-            Image(systemName: "doc.on.doc")
-          }
-          .buttonStyle(.borderless)
-          .help("复制全部日志")
-          .disabled(entries.isEmpty)
-        }
-      }
-      .foregroundStyle(AppTheme.primaryText)
     }
     .workbenchPanel(padding: 18)
     .accessibilityIdentifier("runLogs")
   }
 
+  private func emptyState(_ title: String, detail: String) -> some View {
+    VStack(spacing: 7) {
+      Text(title).font(.callout.weight(.medium))
+      Text(detail).font(.caption).foregroundStyle(.secondary)
+    }
+    .frame(maxWidth: .infinity, minHeight: 85)
+  }
+
   private func logRow(_ entry: RunLogEntry) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 10) {
       Text(String(format: "%07.2f", entry.timestamp))
-        .foregroundStyle(AppTheme.tertiaryText)
-        .frame(width: 58, alignment: .trailing)
+        .foregroundStyle(.secondary).frame(width: 64, alignment: .trailing)
       Text(entry.severity.rawValue)
-        .foregroundStyle(color(for: entry.severity))
-        .frame(width: 42, alignment: .leading)
-      Text(entry.phase?.rawValue.uppercased() ?? "—")
-        .foregroundStyle(AppTheme.indigo)
-        .frame(width: 52, alignment: .leading)
+        .foregroundStyle(color(for: entry.severity)).frame(width: 42, alignment: .leading)
       Text(entry.message)
-        .foregroundStyle(AppTheme.secondaryText)
+        .foregroundStyle(AppTheme.primaryText)
         .textSelection(.enabled)
-      Spacer(minLength: 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .font(.gnfsMonospaced(size: 12))
-    .padding(.horizontal, 12)
-    .padding(.vertical, 4)
+    .font(.system(size: 12, design: .monospaced))
+    .padding(.horizontal, 12).padding(.vertical, 6)
+    .help(entry.phase?.displayName ?? "运行事件")
   }
 
   private func color(for severity: LogSeverity) -> Color {
     switch severity {
     case .error: AppTheme.danger
     case .warning: AppTheme.warning
-    case .info: AppTheme.cyan
+    case .info: AppTheme.indigo
     case .debug, .trace: AppTheme.secondaryText
     }
   }
 
   private static func plainText(_ entry: RunLogEntry) -> String {
-    String(
-      format: "%07.2f  %-5@  %-7@  %@",
-      entry.timestamp,
-      entry.severity.rawValue,
-      entry.phase?.rawValue.uppercased() ?? "—",
-      entry.message
-    )
+    "\(String(format: "%.2f", entry.timestamp))  \(entry.severity.rawValue)  \(entry.phase?.rawValue ?? "—")  \(entry.message)"
   }
 }

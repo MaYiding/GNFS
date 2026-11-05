@@ -1,36 +1,46 @@
+import AppKit
 import SwiftUI
 
 enum AppTheme {
-  static let canvas = Color(red: 0.055, green: 0.067, blue: 0.082)
-  static let header = Color(red: 0.066, green: 0.078, blue: 0.094)
-  static let elevated = Color(red: 0.075, green: 0.088, blue: 0.108)
-  static let surface = Color(red: 0.092, green: 0.106, blue: 0.128)
-  static let surfaceHover = Color(red: 0.115, green: 0.132, blue: 0.158)
-  static let separator = Color.white.opacity(0.11)
-  static let separatorStrong = Color.white.opacity(0.18)
+  static let canvas = adaptive(light: 0xF3F5F9, dark: 0x121820)
+  static let header = adaptive(light: 0xF8F9FC, dark: 0x181E28)
+  static let surface = adaptive(light: 0xFFFFFF, dark: 0x1C2430)
+  static let elevated = surface
+  static let surfaceHover = Color.primary.opacity(0.055)
+  static let separator = Color.primary.opacity(0.08)
+  static let separatorStrong = Color.primary.opacity(0.14)
 
-  static let primaryText = Color(red: 0.91, green: 0.925, blue: 0.95)
-  static let secondaryText = Color(red: 0.62, green: 0.66, blue: 0.72)
-  static let tertiaryText = Color(red: 0.43, green: 0.47, blue: 0.54)
-
-  static let indigo = Color(red: 0.31, green: 0.37, blue: 0.98)
-  static let cyan = Color(red: 0.10, green: 0.72, blue: 0.94)
-  static let success = Color(red: 0.24, green: 0.72, blue: 0.50)
-  static let warning = Color(red: 0.95, green: 0.65, blue: 0.25)
-  static let danger = Color(red: 0.95, green: 0.32, blue: 0.35)
+  static let primaryText = Color.primary
+  static let secondaryText = Color.secondary
+  static let tertiaryText = Color.secondary
+  static let indigo = adaptive(light: 0x5145BD, dark: 0xA4A1FF)
+  static let cyan = adaptive(light: 0x07677C, dark: 0x63CBDC)
+  static let success = adaptive(light: 0x217344, dark: 0x6FD99A)
+  static let warning = adaptive(light: 0x9E590B, dark: 0xF2BA62)
+  static let danger = adaptive(light: 0xBC2D3A, dark: 0xFF7B86)
 
   static let progressGradient = LinearGradient(
-    colors: [indigo, cyan],
-    startPoint: .leading,
-    endPoint: .trailing
+    colors: [indigo, cyan], startPoint: .leading, endPoint: .trailing
   )
-
-  static let contentPadding: CGFloat = 38
-  static let sectionSpacing: CGFloat = 22
+  static let contentPadding: CGFloat = 24
+  static let sectionSpacing: CGFloat = 20
   static let controlRadius: CGFloat = 8
-  static let panelRadius: CGFloat = 10
-  static let headerHeight: CGFloat = 80
-  static let contentMaxWidth: CGFloat = 1_520
+  static let panelRadius: CGFloat = 14
+  static let headerHeight: CGFloat = 64
+  static let contentMaxWidth: CGFloat = 1_160
+
+  private static func adaptive(light: UInt32, dark: UInt32) -> Color {
+    Color(
+      nsColor: NSColor(name: nil) { appearance in
+        let value = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        return NSColor(
+          srgbRed: Double((value >> 16) & 0xFF) / 255,
+          green: Double((value >> 8) & 0xFF) / 255,
+          blue: Double(value & 0xFF) / 255,
+          alpha: 1
+        )
+      })
+  }
 }
 
 extension Font {

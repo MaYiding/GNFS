@@ -1117,11 +1117,7 @@ Pipeline::Pipeline(const Integer& n, const Config& config)
             std::min(params_.max_local_sieve_threads, hardware_threads);
     }
     stats_.n_bits = n.bit_length();
-    stats_.n_digits = params_.digits;
-    stats_.degree = params_.degree;
-    stats_.rational_bound = params_.rational_bound;
-    stats_.algebraic_bound = params_.algebraic_bound;
-    stats_.large_prime_bound = params_.large_prime_bound;
+    stats_.n_digits = n.to_string().size();
 }
 
 Pipeline::StructuredRouteSnapshot Pipeline::capture_structured_route_snapshot() const {
@@ -1214,6 +1210,16 @@ void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_p
     info.phase_progress = phase_progress;
     info.elapsed_s = elapsed_s();
     info.message = msg;
+    info.method = stats_.method_used;
+    info.algorithm = stats_.executed_algorithm;
+    info.current_number = n_.to_string();
+    if (stats_.gnfs_parameters_applied) {
+        info.effective_parameters =
+            EffectiveGNFSParameters{stats_.degree,          stats_.rational_bound,
+                                    stats_.algebraic_bound, stats_.large_prime_bound,
+                                    stats_.sieve_width,     stats_.sieve_height,
+                                    stats_.max_special_q};
+    }
     // Progress counters are phase-scoped. Do not leak the last value from a
     // completed phase into a later event: event-stream consumers rely on
     // non-applicable counters remaining at their zero/unset defaults.
@@ -1231,10 +1237,15 @@ void Pipeline::emit_progress(Phase phase, const std::string& msg, double phase_p
         info.dependency_index = stats_.dependencies_tried;
         info.dependencies_total = stats_.dependencies_found;
         break;
+    case Phase::FactorExtraction:
+        if (stats_.gnfs_parameters_applied) {
+            info.dependency_index = stats_.dependencies_tried;
+            info.dependencies_total = stats_.dependencies_found;
+        }
+        break;
     case Phase::PolynomialSelection:
     case Phase::FactorBase:
     case Phase::Filtering:
-    case Phase::FactorExtraction:
     case Phase::Done:
         break;
     }
@@ -1262,6 +1273,22 @@ PolynomialContext Pipeline::select_polynomial() {
 
 PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_base) {
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
+    stats_.method_used = FactorizationMethod::GNFS;
+    stats_.executed_algorithm = "gnfs";
+    if (std::find(stats_.algorithms_executed.begin(), stats_.algorithms_executed.end(), "gnfs") ==
+        stats_.algorithms_executed.end()) {
+        stats_.algorithms_executed.push_back("gnfs");
+    }
+    stats_.gnfs_parameters_applied = true;
+    stats_.degree = params_.degree;
+    stats_.rational_bound = params_.rational_bound;
+    stats_.algebraic_bound = params_.algebraic_bound;
+    stats_.large_prime_bound = params_.large_prime_bound;
+    stats_.sieve_width =
+        static_cast<uint64_t>(static_cast<int64_t>(params_.sieve_i_max) - params_.sieve_i_min + 1);
+    stats_.sieve_height =
+        static_cast<uint64_t>(static_cast<int64_t>(params_.sieve_j_max) - params_.sieve_j_min + 1);
+    stats_.max_special_q = params_.max_special_q;
     emit_progress(Phase::PolynomialSelection, "Starting polynomial selection");
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
              "N=" + n_.to_string() + " bits=" + std::to_string(stats_.n_bits) +
@@ -1280,6 +1307,7 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
             try {
                 auto ck = polynomial::PolyCheckpoint::load_for(poly_ckpt, n_);
                 auto ctx_resumed = ck.to_context();
+                stats_.degree = ctx_resumed.degree();
 
                 auto t1 = std::chrono::high_resolution_clock::now();
                 stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
@@ -1301,6 +1329,7 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
 
     bool verbose = config_.verbose.value_or(false);
     auto ctx = polynomial::SelectorDispatch::select(n_, params_.degree, verbose);
+    stats_.degree = ctx.degree();
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
@@ -1837,6 +1866,27 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         return reduction;
     };
 
+    stats_.candidates_statistics_complete = true;
+    double collection_filter_s = 0.0;
+    stats_.timings.filter_s = 0.0;
+    stats_.relations_after_filter = 0;
+    stats_.singletons_removed = 0;
+    stats_.merged_relations = 0;
+    auto measure_reduction = [&](auto&& operation) {
+        emit_progress(Phase::Filtering, "Reducing collected relations");
+        const auto started = std::chrono::steady_clock::now();
+        auto reduction = operation();
+        const double duration =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        collection_filter_s += duration;
+        stats_.timings.filter_s = collection_filter_s;
+        stats_.relations_after_filter = reduction.stats.output_relations;
+        stats_.singletons_removed = reduction.stats.singleton_rows_removed;
+        stats_.merged_relations = reduction.stats.merged_relations;
+        emit_progress(Phase::Filtering, "Relation reduction complete", 1.0);
+        return reduction;
+    };
+
     emit_log(LogLevel::Info, Phase::Sieving,
              "target=" + std::to_string(initial_target) +
                  " matrix_cols=" + std::to_string(matrix_cols) + " sq_range=[" +
@@ -1928,13 +1978,26 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                 std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0)
                     .count();
             stats_.relations_found = dist_rels.size();
+            stats_.candidates_statistics_complete = false;
+            stats_.full_relations = stats_.partial_1lp = stats_.partial_2lp = 0;
+            for (const auto& relation : dist_rels) {
+                const auto count = relation.num_large_primes();
+                if (count == 0)
+                    ++stats_.full_relations;
+                else if (count == 1)
+                    ++stats_.partial_1lp;
+                else
+                    ++stats_.partial_2lp;
+            }
             stats_.special_q_processed = sq_count;
 
             // Run filter+merge once on collected relations (mirrors the
             // adaptive-loop body but only one pass — no adaptive retry).
-            auto dist_reduction = reduce_vector(
-                std::move(dist_rels), lp_enabled ? relation::ReductionStrategy::StandardV0
-                                                 : relation::ReductionStrategy::NoLargePrimes);
+            auto dist_reduction = measure_reduction([&] {
+                return reduce_vector(std::move(dist_rels),
+                                     lp_enabled ? relation::ReductionStrategy::StandardV0
+                                                : relation::ReductionStrategy::NoLargePrimes);
+            });
             // The distributed workers own every relation payload; the eager
             // master collector is unused. Remove its exact fresh empty pair
             // before any success callback or normal return can strand it and
@@ -2099,6 +2162,10 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     int last_reduction_round = round_start;
     for (int round = round_start; round < adaptive_round_limit; ++round) {
         last_reduction_round = round;
+        stats_.relations_found = collector.size();
+        stats_.special_q_processed = sq_count;
+        relations_target_ = batch_target;
+        emit_progress(Phase::Sieving, "Collecting relations");
         // ── Batch SQ processing: sieve + cofac in parallel ──
         // Collect a batch of SQ primes, sieve them in parallel (each thread
         // owns its own LatticeSieve copy), then cofac results in parallel.
@@ -2319,7 +2386,8 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
                                                     : relation::ReductionStrategy::StandardV0);
         // Avoid retaining the previous reduced corpus while materializing the next probe.
         last_reduction.reset();
-        last_reduction.emplace(reduce_collector_snapshot(strategy));
+        last_reduction.emplace(
+            measure_reduction([&] { return reduce_collector_snapshot(strategy); }));
         ++stats_.sieve_rounds_completed;
         const auto& reduction_stats = last_reduction->stats;
 
@@ -2409,7 +2477,8 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
         const auto strategy = !lp_enabled ? relation::ReductionStrategy::NoLargePrimes
                                           : (use_v3 ? relation::ReductionStrategy::StandardV0WithV3
                                                     : relation::ReductionStrategy::StandardV0);
-        last_reduction.emplace(reduce_collector_snapshot(strategy));
+        last_reduction.emplace(
+            measure_reduction([&] { return reduce_collector_snapshot(strategy); }));
         ++stats_.sieve_rounds_completed;
     }
     if (!sieve_resume_path.empty() && !recovered_finalized_ooc) {
@@ -2484,7 +2553,8 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();
-    stats_.timings.sieve_s = std::chrono::duration<double>(t1 - t0).count();
+    stats_.timings.sieve_s =
+        std::max(0.0, std::chrono::duration<double>(t1 - t0).count() - collection_filter_s);
 
     // Collect final stats
     stats_.relations_found = collector.size();
@@ -3304,6 +3374,10 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
                                        const PolynomialContext& ctx) {
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     require_pipeline_context(n_, ctx, "extract_factors");
+    stats_.dependencies_found = mr.dependencies.size();
+    stats_.dependencies_tried = 0;
+    stats_.timings.sqrt_s = 0.0;
+    stats_.timings.extract_s = 0.0;
     emit_progress(Phase::SquareRoot, "Starting factor extraction");
 
     auto t0_sqrt = std::chrono::high_resolution_clock::now();
@@ -3328,7 +3402,11 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
     };
 
     auto try_factor = [&](const Integer& rat_sqrt, const Integer& alg_value) -> bool {
+        const auto extract_started = std::chrono::steady_clock::now();
         auto factors = sqrt::extract_factors(rat_sqrt, alg_value, n_);
+        stats_.timings.extract_s +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - extract_started)
+                .count();
 
         if (is_nontrivial(factors.factor1)) {
             Integer f1 = factors.factor1; // copy ctor
@@ -3451,6 +3529,8 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
 
                 // XOR is formed and verified in matrix coordinates; the
                 // structured route maps and materializes the result once.
+                ++stats_.dependencies_tried;
+                emit_progress(Phase::FactorExtraction, "Trying XOR dependency " + std::to_string(stats_.dependencies_tried));
                 if (try_matrix_dependency(*combined)) {
                     break;
                 }
@@ -3459,7 +3539,8 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
     }
 
     auto t1_sqrt = std::chrono::high_resolution_clock::now();
-    stats_.timings.sqrt_s = std::chrono::duration<double>(t1_sqrt - t0_sqrt).count();
+    stats_.timings.sqrt_s = std::max(0.0, std::chrono::duration<double>(t1_sqrt - t0_sqrt).count() -
+                                              stats_.timings.extract_s);
 
     // Sort factors ascending
     if (result.factors.size() == 2 && result.factors[0].compare(result.factors[1]) > 0) {
@@ -3476,7 +3557,9 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
     } else {
         emit_log(LogLevel::Warn, Phase::FactorExtraction, "No non-trivial factor found");
     }
-    emit_progress(Phase::Done, result.success ? "Factorization succeeded" : "Failed", 1.0);
+    emit_progress(result.success ? Phase::Done : Phase::FactorExtraction,
+                  result.success ? "Factorization succeeded" : "No non-trivial factor found",
+                  result.success ? 1.0 : -1.0);
 
     return result;
 }
@@ -3492,6 +3575,17 @@ FactorResult Pipeline::run() {
     // strict flag is a process configuration error even when a fast factor
     // would otherwise let this invocation avoid the GNFS phases.
     const auto structured_route = capture_structured_route_snapshot();
+    auto begin_algorithm = [&](const char* algorithm, FactorizationMethod family,
+                               const char* message) {
+        stats_.executed_algorithm = algorithm;
+        stats_.method_used = family;
+        if (std::find(stats_.algorithms_executed.begin(), stats_.algorithms_executed.end(),
+                      algorithm) == stats_.algorithms_executed.end()) {
+            stats_.algorithms_executed.emplace_back(algorithm);
+        }
+        emit_progress(Phase::FactorExtraction, message);
+    };
+    begin_algorithm("primality", FactorizationMethod::Auto, "Checking primality");
 
     // Input validation.
     // Adaptive Miller-Rabin reps: 5 for small N (fast on trial-division path),
@@ -3503,6 +3597,7 @@ FactorResult Pipeline::run() {
         r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
+        r.stats.timings.non_gnfs_s = r.stats.timings.total_s;
         return r;
     }
     if (mpz_cmp_si(n_.get_mpz(), 1) <= 0) {
@@ -3512,6 +3607,7 @@ FactorResult Pipeline::run() {
         return r;
     }
 
+    begin_algorithm("perfect_power", FactorizationMethod::TrialDivision, "Checking perfect powers");
     // Check for perfect power
     if (mpz_perfect_power_p(n_.get_mpz())) {
         // exp upper bound: for any perfect power n = b^e with b ≥ 2,
@@ -3533,6 +3629,7 @@ FactorResult Pipeline::run() {
                     r.factors[1] /= root;
                     r.stats = stats_;
                     r.stats.timings.total_s = elapsed_s();
+                    r.stats.timings.non_gnfs_s = r.stats.timings.total_s;
                     r.stats.method_used = FactorizationMethod::TrialDivision;
                     r.stats.method_reason = "perfect power";
                     emit_log(LogLevel::Info, Phase::PolynomialSelection,
@@ -3570,6 +3667,7 @@ FactorResult Pipeline::run() {
         r.stats.method_used = m;
         r.stats.method_reason = m_reason;
         r.stats.timings.total_s = elapsed_s();
+        r.stats.timings.non_gnfs_s = r.stats.timings.total_s;
         return r;
     };
 
@@ -3578,13 +3676,15 @@ FactorResult Pipeline::run() {
     // For >12d: quick trial to 10^4 only (rho/SIQS catches the rest).
     // Saves ~3ms of overhead for medium/large N.
     {
+        begin_algorithm("trial", FactorizationMethod::TrialDivision, "Trial division");
         uint64_t td_limit = (stats_.n_digits <= 12) ? 1000000 : 10000;
         uint64_t small_f = trial_divide(n_, td_limit);
         if (small_f > 0) {
             Integer f1(small_f);
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
                      "Trial division found factor: " + std::to_string(small_f));
-            return make_fast_result(f1, FactorizationMethod::TrialDivision, "factor ≤ 10^6");
+            return make_fast_result(f1, FactorizationMethod::TrialDivision,
+                                    "factor <= " + std::to_string(td_limit));
         }
     }
 
@@ -3594,6 +3694,7 @@ FactorResult Pipeline::run() {
         r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
+        r.stats.timings.non_gnfs_s = r.stats.timings.total_s;
         return r;
     }
 
@@ -3605,6 +3706,7 @@ FactorResult Pipeline::run() {
         ((method == FactorizationMethod::SIQS || method == FactorizationMethod::GNFS) &&
          stats_.n_bits <= 128)) {
 
+        begin_algorithm("rho", FactorizationMethod::PollardRho, "Pollard rho factor search");
         // Fast mpn-based rho: N ≤ 128 bits (~38 digits)
         // Uses GMP mpn_ assembly (no mpz_t overhead): ~8-12ns/iter vs ~30ns/iter
         // Iteration budget: O(p^{1/2}) where p is smallest factor.
@@ -3659,6 +3761,7 @@ FactorResult Pipeline::run() {
         r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
+        r.stats.timings.non_gnfs_s = r.stats.timings.total_s;
         return r;
     }
 
@@ -3688,6 +3791,7 @@ FactorResult Pipeline::run() {
 
         // Skip ECM if configured with 0 curves
         if (ecm_config.num_curves > 0) {
+            begin_algorithm("ecm", FactorizationMethod::SIQS, "ECM factor probe");
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
                      "ECM probe: " + std::to_string(stats_.n_digits) +
                          "d N, "
@@ -3756,8 +3860,14 @@ FactorResult Pipeline::run() {
                 siqs_timeout = 3600;
         }
 
+        begin_algorithm("siqs", FactorizationMethod::SIQS, "SIQS factor search");
+        stats_.siqs_statistics_complete = false;
         auto siqs_result = siqs::factor(n_, siqs_timeout, true);
         if (siqs_result) {
+            stats_.siqs_statistics_complete = true;
+            stats_.siqs_relations = siqs_result->relations_found;
+            stats_.siqs_polynomials = siqs_result->polynomials_used;
+            stats_.siqs_workers = siqs_result->resolved_sieve_workers;
             emit_log(LogLevel::Info, Phase::PolynomialSelection,
                      "SIQS found factor: " + siqs_result->factor1.to_string() + " * " +
                          siqs_result->factor2.to_string());
@@ -3775,6 +3885,7 @@ FactorResult Pipeline::run() {
             r.stats.method_used = FactorizationMethod::SIQS;
             r.stats.method_reason = std::to_string(stats_.n_digits) + "d SIQS";
             r.stats.timings.total_s = elapsed_s();
+            r.stats.timings.non_gnfs_s = r.stats.timings.total_s;
             return r;
         }
 
@@ -3786,12 +3897,14 @@ FactorResult Pipeline::run() {
             r.n = n_; // Integer op=
             r.stats = stats_;
             r.stats.timings.total_s = elapsed_s();
+            r.stats.timings.non_gnfs_s = r.stats.timings.total_s;
             return r;
         }
 
         emit_log(LogLevel::Info, Phase::PolynomialSelection, "SIQS failed, falling back to GNFS");
     }
 
+    stats_.timings.non_gnfs_s = elapsed_s();
     // ── Phase 3: Full GNFS pipeline ──
     stats_.method_used = FactorizationMethod::GNFS;
     stats_.method_reason = std::to_string(stats_.n_digits) + "d GNFS";

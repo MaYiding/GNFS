@@ -5,32 +5,50 @@ struct PipelineRailView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 19) {
+    VStack(alignment: .leading, spacing: 16) {
       HStack {
-        Text("GNFS 流水线")
-          .font(.system(size: 13, weight: .semibold))
-          .tracking(0.9)
-          .foregroundStyle(AppTheme.secondaryText)
+        Label(
+          run?.usesGNFSPipeline == true ? "GNFS 流水线" : "算法路线",
+          systemImage: "point.3.connected.trianglepath.dotted"
+        )
+        .font(.callout.weight(.semibold))
         Spacer()
-        if let run, run.status == .running {
-          Text(run.phase.displayName)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(AppTheme.cyan)
+        if let run {
+          Text(
+            run.result?.executionLabel
+              ?? AlgorithmDisplay.name(run.activeAlgorithm, fallback: "准备计算")
+          )
+          .font(.caption.weight(.medium)).foregroundStyle(AppTheme.indigo)
         }
       }
-
-      HStack(spacing: 0) {
-        ForEach(Array(PipelinePhase.allCases.enumerated()), id: \.element.id) { index, phase in
-          phaseNode(phase)
-          if index < PipelinePhase.allCases.count - 1 {
-            connector(after: phase)
-          }
+      if run?.usesGNFSPipeline == true {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 12)], spacing: 16) {
+          ForEach(PipelinePhase.allCases) { phaseNode($0) }
         }
+      } else {
+        Text(routeDescription)
+          .font(.callout).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("algorithmRoute")
       }
     }
-    .padding(.horizontal, 2)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("GNFS 流水线进度")
+  }
+
+  private var routeDescription: String {
+    guard let run else {
+      return "自动模式按整数规模选择试除、Pollard Rho、SIQS 或 GNFS。运行后显示实际使用的算法。"
+    }
+    if run.status == .succeeded {
+      if let count = run.result?.attempts?.count, count > 1 {
+        return "已完成 \(count) 次拆分与最终校验。各次的算法、生效参数和统计可在下方分别查看。"
+      }
+      if run.result?.statistics.gnfsParametersApplied == false {
+        return "已完成因子搜索与结果校验。本次没有进入 GNFS 流水线。"
+      }
+      return "因子搜索与结果校验已完成。"
+    }
+    return "请求路线：\(run.configuration.method.displayName)。当前实际执行：\(run.activityTitle)。"
   }
 
   private func phaseNode(_ phase: PipelinePhase) -> some View {
@@ -61,7 +79,7 @@ struct PipelineRailView: View {
 
       Text(phase.displayName)
         .font(.system(size: 12.5, weight: state == .active ? .semibold : .medium))
-        .foregroundStyle(state == .inactive ? AppTheme.tertiaryText : state.foreground)
+        .foregroundStyle(state == .active ? AppTheme.indigo : AppTheme.secondaryText)
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -69,21 +87,6 @@ struct PipelineRailView: View {
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: state)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("\(phase.displayName)：\(state.accessibilityLabel)")
-  }
-
-  private func connector(after phase: PipelinePhase) -> some View {
-    let isComplete =
-      run.map { record in
-        record.status == .succeeded || phase.order < record.phase.order
-      } ?? false
-    return Rectangle()
-      .fill(
-        isComplete
-          ? AnyShapeStyle(AppTheme.progressGradient) : AnyShapeStyle(AppTheme.separatorStrong)
-      )
-      .frame(maxWidth: .infinity)
-      .frame(height: 2.5)
-      .offset(y: -10)
   }
 
   private func state(for phase: PipelinePhase) -> PhaseVisualState {

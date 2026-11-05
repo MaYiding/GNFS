@@ -22,7 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-preserve_failure_artifacts() {
+preserve_test_artifacts() {
     [[ -n "$failure_artifacts" ]] || return 0
     mkdir -p "$failure_artifacts"
     if [[ -f "$test_log" ]]; then
@@ -76,6 +76,13 @@ xcodebuild_exit_code=$?
 set -e
 
 if (( xcodebuild_exit_code != 0 )); then
-    preserve_failure_artifacts
+    preserve_test_artifacts
     exit "$xcodebuild_exit_code"
+fi
+
+# An explicit evidence destination preserves passing renders as well as failures.
+preserve_test_artifacts
+if [[ -n "$failure_artifacts" ]]; then
+    /usr/bin/ditto "$derived_data/Build/Products/Debug/GNFSWorkbench.app" \
+        "$failure_artifacts/GNFSWorkbench.app"
 fi
