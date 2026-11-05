@@ -268,7 +268,17 @@ void test_target_multiplier_is_frozen_in_snapshot() {
     const size_t doubled = scaled_params.raw_relation_target(columns);
     GNFS_TEST_CHECK(scaled_params.sieve_target_multiplier == 2.0);
     GNFS_TEST_CHECK(doubled == baseline * 2);
-    GNFS_TEST_CHECK(scaled_params.max_special_q == baseline_max_special_q);
+    // compute() derives the SQ budget before it updates target_excess from
+    // its initial value. Mirror that historical order in the independent check.
+    auto budget_snapshot = scaled_params;
+    budget_snapshot.target_excess = GNFSParams{}.target_excess;
+    const size_t scaled_budget = gnfs::util::saturating_size_product(
+        budget_snapshot.estimated_relations_needed(), size_t{6});
+    GNFS_TEST_CHECK(
+        scaled_params.max_special_q ==
+        std::max(uint32_t{500000},
+                 static_cast<uint32_t>(std::min(scaled_budget, static_cast<size_t>(UINT32_MAX)))));
+    GNFS_TEST_CHECK(scaled_params.max_special_q > baseline_max_special_q);
 
     // Changing the environment after construction must not alter either
     // snapshot.  Separate parameter instances can still capture separate
@@ -286,6 +296,7 @@ void test_target_multiplier_is_frozen_in_snapshot() {
     const auto minimum_params = GNFSParams::compute(197);
     const size_t minimum = minimum_params.raw_relation_target(columns);
     GNFS_TEST_CHECK(minimum == static_cast<size_t>(static_cast<double>(baseline) * 0.1));
+    GNFS_TEST_CHECK(minimum_params.max_special_q < baseline_max_special_q);
 
     GNFSParams tiny_target;
     tiny_target.large_prime_bits = 0;
@@ -297,6 +308,7 @@ void test_target_multiplier_is_frozen_in_snapshot() {
     const auto maximum_params = GNFSParams::compute(197);
     const size_t maximum = maximum_params.raw_relation_target(columns);
     GNFS_TEST_CHECK(maximum == static_cast<size_t>(static_cast<double>(baseline) * 100.0));
+    GNFS_TEST_CHECK(maximum_params.max_special_q > scaled_params.max_special_q);
 
     // Whitespace, non-decimal syntax, invalid suffixes, non-finite values, and
     // out-of-range values must fall back to 1.

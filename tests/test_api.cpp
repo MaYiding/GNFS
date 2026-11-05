@@ -4482,6 +4482,120 @@ bool test_sieve_resume_round_limit_preflight() {
     return true;
 }
 
+bool test_target_environment_callback_preserves_stage_identity() {
+    ScopedEnvironmentVariable target_mult("GNFS_SIEVE_TARGET_MULT", "2");
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline target_pipeline(Integer(143), cfg);
+    auto ctx = target_pipeline.select_polynomial();
+    auto fb = target_pipeline.build_factor_base(ctx);
+    const auto target_before = target_pipeline.params().raw_relation_target(1000);
+    auto external = target_pipeline.filter({});
+    bool env_changed = false;
+    target_pipeline.set_progress_callback([&](const ProgressInfo& info) {
+        if (info.message == "Building matrix") {
+            env_changed = setenv("GNFS_SIEVE_TARGET_MULT", "3", 1) == 0;
+        }
+    });
+    try {
+        (void)target_pipeline.build_matrix(std::move(external), fb, ctx);
+    } catch (const std::exception& error) {
+        std::cout << "(environment drift changed stage identity: " << error.what() << ") ";
+        return false;
+    }
+    if (!env_changed || target_pipeline.params().sieve_target_multiplier != 2.0 ||
+        target_pipeline.params().raw_relation_target(1000) != target_before) {
+        std::cout << "(target snapshot drifted in callback) ";
+        return false;
+    }
+    return true;
+}
+
+bool test_sieve_schema3_checkpoint_is_preserved_then_schema4_recovers() {
+    SieveResumeArtifacts artifacts(gnfs::util::temp_path("gnfs_test_schema3_checkpoint_" +
+                                                         std::to_string(gnfs::util::process_id())));
+    const std::string& base = artifacts.base;
+    ScopedEnvironmentVariable multiplier("GNFS_SIEVE_TARGET_MULT", std::nullopt);
+    ScopedEnvironmentVariable lp_override("GNFS_OVERRIDE_LP_BITS", std::nullopt);
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+    ScopedEnvironmentVariable cascade("GNFS_CASCADE_V3", "0");
+    ScopedEnvironmentVariable three_lp("GNFS_3LP", "0");
+    ScopedEnvironmentVariable weight3("GNFS_V0_WEIGHT3", "0");
+    ScopedEnvironmentVariable cutoff("GNFS_WEIGHT_CUTOFF", "0");
+    ScopedEnvironmentVariable residual("GNFS_DROP_RESIDUAL", "0");
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(-1);
+    coefficients.emplace_back(0);
+    coefficients.emplace_back(0);
+    coefficients.emplace_back(1);
+    gnfs::core::PolynomialContext ctx(Integer(143), std::move(coefficients), Integer(1), 1.0);
+    gnfs::core::FactorBaseParams fbp{5, 5, 101, gnfs::core::SIEVE_LOG_SCALE};
+    gnfs::factor_base::FactorBase fb(fbp);
+    fb.add_rational(2, 1);
+    fb.add_rational(3, 1);
+    fb.add_algebraic(5, 1, 1);
+    const auto current = gnfs::sieve::make_sieve_run_identity(ctx, fb, pipeline.params());
+    // Generated with the schema-3 implementation at 54b8eb4e for these exact
+    // inputs. This is an old identity, not an arbitrary corrupted fingerprint.
+    const gnfs::sieve::SieveRunIdentity old{"143", UINT64_C(5799931890627438805),
+                                            UINT64_C(3685029490805810991)};
+    if (old == current) {
+        std::cout << "(schema-3 identity unexpectedly equals schema 4) ";
+        return false;
+    }
+    gnfs::relation::OOCSnapshotDescriptor descriptor;
+    {
+        gnfs::relation::OOCRelationWriter writer(base);
+        descriptor = writer.checkpoint_prefix();
+        writer.fail_suspended_snapshot();
+    }
+    gnfs::sieve::SieveCheckpoint checkpoint;
+    checkpoint.sq_count = 0;
+    checkpoint.current_index = 0;
+    checkpoint.round = 0;
+    checkpoint.batch_target = 5000;
+    checkpoint.candidates_total = 0;
+    checkpoint.collection_complete = true;
+    bind_checkpoint_to_run(checkpoint, old);
+    bind_checkpoint_to_ooc(checkpoint, descriptor,
+                           gnfs::relation::RelationSequenceReceiptAccumulator{}.finish(), base);
+    checkpoint.save(base + ".sieve_ckpt");
+    const auto checkpoint_before = read_test_file(base + ".sieve_ckpt");
+    const auto data_before = read_test_file(base + ".reldata");
+    const auto index_before = read_test_file(base + ".relidx");
+    ScopedEnvironmentVariable resume("GNFS_SIEVE_RESUME", base);
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", std::nullopt);
+    bool rejected = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, fb);
+    } catch (const std::runtime_error& error) {
+        rejected = std::string_view(error.what()).find("run identity") != std::string_view::npos;
+    }
+    if (!rejected || read_test_file(base + ".sieve_ckpt") != checkpoint_before ||
+        read_test_file(base + ".reldata") != data_before ||
+        read_test_file(base + ".relidx") != index_before) {
+        std::cout << "(schema-3 rejection changed checkpoint or OOC files) ";
+        return false;
+    }
+    bind_checkpoint_to_run(checkpoint, current);
+    checkpoint.save(base + ".sieve_ckpt");
+    const auto recovered = pipeline.sieve_and_collect(ctx, fb);
+    if (recovered.stats.input_relations != 0 ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::RecoveredTerminalCheckpoint ||
+        gnfs::sieve::SieveCheckpoint::exists(base + ".sieve_ckpt")) {
+        std::cout << "(schema-4 paired checkpoint did not recover) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_sieve_resume_policy_identity_preflight() {
     SieveResumeArtifacts artifacts(gnfs::util::temp_path("gnfs_test_sieve_resume_policy_identity_" +
                                                          std::to_string(gnfs::util::process_id())));
@@ -4935,6 +5049,8 @@ int main() {
     TEST(sieve_resume_fresh_no_prior_ckpt);
     TEST(sieve_resume_round_limit_preflight);
     TEST(sieve_resume_policy_identity_preflight);
+    TEST(sieve_schema3_checkpoint_is_preserved_then_schema4_recovers);
+    TEST(target_environment_callback_preserves_stage_identity);
     TEST(sieve_resume_with_paired_checkpoint);
     TEST(sieve_resume_after_terminal_checkpoint_publication);
     TEST(sieve_resume_after_ooc_finalize);

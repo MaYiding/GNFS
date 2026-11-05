@@ -98,8 +98,9 @@ construct separate instances under the desired environment. The multiplier is
 applied after the size-aware target has been calculated, and the existing
 saturating `size_t` conversion still governs overflow. A positive base target
 is clamped to at least one relation after scaling; an explicit zero-column input
-remains zero. The hard `max_special_q` cap remains derived from the unscaled
-size-aware geometry and is therefore stable within the snapshot.
+remains zero. When large primes are enabled, the automatic `max_special_q`
+budget is derived from the scaled estimated relation target, with saturating
+arithmetic. An explicit `max_special_q` override still sets the hard cap.
 
 ```bash
 GNFS_SIEVE_TARGET_MULT=2 ./gnfs <N>       # double the initial target

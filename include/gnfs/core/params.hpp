@@ -338,9 +338,8 @@ struct GNFSParams {
         {
             size_t est_rels = p.estimated_relations_needed();
             // 保守假设每 SQ 平均 1 个关系（小 B 时命中率低），乘 6 安全余量
-            // Keep the hard special-Q cap tied to the unscaled geometry.  The
-            // experiment multiplier changes only the initial target within
-            // this already materialized parameter snapshot.
+            // Preserve the multiplier's effect on the estimated relation
+            // budget while saturating the special-Q count before narrowing.
             const size_t bounded_sq_count = util::saturating_size_product(est_rels, size_t{6});
             uint32_t needed_sq =
                 static_cast<uint32_t>(std::min(static_cast<size_t>(UINT32_MAX), bounded_sq_count));
@@ -422,8 +421,7 @@ struct GNFSParams {
         double matrix_cols = pi_r + pi_a + target_excess;
 
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
-            return raw_relation_target_unscaled(
-                util::size_from_nonnegative_double_floor(matrix_cols));
+            return raw_relation_target(util::size_from_nonnegative_double_floor(matrix_cols));
         }
         return util::size_from_nonnegative_double_floor(matrix_cols);
     }
@@ -538,8 +536,7 @@ private:
         return *parsed;
     }
 
-    /// Calculate the size-aware target without applying experiment-only
-    /// scaling. This keeps derived limits such as max_special_q stable.
+    /// Calculate the size-aware target before applying experiment scaling.
     [[nodiscard]] size_t raw_relation_target_unscaled(size_t matrix_columns) const {
         if (large_prime_bits > 0 && large_prime_bound > algebraic_bound) {
             const double mc = static_cast<double>(matrix_columns);
