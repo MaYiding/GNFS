@@ -340,8 +340,8 @@ public:
             __int128 ci = static_cast<__int128>(f_coeffs_[i].to_int64());
             __int128 term = ci * a_power * b_pow;
             result += term;
-            a_power *= static_cast<__int128>(a);
-            if (i < degree_ && b_val != 0) {
+            if (i < degree_) {
+                a_power *= static_cast<__int128>(a);
                 b_pow /= b_val; // b^(d-i) → b^(d-i-1)
             }
         }
