@@ -466,6 +466,137 @@ void test_siqs_rejects_tiny_inputs_without_sieving() {
     std::printf("  siqs tiny-input guards: PASS\n");
 }
 
+void test_siqs_native_attempt_entry() {
+    using siqs_factor_detail::factor_once;
+    using siqs_factor_detail::FactorAttemptContext;
+    using siqs_factor_detail::FactorAttemptTerminal;
+    const Integer modulus(143u);
+    const auto make_context = [](const Integer& n, size_t max_seconds) {
+        const auto started = std::chrono::steady_clock::now();
+        const size_t digits = n.to_string().size();
+        return FactorAttemptContext{started, max_seconds, false, digits, select_params(digits)};
+    };
+
+    bool rejected_zero = false;
+    try {
+        (void)factor_once(modulus, 0, SIQSShadowProofMode::off, make_context(modulus, 0));
+    } catch (const std::invalid_argument&) {
+        rejected_zero = true;
+    }
+    require_test(rejected_zero, "native attempt accepted multiplier zero");
+
+    auto inadequate = make_context(modulus, 0);
+    inadequate.params.num_a_factors = 0;
+    const auto rejected = factor_once(modulus, 1, SIQSShadowProofMode::off, inadequate);
+    require_test(!rejected.result &&
+                     rejected.terminal == FactorAttemptTerminal::insufficient_factor_base &&
+                     !rejected.observe_record_committed,
+                 "native factor-base rejection lost its terminal outcome");
+
+    for (const auto mode :
+         {SIQSShadowProofMode::off, SIQSShadowProofMode::observe, SIQSShadowProofMode::prefer}) {
+        ScopedStderrCapture capture;
+        const auto exhausted = factor_once(modulus, 1, mode, make_context(modulus, 0));
+        const std::string record = capture.finish();
+        require_test(!exhausted.result &&
+                         exhausted.terminal == FactorAttemptTerminal::insufficient_relations,
+                     "zero-budget native attempt did not preserve its completed failure state");
+        const size_t expected_observe = mode == SIQSShadowProofMode::observe ? 1 : 0;
+        const size_t expected_prefer = mode == SIQSShadowProofMode::prefer ? 1 : 0;
+        require_test(count_occurrences(record, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) ==
+                             expected_observe &&
+                         count_occurrences(record, SIQS_SHADOW_PROOF_PREFER_DECISION_PREFIX) ==
+                             expected_prefer,
+                     "zero-budget attempt changed terminal shadow record multiplicity");
+        require_test(exhausted.observe_record_committed == (expected_observe == 1),
+                     "failed native attempt lost the observe record commit result");
+    }
+    {
+        ScopedUnwritableStderr failed_stream;
+        const auto failed_emit =
+            factor_once(modulus, 1, SIQSShadowProofMode::observe, make_context(modulus, 0));
+        failed_stream.finish();
+        require_test(!failed_emit.result &&
+                         failed_emit.terminal == FactorAttemptTerminal::insufficient_relations &&
+                         !failed_emit.observe_record_committed,
+                     "failed observe emitter became a committed attempt record");
+    }
+
+    for (uint32_t multiplier : {1u, 3u}) {
+        auto context = make_context(modulus, 0);
+        context.verbose = true;
+        ScopedStderrCapture capture;
+        const auto outcome = factor_once(modulus, multiplier, SIQSShadowProofMode::off, context);
+        const std::string output = capture.finish();
+        require_test(
+            !outcome.result && outcome.terminal == FactorAttemptTerminal::insufficient_relations &&
+                output.find(", k=" + std::to_string(multiplier) + ", FB=") != std::string::npos,
+            "native attempt replaced the explicitly selected multiplier");
+    }
+    {
+        auto context = make_context(modulus, 2);
+        context.verbose = true;
+        ScopedStderrCapture capture;
+        const auto outcome = factor_once(modulus, 1, SIQSShadowProofMode::off, context);
+        const std::string output = capture.finish();
+        require_test(output.find(", k=1, FB=") != std::string::npos &&
+                         output.find("[SIQS] Sieve done:") != std::string::npos,
+                     "bounded explicit multiplier attempt did not execute its native stages");
+        if (outcome.result) {
+            require_test(outcome.terminal == FactorAttemptTerminal::factor_found &&
+                             outcome.result->factor1 > Integer(1u) &&
+                             outcome.result->factor1 < modulus &&
+                             outcome.result->factor2 > Integer(1u) &&
+                             outcome.result->factor1 * outcome.result->factor2 == modulus,
+                         "explicit multiplier returned an invalid non-trivial factorization");
+            require_test(output.find("[SIQS] SUCCESS:") != std::string::npos,
+                         "successful native attempt lost its terminal stage log");
+        } else if (outcome.terminal == FactorAttemptTerminal::no_factor) {
+            require_test(output.find("[SIQS] All dependencies + combos failed") !=
+                             std::string::npos,
+                         "exhausted native extraction lost its terminal stage log");
+        } else {
+            require_test(outcome.terminal == FactorAttemptTerminal::insufficient_relations &&
+                             output.find("[SIQS] Not enough relations") != std::string::npos,
+                         "native attempt failure did not match its terminal stage log");
+        }
+        require_test(!outcome.observe_record_committed,
+                     "explicit off-mode attempt claimed an observe record");
+        printf("  native explicit k=1 bounded attempt terminal=%u: PASS\n",
+               static_cast<unsigned>(outcome.terminal));
+    }
+    {
+        auto context = make_context(modulus, 30);
+        context.started -= std::chrono::seconds(2);
+        const auto outcome =
+            factor_once(modulus, select_multiplier(modulus), SIQSShadowProofMode::off, context);
+        require_test(outcome.result.has_value() &&
+                         outcome.terminal == FactorAttemptTerminal::factor_found,
+                     "native historical multiplier did not factor the fixture");
+        require_test(outcome.result->factor1 * outcome.result->factor2 == modulus &&
+                         canonical_factors(*outcome.result) ==
+                             std::pair<Integer, Integer>{Integer(11u), Integer(13u)},
+                     "native multiplier result failed the independent factor identity");
+        require_test(outcome.result->time_seconds >= 2.0,
+                     "native attempt reset the caller's shared timer origin");
+        require_test(!outcome.observe_record_committed &&
+                         !outcome.result->shadow_proof_observe_record_committed,
+                     "off-mode native attempt claimed shadow telemetry");
+    }
+
+    // The default facade retains its historical single multiplier, even when
+    // a future coprime portfolio would skip it. Zero budget keeps this check
+    // independent of a factoring success and of per-multiplier sieve work.
+    ScopedEnvironmentVariable mode(SIQS_SHADOW_PROOF_ENV, "0");
+    ScopedStderrCapture capture;
+    const auto historical = factor(Integer(303u), 0, true);
+    const std::string output = capture.finish();
+    require_test(!historical && output.find(", k=3, FB=") != std::string::npos,
+                 "default facade changed historical single-multiplier selection");
+    printf("  native attempts: rejected FB, zero-budget terminal records, explicit k=1/3, "
+           "shared timer, legacy selector: PASS\n");
+}
+
 void test_siqs_small() {
     std::string default_stderr;
     const auto default_result = factor_143_with_shadow_mode(nullptr, default_stderr);
@@ -733,6 +864,7 @@ int main() {
     test_split_cofactor_edge();
 
     printf("\n--- Factorization tests ---\n");
+    test_siqs_native_attempt_entry();
     test_siqs_small();
     test_siqs_prefer_candidate_route();
     test_siqs_shadow_rejected_modes();

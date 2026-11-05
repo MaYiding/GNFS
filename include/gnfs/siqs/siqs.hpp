@@ -1914,43 +1914,53 @@ static_assert(noexcept(siqs_factor_detail::commit_prefer_route(
     nullptr, std::declval<const Integer&>(), std::declval<const SIQSShadowProofPreferDecision&>(),
     std::nullopt)));
 
-inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3600,
-                                        bool verbose = true) {
-    const SIQSShadowProofMode shadow_proof_mode =
-        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
+namespace siqs_factor_detail {
 
-    // SIQS is a medium-size composite factorer. Reject non-positive and
-    // tiny odd inputs before parameter selection; handle even composites
-    // directly so an empty/degenerate A-factor set cannot reach the Gray-code
-    // shift below. The trivial N=2/3 cases have no non-trivial factor.
-    if (mpz_cmp_ui(N.get_mpz(), 4) < 0) {
-        return std::nullopt;
-    }
-    if (mpz_even_p(N.get_mpz())) {
-        SIQSResult result;
-        result.factor1 = int64_t(2);
-        mpz_fdiv_q_2exp(result.factor2.get_mpz(), N.get_mpz(), 1);
-        result.time_seconds = 0.0;
-        result.relations_found = 0;
-        result.polynomials_used = 0;
-        result.resolved_sieve_workers = 0;
-        result.shadow_proof_observe_record_committed = false;
-        return result;
-    }
-    if (mpz_cmp_ui(N.get_mpz(), 15) < 0) {
-        return std::nullopt;
-    }
+/// Prepared by the facade before starting one native attempt. The shared timer
+/// origin includes parameter and multiplier selection; it is not reset here.
+struct FactorAttemptContext {
+    std::chrono::steady_clock::time_point started;
+    size_t max_seconds;
+    bool verbose;
+    size_t digits;
+    SIQSParams params;
+};
 
-    auto start = std::chrono::steady_clock::now();
+enum class FactorAttemptTerminal : uint8_t {
+    insufficient_factor_base,
+    insufficient_relations,
+    no_factor,
+    factor_found,
+};
+
+/// Accounting for a completed native attempt, not shadow-return authority.
+/// Only commit_prefer_route can authorize the preferred result inside the
+/// attempt. Failure still retains whether an observe record was committed.
+struct FactorAttemptOutcome {
+    std::optional<SIQSResult> result;
+    FactorAttemptTerminal terminal;
+    bool observe_record_committed;
+};
+
+/// Run one explicit multiplier for facade-validated input. Multiplier
+/// admission belongs to the caller; the default facade retains its historical
+/// single selection. The caller supplies parameters and the shared timer origin.
+/// This entry does not rank candidates, reset the budget, or implement complete
+/// cancellation of factor-base construction or the linear-algebra backends.
+inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
+                                        SIQSShadowProofMode shadow_proof_mode,
+                                        const FactorAttemptContext& context) {
+    if (multiplier == 0)
+        throw std::invalid_argument("SIQS attempt requires a positive multiplier");
+    const auto start = context.started;
+    const auto max_seconds = context.max_seconds;
+    const auto verbose = context.verbose;
+    const auto digits = context.digits;
+    const auto& params = context.params;
     auto elapsed = [&]() {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     };
 
-    size_t digits = N.to_string().size();
-    auto params = select_params(digits);
-
-    // Knuth-Schroeppel multiplier selection
-    uint32_t multiplier = select_multiplier(N);
     Integer kN;
     if (multiplier > 1) {
         mpz_mul_ui(kN.get_mpz(), N.get_mpz(), multiplier); // kN = N * k (skip source copy)
@@ -1976,7 +1986,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         if (verbose) {
             fprintf(stderr, "[SIQS] Factor base has insufficient odd primes for A; giving up\n");
         }
-        return std::nullopt;
+        return {std::nullopt, FactorAttemptTerminal::insufficient_factor_base, false};
     }
 
     if (verbose) {
@@ -2229,7 +2239,10 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
                 siqs_factor_detail::commit_prefer_route(stderr, N, decision,
                                                         std::move(prepared_shadow_result));
             if (routed_shadow_result.has_value()) {
-                return routed_shadow_result;
+                // The result is bound to the committed pre-emit sample.
+                // Do not veto or retime it after the emitter returns.
+                return {std::move(routed_shadow_result), FactorAttemptTerminal::factor_found,
+                        false};
             }
         } catch (...) {
             // Explicit prefer never prevents the untouched legacy path.
@@ -2249,7 +2262,8 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
             fprintf(stderr, "[SIQS] Not enough relations (%zu <= %zu), giving up\n",
                     relations.size(), fb_size);
         }
-        return std::nullopt;
+        return {std::nullopt, FactorAttemptTerminal::insufficient_relations,
+                shadow_proof_observe_record_committed};
     }
 
     // Trim excess relations to reduce LA cost.
@@ -2291,13 +2305,55 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
                     sr.factor1.to_string().c_str(), sr.factor2.to_string().c_str(), sr.time_seconds,
                     num_polys);
         }
-        return sr;
+        return {std::move(sr), FactorAttemptTerminal::factor_found,
+                shadow_proof_observe_record_committed};
     }
 
     if (verbose) {
         fprintf(stderr, "[SIQS] All dependencies + combos failed\n");
     }
-    return std::nullopt;
+    return {std::nullopt, FactorAttemptTerminal::no_factor, shadow_proof_observe_record_committed};
+}
+
+} // namespace siqs_factor_detail
+
+inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3600,
+                                        bool verbose = true) {
+    const SIQSShadowProofMode shadow_proof_mode =
+        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
+
+    // SIQS is a medium-size composite factorer. Reject non-positive and
+    // tiny odd inputs before parameter selection; handle even composites
+    // directly so an empty/degenerate A-factor set cannot reach the Gray-code
+    // shift below. The trivial N=2/3 cases have no non-trivial factor.
+    if (mpz_cmp_ui(N.get_mpz(), 4) < 0) {
+        return std::nullopt;
+    }
+    if (mpz_even_p(N.get_mpz())) {
+        SIQSResult result;
+        result.factor1 = int64_t(2);
+        mpz_fdiv_q_2exp(result.factor2.get_mpz(), N.get_mpz(), 1);
+        result.time_seconds = 0.0;
+        result.relations_found = 0;
+        result.polynomials_used = 0;
+        result.resolved_sieve_workers = 0;
+        result.shadow_proof_observe_record_committed = false;
+        return result;
+    }
+    if (mpz_cmp_ui(N.get_mpz(), 15) < 0) {
+        return std::nullopt;
+    }
+
+    auto start = std::chrono::steady_clock::now();
+
+    size_t digits = N.to_string().size();
+    auto params = select_params(digits);
+
+    // Knuth-Schroeppel multiplier selection
+    uint32_t multiplier = select_multiplier(N);
+    const siqs_factor_detail::FactorAttemptContext context{start, max_seconds, verbose, digits,
+                                                           params};
+    return siqs_factor_detail::factor_once(N, multiplier, shadow_proof_mode, context).result;
 }
 
 } // namespace gnfs::siqs
