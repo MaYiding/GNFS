@@ -16,6 +16,13 @@ bool is_valid_string_base(int base) {
     return base >= 2 && base <= 62;
 }
 
+const char* checked_integer_string(const std::string& str) {
+    if (str.find('\0') != std::string::npos) {
+        throw std::invalid_argument("Integer string contains an embedded NUL");
+    }
+    return str.c_str();
+}
+
 void set_mpz_from_uint64(mpz_t dest, uint64_t value) {
     mpz_import(dest, 1, 1, sizeof(value), 0, 0, &value);
 }
@@ -123,7 +130,7 @@ Integer::Integer(const char* str, int base) {
     }
 }
 
-Integer::Integer(const std::string& str, int base) : Integer(str.c_str(), base) {}
+Integer::Integer(const std::string& str, int base) : Integer(checked_integer_string(str), base) {}
 
 Integer::Integer(const Integer& other) {
     mpz_init_set(value_, other.value_);
