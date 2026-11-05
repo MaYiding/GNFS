@@ -10407,6 +10407,10 @@ def _is_cpp_digit_separator(text: str, cursor: int) -> bool:
 
 
 def _skip_non_code(text: str, cursor: int) -> int | None:
+    # Encoding prefixes remain code until their R or quote is reached.
+    # Ordinary characters cannot start any trivia recognized below.
+    if text[cursor] not in {"R", '"', "'", "/"}:
+        return None
     raw_end = _skip_raw_string(text, cursor)
     if raw_end is not None:
         return raw_end
@@ -28895,6 +28899,31 @@ def run_self_test() -> list[str]:
     def expect(condition: bool, message: str) -> None:
         if not condition:
             errors.append(message)
+
+    trivia_sources = [
+        r'''const char* text = "getenv(\"GNFS_DECOY\")";
+const char slash = '/'; const char quote = '\'';
+const auto number = 1'000; // getenv("GNFS_DECOY")
+/* getenv("GNFS_DECOY") */ std::getenv("GNFS_LATTICE_LLL");
+'''
+    ]
+    for prefix in ("", "u8", "u", "U", "L"):
+        trivia_sources.append(
+            prefix + 'R"tag(" // getenv("GNFS_DECOY")\n'
+            '/* getenv("GNFS_DECOY") */ )tag";\n'
+            'std::getenv("GNFS_LATTICE_LLL");'
+        )
+    for trivia_source in trivia_sources:
+        calls, parse_errors = find_getenv_calls(trivia_source)
+        live_offset = trivia_source.rfind("std::getenv")
+        expected_line = trivia_source.count("\n", 0, live_offset) + 1
+        expect(
+            not parse_errors
+            and len(calls) == 1
+            and calls[0].argument == '"GNFS_LATTICE_LLL"'
+            and calls[0].line == expected_line,
+            "comment, quote, digit separator, or prefixed raw-string trivia changed getenv scanning",
+        )
 
     errors.extend(run_worker_cleanup_capsule_self_test())
     errors.extend(run_worker_cleanup_completion_route_self_test())
