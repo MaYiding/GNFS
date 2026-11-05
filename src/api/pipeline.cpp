@@ -1347,12 +1347,18 @@ void Pipeline::require_factor_base_contract(const PolynomialContext& ctx, const 
     // Validate the mathematical identity once before binding. Subsequent
     // phases compare the stable digest, avoiding repeated root/primality scans
     // while still detecting a caller that substitutes or mutates a base.
+    uint32_t previous_rational_prime = 0;
     for (const auto& prime : fb.rational()) {
         if (prime.p < 2 || prime.p > params_.rational_bound || !gnfs::util::is_prime_u32(prime.p) ||
             mpz_divisible_ui_p(ctx.n().get_mpz(), prime.p) != 0) {
             throw std::invalid_argument("Pipeline::" + std::string(phase) +
                                         " factor base contains an invalid rational prime");
         }
+        if (prime.p <= previous_rational_prime) {
+            throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                        " rational factor-base primes must be strictly increasing");
+        }
+        previous_rational_prime = prime.p;
     }
     const uint32_t max_algebraic_prime = std::max(params_.algebraic_bound, params_.special_q_max);
     for (const auto& prime : fb.algebraic()) {
