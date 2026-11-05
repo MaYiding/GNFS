@@ -1172,6 +1172,8 @@ struct Pipeline::CallbackInputScope final {
                        relation::StageInputFingerprint fingerprint) noexcept
         : pipeline(owner), state{&ctx, &fb, fingerprint, false},
           previous(owner.callback_input_state_.active) {
+        state.enclosing = previous;
+        state.owner_invalidated = previous != nullptr && previous->owner_invalidated;
         pipeline.callback_input_state_.active = &state;
     }
     CallbackInputScope(const CallbackInputScope&) = delete;
@@ -1180,7 +1182,7 @@ struct Pipeline::CallbackInputScope final {
         pipeline.callback_input_state_.active = previous;
     }
     void verify_before_publish() {
-        if (state.callback_seen)
+        if (state.callback_seen || state.owner_invalidated)
             pipeline.verify_callback_inputs();
     }
 };
@@ -1188,6 +1190,9 @@ struct Pipeline::CallbackInputScope final {
 void Pipeline::verify_callback_inputs() {
     if (callback_input_state_.active == nullptr)
         return;
+    if (callback_input_state_.active->owner_invalidated) {
+        throw std::invalid_argument("pipeline callback changed its active Pipeline owner");
+    }
     if (stage_input_fingerprint(*callback_input_state_.active->context,
                                 *callback_input_state_.active->factor_base) !=
         callback_input_state_.active->fingerprint) {

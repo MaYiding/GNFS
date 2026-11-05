@@ -188,6 +188,10 @@ public:
                   std::optional<FactorizationMethod> override = std::nullopt);
 
     // Configuration
+    /// During sieving, matrix construction/solving, and factor extraction,
+    /// callbacks may copy this Pipeline, but must not assign to or move from
+    /// its active owner. Such operations invalidate those stages and are
+    /// rejected when control returns from the callback.
     void set_progress_callback(ProgressCallback cb) {
         progress_cb_ = std::move(cb);
     }
@@ -229,6 +233,8 @@ private:
         const FactorBase* factor_base;
         relation::StageInputFingerprint fingerprint;
         bool callback_seen = false;
+        bool owner_invalidated = false;
+        CallbackInputState* enclosing = nullptr;
     };
     // Active callback state belongs to one invocation's stack. Copying or
     // moving a Pipeline must never transfer the borrowed stack pointer.
@@ -236,18 +242,37 @@ private:
         CallbackInputState* active = nullptr;
         CallbackInputSlot() = default;
         CallbackInputSlot(const CallbackInputSlot&) noexcept {}
-        CallbackInputSlot(CallbackInputSlot&&) noexcept {}
-        // Assignment does not disrupt an invocation already executing on
-        // the destination; only its scope may restore that pointer.
-        CallbackInputSlot& operator=(const CallbackInputSlot&) noexcept {
+        CallbackInputSlot(CallbackInputSlot&& other) noexcept {
+            other.invalidate_owner();
+        }
+        // Keep the borrowed scope pointer in place, but reject replacement of
+        // its owner before any phase can use the replacement's N or tuning.
+        CallbackInputSlot& operator=(const CallbackInputSlot& other) noexcept {
+            if (this != &other)
+                invalidate_owner();
             return *this;
         }
-        CallbackInputSlot& operator=(CallbackInputSlot&&) noexcept {
+        CallbackInputSlot& operator=(CallbackInputSlot&& other) noexcept {
+            // Member self-moves need not preserve the enclosing object's value.
+            invalidate_owner();
+            if (this != &other)
+                other.invalidate_owner();
             return *this;
+        }
+
+    private:
+        void invalidate_owner() noexcept {
+            // A nested invocation's exception may be caught by its caller.
+            // Invalidate every enclosing invocation as well as the innermost.
+            for (auto* scope = active; scope != nullptr; scope = scope->enclosing)
+                scope->owner_invalidated = true;
         }
     };
     struct CallbackInputScope;
     void verify_callback_inputs();
+    // Keep this the first per-instance member: generated assignment and move
+    // operations must invalidate active scopes before any other member changes
+    // or throws, even if the callback catches that exception.
     CallbackInputSlot callback_input_state_;
 
     struct StructuredRouteSnapshot final {
