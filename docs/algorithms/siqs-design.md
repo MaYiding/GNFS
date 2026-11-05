@@ -153,6 +153,32 @@ one multiplier. Its budget checks, shadow records, and result commit behavior
 remain unchanged. Candidate limits do not count started attempts or establish a time
 budget. A retry controller and its budget admission remain separate work.
 
+## Native Single-Attempt Boundary
+
+The public `factor()` facade still performs its original input fast paths,
+starts the timer, selects parameters, and selects one historical multiplier in
+that order. It delegates the remaining native work to the internal
+`siqs_factor_detail::factor_once` entry with an explicit multiplier, shadow mode,
+and `FactorAttemptContext`. The context carries the original parameter choice
+and timer origin; the native attempt does not parse environment flags or reset
+the caller's clock.
+
+Every normal return supplies a `FactorAttemptOutcome`: the existing optional
+factor result, a terminal state for insufficient factor base, insufficient
+relations, exhausted factor extraction, or success, and whether an observe
+record was committed. A failed attempt therefore retains its observe commit
+metadata. This metadata grants no shadow-return authority. Preferred results
+still pass through `commit_prefer_route`; an accepted result keeps its single
+pre-emit timing sample and is returned without a later deadline veto.
+
+This extraction preserves the default single-attempt and zero-budget behavior.
+It does not start retries or add a deadline guarantee. A future coordinator must
+filter and deduplicate the complete ranking, finish budget admission before
+counting an attempt, preserve returned committed results, and enable requested
+shadow work only on the first actual attempt. Factor-base construction, both
+linear-algebra backends, and the remaining long stages still require a coherent
+cooperative cancellation contract before an end-to-end deadline can be claimed.
+
 ## Parameter Calibration
 
 The `select_params` table is tuned against msieve, CADO-NFS, and YAFU defaults.
