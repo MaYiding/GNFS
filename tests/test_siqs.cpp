@@ -4,6 +4,7 @@
 #include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/siqs/siqs.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -17,6 +18,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using gnfs::core::Integer;
 using gnfs::tests::siqs_live_sieve_fixture_v1;
@@ -270,6 +272,49 @@ void test_init_poly_handles_large_a_factor_count() {
     std::printf("  init_poly large A-factor boundary (17 factors): PASS\n");
 }
 
+void test_multiplier_candidate_ranking() {
+    const Integer N("1000000007");
+    require_test(rank_multiplier_candidates(N, 0).empty(),
+                 "zero multiplier ranking limit was not empty");
+
+    const auto ranked = rank_multiplier_candidates(N, 64);
+    require_test(!ranked.empty(), "multiplier ranking returned no candidates");
+    require_test(ranked.front() == select_multiplier(N),
+                 "top ranked multiplier changed select_multiplier compatibility");
+    require_test(ranked == rank_multiplier_candidates(N, 64),
+                 "multiplier ranking was not deterministic");
+
+    for (size_t i = 0; i < ranked.size(); ++i) {
+        require_test(std::find(ranked.begin(), ranked.begin() + static_cast<std::ptrdiff_t>(i),
+                               ranked[i]) == ranked.begin() + static_cast<std::ptrdiff_t>(i),
+                     "multiplier ranking returned duplicate candidates");
+    }
+
+    const auto top_three = rank_multiplier_candidates(N, 3);
+    require_test(top_three.size() == 3, "positive multiplier ranking limit was not respected");
+    require_test(std::equal(top_three.begin(), top_three.end(), ranked.begin()),
+                 "multiplier ranking limit did not preserve the sorted prefix");
+    require_test(rank_multiplier_candidates(N, std::numeric_limits<size_t>::max()) == ranked,
+                 "oversized multiplier ranking limit was not clamped");
+
+    bool invalid_zero_thrown = false;
+    try {
+        (void)rank_multiplier_candidates(Integer(0), 1);
+    } catch (const std::invalid_argument&) {
+        invalid_zero_thrown = true;
+    }
+    require_test(invalid_zero_thrown, "zero N did not fail closed for multiplier ranking");
+
+    bool invalid_negative_thrown = false;
+    try {
+        (void)rank_multiplier_candidates(Integer(-1), 1);
+    } catch (const std::invalid_argument&) {
+        invalid_negative_thrown = true;
+    }
+    require_test(invalid_negative_thrown, "negative N did not fail closed for multiplier ranking");
+    std::printf("  multiplier candidate ranking: PASS (%zu candidates)\n", ranked.size());
+}
+
 void test_siqs_rejects_tiny_inputs_without_sieving() {
     const auto trivial = factor(Integer("2"), 1, false);
     require_test(!trivial.has_value(), "SIQS accepted the trivial prime 2");
@@ -287,6 +332,82 @@ void test_siqs_rejects_tiny_inputs_without_sieving() {
                      "SIQS even fast path returned invalid factors");
     }
     std::printf("  siqs tiny-input guards: PASS\n");
+}
+
+void test_siqs_multiplier_portfolio_deadline_and_shared_factor_guard() {
+    // A ranked multiplier may share a factor with N.  Treat that as a direct
+    // factorization opportunity instead of constructing a degenerate kN.
+    ScopedEnvironmentVariable shadow_off(SIQS_SHADOW_PROOF_ENV, "0");
+    ScopedStderrCapture direct_capture;
+    const auto direct = factor(Integer("303"), 1, true);
+    const std::string direct_log = direct_capture.finish();
+    require_test(direct.has_value(), "shared multiplier factor was not returned");
+    require_test(direct->factor1 * direct->factor2 == Integer("303"),
+                 "shared multiplier factor result was not a valid factorization");
+    require_test(direct->factor1 == Integer("3") || direct->factor2 == Integer("3"),
+                 "shared multiplier factor guard returned an unexpected factor");
+    require_test(count_occurrences(direct_log, "route=multiplier_gcd") == 1 &&
+                     direct_log.find("candidate_ordinal=1") != std::string::npos &&
+                     direct_log.find("multiplier=3") != std::string::npos &&
+                     direct_log.find("sieved=false") != std::string::npos &&
+                     direct_log.find("shadow_telemetry=false") != std::string::npos,
+                 "shared multiplier direct route lacked its audit fields");
+    require_test(count_occurrences(direct_log, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 0 &&
+                     count_occurrences(direct_log, SIQS_SHADOW_PROOF_PREFER_DECISION_PREFIX) == 0,
+                 "shared multiplier direct route emitted shadow telemetry");
+
+    // An already-expired positive-budget attempt must remain bounded even when
+    // its per-attempt remainder is negative. This catches the old sign-based
+    // enforcement bug where a negative remainder disabled the absolute clock.
+    const SIQSDeadline expired_deadline =
+        std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    const auto expired_start = std::chrono::steady_clock::now();
+    const auto expired = siqs_factor_detail::factor_once(Integer("1000000007"), -1.0, false, 1,
+                                                         SIQSShadowProofMode::off, nullptr, nullptr,
+                                                         expired_deadline, false);
+    const double expired_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - expired_start).count();
+    require_test(!expired.has_value(), "expired positive-budget attempt returned a factor");
+    // Keep a generous watchdog so a loaded CI runner does not turn scheduler
+    // latency into a functional failure. The immediate deadline gate is
+    // covered by the no-work result and the direct factor_once contract.
+    require_test(expired_seconds < 10.0,
+                 "expired positive-budget attempt ignored its caller-wide deadline");
+
+    // A zero-budget call retains one compatibility probe for shadow telemetry,
+    // but it must never launch retry attempts or duplicate the record.
+    ScopedEnvironmentVariable shadow_observe(SIQS_SHADOW_PROOF_ENV, "observe");
+    ScopedStderrCapture capture;
+    const auto zero_budget = factor(Integer("1000000007"), 0, true);
+    const std::string log = capture.finish();
+    require_test(!zero_budget.has_value(), "zero-budget prime unexpectedly produced a factor");
+    require_test(count_occurrences(log, "[SIQS] multiplier attempt ") == 1,
+                 "zero-budget compatibility probe launched retries");
+    require_test(log.find("[SIQS] multiplier attempt 1/3:") != std::string::npos &&
+                     log.find("[SIQS] multiplier attempt 2/3:") == std::string::npos &&
+                     log.find("[SIQS] multiplier attempt 3/3:") == std::string::npos,
+                 "zero-budget compatibility probe reported an invalid attempt ordinal");
+    require_test(count_occurrences(log, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) == 1,
+                 "zero-budget compatibility probe duplicated observe telemetry");
+
+    // With a positive budget, retries are allowed but remain bounded by the
+    // portfolio cap and the caller's wall clock.
+    ScopedEnvironmentVariable shadow_off_again(SIQS_SHADOW_PROOF_ENV, "0");
+    ScopedStderrCapture retry_capture;
+    const auto retry_start = std::chrono::steady_clock::now();
+    const auto prime_result = factor(Integer("1000000007"), 1, true);
+    const double retry_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - retry_start).count();
+    const std::string retry_log = retry_capture.finish();
+    require_test(!prime_result.has_value(), "known prime unexpectedly produced a factor");
+    require_test(count_occurrences(retry_log, "[SIQS] multiplier attempt ") >= 1 &&
+                     count_occurrences(retry_log, "[SIQS] multiplier attempt ") <= 3,
+                 "multiplier portfolio exceeded its attempt cap");
+    // The one-second budget is enforced cooperatively; allow startup and
+    // scheduler jitter while still catching a runaway retry implementation.
+    require_test(retry_seconds < 10.0,
+                 "multiplier portfolio exceeded a bounded one-second caller budget");
+    std::printf("  multiplier portfolio deadline/shared-factor guards: PASS\n");
 }
 
 void test_siqs_small() {
@@ -551,7 +672,9 @@ int main() {
     test_factor_base();
     test_factor_base_rejects_unrepresentable_count();
     test_init_poly_handles_large_a_factor_count();
+    test_multiplier_candidate_ranking();
     test_siqs_rejects_tiny_inputs_without_sieving();
+    test_siqs_multiplier_portfolio_deadline_and_shared_factor_guard();
     test_split_cofactor_edge();
 
     printf("\n--- Factorization tests ---\n");

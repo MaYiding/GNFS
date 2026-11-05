@@ -3,6 +3,7 @@
 /// @file shadow_matrix.hpp
 /// @brief Deterministic GF(2) left-nullspace solving for canonical SIQS shadow rows.
 
+#include <gnfs/siqs/deadline.hpp>
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/util/joining_thread.hpp>
 #include <gnfs/util/thread_pool.hpp>
@@ -130,7 +131,8 @@ private:
     friend SIQSShadowMatrixResult
     solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
                              std::span<const uint32_t> factor_base_primes,
-                             const core::Integer& modulus, const SIQSShadowMatrixOptions& options);
+                             const core::Integer& modulus, const SIQSShadowMatrixOptions& options,
+                             const SIQSDeadline* deadline);
 
     SIQSShadowMatrixResult(SIQSShadowMatrixStatus status,
                            std::optional<SIQSShadowMatrixSolution> solution)
@@ -446,8 +448,12 @@ eliminate_pivot(std::vector<uint64_t>& matrix, size_t equation_count, size_t wor
 [[nodiscard]] inline SIQSShadowMatrixResult
 solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
                          std::span<const uint32_t> factor_base_primes, const core::Integer& modulus,
-                         const SIQSShadowMatrixOptions& options = {}) {
+                         const SIQSShadowMatrixOptions& options = {},
+                         const SIQSDeadline* deadline = nullptr) {
     using namespace shadow_matrix_detail;
+
+    if (siqs_deadline_expired(deadline))
+        return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::worker_failure);
 
     if (!post_merge_row_detail::has_valid_modulus(modulus)) {
         return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::invalid_modulus);
@@ -459,7 +465,10 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
         return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::invalid_options);
     }
 
+    size_t row_ordinal = 0;
     for (const SIQSShadowRow& shadow_row : rows) {
+        if ((row_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::worker_failure);
         if (!has_known_origin(shadow_row.origin)) {
             return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::invalid_row);
         }
@@ -508,6 +517,8 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
 
     std::vector<uint64_t> matrix(matrix_word_count, uint64_t{0});
     for (size_t row = 0; row < variable_count; ++row) {
+        if ((row & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::worker_failure);
         const size_t variable_word = row / size_t{64};
         const uint64_t variable_mask = uint64_t{1} << (row % size_t{64});
         visit_siqs_post_merge_odd_columns(rows[row].row, [&](size_t column) {
@@ -524,6 +535,8 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
         std::min(equation_count, static_cast<size_t>(options.elimination_workers));
     std::unique_ptr<PersistentPivotEliminationTeam> elimination_team;
     for (size_t equation = 0; equation < equation_count; ++equation) {
+        if ((equation & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::worker_failure);
         const size_t equation_offset = equation * words_per_row;
         const size_t pivot_column = leftmost_set_bit(
             std::span<const uint64_t>(matrix.data() + equation_offset, words_per_row),
@@ -554,6 +567,8 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
         if (elimination_status != SIQSShadowMatrixStatus::valid) {
             return SIQSShadowMatrixResult::failure(elimination_status);
         }
+        if (siqs_deadline_expired(deadline))
+            return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::worker_failure);
     }
 
     SIQSShadowMatrixSolution solution;
@@ -563,6 +578,8 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
     for (size_t free_column = 0;
          free_column < variable_count && solution.dependencies.size() < options.max_dependencies;
          ++free_column) {
+        if ((free_column & 63u) == 0 && siqs_deadline_expired(deadline))
+            return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::worker_failure);
         if (is_pivot[free_column] != 0) {
             continue;
         }
@@ -573,6 +590,8 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
         const size_t free_word = free_column / size_t{64};
         const uint64_t free_mask = uint64_t{1} << (free_column % size_t{64});
         for (size_t equation = 0; equation < equation_count; ++equation) {
+            if ((equation & 255u) == 0 && siqs_deadline_expired(deadline))
+                return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::worker_failure);
             if (pivot_columns[equation] != no_pivot &&
                 (matrix[equation * words_per_row + free_word] & free_mask) != 0) {
                 dependency.push_back(pivot_columns[equation]);
@@ -587,7 +606,11 @@ solve_siqs_shadow_matrix(std::span<const SIQSShadowRow> rows,
     }
 
     std::vector<uint64_t> packed_dependency(words_per_row, uint64_t{0});
-    for (const auto& dependency : solution.dependencies) {
+    for (size_t dependency_ordinal = 0; dependency_ordinal < solution.dependencies.size();
+         ++dependency_ordinal) {
+        if (siqs_deadline_expired(deadline))
+            return SIQSShadowMatrixResult::failure(SIQSShadowMatrixStatus::worker_failure);
+        const auto& dependency = solution.dependencies[dependency_ordinal];
         if (!dependency_is_null(dependency, matrix, equation_count, words_per_row, variable_count,
                                 packed_dependency)) {
             return SIQSShadowMatrixResult::failure(

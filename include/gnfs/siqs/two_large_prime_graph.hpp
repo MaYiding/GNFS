@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <gnfs/siqs/deadline.hpp>
 #include <limits>
 #include <numeric>
 #include <optional>
@@ -263,8 +264,13 @@ private:
 /// relation identifier is appended to a cycle.
 [[nodiscard]] inline TwoLargePrimeCycleBasisResult
 build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
-                                  const TwoLargePrimeCycleBasisLimits& limits) {
+                                  const TwoLargePrimeCycleBasisLimits& limits,
+                                  const SIQSDeadline* deadline = nullptr) {
     using namespace two_large_prime_graph_detail;
+
+    if (siqs_deadline_expired(deadline))
+        return TwoLargePrimeCycleBasisResultFactory::failure(
+            TwoLargePrimeCycleBasisStatus::size_overflow);
 
     if (edges.size() > limits.max_edges) {
         return TwoLargePrimeCycleBasisResultFactory::failure(
@@ -277,7 +283,11 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
 
     std::vector<CanonicalEdge> canonical_edges;
     canonical_edges.reserve(edges.size());
+    size_t edge_ordinal = 0;
     for (const auto& edge : edges) {
+        if ((edge_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return TwoLargePrimeCycleBasisResultFactory::failure(
+                TwoLargePrimeCycleBasisStatus::size_overflow);
         const uint64_t p = std::min(edge.p, edge.q);
         const uint64_t q = std::max(edge.p, edge.q);
 
@@ -305,7 +315,11 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
     }
     std::vector<size_t> relation_indices;
     relation_indices.reserve(canonical_edges.size());
+    size_t canonical_ordinal = 0;
     for (const auto& edge : canonical_edges) {
+        if ((canonical_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return TwoLargePrimeCycleBasisResultFactory::failure(
+                TwoLargePrimeCycleBasisStatus::size_overflow);
         relation_indices.push_back(edge.relation_index);
     }
     std::sort(relation_indices.begin(), relation_indices.end());
@@ -321,7 +335,11 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
             TwoLargePrimeCycleBasisStatus::size_overflow);
     }
     vertices.reserve(canonical_edges.size() * 2);
+    canonical_ordinal = 0;
     for (const auto& edge : canonical_edges) {
+        if ((canonical_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return TwoLargePrimeCycleBasisResultFactory::failure(
+                TwoLargePrimeCycleBasisStatus::size_overflow);
         vertices.push_back(edge.p);
         vertices.push_back(edge.q);
     }
@@ -350,7 +368,11 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
     size_t component_count = vertices.size();
     size_t tree_edge_count = 0;
 
+    canonical_ordinal = 0;
     for (const auto& edge : canonical_edges) {
+        if ((canonical_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return TwoLargePrimeCycleBasisResultFactory::failure(
+                TwoLargePrimeCycleBasisStatus::size_overflow);
         const size_t p = vertex_index(edge.p);
         const size_t q = vertex_index(edge.q);
         if (p != q && components.unite(p, q)) {
@@ -407,6 +429,9 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
     size_t rooted_component_count = 0;
 
     for (size_t root = 0; root < vertices.size(); ++root) {
+        if ((root & 63u) == 0 && siqs_deadline_expired(deadline))
+            return TwoLargePrimeCycleBasisResultFactory::failure(
+                TwoLargePrimeCycleBasisStatus::size_overflow);
         if (parent[root] != no_index) {
             continue;
         }
@@ -423,6 +448,9 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
         stack.push_back(root);
 
         while (!stack.empty()) {
+            if (siqs_deadline_expired(deadline))
+                return TwoLargePrimeCycleBasisResultFactory::failure(
+                    TwoLargePrimeCycleBasisStatus::size_overflow);
             const size_t vertex = stack.back();
             stack.pop_back();
             for (const auto& [neighbor, relation_index] : forest[vertex]) {
@@ -472,7 +500,11 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
         return std::nullopt;
     };
 
+    size_t chord_ordinal = 0;
     for (const auto& chord : chords) {
+        if ((chord_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return TwoLargePrimeCycleBasisResultFactory::failure(
+                TwoLargePrimeCycleBasisStatus::size_overflow);
         std::vector<size_t> cycle;
         if (const auto status = append_cycle_relation(cycle, chord.relation_index)) {
             return TwoLargePrimeCycleBasisResultFactory::failure(*status);
@@ -481,6 +513,9 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
         size_t rhs = chord.q;
 
         while (depth[lhs] > depth[rhs]) {
+            if (siqs_deadline_expired(deadline))
+                return TwoLargePrimeCycleBasisResultFactory::failure(
+                    TwoLargePrimeCycleBasisStatus::size_overflow);
             if (parent[lhs] == no_index || parent[lhs] == lhs) {
                 return TwoLargePrimeCycleBasisResultFactory::failure(
                     TwoLargePrimeCycleBasisStatus::internal_invariant_failure);
@@ -491,6 +526,9 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
             lhs = parent[lhs];
         }
         while (depth[rhs] > depth[lhs]) {
+            if (siqs_deadline_expired(deadline))
+                return TwoLargePrimeCycleBasisResultFactory::failure(
+                    TwoLargePrimeCycleBasisStatus::size_overflow);
             if (parent[rhs] == no_index || parent[rhs] == rhs) {
                 return TwoLargePrimeCycleBasisResultFactory::failure(
                     TwoLargePrimeCycleBasisStatus::internal_invariant_failure);
@@ -501,6 +539,9 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
             rhs = parent[rhs];
         }
         while (lhs != rhs) {
+            if (siqs_deadline_expired(deadline))
+                return TwoLargePrimeCycleBasisResultFactory::failure(
+                    TwoLargePrimeCycleBasisStatus::size_overflow);
             if (parent[lhs] == no_index || parent[rhs] == no_index || parent[lhs] == lhs ||
                 parent[rhs] == rhs) {
                 return TwoLargePrimeCycleBasisResultFactory::failure(
@@ -538,7 +579,11 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
 
     size_t verified_total_cycle_incidences = 0;
     size_t verified_max_cycle_length = 0;
+    size_t cycle_ordinal = 0;
     for (const auto& cycle : cycles) {
+        if ((cycle_ordinal++ & 63u) == 0 && siqs_deadline_expired(deadline))
+            return TwoLargePrimeCycleBasisResultFactory::failure(
+                TwoLargePrimeCycleBasisStatus::size_overflow);
         if (cycle.empty()) {
             return TwoLargePrimeCycleBasisResultFactory::failure(
                 TwoLargePrimeCycleBasisStatus::internal_invariant_failure);
@@ -564,10 +609,11 @@ build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
 
 /// Source-compatible unlimited wrapper for the legacy optional API.
 [[nodiscard]] inline std::optional<TwoLargePrimeCycleBasis>
-build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges) {
+build_two_large_prime_cycle_basis(std::span<const TwoLargePrimeEdge> edges,
+                                  const SIQSDeadline* deadline = nullptr) {
     const size_t unlimited = std::numeric_limits<size_t>::max();
     auto result = build_two_large_prime_cycle_basis(
-        edges, TwoLargePrimeCycleBasisLimits{unlimited, unlimited, unlimited});
+        edges, TwoLargePrimeCycleBasisLimits{unlimited, unlimited, unlimited}, deadline);
     return two_large_prime_graph_detail::TwoLargePrimeCycleBasisResultFactory::release(
         std::move(result));
 }

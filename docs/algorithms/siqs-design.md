@@ -59,7 +59,7 @@ finite bound while allowing LP components deeper than the former fixed
 | Component | Header | Role |
 |-----------|--------|------|
 | `select_params(digits)` | `siqs.hpp` lines 53-75 | Calibrated table (FB size, M, LP multiplier, # A factors, error budget) |
-| `select_multiplier` | `siqs.hpp` ~line 252 | Knuth-Schroeppel; picks `k` so `kN` has a denser FB |
+| `rank_multiplier_candidates` / `select_multiplier` | `siqs.hpp` ~line 314 | Deterministic Knuth-Schroeppel ranking; the legacy selector keeps the top `k` |
 | `build_factor_base` | `siqs.hpp` ~line 310 | Adds the sign sentinel at slot 0, then primes including `p=2` |
 | `choose_A` / `init_poly` | `siqs.hpp` ~line 386 | Target `A ≈ sqrt(2N)/M`, then build B and prime sieve offsets |
 | `next_poly_B` | `siqs.hpp` ~line 591 | Gray-code switch: one bit flip rotates offsets in O(FB) |
@@ -676,9 +676,15 @@ SIQS's `L_N(1/2, 1)`.
   production-ready. Use GNFS for ≥60 digits until then
 - **No checkpointing**: each SIQS run starts from scratch. Acceptable since the
   whole algorithm completes inside the GNFS Phase 2 budget
-- **Single multiplier per run**: `select_multiplier` runs once on input N; for
-  unlucky N where the Knuth-Schroeppel score is misleading, the only recourse
-  today is to let SIQS fail and fall through to GNFS
+- **Multiplier portfolio is bounded and live**: production `factor()` ranks a
+  deterministic candidate order and tries up to three multipliers under one
+  caller-wide monotonic deadline. The deadline is checked at sieve, merge,
+  linear-algebra, extraction, and shadow-proof boundaries as well as inside
+  their bounded hot loops. A candidate that shares a factor with `N` is handled
+  directly instead of constructing a degenerate `kN`. The first attempt keeps
+  the requested shadow mode; retries disable shadow telemetry so one invocation
+  emits at most one observe/prefer record. Tiny/even inputs retain their fast
+  paths, and a zero budget permits only the first bounded compatibility probe.
 
 ## References
 
