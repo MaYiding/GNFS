@@ -268,6 +268,38 @@ No hot-path performance measurement is claimed. Only the explicit internal entry
 accepts cancellation; `solve_matrix`, `factor_once`, shadow finalization, and the
 multiplier coordinator retain their existing behavior and supply no stop predicate.
 
+### Native Dependency Extraction Budgets
+
+The native attempt checks zero-parity relations individually before spending its
+matrix dependency budget. Each row in the already trimmed corpus gets at most
+one singleton attempt, using one reusable index vector and the existing square
+congruence and GCD checks. A useful singleton returns immediately. Otherwise,
+the consumer removes zero-parity rows in place, preserving survivor order, and
+asks the unchanged matrix solver for at most 64 non-singleton dependencies.
+The existing combination limit remains `min(3 * dependency_count, 200)`.
+The consumer never materializes the full nullspace or copies the entire corpus.
+
+This separates two useful opportunities. A zero-parity row can itself reveal a
+factor, but many valid unit dependencies have only trivial GCDs. For an admitted
+relation satisfying the square congruence, those failed GCD attempts imply
+`X == Y` or `X == -Y` modulo the factorization target; the unit cannot improve
+later plus/minus GCD attempts. For dense Gaussian elimination, removing its
+coordinate preserves the ordered non-unit basis after remapping surviving row
+indices. The sparse backend retains its dependency budget, without a promise
+that an iterative solver chooses the same basis after zero-row removal. The
+generic dense kernel still includes unit vectors and retains its original
+`max_deps` contract.
+
+Parity alone does not authenticate a relation. `try_extract` still rejects
+invalid exponents or a failed square congruence; a rejected malformed row is
+not evidence of a valid dependency with trivial GCDs. The native policy assumes
+the ordinary admitted relation identities and grants no shadow authority.
+
+Successful legacy results retain the admitted, pre-compaction relation count,
+the existing elapsed-time sample, and their observe-commit field. Preferred
+shadow results still commit and return before this phase. No new time budget,
+cancellation propagation, or retry policy is introduced here.
+
 ## Parameter Calibration
 
 The `select_params` table is tuned against msieve, CADO-NFS, and YAFU defaults.

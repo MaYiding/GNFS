@@ -814,6 +814,96 @@ void test_dense_gauss_cooperative_stop() {
                 cancellation_cases);
 }
 
+void test_native_dependency_budgets() {
+    using siqs_factor_detail::extract_native_dependencies;
+    const Integer modulus(77);
+    const std::vector<FBPrime> fb{{0, 0, 0}, {2, 1, 1}, {19, 1, 4}, {23, 10, 4}};
+    SIQSRelation unit{};
+    unit.value = Integer(39);
+    unit.exponents = {0, 2, 2, 0};
+    SIQSRelation first{};
+    first.value = Integer(10);
+    first.exponents = {0, 0, 0, 1};
+    SIQSRelation second{};
+    second.value = Integer(13);
+    second.exponents = {0, 2, 0, 1};
+    // These are exact Q=X^2-N identities, not merely synthetic parity rows.
+    require_test(unit.value * unit.value - modulus == Integer(1444) &&
+                     first.value * first.value - modulus == Integer(23) &&
+                     second.value * second.value - modulus == Integer(92),
+                 "dependency congestion fixtures lost their exact Q identities");
+    require_test(gnfs::core::gcd(unit.value - Integer(38), modulus) == Integer(1) &&
+                     gnfs::core::gcd(unit.value + Integer(38), modulus) == modulus,
+                 "unit fixture no longer has only trivial GCDs");
+
+    constexpr size_t unit_count = 80;
+    std::vector<SIQSRelation> relations(unit_count, unit);
+    relations.push_back(first);
+    relations.push_back(second);
+    const auto complete_prefix = dense_gauss_left_nullspace(relations, fb.size(), 64);
+    require_test(complete_prefix.size() == 64 &&
+                     std::all_of(complete_prefix.begin(), complete_prefix.end(),
+                                 [](const auto& dependency) { return dependency.size() == 1; }),
+                 "generic kernel no longer preserves its complete unit-vector prefix");
+    require_test(!try_extract_with_combos(modulus, modulus, relations, complete_prefix, fb),
+                 "trivial unit subspace unexpectedly extracted a factor");
+    const auto later = try_extract(modulus, modulus, relations, {unit_count + 1, unit_count}, fb);
+    require_test(later && later->first == Integer(7) && later->second == Integer(11),
+                 "late non-unit fixture no longer extracts 7 and 11");
+
+    const auto outcome = extract_native_dependencies(modulus, modulus, relations, fb);
+    require_test(outcome.factors && outcome.factors->first == Integer(7) &&
+                     outcome.factors->second == Integer(11) &&
+                     outcome.singleton_attempts == unit_count && outcome.matrix_rows == 2 &&
+                     outcome.non_singleton_dependencies == 1,
+                 "unit prechecks displaced the later non-unit factorization");
+    require_test(relations.size() == 2 && relations[0].value == first.value &&
+                     relations[1].value == second.value,
+                 "native dependency compaction changed survivor order");
+
+    // Retain the historical non-unit cap rather than materializing the entire
+    // kernel: the useful pair is now beyond 64 non-unit basis vectors.
+    relations.assign(unit_count, unit);
+    relations.insert(relations.end(), 65, first);
+    relations.push_back(second);
+    const auto capped = extract_native_dependencies(modulus, modulus, relations, fb);
+    require_test(!capped.factors && capped.singleton_attempts == unit_count &&
+                     capped.matrix_rows == 66 && capped.non_singleton_dependencies == 64,
+                 "native dependency consumer exceeded its non-unit storage/attempt budget");
+    const auto beyond_cap = try_extract(modulus, modulus, relations, {65, 0}, fb);
+    require_test(beyond_cap && beyond_cap->first == Integer(7) && beyond_cap->second == Integer(11),
+                 "non-unit budget fixture no longer distinguishes capped from full extraction");
+
+    relations.assign(unit_count, unit);
+    const auto only_units = extract_native_dependencies(modulus, modulus, relations, fb);
+    require_test(!only_units.factors && only_units.singleton_attempts == unit_count &&
+                     only_units.matrix_rows == 0 && only_units.non_singleton_dependencies == 0 &&
+                     relations.empty(),
+                 "unit-only corpus started matrix work or fabricated a factor");
+
+    // A useful singleton still gets its own opportunity and returns before
+    // compaction or linear algebra. For N=15, 8^2-15=7^2 is trivial, whereas
+    // 4^2-15=1 extracts 3*5.
+    const Integer small_modulus(15);
+    const std::vector<FBPrime> small_fb{{0, 0, 0}, {2, 1, 1}, {7, 1, 2}};
+    SIQSRelation trivial_unit{};
+    trivial_unit.value = Integer(8);
+    trivial_unit.exponents = {0, 0, 2};
+    SIQSRelation useful_unit{};
+    useful_unit.value = Integer(4);
+    useful_unit.exponents = {0, 0, 0};
+    std::vector<SIQSRelation> singleton_relations{trivial_unit, useful_unit};
+    const auto singleton =
+        extract_native_dependencies(small_modulus, small_modulus, singleton_relations, small_fb);
+    require_test(singleton.factors && singleton.factors->first == Integer(3) &&
+                     singleton.factors->second == Integer(5) && singleton.singleton_attempts == 2 &&
+                     singleton.matrix_rows == 0 && singleton.non_singleton_dependencies == 0 &&
+                     singleton_relations.size() == 2,
+                 "useful singleton lost its independent precheck or mutated the input early");
+    std::puts(
+        "  native dependency budgets: PASS (80 trivial units, late non-unit, cap, useful unit)");
+}
+
 void test_init_poly_handles_large_a_factor_count() {
     // The production table currently uses at most 12 A factors, but this is
     // a valid runtime shape for the public helper.  It also covers the former
@@ -1262,6 +1352,7 @@ int main() {
     test_dense_gauss_kernel_oracle();
     test_dense_gauss_parallel_kernel();
     test_dense_gauss_cooperative_stop();
+    test_native_dependency_budgets();
     test_init_poly_handles_large_a_factor_count();
     test_siqs_rejects_tiny_inputs_without_sieving();
     test_split_cofactor_edge();
