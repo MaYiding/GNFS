@@ -108,8 +108,10 @@ GNFS_SIEVE_TARGET_MULT=0.5 ./gnfs <N>     # halve it, within the accepted range
 unset GNFS_SIEVE_TARGET_MULT              # use the default target
 ```
 
-This tuning switch changes only the starting point of the adaptive sieve
-loop. It does not change relation encoding, merge policy, or matrix contents.
+This tuning switch scales the initial target and, when large primes are enabled,
+the derived automatic special-Q budget. It does not change relation encoding or
+the merge algorithm. Different targets or budgets can change the relations
+collected and the resulting matrix; bit-for-bit equality is not guaranteed.
 The frozen multiplier is included in the checkpoint run identity, so a
 checkpoint cannot be resumed under a different target strategy. The geometry helper
 `GNFSParams::sieve_i_bounds_for_width()` also keeps explicitly configured odd
