@@ -2199,7 +2199,8 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     size_t target_usable = fb_size + 50;
 
     std::vector<SIQSRelation> all_relations;
-    all_relations.reserve(target_usable * 10);
+    if (elapsed() < static_cast<double>(max_seconds))
+        all_relations.reserve(target_usable * 10);
     std::mutex relations_mutex;
 
     // Use atomic counters to avoid expensive estimate_usable under mutex
@@ -2236,6 +2237,10 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     std::atomic<bool> enough{false};
 
     auto sieve_worker = [&](unsigned thread_id) {
+        // Admission may expire between the caller's launch check and entry.
+        // Leave the empty corpus for the ordinary post-join terminal handling.
+        if (elapsed() >= static_cast<double>(max_seconds))
+            return;
         std::mt19937 local_rng(42 + thread_id * 1000);
         std::vector<SIQSRelation> local_relations;
         local_relations.reserve(target_usable);
@@ -2330,7 +2335,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
 
     // Launch threads
     std::vector<std::thread> threads;
-    for (unsigned t = 0; t < num_threads; t++) {
+    for (unsigned t = 0; t < num_threads && elapsed() < static_cast<double>(max_seconds); t++) {
         threads.emplace_back(sieve_worker, t);
     }
     for (auto& t : threads)
