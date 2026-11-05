@@ -151,7 +151,31 @@ public:
 
     // 与 int64_t/uint64_t 直接比较,避免临时 Integer 分配 (走 mpz_cmp_si/ui)
     bool operator==(int64_t rhs) const;
+    bool operator==(uint64_t rhs) const;
     bool operator!=(int64_t rhs) const {
+        return !(*this == rhs);
+    }
+    bool operator!=(uint64_t rhs) const {
+        return !(*this == rhs);
+    }
+
+    // Keep comparisons with other integral types exact while avoiding an
+    // overload ambiguity for ordinary signed and unsigned integer literals.
+    template <typename T>
+        requires(std::is_integral_v<T> && sizeof(T) <= sizeof(uint64_t) &&
+                 !std::is_same_v<T, int64_t> && !std::is_same_v<T, uint64_t>)
+    bool operator==(T rhs) const {
+        if constexpr (std::is_signed_v<T>) {
+            return *this == static_cast<int64_t>(rhs);
+        } else {
+            return *this == static_cast<uint64_t>(rhs);
+        }
+    }
+
+    template <typename T>
+        requires(std::is_integral_v<T> && sizeof(T) <= sizeof(uint64_t) &&
+                 !std::is_same_v<T, int64_t> && !std::is_same_v<T, uint64_t>)
+    bool operator!=(T rhs) const {
         return !(*this == rhs);
     }
 

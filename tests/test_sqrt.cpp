@@ -8,11 +8,15 @@
 #include <gnfs/sqrt/number_field.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace gnfs;
@@ -1035,6 +1039,262 @@ void test_sqrt_even_degree_extension() {
     std::cout << "  ALL even-degree sqrt tests PASSED" << std::endl;
 }
 
+namespace {
+
+using SmallPolynomial = std::vector<uint64_t>;
+
+// Independent dense arithmetic for the small monic fixtures below (p <= 5).
+// This oracle does not use ModularPoly multiplication, division, or powers.
+SmallPolynomial small_remainder(SmallPolynomial dividend, const SmallPolynomial& divisor,
+                                uint64_t p) {
+    GNFS_TEST_CHECK(!divisor.empty() && divisor.back() == 1);
+    while (!dividend.empty() && dividend.back() == 0) {
+        dividend.pop_back();
+    }
+    while (dividend.size() >= divisor.size()) {
+        const size_t offset = dividend.size() - divisor.size();
+        const uint64_t lead = dividend.back();
+        for (size_t index = 0; index < divisor.size(); ++index) {
+            auto& coefficient = dividend[offset + index];
+            coefficient = (coefficient + p - lead * divisor[index] % p) % p;
+        }
+        while (!dividend.empty() && dividend.back() == 0) {
+            dividend.pop_back();
+        }
+    }
+    return dividend;
+}
+
+SmallPolynomial small_product(const SmallPolynomial& left, const SmallPolynomial& right,
+                              const SmallPolynomial& modulus, uint64_t p) {
+    if (left.empty() || right.empty()) {
+        return {};
+    }
+    SmallPolynomial result(left.size() + right.size() - 1, 0);
+    for (size_t i = 0; i < left.size(); ++i) {
+        for (size_t j = 0; j < right.size(); ++j) {
+            result[i + j] = (result[i + j] + left[i] * right[j]) % p;
+        }
+    }
+    return small_remainder(std::move(result), modulus, p);
+}
+
+SmallPolynomial small_decode(uint64_t code, size_t degree, uint64_t p) {
+    SmallPolynomial coefficients(degree);
+    for (auto& coefficient : coefficients) {
+        coefficient = code % p;
+        code /= p;
+    }
+    return coefficients;
+}
+
+uint64_t small_encode(const SmallPolynomial& coefficients, uint64_t p) {
+    uint64_t code = 0;
+    for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it) {
+        GNFS_TEST_CHECK(*it < p);
+        code = code * p + *it;
+    }
+    return code;
+}
+
+bool small_is_irreducible(const SmallPolynomial& polynomial, uint64_t p) {
+    // Any proper factorization has a monic factor of degree <= d/2.
+    uint64_t count = 1;
+    for (size_t degree = 1; degree <= (polynomial.size() - 1) / 2; ++degree) {
+        count *= p;
+        for (uint64_t code = 0; code < count; ++code) {
+            auto divisor = small_decode(code, degree, p);
+            divisor.push_back(1);
+            if (small_remainder(polynomial, divisor, p).empty()) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+void test_sqrt_complete_extension_search() {
+    std::cout << "Testing complete extension-field square root search..." << std::endl;
+    struct Field {
+        uint64_t p;
+        SmallPolynomial modulus;
+    };
+    const std::vector<Field> fields{
+        {3, {1, 0, 0, 0, 2, 0, 1}}, // x^6 + 2*x^4 + 1
+        {3, {1, 0, 1}},             // x^2 + 1
+        {5, {2, 0, 1}},             // x^2 + 2
+        {3, {1, 2, 0, 1}},          // x^3 + 2*x + 1
+        {2, {1, 1, 0, 1}},          // x^3 + x + 1
+    };
+    for (const auto& field : fields) {
+        const size_t degree = field.modulus.size() - 1;
+        GNFS_TEST_CHECK(small_is_irreducible(field.modulus, field.p));
+        uint64_t count = 1;
+        for (size_t index = 0; index < degree; ++index) {
+            count *= field.p;
+        }
+
+        // Enumerating every square gives an oracle independent of Euler's
+        // criterion and the production non-square search.
+        std::vector<bool> squares(static_cast<size_t>(count), false);
+        for (uint64_t code = 0; code < count; ++code) {
+            const auto element = small_decode(code, degree, field.p);
+            const auto square = small_product(element, element, field.modulus, field.p);
+            squares[static_cast<size_t>(small_encode(square, field.p))] = true;
+        }
+        const auto expected_squares = field.p == 2 ? count : (count + 1) / 2;
+        GNFS_TEST_CHECK(static_cast<uint64_t>(std::count(squares.begin(), squares.end(), true)) ==
+                        expected_squares);
+
+        if (field.p == 3 && degree == 6) {
+            // All x+c candidates are squares, but x^2+x+2 is a non-square.
+            for (uint64_t constant = 0; constant < field.p; ++constant) {
+                GNFS_TEST_CHECK(squares[static_cast<size_t>(constant + field.p)]);
+            }
+            GNFS_TEST_CHECK(!squares[14]);
+            const auto known_square = small_product({0, 1}, {0, 1}, field.modulus, field.p);
+            GNFS_TEST_CHECK(known_square == SmallPolynomial({0, 0, 1}));
+            const auto root =
+                ModularPoly::sqrt_tonelli_shanks(ModularPoly(known_square), field.modulus, field.p);
+            GNFS_TEST_CHECK(!root.is_zero() && "sqrt(x^2) must find a root in F_(3^6)");
+        }
+
+        for (uint64_t code = 0; code < count; ++code) {
+            const ModularPoly element(small_decode(code, degree, field.p));
+            const bool expected = squares[static_cast<size_t>(code)];
+            GNFS_TEST_CHECK(ModularPoly::is_square(element, field.modulus, field.p) == expected);
+            const auto root = ModularPoly::sqrt_tonelli_shanks(element, field.modulus, field.p);
+            if (!expected) {
+                GNFS_TEST_CHECK(root.is_zero());
+                continue;
+            }
+            GNFS_TEST_CHECK(root.degree() < static_cast<int>(degree));
+            const auto square =
+                small_product(root.coefficients(), root.coefficients(), field.modulus, field.p);
+            GNFS_TEST_CHECK(small_encode(square, field.p) == code);
+        }
+        std::cout << "  F_(" << field.p << '^' << degree << "): " << count << " elements verified"
+                  << std::endl;
+    }
+}
+
+namespace {
+
+SmallPolynomial equivalent_representative(const SmallPolynomial& element,
+                                          const SmallPolynomial& modulus,
+                                          const SmallPolynomial& multiplier, uint64_t p) {
+    // Construct a+k*f with exact GMP arithmetic, including coefficients and
+    // products above UINT64_MAX. Only the final residues become uint64_t.
+    std::vector<Integer> coefficients(
+        std::max(element.size(), modulus.size() + multiplier.size() - 1));
+    for (size_t i = 0; i < element.size(); ++i) {
+        coefficients[i] = element[i];
+    }
+    for (size_t i = 0; i < modulus.size(); ++i) {
+        for (size_t j = 0; j < multiplier.size(); ++j) {
+            coefficients[i + j] += Integer(modulus[i]) * Integer(multiplier[j]);
+        }
+    }
+    const Integer prime(p);
+    SmallPolynomial result(coefficients.size());
+    for (size_t i = 0; i < coefficients.size(); ++i) {
+        mpz_fdiv_r(coefficients[i].get_mpz(), coefficients[i].get_mpz(), prime.get_mpz());
+        result[i] = coefficients[i].to_uint64();
+    }
+    return result;
+}
+
+} // namespace
+
+void test_modular_sqrt_quotient_representatives() {
+    std::cout << "Testing square roots of equivalent quotient representatives..." << std::endl;
+    struct PrimeCase {
+        uint64_t p;
+        uint64_t nonsquare;
+    };
+    const std::vector<PrimeCase> primes{
+        {UINT64_C(4294967311), 3}, {UINT64_C(18446744073709551557), 2}, {3, 2}, {2, 0}};
+    const std::vector<SmallPolynomial> multipliers{{1}, {0, 1}, {2, 1, 2}};
+    for (const auto& field : primes) {
+        const Integer prime(field.p);
+        GNFS_TEST_CHECK(mpz_probab_prime_p(prime.get_mpz(), 20) != 0);
+        const SmallPolynomial modulus{field.p - 1, 1}; // x-1: evaluate at x=1.
+        std::vector<uint64_t> classes{0, 1};
+        if (field.p != 2) {
+            const Integer nonsquare(field.nonsquare);
+            GNFS_TEST_CHECK(mpz_legendre(nonsquare.get_mpz(), prime.get_mpz()) == -1);
+            classes.push_back(4 % field.p);
+            classes.push_back(field.nonsquare);
+        }
+        for (uint64_t value : classes) {
+            const Integer expected_value(value);
+            const bool square = field.p == 2 || value == 0 ||
+                                mpz_legendre(expected_value.get_mpz(), prime.get_mpz()) == 1;
+            const ModularPoly canonical(value);
+            const auto canonical_root =
+                ModularPoly::sqrt_tonelli_shanks(canonical, modulus, field.p);
+            for (const auto& multiplier : multipliers) {
+                const auto coefficients =
+                    equivalent_representative({value}, modulus, multiplier, field.p);
+                Integer at_one;
+                for (uint64_t coefficient : coefficients) {
+                    at_one += Integer(coefficient);
+                }
+                mpz_fdiv_r(at_one.get_mpz(), at_one.get_mpz(), prime.get_mpz());
+                GNFS_TEST_CHECK(at_one.compare(expected_value) == 0);
+
+                const ModularPoly representative(coefficients);
+                GNFS_TEST_CHECK(ModularPoly::is_square(representative, modulus, field.p) == square);
+                const auto root =
+                    ModularPoly::sqrt_tonelli_shanks(representative, modulus, field.p);
+                GNFS_TEST_CHECK(root.coefficients() == canonical_root.coefficients());
+                GNFS_TEST_CHECK(root.degree() < 1);
+                if (square) {
+                    const Integer coefficient(root.coeff(0));
+                    Integer squared = coefficient * coefficient;
+                    mpz_fdiv_r(squared.get_mpz(), squared.get_mpz(), prime.get_mpz());
+                    GNFS_TEST_CHECK(squared.compare(expected_value) == 0);
+                } else {
+                    GNFS_TEST_CHECK(root.is_zero());
+                }
+            }
+        }
+    }
+
+    // Nonlinear quotient: square all nine elements independently using the
+    // small-field convolution oracle instead of production reduction/powers.
+    const SmallPolynomial modulus{1, 0, 1};
+    std::vector<bool> squares(9, false);
+    for (uint64_t code = 0; code < 9; ++code) {
+        const auto element = small_decode(code, 2, 3);
+        squares[static_cast<size_t>(small_encode(small_product(element, element, modulus, 3), 3))] =
+            true;
+    }
+    const std::vector<SmallPolynomial> classes{{}, {1}, {0, 2}, {1, 1}};
+    for (const auto& element : classes) {
+        const bool square = squares[static_cast<size_t>(small_encode(element, 3))];
+        const auto canonical_root =
+            ModularPoly::sqrt_tonelli_shanks(ModularPoly(element), modulus, 3);
+        for (const auto& multiplier : multipliers) {
+            const auto coefficients = equivalent_representative(element, modulus, multiplier, 3);
+            GNFS_TEST_CHECK(small_remainder(coefficients, modulus, 3) == element);
+            const ModularPoly representative(coefficients);
+            GNFS_TEST_CHECK(ModularPoly::is_square(representative, modulus, 3) == square);
+            const auto root = ModularPoly::sqrt_tonelli_shanks(representative, modulus, 3);
+            GNFS_TEST_CHECK(root.coefficients() == canonical_root.coefficients());
+            if (square) {
+                GNFS_TEST_CHECK(
+                    small_product(root.coefficients(), root.coefficients(), modulus, 3) == element);
+            } else {
+                GNFS_TEST_CHECK(root.is_zero());
+            }
+        }
+    }
+    std::cout << "  Quotient representative invariance: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -1060,6 +1320,8 @@ int main() {
     test_non_monic_number_field_multiply_contract();
     test_characteristic_2_sqrt();
     test_sqrt_even_degree_extension();
+    test_sqrt_complete_extension_search();
+    test_modular_sqrt_quotient_representatives();
     test_couveignes_compute_from_element_terminates();
     test_couveignes_compute_from_element_normal();
     test_couveignes_gray_code_invariants();

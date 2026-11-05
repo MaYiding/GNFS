@@ -32,7 +32,7 @@ OBSOLETE_HARNESS_FILES = (
 )
 SHELL_FUNCTION_SHA256 = {
     ("scripts/test.sh", "run_single_test"): (
-        "55c3e738e04fa08c35c3743d434390f1e23b7988dd7b5eab25d66278c5435920"
+        "3bae6314d8e5f2b08068f919d4544e631d379de95e1eac8c828ba1c36760148c"
     ),
     ("scripts/test.sh", "run_dual_stream_with_timeout"): (
         "4597d13f41083f419ba7d8b436e3cf592de6fcf86ec0acf339d4cbdfeac1719b"
@@ -324,8 +324,8 @@ class Checks:
         for marker in (
             "Verify MinGW process-tree supervisor",
             "-DGNFS_BUILD_TESTS=ON",
-            "--target gnfs_test_process_supervisor",
-            "-R '^ProcessSupervisor$'",
+            "--target gnfs_test_process_supervisor test_trial_wheel",
+            "-R '^(ProcessSupervisor|TrialWheel)$'",
         ):
             if marker not in release_readiness:
                 self.fail(

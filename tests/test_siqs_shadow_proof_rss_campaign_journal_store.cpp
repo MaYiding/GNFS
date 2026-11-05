@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <ios>
@@ -1164,6 +1165,7 @@ public:
     enum class Action : uint8_t {
         fail_before_confirm,
         remove_and_report_durable,
+        remove_and_change_parent_metadata,
     };
 
     TestConfirmationOps(std::size_t target_call, Action action) noexcept
@@ -1182,10 +1184,31 @@ public:
         if (confirm_calls_ != target_call_) {
             return durable::confirm_durable_at(parent_handle, leaf);
         }
-        if (action_ == Action::remove_and_report_durable) {
-            if (::unlinkat(static_cast<int>(parent_handle), leaf.c_str(), 0) != 0) {
+        if (action_ == Action::remove_and_report_durable ||
+            action_ == Action::remove_and_change_parent_metadata) {
+            const int parent_fd = static_cast<int>(parent_handle);
+            struct stat parent_before {};
+            if (action_ == Action::remove_and_change_parent_metadata &&
+                ::fstat(parent_fd, &parent_before) != 0) {
                 return {durable::PublishStatus::open_failed,
                         std::error_code(errno, std::generic_category()), 0};
+            }
+            if (::unlinkat(parent_fd, leaf.c_str(), 0) != 0) {
+                return {durable::PublishStatus::open_failed,
+                        std::error_code(errno, std::generic_category()), 0};
+            }
+            if (action_ == Action::remove_and_change_parent_metadata) {
+                // Unlink need not change directory size, link count, or coarse
+                // timestamps. Give the namespace-generation check an explicit
+                // mtime change instead of depending on the filesystem clock.
+                const timespec times[2] = {
+                    {.tv_sec = 0, .tv_nsec = UTIME_OMIT},
+                    {.tv_sec = parent_before.st_mtime == 1 ? 2 : 1, .tv_nsec = 0},
+                };
+                if (::futimens(parent_fd, times) != 0) {
+                    return {durable::PublishStatus::open_failed,
+                            std::error_code(errno, std::generic_category()), 0};
+                }
             }
             return {durable::PublishStatus::durable, {}, 0};
         }
@@ -3916,10 +3939,11 @@ void test_committed_prefix_durability_precedes_next_authority() {
         CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
     }
 
-    {
+    for (const auto action : {TestConfirmationOps::Action::remove_and_change_parent_metadata,
+                              TestConfirmationOps::Action::remove_and_report_durable}) {
         TempStore fixture;
         write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
-        TestConfirmationOps ops(3, TestConfirmationOps::Action::remove_and_report_durable);
+        TestConfirmationOps ops(3, action);
         auto deployment = make_deployment(fixture.trusted_base());
         deployment.publication_ops = &ops;
         const auto policy = make_policy();
@@ -3929,13 +3953,41 @@ void test_committed_prefix_durability_precedes_next_authority() {
 
         auto begin = std::move(*session).begin_next_slot();
         CHECK(!static_cast<bool>(begin));
-        CHECK(ops.confirm_calls() == 3);
-        CHECK(begin.diagnostic().error == StoreError::snapshot_changed);
-        CHECK(begin.diagnostic().object == StoreObject::artifact_root);
         CHECK(begin.diagnostic().publication_status == durable::PublishStatus::durable);
+        const auto removed_leaf = artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stdout);
+        CHECK(!std::filesystem::exists(fixture.artifact_leaf(removed_leaf.view())));
         const auto next_start = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(3);
         CHECK(next_start.has_value());
         CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+        if (action == TestConfirmationOps::Action::remove_and_change_parent_metadata) {
+            if (ops.confirm_calls() != 3 ||
+                begin.diagnostic().error != StoreError::snapshot_changed ||
+                begin.diagnostic().object != StoreObject::artifact_root) {
+                std::cerr << "artifact metadata change confirmation count=" << ops.confirm_calls()
+                          << " error="
+                          << siqs_shadow_proof_rss_campaign_journal_store_error_name(
+                                 begin.diagnostic().error)
+                          << " object="
+                          << siqs_shadow_proof_rss_campaign_journal_store_object_name(
+                                 begin.diagnostic().object)
+                          << " native=" << begin.diagnostic().native_error.value() << '\n';
+            }
+            CHECK(ops.confirm_calls() == 3);
+            CHECK(begin.diagnostic().error == StoreError::snapshot_changed);
+            CHECK(begin.diagnostic().object == StoreObject::artifact_root);
+        } else if (begin.diagnostic().error == StoreError::snapshot_changed) {
+            CHECK(begin.diagnostic().object == StoreObject::artifact_root);
+        } else {
+            // With unchanged directory metadata, the final full snapshot must
+            // still reject the missing committed artifact before publication.
+            CHECK(begin.diagnostic().error == StoreError::artifact_consistency_invalid);
+            CHECK(begin.diagnostic().object == StoreObject::artifact);
+            CHECK(begin.diagnostic().artifact_consistency.error ==
+                  SIQSShadowProofRssCampaignArtifactConsistencyError::committed_artifact_missing);
+            CHECK(begin.diagnostic().artifact_consistency.slot_number == 1);
+            CHECK(begin.diagnostic().artifact_consistency.kind ==
+                  SIQSShadowProofRssArtifactKind::probe_stdout);
+        }
     }
 
     {

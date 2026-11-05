@@ -128,6 +128,57 @@ finite bound while allowing LP components deeper than the former fixed
 | `tests/test_siqs_shadow_prefer_route.cpp` | Instant production-adapter composition, three-gate truth table, exact candidate/fallback records, write failure, stale candidate rejection, and cross-platform environment/stderr paths |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
+## Multiplier Candidate Preparation
+
+`rank_multiplier_candidates(N, limit)` exposes the raw Knuth-Schroeppel ranking
+for callers that need to inspect or prepare more than one candidate. It ranks
+all 21 fixed candidates before returning the requested prefix. A zero limit
+returns an empty vector without inspecting `N`; a positive limit requires
+positive `N` and otherwise throws `std::invalid_argument`. Limits above 21
+return the complete ranking. Equal scores retain the historical candidate
+order. Floating-point score ordering is deterministic within an implementation;
+near-tie ordering across platforms is not a golden contract.
+
+`select_multiplier(N)` keeps the historical first candidate for positive `N`.
+The raw ranking and selector do not filter shared factors. The internal
+`siqs_multiplier_detail::admit_candidates` helper preserves supplied order,
+rejects zero and every `gcd(N, k) > 1` (including `k = N`), and removes duplicates
+before applying the eligible-candidate limit. Callers must supply the complete
+ranking: truncating the raw ranking first can discard available candidates.
+For example, `N = 15015` has only one admissible entry in its raw first three,
+while the complete ranking supplies three coprime candidates.
+
+These helpers prepare candidates only. Production `factor()` still selects
+one multiplier. Its budget checks, shadow records, and result commit behavior
+remain unchanged. Candidate limits do not count started attempts or establish a time
+budget. A retry controller and its budget admission remain separate work.
+
+## Native Single-Attempt Boundary
+
+The public `factor()` facade still performs its original input fast paths,
+starts the timer, selects parameters, and selects one historical multiplier in
+that order. It delegates the remaining native work to the internal
+`siqs_factor_detail::factor_once` entry with an explicit multiplier, shadow mode,
+and `FactorAttemptContext`. The context carries the original parameter choice
+and timer origin; the native attempt does not parse environment flags or reset
+the caller's clock.
+
+Every normal return supplies a `FactorAttemptOutcome`: the existing optional
+factor result, a terminal state for insufficient factor base, insufficient
+relations, exhausted factor extraction, or success, and whether an observe
+record was committed. A failed attempt therefore retains its observe commit
+metadata. This metadata grants no shadow-return authority. Preferred results
+still pass through `commit_prefer_route`; an accepted result keeps its single
+pre-emit timing sample and is returned without a later deadline veto.
+
+This extraction preserves the default single-attempt and zero-budget behavior.
+It does not start retries or add a deadline guarantee. A future coordinator must
+filter and deduplicate the complete ranking, finish budget admission before
+counting an attempt, preserve returned committed results, and enable requested
+shadow work only on the first actual attempt. Factor-base construction, both
+linear-algebra backends, and the remaining long stages still require a coherent
+cooperative cancellation contract before an end-to-end deadline can be claimed.
+
 ## Parameter Calibration
 
 The `select_params` table is tuned against msieve, CADO-NFS, and YAFU defaults.

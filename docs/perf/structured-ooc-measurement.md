@@ -26,6 +26,9 @@ Linux 的 `/proc/self/statm` 使用异步近似 RSS 计数，与 `getrusage` 分
 继续校验 current 不超过 peak。schema 拒绝记录时，探针校验器在 stderr 输出明确标注
 为未验证的原始记录，便于诊断；该输出不构成通过的测量证据。
 
+SIQS 256-A 的 V3/V4 summary 同样保留 Linux 的两个独立 RSS 观测值。512MiB
+资源门槛仍由 lifetime peak 判定，字段格式与 RSS evidence 的一致性校验保持不变。
+
 ## Synthetic Direct-Route RSS
 
 以下命令默认使用 Release 构建。显式传入 `-t` 时保留调用方选择。测量入口拒绝

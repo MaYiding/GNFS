@@ -9,8 +9,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
+import json
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -5540,8 +5542,8 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
     "invalidated_.store(true,std::memory_order_release);}"
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
-WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256 = (
-    "2a6abb9f0f173738abcbb65f8d0c6bc0107c2c1df28985bdf3dc707d144792b3"
+WORKER_CLEANUP_RECEIPT_CMAKE_BOUNDARY_SHA256 = (
+    "211c9dfc6a794b8646c4d716982e844efbb2b4558a7e12e9a739ca7f2365d826"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -10405,6 +10407,10 @@ def _is_cpp_digit_separator(text: str, cursor: int) -> bool:
 
 
 def _skip_non_code(text: str, cursor: int) -> int | None:
+    # Encoding prefixes remain code until their R or quote is reached.
+    # Ordinary characters cannot start any trivia recognized below.
+    if text[cursor] not in {"R", '"', "'", "/"}:
+        return None
     raw_end = _skip_raw_string(text, cursor)
     if raw_end is not None:
         return raw_end
@@ -10795,6 +10801,113 @@ def _cmake_command_records(text: str) -> list[CMakeCommandRecord]:
     return list(_cmake_command_records_cached(text))
 
 
+
+def _worker_cleanup_cmake_boundary(text: str) -> str:
+    """Retain build semantics while allowing independent literal test leaves.
+
+    An executable that only consumes ordinary test sources and privately links
+    project libraries cannot change the compilation of a protected target.
+    Keep all other commands, including conditionals, source properties, aliases,
+    generated code, and global or target compiler settings, in the frozen surface.
+    """
+
+    commands = _cmake_command_records(text)
+    protected_sources = set(WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS)
+    protected_targets = {
+        target
+        for targets in WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS.values()
+        for target in targets
+    }
+    declarations: dict[str, list[CMakeCommandRecord]] = {}
+    for command in commands:
+        if command.name in {"add_executable", "add_library"}:
+            first = _cmake_first_argument(command.body)
+            if first is not None:
+                declarations.setdefault(first, []).append(command)
+    leaves: set[str] = set()
+    for target, records in declarations.items():
+        if len(records) != 1 or target in protected_targets:
+            continue
+        command = records[0]
+        tokens = command.body.split()
+        if (
+            command.name == "add_executable"
+            and re.fullmatch(r"test_[a-zA-Z0-9_]+", target)
+            and len(tokens) >= 2
+            and all(
+                re.fullmatch(r"tests/(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+\.cpp", source)
+                and source not in protected_sources
+                for source in tokens[1:]
+            )
+        ):
+            leaves.add(target)
+
+    test_names: dict[str, list[list[str]]] = {}
+    for command in commands:
+        if command.name == "add_test":
+            tokens = command.body.split()
+            if len(tokens) >= 2:
+                name = tokens[1] if tokens[0] == "NAME" else tokens[0]
+                test_names.setdefault(name, []).append(tokens)
+    leaf_tests = {
+        name
+        for name, entries in test_names.items()
+        if len(entries) == 1
+        and re.fullmatch(r"[a-zA-Z0-9_]+", name)
+        and len(entries[0]) == 4
+        and entries[0][:1] == ["NAME"]
+        and entries[0][2] == "COMMAND"
+        and entries[0][3] in leaves
+    }
+    surface: list[tuple[str, str]] = []
+    for command in commands:
+        tokens = command.body.split()
+        first = tokens[0] if tokens else ""
+        if command.name == "add_executable" and first in leaves:
+            continue
+        if (
+            command.name == "target_link_libraries"
+            and first in leaves
+            and len(tokens) >= 3
+            and tokens[1] == "PRIVATE"
+            and all(token in {"gnfs_core", "gnfs_util", "Threads::Threads"} for token in tokens[2:])
+        ):
+            continue
+        if command.name == "add_test" and len(tokens) == 4 and tokens[1] in leaf_tests:
+            continue
+        if (
+            command.name == "set_tests_properties"
+            and first in leaf_tests
+            and re.fullmatch(
+                r'\s*[a-zA-Z0-9_]+\s+PROPERTIES\s+LABELS\s+"(?:instant|fast|slow)"'
+                r'\s+TIMEOUT\s+[1-9][0-9]*(?:\s+SKIP_RETURN_CODE\s+77)?\s*',
+                command.body,
+            )
+        ):
+            continue
+        # This marker controls required-test platform exclusions. Only the
+        # actual CMake WIN32 condition is accepted; forged literal values must
+        # remain visible to the frozen boundary.
+        if command.name == "file" and re.fullmatch(
+            r'\s*GENERATE\s+OUTPUT\s+"\$\{CMAKE_BINARY_DIR\}/gnfs-test-platform\.txt"'
+            r'\s+CONTENT\s+"WIN32=\$<BOOL:\$\{WIN32\}>\\n"\s*',
+            command.body,
+        ):
+            continue
+        surface.append((command.name, command.body.strip()))
+    # The parser is conservative, not a complete CMake interpreter. Preserve
+    # every nontrivia byte it did not consume; otherwise a valid but unfamiliar
+    # command could disappear from the digest (for example an escaped hash).
+    remainder = list(_mask_cmake_comments(text))
+    for command in commands:
+        remainder[command.start : command.end] = " " * (command.end - command.start)
+    unparsed = "".join(remainder).strip()
+    result = json.dumps(surface, ensure_ascii=True, separators=(",", ":"))
+    if unparsed:
+        result += "\nUNPARSED:" + unparsed
+    return result
+
+
 def _cmake_literal_false(body: str) -> bool:
     normalized = re.sub(r"[ \t\r\n()]", "", body).upper()
     return normalized in {"0", "FALSE", "OFF", "NO", "IGNORE", "NOTFOUND", '"FALSE"'}
@@ -11107,6 +11220,53 @@ def _resolve_cmake_repo_path(root: Path, argument: str) -> str | None:
     if not resolved.is_file():
         return None
     return relative.as_posix()
+
+
+
+def _runner_catalog_array(shell: str, name: str) -> str | None:
+    """Read one literal catalog declaration; reject later resets or appends."""
+    assignments = re.findall(
+        rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*(?:\[[^\n]*?\])?\s*\+?=",
+        shell,
+    )
+    matches = re.findall(rf"(?ms)^{re.escape(name)}=\(\s*\n(.*?)^\)\s*$", shell)
+    return matches[0] if len(assignments) == len(matches) == 1 else None
+
+
+def _runner_path_to_module_body(shell: str) -> str | None:
+    matches = re.findall(r"(?ms)^path_to_module\(\)\s*\{\s*\n(.*?)^\}", shell)
+    declarations = re.findall(
+        r"(?<![A-Za-z0-9_])(?:function\s+)?path_to_module\s*(?:\(\))?\s*\{", shell
+    )
+    return matches[0] if len(matches) == len(declarations) == 1 else None
+
+
+def _runner_catalog_target_is_unique(shell: str, target: str) -> bool:
+    """Count registrations in their consumers, not unrelated platform metadata."""
+    token = rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])"
+    for name in ("ALL_TEST_BINARIES", "MODULE_TESTS", "TEST_TIMEOUT", "TEST_TIER"):
+        body = _runner_catalog_array(shell, name)
+        if body is None or len(re.findall(token, body)) != 1:
+            return False
+    modules = _runner_catalog_array(shell, "MODULE_TESTS")
+    assert modules is not None
+    try:
+        words = shlex.split(modules)
+    except ValueError:
+        return False
+    keys = words[::2]
+    if (
+        len(words) % 2 != 0
+        or any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None for key in keys)
+        or len(set(keys)) != len(keys)
+        or keys.count("sieve") != 1
+    ):
+        return False
+    smoke = _runner_catalog_array(shell, "SMOKE_TESTS")
+    if smoke is None or re.search(token, smoke):
+        return False
+    mapping = _runner_path_to_module_body(shell)
+    return mapping is not None and len(re.findall(token, mapping)) == 1
 
 
 def _mask_shell_comments(text: str) -> str:
@@ -14288,14 +14448,14 @@ class Checks:
 
         if (
             hashlib.sha256(
-                _mask_cmake_comments(cmake_text).encode("utf-8")
+                _worker_cleanup_cmake_boundary(cmake_text).encode("utf-8")
             ).hexdigest()
-            != WORKER_CLEANUP_RECEIPT_CMAKE_COMMENT_MASKED_SHA256
+            != WORKER_CLEANUP_RECEIPT_CMAKE_BOUNDARY_SHA256
         ):
             self.fail(
                 WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
                 1,
-                "entire layout-preserving comment-masked CMake surface is not exact",
+                "protected CMake build boundary is not exact",
             )
         if commands is None:
             active = _mask_definitely_inactive_cmake(cmake_text)
@@ -21362,11 +21522,7 @@ class Checks:
             )
 
         def array_body(name: str) -> str | None:
-            match = re.search(
-                rf"(?ms)^{re.escape(name)}=\(\s*\n(.*?)^\)\s*$",
-                test_runner_code,
-            )
-            return None if match is None else match.group(1)
+            return _runner_catalog_array(test_runner_code, name)
 
         all_tests = array_body("ALL_TEST_BINARIES")
         module_tests = array_body("MODULE_TESTS")
@@ -21412,21 +21568,16 @@ class Checks:
         source = re.escape(WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE)
         path_mapping = re.findall(
             rf'(?m)^\s*[^\n]*{source}[^\n]*\)\s*echo\s+"sieve"\s*;;\s*$',
-            test_runner_code,
+            _runner_path_to_module_body(test_runner_code) or "",
         )
-        total_target_uses = len(
-            re.findall(
-                rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
-                test_runner_code,
-            )
-        )
+
         if (
             len(all_test_entries) != 1
             or len(timeout_entries) != 1
             or len(tier_entries) != 1
             or module_count != 1
             or len(path_mapping) != 1
-            or total_target_uses != 5
+            or not _runner_catalog_target_is_unique(test_runner_code, target)
         ):
             self.fail(
                 WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
@@ -21522,10 +21673,7 @@ class Checks:
         shell = _mask_shell_comments(test_runner_text)
 
         def array_body(name: str) -> str | None:
-            match = re.search(
-                rf"(?ms)^{re.escape(name)}=\(\s*\n(.*?)^\)\s*$", shell
-            )
-            return None if match is None else match.group(1)
+            return _runner_catalog_array(shell, name)
 
         arrays = {
             name: array_body(name)
@@ -21558,14 +21706,9 @@ class Checks:
             source = re.escape(WORKER_CLEANUP_ORCHESTRATION_TEST_FILE)
             path_mapping = re.findall(
                 rf'(?m)^\s*[^\n]*{source}[^\n]*\)\s*echo\s+"sieve"\s*;;\s*$',
-                shell,
+                _runner_path_to_module_body(shell) or "",
             )
-            total = len(
-                re.findall(
-                    rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
-                    shell,
-                )
-            )
+
             exact = (
                 len(re.findall(rf"(?m)^\s*{re.escape(target)}\s*$", all_tests))
                 == 1
@@ -21584,7 +21727,7 @@ class Checks:
                 )
                 == 1
                 and len(path_mapping) == 1
-                and total == 5
+                and _runner_catalog_target_is_unique(shell, target)
             )
             if not exact:
                 self.fail(
@@ -21772,10 +21915,7 @@ class Checks:
         shell = _mask_shell_comments(test_runner_text)
 
         def array_body(name: str) -> str | None:
-            match = re.search(
-                rf"(?ms)^{re.escape(name)}=\(\s*\n(.*?)^\)\s*$", shell
-            )
-            return None if match is None else match.group(1)
+            return _runner_catalog_array(shell, name)
 
         arrays = {
             name: array_body(name)
@@ -21806,14 +21946,9 @@ class Checks:
             source = re.escape(WAVE_RESULT_TEST_FILE)
             path_mapping = re.findall(
                 rf'(?m)^\s*[^\n]*{source}[^\n]*\)\s*echo\s+"sieve"\s*;;\s*$',
-                shell,
+                _runner_path_to_module_body(shell) or "",
             )
-            total = len(
-                re.findall(
-                    rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])",
-                    shell,
-                )
-            )
+
             exact = (
                 len(re.findall(rf"(?m)^\s*{re.escape(target)}\s*$", all_tests))
                 == 1
@@ -21832,7 +21967,7 @@ class Checks:
                 )
                 == 1
                 and len(path_mapping) == 1
-                and total == 5
+                and _runner_catalog_target_is_unique(shell, target)
             )
             if not exact:
                 self.fail(
@@ -28765,6 +28900,31 @@ def run_self_test() -> list[str]:
         if not condition:
             errors.append(message)
 
+    trivia_sources = [
+        r'''const char* text = "getenv(\"GNFS_DECOY\")";
+const char slash = '/'; const char quote = '\'';
+const auto number = 1'000; // getenv("GNFS_DECOY")
+/* getenv("GNFS_DECOY") */ std::getenv("GNFS_LATTICE_LLL");
+'''
+    ]
+    for prefix in ("", "u8", "u", "U", "L"):
+        trivia_sources.append(
+            prefix + 'R"tag(" // getenv("GNFS_DECOY")\n'
+            '/* getenv("GNFS_DECOY") */ )tag";\n'
+            'std::getenv("GNFS_LATTICE_LLL");'
+        )
+    for trivia_source in trivia_sources:
+        calls, parse_errors = find_getenv_calls(trivia_source)
+        live_offset = trivia_source.rfind("std::getenv")
+        expected_line = trivia_source.count("\n", 0, live_offset) + 1
+        expect(
+            not parse_errors
+            and len(calls) == 1
+            and calls[0].argument == '"GNFS_LATTICE_LLL"'
+            and calls[0].line == expected_line,
+            "comment, quote, digit separator, or prefixed raw-string trivia changed getenv scanning",
+        )
+
     errors.extend(run_worker_cleanup_capsule_self_test())
     errors.extend(run_worker_cleanup_completion_route_self_test())
     errors.extend(run_worker_cleanup_completion_publication_self_test())
@@ -33891,6 +34051,41 @@ void escaped_cleanup_conversion_wrapper() {
         Path(__file__).resolve().parents[1]
         / WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE
     ).read_text(encoding="utf-8")
+    catalog_shell = _mask_shell_comments(worker_cleanup_receipt_test_runner)
+    for target in (
+        WORKER_CLEANUP_RECEIPT_TEST_TARGET,
+        WORKER_CLEANUP_ORCHESTRATION_TEST_TARGET,
+        WAVE_RESULT_TEST_TARGET,
+    ):
+        expect(
+            _runner_catalog_target_is_unique(
+                catalog_shell + f"\nPLATFORM_METADATA=(\n    {target}\n)\n", target
+            ),
+            "unrelated platform metadata was counted as a test registration",
+        )
+        for changed_catalog in (
+            catalog_shell.replace("ALL_TEST_BINARIES=(", f"ALL_TEST_BINARIES=(\n    {target}", 1),
+            catalog_shell.replace("SMOKE_TESTS=(", f"SMOKE_TESTS=(\n    {target}", 1),
+            catalog_shell.replace("TEST_TIMEOUT=(", f"TEST_TIMEOUT=(\n    {target} 1", 1),
+            catalog_shell.replace("TEST_TIER=(", f'TEST_TIER=(\n    {target} "fast"', 1),
+            catalog_shell.replace("MODULE_TESTS=(", f'MODULE_TESTS=(\n    extra "{target}"', 1),
+            catalog_shell.replace("MODULE_TESTS=(", 'MODULE_TESTS=(\n    sieve ""', 1),
+            catalog_shell + "\nALL_TEST_BINARIES=(\n)\n",
+            catalog_shell + f"\nALL_TEST_BINARIES+=({target})\n",
+            catalog_shell + "\ntypeset -a ALL_TEST_BINARIES=()\n",
+            catalog_shell + f"\nTEST_TIMEOUT[{target}]=1\n",
+            catalog_shell + '\nfunction path_to_module { echo "core"; }\n',
+            catalog_shell + f"\n:; TEST_TIMEOUT[{target}]=1\n",
+            catalog_shell + f"\n:; ALL_TEST_BINARIES+=({target})\n",
+            catalog_shell + f"\nbuiltin typeset -a ALL_TEST_BINARIES=({target})\n",
+            catalog_shell + '\n:; function path_to_module { echo "core"; }\n',
+            catalog_shell.replace("MODULE_TESTS=(", 'MODULE_TESTS=(\n    "sieve" "test_dummy"', 1),
+            catalog_shell.replace("MODULE_TESTS=(", "MODULE_TESTS=(\n    'sieve' 'test_dummy'", 1),
+        ):
+            expect(
+                not _runner_catalog_target_is_unique(changed_catalog, target),
+                "duplicate, overridden, or misplaced test registration was accepted",
+            )
     exact_worker_cleanup_receipt_catalog_checks = Checks(Path("."))
     exact_worker_cleanup_receipt_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
         worker_cleanup_receipt_cmake, worker_cleanup_receipt_test_runner
@@ -34036,11 +34231,11 @@ void escaped_cleanup_conversion_wrapper() {
     )
     expect(
         any(
-            "entire layout-preserving comment-masked CMake surface is not exact"
+            "protected CMake build boundary is not exact"
             in error
             for error in literal_and_inactive_cmake_surface_checks.errors
         ),
-        "whole-file CMake hash did not close inert/string command injection: "
+        "CMake build boundary hash did not close inert/string command injection: "
         f"{literal_and_inactive_cmake_surface_checks.errors}",
     )
     exact_cmake_surface_checks = Checks(Path("."))
@@ -34049,9 +34244,52 @@ void escaped_cleanup_conversion_wrapper() {
     )
     expect(
         not exact_cmake_surface_checks.errors,
-        "exact whole-file CMake surface was rejected: "
+        "exact CMake build boundary was rejected: "
         f"{exact_cmake_surface_checks.errors}",
     )
+    independent_test = (
+        "\nadd_executable(test_boundary_probe tests/test_boundary_probe.cpp)\n"
+        "target_link_libraries(test_boundary_probe PRIVATE gnfs_core Threads::Threads)\n"
+        "add_test(NAME BoundaryProbe COMMAND test_boundary_probe)\n"
+        'set_tests_properties(BoundaryProbe PROPERTIES LABELS "fast" TIMEOUT 60 '
+        "SKIP_RETURN_CODE 77)\n"
+    )
+    boundary = _worker_cleanup_cmake_boundary(worker_cleanup_receipt_cmake)
+    for extension in (
+        independent_test,
+        independent_test.replace("boundary_probe", "another_probe").replace(
+            "BoundaryProbe", "AnotherProbe"
+        ),
+        '\nfile(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/gnfs-test-platform.txt" '
+        'CONTENT "WIN32=$<BOOL:${WIN32}>\\n")\n',
+    ):
+        expect(
+            _worker_cleanup_cmake_boundary(worker_cleanup_receipt_cmake + extension)
+            == boundary,
+            "independent test or canonical platform marker changed the receipt boundary",
+        )
+    for extension in (
+        independent_test.replace("tests/test_boundary_probe.cpp", WORKER_CLEANUP_TAIL_AUTHORITY_TEST_FILE),
+        independent_test.replace("test_boundary_probe", WORKER_CLEANUP_RECEIPT_TEST_TARGET),
+        independent_test.replace("BoundaryProbe", WORKER_CLEANUP_RECEIPT_CTEST_NAME),
+        independent_test.replace("tests/test_boundary_probe.cpp", "${injected_sources}"),
+        independent_test.replace("tests/test_boundary_probe.cpp", "tests/../src/sieve/injected.cpp"),
+        independent_test.replace("PRIVATE gnfs_core Threads::Threads", "PUBLIC gnfs_core"),
+        independent_test + "target_link_libraries(gnfs_core PRIVATE test_boundary_probe)\n",
+        independent_test + "target_compile_definitions(gnfs_core PRIVATE private=public)\n",
+        '\nset(CMAKE_CXX_FLAGS "-Dprivate=public" CACHE STRING \\# FORCE)\n',
+        independent_test + "set_source_files_properties(src/sieve/injected.cpp PROPERTIES COMPILE_FLAGS evil)\n",
+        independent_test + "cmake_language(EVAL CODE \"add_compile_definitions(private=public)\")\n",
+        '\nfile(GENERATE OUTPUT "${CMAKE_SOURCE_DIR}/gnfs-injected.txt" CONTENT "evil")\n',
+        '\nfile(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/CMakeLists.txt" CONTENT "evil")\n',
+        '\nfile(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/gnfs-test-platform.txt" CONTENT "WIN32=1\\n")\n',
+        '\nfile(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/gnfs-extra-metadata.txt" CONTENT "evil")\n',
+    ):
+        expect(
+            _worker_cleanup_cmake_boundary(worker_cleanup_receipt_cmake + extension)
+            != boundary,
+            "a protected, dynamic, or shared build mutation escaped the receipt boundary",
+        )
     cmake_string_mutation = worker_cleanup_receipt_cmake.replace(
         "Industrial-grade General Number Field Sieve implementation",
         "Industrial-grade General Number Field Sieve implementatioN",
@@ -34063,11 +34301,11 @@ void escaped_cleanup_conversion_wrapper() {
     )
     expect(
         any(
-            "entire layout-preserving comment-masked CMake surface is not exact"
+            "protected CMake build boundary is not exact"
             in error
             for error in cmake_string_checks.errors
         ),
-        "a CMake literal-string mutation escaped the whole-file hash: "
+        "a CMake literal-string mutation escaped the build boundary hash: "
         f"{cmake_string_checks.errors}",
     )
     cmake_preset_bytes = (

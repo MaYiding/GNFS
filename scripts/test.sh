@@ -386,6 +386,7 @@ ALL_TEST_BINARIES=(
     test_poly_checkpoint
     test_fb_checkpoint
     test_bl_checkpoint
+    test_bl_checkpoint_stream_failure
     test_memory_pool
     test_relation_pool_integration
     test_integer_scratch_pool
@@ -481,6 +482,22 @@ ALL_TEST_BINARIES=(
     test_work_stealing
 )
 
+# CMake excludes these targets under WIN32. Keep platform exclusions explicit
+# so a missing ordinary target, or GNFS_BUILD_TESTS=OFF, cannot make a gate pass.
+typeset -a WINDOWS_UNAVAILABLE_TESTS
+WINDOWS_UNAVAILABLE_TESTS=(
+    test_distributed_sieve_worker_entry
+    test_distributed_sieve_worker_writer_authority
+    test_distributed_sieve_worker_execution
+    test_distributed_sieve_merge_writer_authority
+    test_distributed_sieve_wave_merge_commit
+    test_distributed_sieve_worker_cleanup_tail
+    test_distributed_sieve_worker_cleanup_authorization_publisher
+    test_distributed_sieve_worker_cleanup_orchestrator
+    test_distributed_sieve_worker_work_package_file
+    test_distributed_sieve_resume
+)
+
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
 typeset -A MODULE_TESTS
 MODULE_TESTS=(
@@ -491,7 +508,7 @@ MODULE_TESTS=(
     sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_worker_entry test_distributed_sieve_worker_writer_authority test_distributed_sieve_worker_execution test_distributed_sieve_worker_process test_distributed_sieve_wave_store_windows test_distributed_sieve_work_identity_codec test_distributed_sieve_work_package_codec test_distributed_sieve_worker_cleanup_codec test_distributed_sieve_merge_writer_codec test_distributed_sieve_merge_writer test_distributed_sieve_merge_writer_authority test_distributed_sieve_wave_merge_commit test_distributed_sieve_worker_cleanup_tail test_distributed_sieve_worker_cleanup_authorization_publisher test_distributed_sieve_worker_cleanup_orchestrator test_distributed_sieve_wave_result test_distributed_sieve_worker_work_package_file test_distributed_sieve_execution_policy test_distributed_sieve_seed_v2 test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_edge_cases test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
     cofactor       "test_cofactor test_cofactor_attempt_context test_cofactor_seed_provider test_candidate_chunk_plan test_candidate_batch test_squfof test_squfof_budget_corpus test_squfof_success_challenge_corpus test_squfof_success_challenge_oracle test_squfof_budget_oracle test_squfof_strategy_oracle test_brent_pollard_rho test_brent_pollard_rho_parallel test_survival_predictor test_batch_ecm test_ecm_curve_plan test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_sigma_seed_pool test_ecm_stage2_parallel test_ecm_stage1_parallel test_batch_inversion test_trial_div_simd test_cofactor_stage_timing test_ecm_prime_cache test_cofactor_result_cache test_integration test_ecm_brent_suyama"
     relation       "test_relation_corpus_sha256 test_relation_collector test_relation_corpus test_relation_sink test_ooc_store_integrity test_ooc_durable_handoff test_ooc_cleanup_transaction test_filter test_lp_key_contract test_relation_identity test_relation_reduction_engine test_structured_filter test_structured_filter_policy test_structured_tree_basis test_structured_tree_basis_property test_structured_budgeted_driver test_structured_conflict_batch test_structured_parallel_prepare test_structured_batch_commit test_structured_parallel_driver test_structured_parallel_failures test_structured_incidence_builder test_structured_materialization test_filter_radix_sort test_lp_bloom test_lp_key_hash test_merger_parallel test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
-    linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_krylov_sequence_mmap test_bw_krylov_mmap_integration test_schirokauer_deg4 test_schirokauer_fastpoly test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_resume_integration test_linalg_progress"
+    linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_krylov_sequence_mmap test_bw_krylov_mmap_integration test_schirokauer_deg4 test_schirokauer_fastpoly test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_checkpoint_stream_failure test_bl_resume_integration test_linalg_progress"
     integration    "test_integration"
     sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_api test_i18n test_method_selection test_event_stream test_cli_event_stream test_relation_reduction_engine"
@@ -943,6 +960,7 @@ TEST_TIMEOUT=(
     test_poly_checkpoint     10
     test_fb_checkpoint       10
     test_bl_checkpoint       10
+    test_bl_checkpoint_stream_failure 60
     test_bl_resume_integration 60
     test_full_resume         120
     test_siqs_e2e            700
@@ -1229,6 +1247,7 @@ TEST_TIER=(
     test_poly_checkpoint     "instant"
     test_fb_checkpoint       "instant"
     test_bl_checkpoint       "instant"
+    test_bl_checkpoint_stream_failure "fast"
     test_bl_resume_integration "fast"
     test_full_resume         "slow"
     test_siqs_e2e            "slow"
@@ -1513,9 +1532,31 @@ run_single_test() {
 
     if [[ ! -x "$binary" ]]; then
         (( TOTAL_TESTS += 1 ))
-        log_skip "${name}: 二进制不存在"
+        local required_binary=0 missing_detail="binary_missing"
+        case "$MODE" in
+            module|mod|changed|diff|gate) required_binary=1 ;;
+        esac
+        if (( required_binary && ${WINDOWS_UNAVAILABLE_TESTS[(Ie)$name]} > 0 )); then
+            # Match CMake's target condition, not the shell's uname. Missing
+            # or unrecognized metadata must not excuse a missing binary.
+            local platform_file="${BUILD_DIR}/gnfs-test-platform.txt"
+            if [[ -r "$platform_file" && "$(<"$platform_file")" == "WIN32=1" ]]; then
+                required_binary=0
+                missing_detail="platform_unsupported"
+            fi
+        fi
+        if (( required_binary )); then
+            (( FAILED_TESTS += 1 ))
+            log_fail "${name}: 必需的测试二进制不存在或不可执行"
+            REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"binary_missing\"}")
+            if (( FAIL_FAST )); then
+                finish_fail_fast
+            fi
+            return 1
+        fi
+        log_skip "${name}: 二进制不存在 (${missing_detail})"
         (( SKIPPED_TESTS += 1 ))
-        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"skip\",\"elapsed_ms\":0,\"detail\":\"binary_missing\"}")
+        REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"skip\",\"elapsed_ms\":0,\"detail\":\"${missing_detail}\"}")
         return 2
     fi
 
@@ -1562,9 +1603,7 @@ run_single_test() {
         (( FAILED_TESTS += 1 ))
         REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"timeout\",\"elapsed_ms\":${elapsed},\"detail\":\"timeout=${test_timeout}s\"}")
         if (( FAIL_FAST )); then
-            log_fail "首次失败即停 (--fail-fast)"
-            show_summary
-            exit 1
+            finish_fail_fast
         fi
         return 3
     fi
@@ -1616,9 +1655,7 @@ run_single_test() {
         echo "${RESET}"
         REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":${elapsed},\"detail\":\"exit_code=$exit_code\"}")
         if (( FAIL_FAST )); then
-            log_fail "首次失败即停 (--fail-fast)"
-            show_summary
-            exit 1
+            finish_fail_fast
         fi
         return 1
     fi
@@ -5919,7 +5956,10 @@ try:
                       ("pass" if expected_rss == "pass" else
                        "unavailable" if expected_rss == "unavailable" else "fail"))
     need(summary["scale_evidence"] == expected_scale)
-    if summary["final_current_rss_bytes"] != "na" and peak != "na":
+    # Linux statm uses approximate RSS accounting and is read separately from
+    # getrusage. Keep the raw values and peak-based budget without ordering them.
+    if (summary["rss_backend"] != "linux_getrusage" and
+            summary["final_current_rss_bytes"] != "na" and peak != "na"):
         need(int(summary["final_current_rss_bytes"]) <= int(peak))
     need(I(summary, "plan_wall_ns") > 0 and I(summary, "capture_wall_ns") > 0 and
          I(summary, "wall_ns") >= I(summary, "plan_wall_ns") + I(summary, "capture_wall_ns") +
@@ -6045,6 +6085,34 @@ print("\n".join(lines))
 PY
 }
 
+# Exercise RSS semantics through both the V3 scale and V4 proof validators.
+# All mutations retain the existing synthetic transcript's mathematical fields.
+siqs_256a_rss_validator_self_check() {
+    local validator="$1" baseline="$2" output_variable="$3"
+    local linux_rss mutation change
+    linux_rss=$(siqs_256a_mutate_transcript "$baseline" \
+        "6:rss_backend=linux_getrusage" "6:final_current_rss_bytes=3000") || return 1
+    if ! "$validator" "$linux_rss" 1 6 0 10 || \
+       [[ "${(P)output_variable}" != "$linux_rss" ]]; then
+        log_fail "${validator} 未保留 Linux 独立 RSS 观测"
+        return 1
+    fi
+    for change in \
+        "rss_backend=darwin_getrusage" "rss_backend=windows_psapi" \
+        "rss_backend=unsupported" "rss_backend=unknown" \
+        "final_current_rss_bytes=-1" "final_current_rss_bytes=0" \
+        "final_current_rss_bytes=01" "final_current_rss_bytes=1.5" \
+        "final_peak_rss_bytes=na" "final_peak_rss_bytes=536870913" \
+        "rss_evidence=unavailable"; do
+        mutation=$(siqs_256a_mutate_transcript "$linux_rss" "6:${change}") || return 1
+        if "$validator" "$mutation" 1 6 0 10 2>/dev/null; then
+            log_fail "${validator} RSS self-check 未拒绝 ${change}"
+            return 1
+        fi
+    done
+    return 0
+}
+
 # Cheap parser-only regression table. It deliberately never starts the profile
 # binary; the real modes run this before their single fresh Release build.
 siqs_256a_validator_self_check() {
@@ -6059,6 +6127,8 @@ GNFS_SIQS_256A_SUMMARY_V3 schema_version=3 status=solver_ready profile_id=siqs50
 EOF
     )
 
+    siqs_256a_rss_validator_self_check validate_siqs_256a_profile_output \
+        "$baseline" SIQS_256A_PROFILE_OUTPUT || return 1
     validate_siqs_256a_profile_output "$baseline" 1 6 0 10 || return 1
     (( SIQS_256A_SCALE_PASS == 1 )) || return 1
     local baseline_identity="$SIQS_256A_PROFILE_IDENTITY"
@@ -6649,6 +6719,8 @@ siqs_256a_proof_validator_self_check() {
     baseline+="GNFS_SIQS_256A_PROOF_V4 schema_version=4 attempted=true status=factor_found deterministic_terminal=solver_ready matrix_status=valid dependency_status=valid factor_status=factor_found matrix_rows=1701 matrix_columns=1601 matrix_projected_dense_bytes=345816 solver_max_dependencies=64 solver_elimination_workers=1 solver_parallel_column_threshold=0 solver_max_dense_matrix_bytes=345816 solver_max_dense_variable_count=1701 elimination_mode=serial dependency_search=first_free_column_basis_prefix dependency_combinations_attempted=false dependency_search_complete=false dependency_ordinal_base=0 minimum_nullity=100 dependencies_returned=64 dependencies_examined=4 dependencies_verified=4 dependency_cap_reached=true dependency_digest_low=10254149926071895734 dependency_digest_high=17300745096364993287 first_failed_dependency=none factor_no_factor_count=3 factor_found_count=1 winning_dependency=3 winning_dependency_size=703 square_modulus=sieved_n gcd_target=n factor=2041646378661656688438487 cofactor=8829847714527711737483339 solver_wall_ns=5 verify_extract_wall_ns=6 solver_attempted=true promotion=false"$'\n'
     baseline+="GNFS_SIQS_256A_SUMMARY_V4 schema_version=4 status=factor_found profile_id=siqs50_multi_a_256x32_scale_v3 stdout_records=6 config_records=1 capture_records=1 graph_records=1 assembly_records=1 proof_records=1 summary_records=1 workers=1 rss_scope=self_lifetime rss_backend=darwin_getrusage rss_evidence=pass scale_evidence=pass proof_evidence=factor_found final_current_rss_bytes=1000 final_peak_rss_bytes=2000 plan_wall_ns=10 capture_wall_ns=20 analysis_wall_ns=30 solver_wall_ns=5 verify_extract_wall_ns=6 wall_ns=70 solver_attempted=true proof_status=factor_found matrix_status=valid dependency_status=valid factor_status=factor_found dependencies_returned=64 dependencies_examined=4 dependency_cap_reached=true factor=2041646378661656688438487 cofactor=8829847714527711737483339 promotion=false"
 
+    siqs_256a_rss_validator_self_check validate_siqs_256a_proof_output \
+        "$baseline" SIQS_256A_PROOF_OUTPUT || return 1
     validate_siqs_256a_proof_output "$baseline" 1 6 0 10 || return 1
     (( SIQS_256A_PROOF_GATE_SCALE_PASS == 1 && SIQS_256A_PROOF_PASS == 1 )) || return 1
     local baseline_identity="$SIQS_256A_PROOF_IDENTITY"
@@ -7200,7 +7272,7 @@ write_report() {
         entries+="$entry"
     done
 
-    cat > "$REPORT_FILE" <<EOF
+    cat > "$REPORT_FILE" <<EOF || return 1
 {
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "build_type": "${BUILD_TYPE}",
@@ -7213,6 +7285,16 @@ write_report() {
 }
 EOF
     log_info "测试报告 ${ARROW} ${REPORT_FILE}"
+}
+
+finish_fail_fast() {
+    log_fail "首次失败即停 (--fail-fast)"
+    local overall_end_ms
+    overall_end_ms=$(timer_start_ms)
+    write_report "$((overall_end_ms - OVERALL_START_MS))" ||
+        log_fail "无法写入 fail-fast 测试报告"
+    show_summary
+    exit 1
 }
 
 write_50d_campaign_report_atomic() {
@@ -8643,7 +8725,15 @@ case "$MODE" in
 
     gate)
         do_build
-        do_gate "${MODE_ARGS[@]}"
+        local gate_status=0
+        do_gate "${MODE_ARGS[@]}" || gate_status=$?
+        # Preserve the report path even if the gate returns an unrecorded error.
+        if (( gate_status != 0 && FAILED_TESTS == 0 )); then
+            (( TOTAL_TESTS += 1 ))
+            (( FAILED_TESTS += 1 ))
+            log_fail "门禁执行失败 (exit=${gate_status})"
+            REPORT_ENTRIES+=("{\"name\":\"gate_execution\",\"status\":\"fail\",\"elapsed_ms\":0,\"detail\":\"exit_code=${gate_status}\"}")
+        fi
         show_summary
         ;;
 
@@ -10375,4 +10465,8 @@ case "$MODE" in
         ;;
 esac
 
-exit $FAILED_TESTS
+# Shell exit statuses are eight bits; keep the full count only in the report.
+if (( FAILED_TESTS > 0 )); then
+    exit 1
+fi
+exit 0

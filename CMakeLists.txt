@@ -526,6 +526,10 @@ target_link_libraries(gnfs PRIVATE
 # ============================================================
 
 option(GNFS_BUILD_TESTS "Build tests" ON)
+# The shell host may be MSYS even when the target uses the POSIX MSYS runtime.
+# Expose the exact condition used by the platform-specific test targets.
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/gnfs-test-platform.txt"
+    CONTENT "WIN32=$<BOOL:${WIN32}>\n")
 option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 
 if(GNFS_BUILD_TESTS)
@@ -564,7 +568,9 @@ if(GNFS_BUILD_TESTS)
                 PYTHON=${Python3_EXECUTABLE}
                 ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_harness_hooks.sh)
         set_tests_properties(HarnessHooks PROPERTIES
-            LABELS "instant" TIMEOUT 10
+            # The aggregate shell contracts launch many fresh interpreters.
+            # Keep their CI selection while allowing for process startup cost.
+            LABELS "instant" TIMEOUT 30
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
@@ -1088,6 +1094,14 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_bl_checkpoint PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BlockLanczosCheckpoint COMMAND test_bl_checkpoint)
     set_tests_properties(BlockLanczosCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_bl_checkpoint_stream_failure
+        tests/test_bl_checkpoint_stream_failure.cpp
+    )
+    target_link_libraries(test_bl_checkpoint_stream_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BlockLanczosCheckpointStreamFailure COMMAND test_bl_checkpoint_stream_failure)
+    set_tests_properties(BlockLanczosCheckpointStreamFailure
+        PROPERTIES LABELS "fast" TIMEOUT 60 SKIP_RETURN_CODE 77)
 
     add_executable(test_bl_resume_integration
         tests/test_bl_resume_integration.cpp

@@ -37,9 +37,9 @@ word-packed Gaussian elimination path used by `BlockLanczos`. The solver writes
 (default `50`, clamped to `[1, 1'000'000]`). A successful solve removes the
 checkpoint; an interrupted process may leave it for the next invocation.
 
-Resume is accepted only when the checksum, matrix shape, packed payload, and
-cursor semantics all agree. For a matrix with `rows` and `cols`, the persisted
-cursor must satisfy:
+Resume is accepted only when the checksum, source matrix identity, matrix shape,
+packed payload, and cursor semantics all agree. For a matrix with `rows` and
+`cols`, the persisted cursor must satisfy:
 
 ```text
 pivot_row <= rows
@@ -54,13 +54,52 @@ deterministic fallback). This prevents a malformed or stale cursor from
 skipping elimination work or treating an uninitialized augmented matrix as a
 completed prefix.
 
+V3 checkpoints bind the state to a SHA-256 digest of the source matrix. The
+canonical byte stream starts with the ASCII tag `GNFS_SPARSE_MATRIX_ID_V1`
+(without a terminator), followed by `rows` and `cols`. Each row then contributes
+its nonzero count and sorted column indices. Every number uses an unsigned
+64-bit little-endian encoding. Row boundaries, row order, and column coordinates
+are significant; insertion order is not. The solver normalizes rows before this
+step, so hashing reads existing indices without copying them.
+
+The digest is computed once per solve only when checkpointing is enabled. With
+`GNFS_BL_CHECKPOINT` unset or empty, the solver does not hash the matrix. Periodic
+saves reuse the same digest.
+
+V3 retains the V2 little-endian field order through `header_checksum`, then
+inserts the 32 digest bytes before `aug_word_count`. The header checksum XORs
+`version`, `rows`, `cols`, `aug_words_per_row`, `pivot_row`, `cur_col`, `iteration`,
+and the four little-endian digest words. The payload checksum and incomplete
+magic protocol remain unchanged. A complete V3 file contains
+`120 + 8 * aug_word_count` bytes. A state without a fingerprint cannot be saved;
+the writer rejects it before truncating an existing file.
+
+The reader checks payload counts against the 64 GiB packed-payload cap and the
+vector implementation's maximum size before allocation. If allocating a valid
+payload still fails, `load()` returns `nullopt`, allowing the solver to restart.
+The allocation-failure regression uses a Linux resource limit and explicitly
+skips that probe on other platforms or under AddressSanitizer; oversized-count
+rejection remains covered on every platform.
+
+V1 native-endian and V2 little-endian files remain decodable, with an absent
+matrix fingerprint. They are not safe to resume because a different matrix may
+have the same dimensions. The solver removes these unbound checkpoints and
+restarts elimination. This one-time compatibility transition loses saved
+elimination work but does not change relation data or the resulting dependencies.
+There is no option to resume an unbound legacy state.
+
 **集成点与测试**:
-- `src/linalg/block_lanczos.cpp` — shape conversion and cursor validation before
-  copying checkpoint state into the live augmented matrix.
-- `include/gnfs/linalg/bl_checkpoint.hpp` — V2 checksum, payload, and two-phase
-  completion marker contract.
+- `src/linalg/block_lanczos.cpp` — matrix identity, shape, and cursor validation
+  before copying checkpoint state into the live augmented matrix.
+- `include/gnfs/linalg/matrix_fingerprint.hpp` — canonical sparse-matrix identity.
+- `include/gnfs/linalg/bl_checkpoint.hpp` — V3 binding, legacy decoding, checksums,
+  payload bounds, and two-phase completion marker contract.
+- `tests/test_bl_checkpoint.cpp` — independent V3 byte fixture, legacy decoding,
+  identity corruption, and unbound-save preservation.
 - `tests/test_bl_resume_integration.cpp` — baseline parity, synthetic and real
-  partial resume, dimension mismatch rejection, and impossible-cursor fallback.
+  partial resume, same-shape matrix mismatch, legacy restart, dimension mismatch
+  rejection, and impossible-cursor fallback. Resume diagnostics prove a matching
+  checkpoint was consumed instead of merely producing fresh-run parity.
 
 ---
 
