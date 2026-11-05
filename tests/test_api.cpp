@@ -2940,6 +2940,136 @@ bool test_structured_filter_run_preflight_preserves_resume_artifacts() {
     return true;
 }
 
+bool test_distributed_resume_conflict_rejected_before_side_effects() {
+    const std::string base = gnfs::util::temp_path("gnfs_test_distributed_resume_conflict_" +
+                                                   std::to_string(gnfs::util::process_id()));
+    SieveResumeArtifacts artifacts(base);
+    const std::vector<std::pair<std::string, std::string>> sentinels{
+        {base + ".poly_ckpt", "distributed-conflict-poly"},
+        {base + ".fb_ckpt", "distributed-conflict-fb"},
+        {base + ".sieve_ckpt", "distributed-conflict-sieve"},
+        {base + ".reldata", "distributed-conflict-data"},
+        {base + ".relidx", "distributed-conflict-index"},
+    };
+    for (const auto& [path, contents] : sentinels) {
+        write_test_file(path, contents);
+    }
+
+    ScopedTestFiles worker_sentinels;
+    for (size_t worker = 0; worker < 2; ++worker) {
+        const std::string worker_base = base + ".worker_" + std::to_string(worker);
+        worker_sentinels.paths.push_back(worker_base + ".reldata");
+        worker_sentinels.paths.push_back(worker_base + ".relidx");
+        worker_sentinels.paths.push_back(worker_base + ".attempts");
+    }
+    for (size_t index = 0; index < worker_sentinels.paths.size(); ++index) {
+        write_test_file(worker_sentinels.paths[index],
+                        "distributed-conflict-worker-" + std::to_string(index));
+    }
+
+    const auto exercise = [&](const char* resume_name) {
+        Config cfg;
+        cfg.method = FactorizationMethod::GNFS;
+        cfg.rational_bound = 5;
+        cfg.algebraic_bound = 5;
+        cfg.large_prime_bound = 101;
+        cfg.verbose = false;
+        Pipeline pipeline(Integer(143), cfg);
+        size_t progress_callbacks = 0;
+        size_t log_callbacks = 0;
+        pipeline.set_progress_callback([&](const ProgressInfo&) { ++progress_callbacks; });
+        pipeline.set_log_callback([&](const LogEntry&) { ++log_callbacks; });
+
+        ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+        ScopedEnvironmentVariable ooc("GNFS_OOC_RELATIONS", "0");
+        ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "2");
+        ScopedEnvironmentVariable distributed_base("GNFS_DISTRIBUTED_SIEVE_BASE_PATH", base);
+        ScopedEnvironmentVariable force_small("GNFS_DISTRIBUTED_SIEVE_FORCE_SMALL", "1");
+        ScopedEnvironmentVariable full_resume(
+            "GNFS_RESUME", std::string(resume_name) == "GNFS_RESUME" ? base : "");
+        ScopedEnvironmentVariable legacy_resume(
+            "GNFS_SIEVE_RESUME", std::string(resume_name) == "GNFS_SIEVE_RESUME" ? base : "");
+
+        bool rejected = false;
+        std::string diagnostic;
+        try {
+            (void)pipeline.run();
+        } catch (const std::invalid_argument& error) {
+            diagnostic = error.what();
+            rejected = diagnostic.find("GNFS_DISTRIBUTED_SIEVE_WORKERS") != std::string::npos &&
+                       diagnostic.find("GNFS_RESUME") != std::string::npos &&
+                       diagnostic.find("GNFS_SIEVE_RESUME") != std::string::npos;
+        }
+        if (!rejected || progress_callbacks != 0 || log_callbacks != 0 ||
+            pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted) {
+            std::cout << "(distributed+resume conflict crossed the preflight boundary: "
+                      << diagnostic << ") ";
+            return false;
+        }
+        for (const auto& [path, contents] : sentinels) {
+            if (read_test_file(path) != contents) {
+                std::cout << "(distributed+resume conflict changed a resume artifact) ";
+                return false;
+            }
+        }
+        for (size_t index = 0; index < worker_sentinels.paths.size(); ++index) {
+            if (read_test_file(worker_sentinels.paths[index]) !=
+                "distributed-conflict-worker-" + std::to_string(index)) {
+                std::cout << "(distributed+resume conflict changed a worker artifact) ";
+                return false;
+            }
+        }
+        return true;
+    };
+
+    return exercise("GNFS_RESUME") && exercise("GNFS_SIEVE_RESUME");
+}
+
+bool test_distributed_resume_conflict_rejected_by_phase_entrypoints() {
+    Config cfg;
+    cfg.method = FactorizationMethod::GNFS;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline pipeline(Integer(143), cfg);
+    gnfs::core::PolynomialContext invalid_context;
+    gnfs::factor_base::FactorBase empty_factor_base;
+    size_t callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) { ++callbacks; });
+    pipeline.set_log_callback([&](const LogEntry&) { ++callbacks; });
+
+    ScopedEnvironmentVariable structured("GNFS_STRUCTURED_FILTER", "0");
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "2");
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", "phase-entrypoint-conflict");
+    ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", "");
+
+    const auto is_conflict = [](const auto& operation) {
+        try {
+            operation();
+        } catch (const std::invalid_argument& error) {
+            return std::string_view(error.what()).find("GNFS_DISTRIBUTED_SIEVE_WORKERS") !=
+                       std::string_view::npos &&
+                   std::string_view(error.what()).find("GNFS_RESUME") != std::string_view::npos;
+        } catch (...) {
+        }
+        return false;
+    };
+
+    const bool select_rejected = is_conflict([&] { (void)pipeline.select_polynomial(); });
+    const bool build_rejected =
+        is_conflict([&] { (void)pipeline.build_factor_base(invalid_context); });
+    const bool sieve_rejected =
+        is_conflict([&] { (void)pipeline.sieve_and_collect(invalid_context, empty_factor_base); });
+
+    if (!select_rejected || !build_rejected || !sieve_rejected || callbacks != 0 ||
+        pipeline.stats().sieve_stop_reason != SieveStopReason::NotStarted) {
+        std::cout << "(distributed+resume conflict crossed a public phase preflight) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_structured_filter_run_freezes_route_before_callbacks() {
     const std::string base = gnfs::util::temp_path("gnfs_test_structured_frozen_route_" +
                                                    std::to_string(gnfs::util::process_id()));
@@ -4320,6 +4450,8 @@ int main() {
     TEST(structured_ooc_callback_failure_cleans_fresh_raw);
     TEST(legacy_ooc_explicit_terminal_cleanup);
     TEST(structured_filter_run_preflight_preserves_resume_artifacts);
+    TEST(distributed_resume_conflict_rejected_before_side_effects);
+    TEST(distributed_resume_conflict_rejected_by_phase_entrypoints);
     TEST(structured_filter_run_freezes_route_before_callbacks);
     TEST(structured_filter_sieve_freezes_route_before_callbacks);
     TEST(structured_filter_size_aware_ooc_run_preflight);
