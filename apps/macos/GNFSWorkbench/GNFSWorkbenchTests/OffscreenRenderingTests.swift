@@ -6,6 +6,30 @@ import XCTest
 
 @MainActor
 final class OffscreenRenderingTests: XCTestCase {
+  func testLegacySuccessRequiresVerifiedFactorsAndMatchingInput() async throws {
+    let model = try await makeCompletedModel()
+    var run = try XCTUnwrap(model.activeRun)
+    let validResult = try XCTUnwrap(run.result)
+    XCTAssertTrue(run.hasVerifiedResult)
+    var legacy = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(validResult)) as? [String: Any])
+    legacy.removeValue(forKey: "factorization_complete")
+    legacy.removeValue(forKey: "factors_prime")
+    run.result = try JSONDecoder().decode(
+      FactorizationResult.self, from: JSONSerialization.data(withJSONObject: legacy))
+    XCTAssertFalse(run.hasVerifiedResult)
+    XCTAssertTrue(run.needsResultVerification)
+    install(run, in: model)
+    try render(model, name: "15-unverified-legacy-result", size: CGSize(width: 900, height: 640))
+    run.result = nil
+    XCTAssertTrue(run.needsResultVerification)
+    run.result = validResult
+    run.configuration.number = "361"
+    XCTAssertTrue(run.needsResultVerification)
+    run.configuration.number = "0x168"
+    XCTAssertTrue(run.hasVerifiedResult)
+  }
+
   func testLiveDashboardRendersOffscreenAtDesignViewport() async throws {
     try render(
       await makeLiveModel(),

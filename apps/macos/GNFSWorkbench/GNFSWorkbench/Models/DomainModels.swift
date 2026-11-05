@@ -395,6 +395,17 @@ struct RunRecord: Identifiable, Codable, Equatable, Sendable {
     configuration.number
   }
 
+  var hasVerifiedResult: Bool {
+    guard let result, result.isVerified,
+      let input = DecimalBigUInt.decimalValue(configuration.number)
+    else { return false }
+    return input == DecimalBigUInt.decimalValue(result.number)
+  }
+
+  var needsResultVerification: Bool {
+    status == .succeeded && !hasVerifiedResult
+  }
+
   var progressFraction: Double? {
     if phase == .sieving, relationsTarget > 0 {
       return min(Double(relationsFound) / Double(relationsTarget), 1)

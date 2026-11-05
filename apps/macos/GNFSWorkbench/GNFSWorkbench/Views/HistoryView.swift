@@ -11,7 +11,7 @@ struct HistoryView: View {
     return model.history.filter {
       $0.configuration.number.localizedCaseInsensitiveContains(query)
         || ($0.result?.factorExpression.localizedCaseInsensitiveContains(query) ?? false)
-        || statusLabel($0.status).localizedCaseInsensitiveContains(query)
+        || statusLabel($0).localizedCaseInsensitiveContains(query)
         || ($0.result?.executionLabel.localizedCaseInsensitiveContains(query) ?? false)
         || ($0.selectedMethod ?? $0.configuration.method).displayName
           .localizedCaseInsensitiveContains(query)
@@ -105,21 +105,34 @@ struct HistoryView: View {
   }
 
   private func historyRow(_ run: RunRecord) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
+    let verified = run.hasVerifiedResult
+    let needsVerification = run.status == .succeeded && !verified
+    return VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 6) {
-        Image(systemName: statusIcon(run.status)).foregroundStyle(statusColor(run.status))
-        Text(statusLabel(run.status)).foregroundStyle(statusColor(run.status))
+        Image(systemName: needsVerification ? "exclamationmark.circle" : statusIcon(run.status))
+          .foregroundStyle(needsVerification ? AppTheme.warning : statusColor(run.status))
+        Text(needsVerification ? "结果未验证" : statusLabel(run))
+          .foregroundStyle(needsVerification ? AppTheme.warning : statusColor(run.status))
         Spacer(minLength: 0)
-        Text(DisplayFormat.duration(run.elapsed)).foregroundStyle(.secondary)
+        if run.status == .running || run.status == .cancelling {
+          TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(DisplayFormat.duration(run.elapsed(at: context.date)))
+              .foregroundStyle(.secondary)
+          }
+        } else {
+          Text(DisplayFormat.duration(run.elapsed)).foregroundStyle(.secondary)
+        }
       }
       .font(.caption.weight(.medium))
       Text(run.displayNumber)
         .font(.system(.callout, design: .monospaced).weight(.medium))
         .lineLimit(2).multilineTextAlignment(.leading)
       Text(
-        run.result?.isVerified == true
+        verified
           ? run.result!.factorExpression
-          : AlgorithmDisplay.name(run.activeAlgorithm, fallback: "等待引擎")
+          : needsVerification ? "旧记录未提供可验证的完整结果"
+          : AlgorithmDisplay.name(
+            run.activeAlgorithm, fallback: run.status.isTerminal ? "未记录执行详情" : "等待引擎")
       )
       .font(.caption).foregroundStyle(.secondary).lineLimit(1)
       Text(run.createdAt.formatted(date: .abbreviated, time: .shortened))
@@ -147,8 +160,9 @@ struct HistoryView: View {
     case .cancelled, .ready: AppTheme.secondaryText
     }
   }
-  private func statusLabel(_ status: RunStatus) -> String {
-    switch status {
+  private func statusLabel(_ run: RunRecord) -> String {
+    if run.needsResultVerification { return "结果未验证" }
+    return switch run.status {
     case .ready: "就绪"
     case .running: "运行中"
     case .cancelling: "正在停止"

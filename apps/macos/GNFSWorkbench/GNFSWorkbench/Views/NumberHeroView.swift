@@ -99,7 +99,11 @@ struct NumberHeroView: View {
             systemImage: "cpu")
           Text(run.configuration.parameters.isAutomatic ? "请求自动参数" : "请求自定义参数")
           Spacer()
-          Label("完整分解", systemImage: "checkmark.shield")
+          if run.hasVerifiedResult {
+            Label("已验证完整分解", systemImage: "checkmark.shield")
+          } else {
+            Label("完整分解任务", systemImage: "function")
+          }
         }
         .font(.callout).foregroundStyle(.secondary)
       }

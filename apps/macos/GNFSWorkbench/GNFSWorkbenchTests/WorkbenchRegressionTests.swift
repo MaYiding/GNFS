@@ -4,6 +4,19 @@ import XCTest
 @testable import GNFSWorkbench
 
 final class WorkbenchRegressionTests: XCTestCase {
+  func testElapsedTimeAdvancesBetweenEventsAndStopsAtTerminalState() {
+    let start = Date(timeIntervalSince1970: 1000)
+    var run = RunRecord(configuration: RunConfiguration(), createdAt: start)
+    run.status = .running
+    run.elapsed = 0.002
+    XCTAssertEqual(run.elapsed(at: start.addingTimeInterval(8)), 8)
+    run.status = .cancelling
+    XCTAssertEqual(run.elapsed(at: start.addingTimeInterval(9)), 9)
+    run.status = .cancelled
+    run.elapsed = 9.5
+    XCTAssertEqual(run.elapsed(at: start.addingTimeInterval(30)), 9.5)
+  }
+
   func testProtocolCountsPreserveUnsignedBoundariesAndUnknownSentinel() throws {
     let json =
       #"{"schema_version":1,"type":"progress","dependency_index":18446744073709551614,"dependencies_total":18446744073709551615,"attempt_index":18446744073709551615}"#

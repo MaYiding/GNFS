@@ -194,6 +194,8 @@ private struct StatisticRow: View {
     }
     .font(.caption)
     .accessibilityElement(children: .combine)
+    .accessibilityLabel(label)
+    .accessibilityValue(value)
   }
 }
 

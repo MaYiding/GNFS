@@ -10,8 +10,23 @@ struct RunStageView: View {
 
   var body: some View {
     Group {
-      if let run, run.status == .succeeded, let result = run.result {
+      if let run, run.status == .succeeded, run.hasVerifiedResult, let result = run.result {
         ResultSummaryView(result: result, canCreateRun: canCreateRun, copy: copy, newRun: newRun)
+      } else if let run, run.needsResultVerification {
+        VStack(alignment: .leading, spacing: 16) {
+          Label("历史结果未验证", systemImage: "exclamationmark.shield")
+            .font(.title3.weight(.semibold)).foregroundStyle(AppTheme.warning)
+          Text("这条记录未通过当前完整结果校验，不能确认质因数分解已完成。原记录已保留，可使用原参数重新运行。")
+            .font(.callout).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          if let result = run.result, !result.factors.isEmpty {
+            Text("记录中的因子（未验证）：\(result.factorExpression)")
+              .font(.callout.monospaced()).textSelection(.enabled)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          Button("使用原参数新建", action: newRun)
+            .disabled(!canCreateRun).buttonStyle(.borderedProminent)
+        }
       } else if let run, run.status == .failed || run.status == .cancelled {
         FailureStateView(
           run: run,
