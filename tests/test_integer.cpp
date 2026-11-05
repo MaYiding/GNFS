@@ -651,6 +651,47 @@ void test_int64_min_boundaries() {
     std::cout << "  INT64_MIN/MAX/UINT64_MAX boundaries: PASS" << std::endl;
 }
 
+void test_integer_fit_oracle() {
+    std::cout << "Testing integer fit boundaries against comparison oracle..." << std::endl;
+    const Integer signed_min("-9223372036854775808");
+    const Integer signed_max("9223372036854775807");
+    const Integer unsigned_max("18446744073709551615");
+    const Integer zero(0);
+    for (unsigned bit = 0; bit <= 256; ++bit) {
+        Integer power(1);
+        mpz_mul_2exp(power.get_mpz(), power.get_mpz(), bit);
+        for (const int offset : {-1, 0, 1}) {
+            for (const int sign : {-1, 1}) {
+                Integer value = power + Integer(offset);
+                if (sign < 0) {
+                    value.negate();
+                }
+                const bool expected_signed =
+                    value.compare(signed_min) >= 0 && value.compare(signed_max) <= 0;
+                const bool expected_unsigned =
+                    value.compare(zero) >= 0 && value.compare(unsigned_max) <= 0;
+                GNFS_TEST_CHECK(value.fits_int64() == expected_signed);
+                GNFS_TEST_CHECK(value.fits_uint64() == expected_unsigned);
+                bool signed_threw = false;
+                try {
+                    GNFS_TEST_CHECK(Integer(value.to_int64()) == value);
+                } catch (const std::overflow_error&) {
+                    signed_threw = true;
+                }
+                GNFS_TEST_CHECK(signed_threw != expected_signed);
+                bool unsigned_threw = false;
+                try {
+                    GNFS_TEST_CHECK(Integer(value.to_uint64()) == value);
+                } catch (const std::overflow_error&) {
+                    unsigned_threw = true;
+                }
+                GNFS_TEST_CHECK(unsigned_threw != expected_unsigned);
+            }
+        }
+    }
+    std::cout << "  Integer fit boundaries: PASS" << std::endl;
+}
+
 void test_uint64_arithmetic_boundaries() {
     std::cout << "Testing Integer uint64_t arithmetic boundaries..." << std::endl;
 
@@ -755,6 +796,7 @@ int main() {
     test_safe_gcd_with_int64_min();
     test_int64_min_boundaries();
     test_uint64_arithmetic_boundaries();
+    test_integer_fit_oracle();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;
