@@ -17,6 +17,10 @@
 #include <string>
 #include <utility>
 
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
+
 namespace gnfs::core {
 
 /// GNFS 参数计算器
