@@ -902,6 +902,48 @@ void test_serialized_rational_order() {
     std::cout << "  Serialized rational-prime order: PASS" << std::endl;
 }
 
+void test_serialized_algebraic_order() {
+    std::cout << "Testing serialized algebraic-prime order..." << std::endl;
+    using Entry = std::pair<uint32_t, uint32_t>;
+    const std::vector<std::vector<Entry>> cases{
+        {{3, 2}, {3, 1}, {67, 66}, {67, 1}},
+        {{7, 6}, {3, 1}},
+        {{3, 1}, {3, 2}, {3, 1}},
+    };
+    for (size_t c = 0; c < cases.size(); ++c) {
+        FactorBase source(FactorBaseParams{97, 97, 10000});
+        for (const auto& [prime, root] : cases[c]) {
+            source.add_algebraic(prime, root, 1);
+        }
+        source.set_sieve_algebraic_count_explicit(cases[c].size());
+        std::stringstream stream;
+        source.save(stream);
+        const std::string original = stream.str();
+        stream.seekg(0);
+        std::optional<FactorBase> loaded;
+        std::string rejection;
+        try {
+            loaded.emplace(FactorBase::load(stream));
+        } catch (const std::runtime_error& error) {
+            rejection = error.what();
+        }
+        GNFS_TEST_CHECK(loaded.has_value() == (c == 0));
+        if (loaded) {
+            GNFS_TEST_CHECK(loaded->algebraic_count() == cases[c].size());
+            for (size_t i = 0; i < cases[c].size(); ++i) {
+                GNFS_TEST_CHECK(loaded->algebraic()[i].p == cases[c][i].first);
+                GNFS_TEST_CHECK(loaded->algebraic()[i].r == cases[c][i].second);
+                GNFS_TEST_CHECK(loaded->find_algebraic(cases[c][i].first, cases[c][i].second) == i);
+            }
+        } else {
+            GNFS_TEST_CHECK(rejection.find(c == 1 ? "not nondecreasing" : "duplicate") !=
+                            std::string::npos);
+        }
+        GNFS_TEST_CHECK(stream.str() == original);
+    }
+    std::cout << "  Serialized algebraic-prime order: PASS" << std::endl;
+}
+
 void test_serialization_invalid() {
     std::cout << "Testing serialization error handling..." << std::endl;
 
@@ -1236,6 +1278,7 @@ int main() {
     test_little_endian_serialization();
     test_serialization_invalid();
     test_serialized_rational_order();
+    test_serialized_algebraic_order();
     test_count_width_guards();
 
     std::cout << "\nAll tests passed!" << std::endl;
