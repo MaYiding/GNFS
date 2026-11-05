@@ -7,8 +7,28 @@ struct RunStageView: View {
   var canCreateRun = true
   let copy: (String) -> Void
   let newRun: () -> Void
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
+
+  private var presentation: StagePresentation {
+    guard let run else { return .ready }
+    if run.status == .succeeded, run.hasVerifiedResult, run.result != nil { return .result }
+    if run.needsResultVerification { return .unverified }
+    if run.status == .failed || run.status == .cancelled { return .stopped }
+    return .live
+  }
 
   var body: some View {
+    ZStack(alignment: .topLeading) {
+      stageContent
+        .transaction { $0.animation = nil }
+        .id(presentation)
+        .transition(.opacity)
+    }
+    .animation(reduceMotion ? nil : WorkbenchMotion.page, value: presentation)
+    .frame(maxWidth: .infinity, alignment: .topLeading)
+  }
+
+  @ViewBuilder private var stageContent: some View {
     Group {
       if let run, run.status == .succeeded, run.hasVerifiedResult, let result = run.result {
         ResultSummaryView(result: result, canCreateRun: canCreateRun, copy: copy, newRun: newRun)
@@ -25,7 +45,7 @@ struct RunStageView: View {
               .fixedSize(horizontal: false, vertical: true)
           }
           Button("使用原参数新建", action: newRun)
-            .disabled(!canCreateRun).buttonStyle(.borderedProminent)
+            .disabled(!canCreateRun).buttonStyle(WorkbenchActionStyle(.secondary))
         }
       } else if let run, run.status == .failed || run.status == .cancelled {
         FailureStateView(
@@ -40,8 +60,11 @@ struct RunStageView: View {
         ReadyStateView()
       }
     }
-    .frame(maxWidth: .infinity, alignment: .topLeading)
   }
+}
+
+private enum StagePresentation: Hashable {
+  case ready, live, result, unverified, stopped
 }
 
 private struct ReadyStateView: View {
@@ -67,6 +90,7 @@ private struct ReadyStateView: View {
 
 private struct LiveMetricsView: View {
   let run: RunRecord
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
 
   private var latestRate: Double {
     run.samples.last?.rate ?? 0
@@ -87,12 +111,16 @@ private struct LiveMetricsView: View {
         Label(run.activityTitle, systemImage: "waveform.path.ecg")
           .font(.headline)
           .foregroundStyle(AppTheme.primaryText)
+          .contentTransition(.opacity)
+          .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: run.activityTitle)
         Spacer()
         TimelineView(.periodic(from: .now, by: 1)) { context in
           Text("已运行 \(DisplayFormat.duration(run.elapsed(at: context.date)))")
             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             .fixedSize()
+            .frame(minWidth: 112, alignment: .trailing)
         }
+        .transaction { $0.animation = nil }
       }
 
       if let number = run.currentNumber, let attempt = run.attemptIndex, attempt > 0 {
@@ -103,7 +131,7 @@ private struct LiveMetricsView: View {
 
       if !run.usesGNFSPipeline {
         HStack(alignment: .top, spacing: 12) {
-          ProgressView().controlSize(.small)
+          RunActivityIndicator()
           VStack(alignment: .leading, spacing: 6) {
             Text(run.status == .cancelling ? "正在停止运算…" : "正在搜索质因数")
               .font(.callout.weight(.medium))
@@ -136,10 +164,20 @@ private struct LiveMetricsView: View {
         }
       } else {
         HStack(spacing: 12) {
-          ProgressView().controlSize(.small)
+          RunActivityIndicator()
           VStack(alignment: .leading, spacing: 6) {
             Text(run.progressFraction.map { "当前阶段 \(Int($0 * 100))%" } ?? "当前阶段未提供可预估进度")
               .font(.callout)
+              .contentTransition(.opacity)
+              .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: run.phase)
+            if let progress = run.progressFraction {
+              ProgressView(value: progress)
+                .progressViewStyle(.linear)
+                .tint(AppTheme.indigo)
+                .frame(maxWidth: 420)
+                .accessibilityLabel("当前阶段进度")
+                .transaction { $0.animation = nil }
+            }
             if run.matrixRows > 0 || run.matrixCols > 0 {
               Text("矩阵 \(run.matrixRows) 行 × \(run.matrixCols) 列")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -188,6 +226,7 @@ private struct LiveMetricsView: View {
             .progressViewStyle(.linear)
             .tint(AppTheme.indigo)
             .accessibilityLabel("进度")
+            .transaction { $0.animation = nil }
           Text(String(format: "%.2f%%", progress * 100))
             .font(.caption.monospacedDigit())
             .foregroundStyle(AppTheme.secondaryText)
@@ -201,9 +240,7 @@ private struct LiveMetricsView: View {
             .fixedSize(horizontal: false, vertical: true)
         }
       } else {
-        ProgressView()
-          .controlSize(.small)
-          .tint(AppTheme.indigo)
+        RunActivityIndicator()
           .accessibilityLabel("当前阶段正在计算")
       }
 
@@ -275,6 +312,10 @@ private struct LiveMetricsView: View {
         .chartYScale(domain: .automatic(includesZero: true))
         .frame(height: 150)
         .accessibilityLabel("关系收集速率图")
+        .transaction { transaction in
+          transaction.animation = nil
+          transaction.disablesAnimations = true
+        }
       } else {
         VStack(spacing: 8) {
           Image(systemName: "chart.xyaxis.line").font(.title3)
@@ -305,11 +346,32 @@ private struct LiveMetricsView: View {
   }
 }
 
+private struct RunActivityIndicator: View {
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
+
+  var body: some View {
+    Group {
+      if reduceMotion {
+        Image(systemName: "circle.dotted")
+          .font(.system(size: 15, weight: .medium))
+          .foregroundStyle(AppTheme.indigo)
+      } else {
+        ProgressView().controlSize(.small).tint(AppTheme.indigo)
+      }
+    }
+    .frame(width: 18, height: 18)
+    .accessibilityLabel("正在计算")
+  }
+}
+
 private struct ResultSummaryView: View {
   let result: FactorizationResult
   let canCreateRun: Bool
   let copy: (String) -> Void
   let newRun: () -> Void
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
+  @State private var didCopy = false
+  @State private var copyFeedbackGeneration = 0
 
   private struct PrimePower {
     let factor: String
@@ -354,7 +416,7 @@ private struct ResultSummaryView: View {
         Spacer(minLength: 12)
         Button("分解另一个整数", action: newRun)
           .disabled(!canCreateRun)
-          .controlSize(.small)
+          .buttonStyle(WorkbenchActionStyle(.secondary))
           .accessibilityIdentifier("resultNewRunButton")
       }
 
@@ -365,11 +427,21 @@ private struct ResultSummaryView: View {
           Spacer()
           Button {
             copy("\(result.number) = \(result.factorExpression)")
+            didCopy = true
+            copyFeedbackGeneration += 1
           } label: {
-            Label("复制分解式", systemImage: "doc.on.doc")
+            ZStack {
+              Label("复制分解式", systemImage: "doc.on.doc")
+                .opacity(didCopy ? 0 : 1)
+              Label("已复制", systemImage: "checkmark")
+                .opacity(didCopy ? 1 : 0)
+            }
+            .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: didCopy)
           }
-          .buttonStyle(.borderless).controlSize(.small)
+          .buttonStyle(WorkbenchActionStyle(.quiet))
           .accessibilityLabel("复制完整分解式")
+          .accessibilityValue(didCopy ? "已复制" : "")
+          .accessibilityIdentifier("copyFactorExpressionButton")
         }
         Text("N = " + displayedExpression)
           .font(.gnfsMonospaced(size: 25, weight: .regular))
@@ -396,6 +468,15 @@ private struct ResultSummaryView: View {
 
       Divider()
       RunStatisticsView(result: result)
+    }
+    .task(id: copyFeedbackGeneration) {
+      guard copyFeedbackGeneration > 0 else { return }
+      do {
+        try await Task.sleep(for: .seconds(1.5))
+      } catch {
+        return
+      }
+      didCopy = false
     }
   }
 
@@ -448,7 +529,7 @@ private struct FailureStateView: View {
         Spacer(minLength: 12)
         Button("使用当前参数新建", action: newRun)
           .disabled(!canCreateRun)
-          .controlSize(.small)
+          .buttonStyle(WorkbenchActionStyle(.secondary))
           .accessibilityIdentifier("failureNewRunButton")
       }
       if let result = run.result {

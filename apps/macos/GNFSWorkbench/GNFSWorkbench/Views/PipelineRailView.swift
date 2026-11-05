@@ -2,10 +2,10 @@ import SwiftUI
 
 struct PipelineRailView: View {
   let run: RunRecord?
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
+    VStack(alignment: .leading, spacing: 12) {
       HStack {
         Label(
           run?.usesGNFSPipeline == true ? "GNFS 流水线" : "算法路线",
@@ -15,15 +15,26 @@ struct PipelineRailView: View {
         Spacer()
         if let run {
           Text(
-            run.result?.executionLabel
-              ?? AlgorithmDisplay.name(run.activeAlgorithm, fallback: "准备计算")
+            (run.result?.executionLabel
+              ?? AlgorithmDisplay.name(run.activeAlgorithm, fallback: "准备计算"))
+              + (run.status == .cancelling ? " · 正在停止" : "")
           )
           .font(.caption.weight(.medium)).foregroundStyle(AppTheme.indigo)
         }
       }
       if run?.usesGNFSPipeline == true {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 6) {
-          ForEach(PipelinePhase.allCases) { phaseNode($0) }
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 4) {
+            ForEach(PipelinePhase.allCases) { phaseNode($0) }
+          }
+          .frame(minWidth: 800)
+
+          LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4),
+            alignment: .leading, spacing: 6
+          ) {
+            ForEach(PipelinePhase.allCases) { phaseNode($0) }
+          }
         }
       } else {
         Text(routeDescription)
@@ -53,39 +64,24 @@ struct PipelineRailView: View {
 
   private func phaseNode(_ phase: PipelinePhase) -> some View {
     let state = state(for: phase)
-    return HStack(spacing: 6) {
-      ZStack {
-        Circle()
-          .fill(state.background)
-          .frame(width: 16, height: 16)
-        Circle()
-          .stroke(state.stroke, lineWidth: state == .active ? 1.5 : 1)
-          .frame(width: 16, height: 16)
-        if state == .complete {
-          Image(systemName: "checkmark")
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(state.foreground)
-        } else if state == .failed {
-          Image(systemName: "xmark")
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(state.foreground)
-        } else {
-          Text("\(phase.order + 1)")
-            .font(.gnfsMonospaced(size: 9, weight: .medium))
-            .foregroundStyle(state.foreground)
-        }
-      }
+    return HStack(spacing: 7) {
+      PhaseIndicator(number: phase.order + 1, state: state)
       Text(phase.displayName)
-        .font(.system(size: 11, weight: state == .active ? .semibold : .regular))
+        .font(.system(size: 11, weight: .medium))
         .foregroundStyle(state == .active ? AppTheme.indigo : AppTheme.secondaryText)
         .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.vertical, 5)
-    .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: state)
+    .padding(.horizontal, 7)
+    .frame(height: 32)
+    .background {
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(AppTheme.indigo.opacity(state == .active ? 0.08 : 0))
+        .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: state)
+    }
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("\(phase.displayName)：\(state.accessibilityLabel)")
+    .accessibilityIdentifier("pipelinePhase-\(phase.order)")
   }
 
   private func state(for phase: PipelinePhase) -> PhaseVisualState {
@@ -95,11 +91,38 @@ struct PipelineRailView: View {
     if phase == run.phase {
       switch run.status {
       case .failed: return .failed
-      case .cancelled, .cancelling: return .cancelled
+      case .cancelled: return .cancelled
+      case .cancelling: return .stopping
       default: return .active
       }
     }
     return .inactive
+  }
+}
+
+private struct PhaseIndicator: View {
+  let number: Int
+  let state: PhaseVisualState
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
+
+  var body: some View {
+    ZStack {
+      Circle().fill(state.background)
+      Circle().stroke(state.stroke, lineWidth: state == .active ? 1.5 : 1)
+      if let symbol = state.symbol {
+        Image(systemName: symbol)
+          .font(.system(size: 8, weight: .semibold))
+          .transition(.opacity)
+      } else {
+        Text("\(number)")
+          .font(.gnfsMonospaced(size: 9, weight: .medium))
+          .transition(.opacity)
+      }
+    }
+    .foregroundStyle(state.foreground)
+    .frame(width: 17, height: 17)
+    .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: state)
+    .accessibilityHidden(true)
   }
 }
 
@@ -109,13 +132,23 @@ private enum PhaseVisualState: Equatable {
   case complete
   case failed
   case cancelled
+  case stopping
+
+  var symbol: String? {
+    switch self {
+    case .complete: "checkmark"
+    case .failed: "xmark"
+    case .cancelled, .stopping: "stop.fill"
+    case .active, .inactive: nil
+    }
+  }
 
   var foreground: Color {
     switch self {
-    case .active: AppTheme.cyan
-    case .complete: .white
+    case .active: AppTheme.indigo
+    case .complete: AppTheme.onAccent
     case .failed: AppTheme.danger
-    case .cancelled: AppTheme.secondaryText
+    case .cancelled, .stopping: AppTheme.secondaryText
     case .inactive: AppTheme.tertiaryText
     }
   }
@@ -123,9 +156,9 @@ private enum PhaseVisualState: Equatable {
   var background: Color {
     switch self {
     case .complete: AppTheme.indigo
-    case .active: AppTheme.cyan.opacity(0.12)
+    case .active: AppTheme.indigo.opacity(0.12)
     case .failed: AppTheme.danger.opacity(0.12)
-    case .cancelled: AppTheme.secondaryText.opacity(0.10)
+    case .cancelled, .stopping: AppTheme.secondaryText.opacity(0.10)
     case .inactive: AppTheme.surface
     }
   }
@@ -133,9 +166,9 @@ private enum PhaseVisualState: Equatable {
   var stroke: Color {
     switch self {
     case .complete: AppTheme.indigo
-    case .active: AppTheme.cyan
+    case .active: AppTheme.indigo
     case .failed: AppTheme.danger
-    case .cancelled: AppTheme.secondaryText
+    case .cancelled, .stopping: AppTheme.secondaryText
     case .inactive: AppTheme.separatorStrong
     }
   }
@@ -147,6 +180,7 @@ private enum PhaseVisualState: Equatable {
     case .complete: "已完成"
     case .failed: "失败"
     case .cancelled: "已取消"
+    case .stopping: "正在停止"
     }
   }
 }

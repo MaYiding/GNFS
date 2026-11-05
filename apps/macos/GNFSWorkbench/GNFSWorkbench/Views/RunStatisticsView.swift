@@ -4,6 +4,7 @@ import SwiftUI
 struct RunStatisticsView: View {
   let result: FactorizationResult
   @State private var selectedAttempt = 0
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
 
   private var attempts: [FactorizationResult] { result.attempts ?? [] }
   private var selected: FactorizationResult {
@@ -29,14 +30,37 @@ struct RunStatisticsView: View {
           .font(.headline)
         Spacer()
         if !attempts.isEmpty {
-          Picker("统计范围", selection: $selectedAttempt) {
-            Text("整次任务 · \(attempts.count) 次拆分").tag(0)
-            ForEach(attempts.indices, id: \.self) { index in
-              Text("第 \(index + 1) 次 · \(attempts[index].executionLabel)").tag(index + 1)
+          HStack(spacing: 4) {
+            Picker("统计范围", selection: $selectedAttempt) {
+              Text("整次任务 · \(attempts.count) 次拆分").tag(0)
+              ForEach(attempts.indices, id: \.self) { index in
+                Text("第 \(index + 1) 次 · \(attempts[index].executionLabel)").tag(index + 1)
+              }
             }
+            .pickerStyle(.menu).controlSize(.small)
+            .labelsHidden().frame(maxWidth: 250)
+            .help("查看整次任务或一次拆分的实际统计")
+            .accessibilityIdentifier("runStatisticsScope")
+
+            Button { selectedAttempt -= 1 } label: {
+              Image(systemName: "chevron.left")
+            }
+            .buttonStyle(WorkbenchActionStyle(.quiet))
+            .disabled(selectedAttempt == 0)
+            .help("上一个统计范围")
+            .accessibilityLabel("上一个统计范围")
+            .accessibilityIdentifier("statisticsPreviousScope")
+
+            Button { selectedAttempt += 1 } label: {
+              Image(systemName: "chevron.right")
+            }
+            .buttonStyle(WorkbenchActionStyle(.quiet))
+            .disabled(selectedAttempt >= attempts.count)
+            .help("下一个统计范围")
+            .accessibilityLabel("下一个统计范围")
+            .accessibilityIdentifier("statisticsNextScope")
           }
-          .pickerStyle(.menu).controlSize(.small)
-          .labelsHidden().frame(maxWidth: 260)
+          .accessibilityElement(children: .contain)
           .accessibilityIdentifier("statisticsScopePicker")
         }
       }
@@ -44,11 +68,16 @@ struct RunStatisticsView: View {
         Text("本次整数  \(selected.number)")
           .font(.caption.monospaced()).textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
+          .contentTransition(.opacity)
+          .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: selectedAttempt)
+          .accessibilityIdentifier("statisticsSplitNumber")
       }
       if let algorithms = selected.statistics.algorithmsExecuted, !algorithms.isEmpty {
         Text("执行过的算法  " + algorithms.map { AlgorithmDisplay.name($0) }.joined(separator: " · "))
           .font(.caption).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
+          .contentTransition(.opacity)
+          .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: selectedAttempt)
       }
       LazyVGrid(
         columns: statisticColumns,
@@ -91,7 +120,13 @@ struct RunStatisticsView: View {
         .font(.caption).foregroundStyle(.secondary)
       }
     }
+    .environment(\.statisticsScope, selectedAttempt)
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("runStatistics")
+    .onChange(of: attempts.count) { _, count in
+      if selectedAttempt > count { selectedAttempt = 0 }
+    }
+    .onChange(of: result.number) { _, _ in selectedAttempt = 0 }
   }
 
   private var timingsPanel: some View {
@@ -165,6 +200,7 @@ struct EffectiveParametersView: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityElement(children: .contain)
       .accessibilityIdentifier("effectiveParameters")
     } else {
       Text("此记录未提供完整的实际参数。")
@@ -194,6 +230,8 @@ private struct StatisticRow: View {
   let label: String
   let value: String
   var emphasized = false
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
+  @Environment(\.statisticsScope) private var statisticsScope
   init(_ label: String, _ value: String, emphasized: Bool = false) {
     self.label = label
     self.value = value
@@ -211,12 +249,25 @@ private struct StatisticRow: View {
         .monospacedDigit().textSelection(.enabled)
         .multilineTextAlignment(.trailing)
         .fixedSize(horizontal: false, vertical: true)
+        .contentTransition(.opacity)
+        .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: statisticsScope)
     }
     .font(.caption)
     .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(label)
     .accessibilityValue(value)
+  }
+}
+
+private struct StatisticsScopeKey: EnvironmentKey {
+  static let defaultValue = 0
+}
+
+extension EnvironmentValues {
+  fileprivate var statisticsScope: Int {
+    get { self[StatisticsScopeKey.self] }
+    set { self[StatisticsScopeKey.self] = newValue }
   }
 }
 

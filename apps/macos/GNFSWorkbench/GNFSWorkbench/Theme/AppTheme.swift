@@ -6,6 +6,8 @@ enum AppTheme {
   static let header = adaptive(light: 0xF3F3F5, dark: 0x252527)
   static let surface = adaptive(light: 0xF5F6F8, dark: 0x27272A)
   static let elevated = adaptive(light: 0xFAFAFC, dark: 0x303033)
+  static let inputSurface = adaptive(light: 0xFFFFFF, dark: 0x202022)
+  static let onAccent = adaptive(light: 0xFFFFFF, dark: 0x15224A)
   static let surfaceHover = Color.primary.opacity(0.055)
   static let separator = Color.primary.opacity(0.08)
   static let separatorStrong = Color.primary.opacity(0.14)

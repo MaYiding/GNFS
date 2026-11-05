@@ -108,7 +108,28 @@ final class OffscreenRenderingTests: XCTestCase {
     let model = await makeEmptyModel()
     try renderView(
       ParameterEditorSheet(model: model), name: "12-parameter-sheet",
-      size: CGSize(width: 480, height: 580), colorScheme: .light)
+      size: CGSize(width: 560, height: 580), colorScheme: .light)
+  }
+
+  func testReducedMotionAndExpandedConsoleRemainUsable() async throws {
+    let model = await makeLiveModel()
+    model.areLogsExpanded = true
+    try renderView(
+      ContentView(model: model).environment(\.workbenchReduceMotion, true),
+      name: "16-reduced-motion-live", size: CGSize(width: 1000, height: 1000))
+    let logs = (0..<600).map { index in
+      RunLogEntry(
+        timestamp: Double(index) / 10, severity: index % 11 == 0 ? .warning : .info,
+        phase: .sieving, message: "Batch \(index): processing special-q and collecting relations")
+    }
+    try renderView(
+      RunLogsView(
+        entries: logs, isExpanded: .constant(true), canClear: false,
+        copy: { _ in }, clear: {}
+      )
+      .padding(20).background(AppTheme.canvas).environment(\.workbenchReduceMotion, true),
+      name: "17-expanded-console-capacity", size: CGSize(width: 650, height: 350),
+      colorScheme: .light)
   }
 
   func testGNFSStatisticsAndEffectiveParametersRender() async throws {
@@ -168,17 +189,56 @@ final class OffscreenRenderingTests: XCTestCase {
     size: CGSize,
     colorScheme: ColorScheme = .dark
   ) throws {
-    let hostingView = NSHostingView(rootView: view.environment(\.colorScheme, colorScheme))
-    hostingView.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
-    hostingView.frame = NSRect(origin: .zero, size: size)
-    hostingView.layoutSubtreeIfNeeded()
+    let appearance = try XCTUnwrap(
+      NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua))
+    var bitmap: NSBitmapImageRep?
+    // Split-view children need controller containment and an AppKit drawing appearance,
+    // not just SwiftUI's colorScheme. The window remains offscreen throughout capture.
+    appearance.performAsCurrentDrawingAppearance {
+      let controller = NSHostingController(
+        rootView: view.environment(\.colorScheme, colorScheme).preferredColorScheme(colorScheme))
+      let hostingView = controller.view
+      hostingView.appearance = appearance
+      let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: size),
+        styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.appearance = appearance
+      window.contentViewController = controller
+      defer { window.close() }
+      window.setContentSize(size)
 
-    guard let representation = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
-    else {
+      // Installing a SwiftUI toolbar can reduce the hosting viewport on the first
+      // layout pass. Correct the window by the measured deficit instead of forcing
+      // a child frame that AppKit will overwrite during the next layout.
+      for _ in 0..<4 {
+        window.contentView?.layoutSubtreeIfNeeded()
+        hostingView.layoutSubtreeIfNeeded()
+        let widthDeficit = size.width - hostingView.bounds.width
+        let heightDeficit = size.height - hostingView.bounds.height
+        if abs(widthDeficit) < 0.001, abs(heightDeficit) < 0.001 { break }
+        var frame = window.frame
+        frame.size.width += widthDeficit
+        frame.size.height += heightDeficit
+        window.setFrame(frame, display: false)
+      }
+      window.contentView?.layoutSubtreeIfNeeded()
+      hostingView.layoutSubtreeIfNeeded()
+      XCTAssertEqual(hostingView.bounds.width, size.width, accuracy: 0.001)
+      XCTAssertEqual(hostingView.bounds.height, size.height, accuracy: 0.001)
+
+      hostingView.effectiveAppearance.performAsCurrentDrawingAppearance {
+        bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
+        if let bitmap {
+          hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        }
+      }
+    }
+
+    guard let representation = bitmap else {
       XCTFail("Unable to allocate offscreen bitmap")
       return
     }
-    hostingView.cacheDisplay(in: hostingView.bounds, to: representation)
     guard let png = representation.representation(using: .png, properties: [:]) else {
       XCTFail("Unable to encode offscreen bitmap")
       return

@@ -2,86 +2,61 @@ import SwiftUI
 
 struct ContentView: View {
   @Bindable var model: AppModel
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
 
   var body: some View {
-    HStack(spacing: 0) {
-      if model.isHistoryPresented {
-        HistoryView(model: model, embedded: true)
-          .frame(width: 224)
-        Divider()
-      }
-      ScrollView {
-        VStack(spacing: AppTheme.sectionSpacing) {
-          if model.historyRestorationState != .ready { historyRecovery }
-          if model.isRunning, model.displayedRun?.id != model.activeRun?.id {
-            HStack {
-              Label("另一个任务正在运行", systemImage: "waveform.path.ecg")
-              Spacer()
-              Button("返回当前任务") { model.selectedRunID = model.activeRun?.id }
-            }
-            .font(.callout)
-            .workbenchPanel(padding: 14)
+    NavigationSplitView(columnVisibility: sidebarVisibility) {
+      HistoryView(model: model, embedded: true)
+        .frame(minWidth: 220, idealWidth: 250, maxWidth: 320)
+        .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
+        .toolbar(removing: .sidebarToggle)
+    } detail: {
+      ScrollViewReader { proxy in
+        ScrollView {
+          ZStack(alignment: .topLeading) {
+            document
+              .id(model.displayedRun?.id)
+              .transition(.opacity)
           }
-          NumberHeroView(
-            configuration: $model.draftConfiguration,
-            run: model.displayedRun,
-            validationMessage: model.inputValidationMessage,
-            canSubmit: model.canStart,
-            submit: { Task { await model.startRun() } },
-            copy: model.copy
-          )
-          if let run = model.displayedRun, !run.status.isTerminal, run.usesGNFSPipeline {
-            PipelineRailView(run: model.displayedRun)
-              .padding(.vertical, 8)
-          }
-          if model.displayedRun != nil {
-            Divider()
-            RunStageView(
-              run: model.displayedRun,
-              finalizationMessage: model.displayedRun.map(model.finalizationMessage(for:)) ?? "",
-              canCreateRun: model.canEdit,
-              copy: model.copy,
-              newRun: { Task { await model.newRun() } }
-            )
-            .id(model.displayedRun?.id)
-            RunLogsView(
-              entries: model.displayedRun?.logs ?? [],
-              isExpanded: $model.areLogsExpanded,
-              canClear: model.canEdit,
-              copy: model.copy,
-              clear: { Task { await model.clearDisplayedLogs() } }
-            )
-            .id(model.displayedRun?.id)
-          }
-          if let run = model.displayedRun, run.status.isTerminal {
-            Text(model.finalizationMessage(for: run))
-              .font(.caption).foregroundStyle(.secondary)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
+          .animation(reduceMotion ? nil : WorkbenchMotion.page, value: model.displayedRun?.id)
+          .padding(AppTheme.contentPadding)
+          .frame(maxWidth: AppTheme.contentMaxWidth)
+          .frame(maxWidth: .infinity, alignment: .top)
+          .id("documentTop")
         }
-        .padding(AppTheme.contentPadding)
-        .frame(maxWidth: AppTheme.contentMaxWidth)
-        .frame(maxWidth: .infinity)
+        .scrollBounceBehavior(.basedOnSize)
+        .background(AppTheme.canvas)
+        .accessibilityIdentifier("workbenchDocument")
+        .onChange(of: model.displayedRun?.id) {
+          var transaction = Transaction()
+          transaction.disablesAnimations = true
+          withTransaction(transaction) { proxy.scrollTo("documentTop", anchor: .top) }
+        }
       }
-      .scrollBounceBehavior(.basedOnSize)
-      .background(AppTheme.canvas)
+      .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
     }
+    .navigationSplitViewStyle(.balanced)
     .modifier(WorkbenchToolbar(model: model))
     .foregroundStyle(AppTheme.primaryText)
     .tint(AppTheme.indigo)
     .overlay(alignment: .bottom) {
-      if let toast = model.toastMessage {
-        Label(toast, systemImage: "checkmark.circle.fill")
-          .font(.callout.weight(.medium))
-          .padding(.horizontal, 18).padding(.vertical, 12)
-          .background(.regularMaterial, in: Capsule())
-          .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
-          .padding(.bottom, 20)
-          .accessibilityLabel(toast)
+      ZStack {
+        if let toast = model.toastMessage {
+          Label(toast, systemImage: "checkmark.circle.fill")
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(.regularMaterial, in: Capsule())
+            .overlay { Capsule().strokeBorder(AppTheme.separator, lineWidth: 1) }
+            .shadow(color: .black.opacity(0.08), radius: 8, y: 3)
+            .accessibilityLabel(toast)
+            .accessibilityIdentifier("copyConfirmation")
+            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 5)))
+        }
       }
+      .padding(.bottom, 18)
+      .allowsHitTesting(false)
+      .animation(reduceMotion ? nil : WorkbenchMotion.feedback, value: model.toastMessage)
     }
-    .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: model.toastMessage)
     .sheet(isPresented: $model.isParametersPresented) {
       ParameterEditorSheet(model: model)
     }
@@ -89,6 +64,65 @@ struct ContentView: View {
       Button("好", role: .cancel) { model.alertMessage = nil }
     } message: {
       Text(model.alertMessage ?? "发生未知错误。")
+    }
+  }
+
+  private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+    Binding(
+      get: { model.isHistoryPresented ? .all : .detailOnly },
+      set: { model.isHistoryPresented = $0 != .detailOnly }
+    )
+  }
+
+  private var document: some View {
+    VStack(spacing: AppTheme.sectionSpacing) {
+      if model.historyRestorationState != .ready { historyRecovery }
+      if model.isRunning, model.displayedRun?.id != model.activeRun?.id {
+        HStack {
+          Label("另一个任务正在运行", systemImage: "waveform.path.ecg")
+          Spacer()
+          Button("返回当前任务") { model.selectedRunID = model.activeRun?.id }
+            .buttonStyle(WorkbenchActionStyle(.secondary))
+        }
+        .font(.callout)
+        .workbenchPanel(padding: 14)
+      }
+      NumberHeroView(
+        configuration: $model.draftConfiguration,
+        run: model.displayedRun,
+        validationMessage: model.inputValidationMessage,
+        canSubmit: model.canStart,
+        submit: { Task { await model.startRun() } },
+        copy: model.copy
+      )
+      if let run = model.displayedRun, !run.status.isTerminal, run.usesGNFSPipeline {
+        PipelineRailView(run: model.displayedRun)
+          .padding(.vertical, 8)
+      }
+      if model.displayedRun != nil {
+        Divider()
+        RunStageView(
+          run: model.displayedRun,
+          finalizationMessage: model.displayedRun.map(model.finalizationMessage(for:)) ?? "",
+          canCreateRun: model.canEdit,
+          copy: model.copy,
+          newRun: { Task { await model.newRun() } }
+        )
+        .id(model.displayedRun?.id)
+        RunLogsView(
+          entries: model.displayedRun?.logs ?? [],
+          isExpanded: $model.areLogsExpanded,
+          canClear: model.canEdit,
+          copy: model.copy,
+          clear: { Task { await model.clearDisplayedLogs() } }
+        )
+        .id(model.displayedRun?.id)
+      }
+      if let run = model.displayedRun, run.status.isTerminal {
+        Text(model.finalizationMessage(for: run))
+          .font(.caption).foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
     }
   }
 

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WorkbenchToolbar: ViewModifier {
   @Bindable var model: AppModel
+  @Environment(\.workbenchReduceMotion) private var reduceMotion
   @State private var report: RunReportDocument?
   @State private var isExportPresented = false
 
@@ -10,7 +11,9 @@ struct WorkbenchToolbar: ViewModifier {
       .toolbar {
         ToolbarItem(placement: .navigation) {
           Button {
-            model.isHistoryPresented.toggle()
+            withAnimation(reduceMotion ? nil : WorkbenchMotion.disclosure) {
+              model.isHistoryPresented.toggle()
+            }
           } label: {
             Image(systemName: "sidebar.left")
           }
@@ -22,10 +25,10 @@ struct WorkbenchToolbar: ViewModifier {
           HStack(spacing: 8) {
             Image(systemName: "function").foregroundStyle(AppTheme.indigo)
             Text("GNFS Workbench").font(.system(size: 13, weight: .semibold))
-            if model.isRunning {
-              Circle().fill(AppTheme.indigo).frame(width: 5, height: 5)
-                .accessibilityLabel("正在分解")
-            }
+            Circle().fill(AppTheme.indigo).frame(width: 5, height: 5)
+              .opacity(model.isRunning ? 1 : 0)
+              .accessibilityLabel("正在分解")
+              .accessibilityHidden(!model.isRunning)
           }
         }
         ToolbarItemGroup(placement: .primaryAction) {
@@ -66,9 +69,12 @@ struct WorkbenchToolbar: ViewModifier {
           } label: {
             HStack(spacing: 6) {
               Image(systemName: model.isRunning ? "stop.fill" : "play.fill")
+                .frame(width: 12)
+                .contentTransition(.identity)
               Text(primaryLabel)
             }
             .font(.system(size: 12, weight: .medium))
+            .frame(minWidth: 86)
           }
           .buttonStyle(.borderedProminent)
           .tint(model.isRunning ? AppTheme.danger : AppTheme.indigo)

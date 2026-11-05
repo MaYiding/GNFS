@@ -17,11 +17,23 @@ Requested overrides and effective parameters have separate labels. Non-GNFS comp
 
 ## Layout and Interaction Coverage
 
-The native window supports a `900 × 640` minimum. The history sidebar can be hidden; the main area scrolls vertically. Long inputs and complete factor expressions wrap without horizontal scrolling. Verified repeated factors use superscript exponents while copy operations preserve the exact machine-readable expression. Statistics use aligned rows with adaptive columns, and advanced parameters open in a transactional sheet. Logs start collapsed and retain their search, severity, copy, and follow controls when expanded.
+The native window supports a `900 × 640` minimum. A native split view contains the history sidebar. Hiding and reopening it preserves the query and selection. Selecting another record returns the document to its top. Long inputs and complete factor expressions wrap without horizontal scrolling. Verified repeated factors use superscript exponents while copy operations preserve the exact machine-readable expression. Statistics use aligned rows with adaptive columns, and advanced parameters open in a transactional sheet. Logs start collapsed and retain their search, severity, copy, and follow controls when expanded. The console keeps a fixed height when filtering. Reading older entries pauses automatic following; the latest-entry control resumes it.
 
 Offscreen rendering tests cover ready, live, complete, failure, long-input, invalid-parameter, and full-sheet states. Light and dark captures include minimum-width windows and detailed GNFS statistics. These are deterministic fixtures for layout review, not performance measurements.
 
 UI tests exercise initial launch, termination and relaunch, closing the final window and reopening, decimal input, running and cancellation states, parameter-sheet dismissal, malformed parameter validation, a real `360` factorization, configuration reuse, and history search. The main scene has a stable identifier and an explicit launch fallback for older, type-derived window restoration identifiers. Process tests independently verify actual engine results, environment isolation, and subprocess cleanup.
+
+## Component and Motion Contract
+
+- Control hover and press feedback changes the surface without scaling labels or moving neighboring controls. Focus rings remain visible; disabled controls cannot trigger actions.
+- Sidebar and disclosure changes use a short, interruptible transition. Record changes fade without interpolating values between different integers. All custom motion respects Reduce Motion.
+- Live counts, times, chart samples, and effective parameters update directly. Only the changing state indicator animates. Progress is never inferred from an animation.
+- The integer editor supports Return to submit, modified Return for text editing, and marked text composition. Validation occupies a reserved feedback row.
+- Parameter edits remain transactional. Read-only records show legible values; editing requires a new draft. Cancel and Escape preserve the previous draft.
+- History rows support pointer feedback and arrow-key navigation. Search and selection survive sidebar disclosure. Selecting a record brings it into view.
+- Log disclosure preserves filters. Filtering and following are separate actions; new events do not pull the reader away from older messages.
+
+Native regression coverage includes repeated sidebar disclosure, Return submission, log expansion and filter persistence, and keyboard history selection. Offscreen fixtures additionally cover Reduce Motion and a console at the retained-log limit. Native runtime checks are required to assess transitions; static screenshots alone do not establish animation quality.
 
 ## Reproducing Evidence
 

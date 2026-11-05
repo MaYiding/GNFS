@@ -27,6 +27,15 @@ actor DemoGNFSRunner: GNFSRunning {
             guard let data = line.data(using: .utf8) else { continue }
             continuation.yield(try JSONDecoder().decode(CLIEvent.self, from: data))
           }
+          if ProcessInfo.processInfo.arguments.contains("--ui-testing-stream-logs") {
+            for index in 0..<1200 {
+              try Task.checkCancellation()
+              if index >= 80 { try await Task.sleep(for: .milliseconds(25)) }
+              let line =
+                #"{"schema_version":1,"type":"log","level":"INFO","phase":"sieve","timestamp_s":\#(5 + Double(index) / 40),"message":"Console scrolling fixture batch \#(index)"}"#
+              continuation.yield(try JSONDecoder().decode(CLIEvent.self, from: Data(line.utf8)))
+            }
+          }
           // Keep the design-preview run alive so the live dashboard
           // can be inspected and its cancellation path remains real.
           try await Task.sleep(for: .seconds(3_600))

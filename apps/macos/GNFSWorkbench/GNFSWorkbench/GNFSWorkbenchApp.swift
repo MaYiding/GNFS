@@ -75,8 +75,15 @@ struct GNFSWorkbenchApp: App {
 
         Button("参数设置") { model.isParametersPresented.toggle() }
           .keyboardShortcut(",", modifiers: [.command, .shift])
-        Button("显示运行历史") { model.isHistoryPresented.toggle() }
-          .keyboardShortcut("s", modifiers: [.command, .control])
+        Button(model.isHistoryPresented ? "隐藏运行历史" : "显示运行历史") {
+          withAnimation(
+            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+              ? nil : WorkbenchMotion.disclosure
+          ) {
+            model.isHistoryPresented.toggle()
+          }
+        }
+        .keyboardShortcut("s", modifiers: [.command, .control])
       }
     }
   }
