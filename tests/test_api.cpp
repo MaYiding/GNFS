@@ -1616,6 +1616,82 @@ bool test_pipeline_context_and_factor_base_contract() {
     return true;
 }
 
+gnfs::core::PolynomialContext
+alternate_same_n_context(const gnfs::core::PolynomialContext& selected) {
+    std::vector<Integer> coefficients;
+    for (const auto& coefficient : selected.coefficients()) {
+        coefficients.emplace_back(coefficient);
+    }
+    coefficients.front() += selected.n();
+    return gnfs::core::PolynomialContext(Integer(selected.n()), std::move(coefficients),
+                                         Integer(selected.m()), selected.skewness());
+}
+
+bool test_failed_phase_preflight_does_not_bind() {
+    Config cfg;
+    cfg.verbose = false;
+    Pipeline source(Integer(143), cfg);
+    auto ctx = source.select_polynomial();
+    auto other = alternate_same_n_context(ctx);
+    auto fb = source.build_factor_base(ctx);
+
+    Pipeline matrix_target(Integer(143), cfg);
+    RelationReductionResult invalid_reduction(1, {}, {});
+    invalid_reduction.generation = 0;
+    try {
+        (void)matrix_target.build_matrix(std::move(invalid_reduction), fb, ctx);
+        std::cout << "(invalid reduction accepted) ";
+        return false;
+    } catch (const std::invalid_argument&) {
+    }
+    try {
+        (void)matrix_target.build_factor_base(other);
+    } catch (const std::exception& error) {
+        std::cout << "(invalid reduction bound inputs: " << error.what() << ") ";
+        return false;
+    }
+
+    Pipeline sieve_target(Integer(143), cfg);
+    gnfs::factor_base::FactorBase invalid_fb;
+    invalid_fb.add_rational(4, 0);
+    try {
+        (void)sieve_target.sieve_and_collect(ctx, invalid_fb);
+        std::cout << "(invalid factor base accepted) ";
+        return false;
+    } catch (const std::invalid_argument&) {
+    }
+    try {
+        (void)sieve_target.build_factor_base(other);
+    } catch (const std::exception& error) {
+        std::cout << "(invalid factor base bound context: " << error.what() << ") ";
+        return false;
+    }
+    Pipeline callback_target(Integer(143), cfg);
+    auto valid_reduction = callback_target.filter({});
+    callback_target.set_progress_callback([](const ProgressInfo& info) {
+        if (info.message == "Building matrix")
+            throw std::runtime_error("injected failure");
+    });
+    bool callback_failed = false;
+    try {
+        (void)callback_target.build_matrix(std::move(valid_reduction), fb, ctx);
+    } catch (const std::runtime_error& error) {
+        callback_failed = std::string_view(error.what()) == "injected failure";
+    }
+    if (!callback_failed) {
+        std::cout << "(matrix callback did not fail) ";
+        return false;
+    }
+    callback_target.set_progress_callback({});
+    try {
+        (void)callback_target.build_factor_base(other);
+    } catch (const std::exception& error) {
+        std::cout << "(failed matrix callback bound inputs: " << error.what() << ") ";
+        return false;
+    }
+    return true;
+}
+
 bool test_v3_cascade_pipeline_integration() {
     // Verify GNFS_CASCADE_V3 ENV actually fires V3 cascade in Pipeline path.
     // Uses 12-digit N (~40-bit, lp_bits=17 → LP enabled) so V3 cascade branch
@@ -4564,6 +4640,7 @@ int main() {
     TEST(pipeline_relation_generations);
     TEST(pipeline_rejects_foreign_context);
     TEST(pipeline_context_and_factor_base_contract);
+    TEST(failed_phase_preflight_does_not_bind);
     TEST(sieve_option_preflight_does_not_bind_factor_base);
     TEST(pipeline_progress_callback);
     TEST(structured_filter_stage_telemetry_parser);

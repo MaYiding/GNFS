@@ -128,6 +128,34 @@ private:
     int uncaught_at_entry_;
 };
 
+// A rejected or failed phase must not leave newly bound inputs behind.
+// Existing bindings are immutable, so only bindings created by this scope
+// need to be cleared when an exception escapes.
+template <typename ContextSignature, typename BaseSignature>
+class PipelineBindingExceptionRollback final {
+public:
+    PipelineBindingExceptionRollback(std::optional<ContextSignature>& context,
+                                     std::optional<BaseSignature>& base) noexcept
+        : context_(context), base_(base), had_context_(context.has_value()),
+          had_base_(base.has_value()), uncaught_at_entry_(std::uncaught_exceptions()) {}
+
+    ~PipelineBindingExceptionRollback() noexcept {
+        if (std::uncaught_exceptions() > uncaught_at_entry_) {
+            if (!had_context_)
+                context_.reset();
+            if (!had_base_)
+                base_.reset();
+        }
+    }
+
+private:
+    std::optional<ContextSignature>& context_;
+    std::optional<BaseSignature>& base_;
+    bool had_context_;
+    bool had_base_;
+    int uncaught_at_entry_;
+};
+
 class FreshOOCExceptionCleanup final {
 public:
     explicit FreshOOCExceptionCleanup(relation::RelationCollector& collector,
@@ -1189,7 +1217,7 @@ void Pipeline::require_context_contract(const PolynomialContext& ctx, const char
 
 void Pipeline::require_factor_base_contract(const PolynomialContext& ctx, const FactorBase& fb,
                                             const char* phase, bool bind_if_unbound) {
-    require_context_contract(ctx, phase, bind_if_unbound);
+    require_context_contract(ctx, phase, false);
 
     const auto& fb_params = fb.params();
     const bool legacy_empty_fixture =
@@ -1205,6 +1233,7 @@ void Pipeline::require_factor_base_contract(const PolynomialContext& ctx, const 
             throw std::invalid_argument("Pipeline::" + std::string(phase) +
                                         " received a factor base different from the bound base");
         }
+        require_context_contract(ctx, phase, bind_if_unbound);
         return;
     }
 
@@ -1267,6 +1296,7 @@ void Pipeline::require_factor_base_contract(const PolynomialContext& ctx, const 
     const auto identity = sieve::make_sieve_run_identity(ctx, fb, params_);
     const FactorBaseSignature signature{identity.fingerprint_lo, identity.fingerprint_hi};
     if (bind_if_unbound) {
+        require_context_contract(ctx, phase, true);
         factor_base_signature_ = signature;
     }
 }
@@ -1416,6 +1446,8 @@ PolynomialContext Pipeline::select_polynomial() {
 }
 
 PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_base) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     emit_progress(Phase::PolynomialSelection, "Starting polynomial selection");
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
@@ -1488,6 +1520,8 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
 // ============================================================
 
 FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     const std::string resume_base = pipeline_resume_base_path();
     reject_distributed_resume_combination(resume_base);
     require_context_contract(ctx, "build_factor_base", true);
@@ -1496,6 +1530,8 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
 
 FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                                             const std::string& resume_base) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     require_context_contract(ctx, "build_factor_base", true);
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     emit_progress(Phase::FactorBase, "Building factor base");
@@ -1597,6 +1633,8 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
 relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                                                               const FactorBase& fb,
                                                               SieveCollectionOptions options) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     const std::string resume_base = pipeline_resume_base_path();
     reject_distributed_resume_combination(resume_base);
     if (options.adaptive_round_limit == 0 ||
@@ -1628,6 +1666,8 @@ relation::RelationReductionResult
 Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
                                  const StructuredRouteSnapshot& structured_preflight,
                                  SieveCollectionOptions options) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     require_factor_base_contract(ctx, fb, "sieve_and_collect", true);
     auto t0 = std::chrono::high_resolution_clock::now();
     FactorStatsRollback stats_rollback(stats_);
@@ -2988,8 +3028,8 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult&
 Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult& reduction,
                                               const FactorBase& fb, const PolynomialContext& ctx,
                                               bool solve_dependencies) {
-    require_factor_base_contract(ctx, fb, solve_dependencies ? "solve_matrix" : "build_matrix",
-                                 true);
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     if (reduction.generation == 0 || !reduction.corpus.valid()) {
         throw std::invalid_argument("matrix phase requires a valid reduction owner");
     }
@@ -3023,6 +3063,8 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
             reduction.corpus, reduction.stats.output_digest,
             "structured OOC reduction does not match its matrix-phase digest");
     }
+    require_factor_base_contract(ctx, fb, solve_dependencies ? "solve_matrix" : "build_matrix",
+                                 true);
     const bool verify_ooc_payload_after_callbacks =
         structured_ooc && (static_cast<bool>(progress_cb_) || static_cast<bool>(log_cb_));
     FactorStatsRollback stats_rollback(stats_);
@@ -3472,6 +3514,8 @@ static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 
 FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase& fb,
                                        const PolynomialContext& ctx) {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     require_factor_base_contract(ctx, fb, "extract_factors", true);
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     emit_progress(Phase::SquareRoot, "Starting factor extraction");
@@ -3656,6 +3700,8 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
 // ============================================================
 
 FactorResult Pipeline::run() {
+    PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
+                                                      factor_base_signature_);
     FactorStatsExceptionRollback stats_exception_rollback(stats_);
     // Validate the relation-filter route before any progress/log callback,
     // checkpoint read/write, fast-method probe, or generation allocation. The
