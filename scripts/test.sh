@@ -7888,6 +7888,13 @@ do_changed() {
         fi
     done <<< "$changed_files"
 
+    # The native SIQS E2E has a separate long budget. Select it for direct
+    # SIQS changes in deep mode, not for every utility dependency cascade.
+    local needs_siqs_e2e=0
+    if (( deep )) && [[ -n "${affected_modules[siqs]:-}" ]]; then
+        needs_siqs_e2e=1
+    fi
+
     # 级联依赖 (--deep 模式)
     if (( deep )); then
         typeset -A cascade_modules
@@ -7943,6 +7950,11 @@ do_changed() {
     if (( deep )) && [[ -n "${affected_modules[api]:-}" ]]; then
         log_section "API 深层合同回归"
         run_single_test test_api || true
+    fi
+
+    if (( needs_siqs_e2e )); then
+        log_section "SIQS 深层 E2E 回归"
+        run_single_test test_siqs_e2e || true
     fi
 
     # 核心模块变更 → 额外 E2E

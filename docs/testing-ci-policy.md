@@ -52,6 +52,22 @@ execute every contract. Its outer CTest watchdog is 30 seconds to accommodate
 aggregate process startup cost; it is not a per-case performance limit. The
 individual contract assertions and bounded child invocations remain unchanged.
 
+### Local Change Selection
+
+`scripts/test.sh changed --deep` adds mapped module dependencies and the API
+contract to applicable change selections. It also selects `test_siqs_e2e` once
+when a changed path maps directly to the `siqs` module, including
+`tests/test_siqs_e2e.cpp`. Reaching SIQS only through another module's dependency
+list does not select this E2E test. Ordinary `changed` and `smoke` keep their
+existing selection.
+
+The SIQS E2E includes a native attempt with a 600-second budget; its runner and
+CTest timeout remains 700 seconds to accommodate the other cases and setup.
+Use `scripts/test.sh run test_siqs_e2e` or `scripts/test.sh module siqs --slow`
+for an explicit selection. Local `changed --deep` does not enable every slow,
+heavy, benchmark, or stress test. The Linux Release deep gate uses the separate
+CI label selection described below.
+
 ### Release-active correctness checks
 
 Release builds define `NDEBUG`, so the standard `assert()` macro is not a
