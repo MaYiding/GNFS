@@ -7611,6 +7611,9 @@ do_module() {
     fi
 
     local module_pass=0 module_fail=0
+    local reuse_selected=0
+    case "${MODE:-}" in changed|diff) reuse_selected=1 ;; esac
+    local -A selected_results=()
 
     for mod in "${modules[@]}"; do
         local tests="${MODULE_TESTS[$mod]:-}"
@@ -7635,15 +7638,30 @@ do_module() {
         local mod_total=0 mod_pass=0 mod_skip=0 mod_failed=0
         for test in ${(s: :)tests}; do
             (( mod_total += 1 ))
+            # Changed mode merges overlapping module maps. These calls have no
+            # arguments or module-specific environment; reuse the first result
+            # for each module's summary without another execution/report entry.
+            # Explicit module selections and run_single_test retries stay intact.
+            if (( reuse_selected )) && [[ -n "${selected_results[$test]:-}" ]]; then
+                case "${selected_results[$test]}" in
+                    skip) (( mod_skip += 1 )) ;;
+                    fail) (( mod_failed += 1 )) ;;
+                    pass) (( mod_pass += 1 )) ;;
+                esac
+                continue
+            fi
             local skipped_before=$SKIPPED_TESTS
             local failed_before=$FAILED_TESTS
             run_single_test "$test" || true
             if (( SKIPPED_TESTS > skipped_before )); then
                 (( mod_skip += 1 ))
+                selected_results[$test]=skip
             elif (( FAILED_TESTS > failed_before )); then
                 (( mod_failed += 1 ))
+                selected_results[$test]=fail
             else
                 (( mod_pass += 1 ))
+                selected_results[$test]=pass
             fi
         done
 
@@ -7950,14 +7968,6 @@ do_changed() {
 
     if (( needs_50d_contract )); then
         do_50d_probe_contracts || true
-    fi
-
-    # Public API contract tests are deliberately slow and therefore live in
-    # MODULE_SLOW_TESTS. Deep change validation must still execute them when
-    # API headers, implementation, or test_api itself changed.
-    if (( deep )) && [[ -n "${affected_modules[api]:-}" ]]; then
-        log_section "API 深层合同回归"
-        run_single_test test_api || true
     fi
 
     if (( needs_siqs_e2e )); then

@@ -137,6 +137,13 @@ validation and executes existing binaries without invoking CMake. If the
 requested executable is missing or not executable, the runner reports a failed
 test and exits non-zero, including with `--no-build`.
 
+Within one `changed` or `diff` selection, overlapping module maps execute each
+shared binary without arguments once. Every affected module retains that first
+result for its summary, while the global report records one execution. Explicit
+`module` repetitions, `--slow`, and the runner's retry policy retain their
+existing behavior. API coverage comes from the API module; the separate SIQS and
+GNFS E2E selection rules remain unchanged.
+
 `module` (including `mod`), `changed` (including `diff`), and `gate` also fail
 when a selected binary is missing or not executable. This applies after a
 successful build and with `--no-build`. The explicit `WINDOWS_UNAVAILABLE_TESTS`
