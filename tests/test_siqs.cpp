@@ -861,6 +861,40 @@ void test_native_dependency_budgets() {
                      relations[1].value == second.value,
                  "native dependency compaction changed survivor order");
 
+    // Place the same valid unit rows before, between, and after survivors.
+    // Original dependency {3,1} extracts 7*11, whereas {5,1} combines two
+    // identical Q=23 relations and has only trivial GCDs.
+    const std::vector<SIQSRelation> interleaved{unit, first, unit, second, unit, first, unit};
+    const std::vector<std::vector<size_t>> original_basis{{0}, {2}, {3, 1}, {4}, {5, 1}, {6}};
+    require_test(dense_gauss_left_nullspace(interleaved, fb.size()) == original_basis,
+                 "interleaved fixture lost its original unit and non-unit index semantics");
+    auto compacted = interleaved;
+    const auto mixed = extract_native_dependencies(modulus, modulus, compacted, fb);
+    require_test(mixed.factors && mixed.factors->first == Integer(7) &&
+                     mixed.factors->second == Integer(11) && mixed.singleton_attempts == 4 &&
+                     mixed.matrix_rows == 3 && mixed.non_singleton_dependencies == 2,
+                 "interleaved unit removal changed extraction or dependency accounting");
+    const auto compacted_basis = dense_gauss_left_nullspace(compacted, fb.size());
+    require_test(compacted_basis == std::vector<std::vector<size_t>>{{1, 0}, {2, 0}},
+                 "interleaved compaction changed the ordered non-unit basis");
+    constexpr std::array<size_t, 3> original_indices{1, 3, 5};
+    const std::vector<std::vector<size_t>> original_non_units{{3, 1}, {5, 1}};
+    for (size_t i = 0; i < compacted_basis.size(); ++i) {
+        auto remapped = compacted_basis[i];
+        for (size_t& index : remapped)
+            index = original_indices.at(index);
+        require_test(remapped == original_non_units[i],
+                     "compacted dependency does not map to its original relation indices");
+        const auto before = try_extract(modulus, modulus, interleaved, remapped, fb);
+        const auto after = try_extract(modulus, modulus, compacted, compacted_basis[i], fb);
+        require_test(before.has_value() == (i == 0) && after.has_value() == before.has_value(),
+                     "interleaved remapping changed useful versus trivial GCD outcomes");
+        if (before)
+            require_test(before->first == Integer(7) && before->second == Integer(11) &&
+                             *after == *before,
+                         "interleaved dependency extracted different factors after compaction");
+    }
+
     // Retain the historical non-unit cap rather than materializing the entire
     // kernel: the useful pair is now beyond 64 non-unit basis vectors.
     relations.assign(unit_count, unit);
@@ -900,8 +934,8 @@ void test_native_dependency_budgets() {
                      singleton.matrix_rows == 0 && singleton.non_singleton_dependencies == 0 &&
                      singleton_relations.size() == 2,
                  "useful singleton lost its independent precheck or mutated the input early");
-    std::puts(
-        "  native dependency budgets: PASS (80 trivial units, late non-unit, cap, useful unit)");
+    std::puts("  native dependency budgets: PASS (80 trivial units, interleaved remap, cap, useful "
+              "unit)");
 }
 
 void test_init_poly_handles_large_a_factor_count() {

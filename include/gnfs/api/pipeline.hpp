@@ -188,9 +188,8 @@ public:
                   std::optional<FactorizationMethod> override = std::nullopt);
 
     // Configuration
-    /// During sieving, matrix construction/solving, and factor extraction,
-    /// callbacks may copy this Pipeline, but must not assign to or move from
-    /// its active owner. Such operations invalidate those stages and are
+    /// Callbacks may copy this Pipeline, but must not assign to or move from
+    /// its active owner. Such operations invalidate active stages and are
     /// rejected when control returns from the callback.
     void set_progress_callback(ProgressCallback cb) {
         progress_cb_ = std::move(cb);
@@ -235,6 +234,7 @@ private:
         bool callback_seen = false;
         bool owner_invalidated = false;
         CallbackInputState* enclosing = nullptr;
+        std::optional<PolynomialContextSignature> context_signature;
     };
     // Active callback state belongs to one invocation's stack. Copying or
     // moving a Pipeline must never transfer the borrowed stack pointer.

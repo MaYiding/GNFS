@@ -79,9 +79,14 @@ bool detail::parse_structured_filter_stage_telemetry(const char* raw_value) {
 
 namespace {
 
+// Rollback guards borrow a flag from an owner scope declared before them.
+// The scope therefore outlives every guard, including during unwinding.
+// A callback can replace or move the owner; in that case snapshots from the
+// old invocation must never be written into the replacement or moved-from object.
 class FactorStatsRollback final {
 public:
-    explicit FactorStatsRollback(FactorStats& target) : target_(&target), snapshot_(target) {
+    FactorStatsRollback(FactorStats& target, const bool& owner_invalidated)
+        : target_(&target), snapshot_(target), owner_invalidated_(owner_invalidated) {
         static_assert(std::is_nothrow_move_assignable_v<FactorStats>);
     }
 
@@ -89,7 +94,7 @@ public:
     FactorStatsRollback& operator=(const FactorStatsRollback&) = delete;
 
     ~FactorStatsRollback() {
-        if (target_ != nullptr) {
+        if (target_ != nullptr && !owner_invalidated_) {
             *target_ = std::move(snapshot_);
         }
     }
@@ -101,6 +106,7 @@ public:
 private:
     FactorStats* target_;
     FactorStats snapshot_;
+    const bool& owner_invalidated_;
 };
 
 /// Restore public phase statistics when a callback or another operation
@@ -108,8 +114,9 @@ private:
 /// exception escaping the public entry point rolls back the snapshot.
 class FactorStatsExceptionRollback final {
 public:
-    explicit FactorStatsExceptionRollback(FactorStats& target)
-        : target_(&target), snapshot_(target), uncaught_at_entry_(std::uncaught_exceptions()) {
+    FactorStatsExceptionRollback(FactorStats& target, const bool& owner_invalidated)
+        : target_(&target), snapshot_(target), owner_invalidated_(owner_invalidated),
+          uncaught_at_entry_(std::uncaught_exceptions()) {
         static_assert(std::is_nothrow_move_assignable_v<FactorStats>);
     }
 
@@ -117,7 +124,8 @@ public:
     FactorStatsExceptionRollback& operator=(const FactorStatsExceptionRollback&) = delete;
 
     ~FactorStatsExceptionRollback() noexcept {
-        if (target_ != nullptr && std::uncaught_exceptions() > uncaught_at_entry_) {
+        if (target_ != nullptr && !owner_invalidated_ &&
+            std::uncaught_exceptions() > uncaught_at_entry_) {
             *target_ = std::move(snapshot_);
         }
     }
@@ -125,6 +133,7 @@ public:
 private:
     FactorStats* target_;
     FactorStats snapshot_;
+    const bool& owner_invalidated_;
     int uncaught_at_entry_;
 };
 
@@ -135,12 +144,14 @@ template <typename ContextSignature, typename BaseSignature>
 class PipelineBindingExceptionRollback final {
 public:
     PipelineBindingExceptionRollback(std::optional<ContextSignature>& context,
-                                     std::optional<BaseSignature>& base) noexcept
+                                     std::optional<BaseSignature>& base,
+                                     const bool& owner_invalidated) noexcept
         : context_(context), base_(base), had_context_(context.has_value()),
-          had_base_(base.has_value()), uncaught_at_entry_(std::uncaught_exceptions()) {}
+          had_base_(base.has_value()), owner_invalidated_(owner_invalidated),
+          uncaught_at_entry_(std::uncaught_exceptions()) {}
 
     ~PipelineBindingExceptionRollback() noexcept {
-        if (std::uncaught_exceptions() > uncaught_at_entry_) {
+        if (!owner_invalidated_ && std::uncaught_exceptions() > uncaught_at_entry_) {
             if (!had_context_)
                 context_.reset();
             if (!had_base_)
@@ -153,6 +164,7 @@ private:
     std::optional<BaseSignature>& base_;
     bool had_context_;
     bool had_base_;
+    const bool& owner_invalidated_;
     int uncaught_at_entry_;
 };
 
@@ -1168,13 +1180,22 @@ struct Pipeline::CallbackInputScope final {
     CallbackInputState state;
     CallbackInputState* previous;
 
+    explicit CallbackInputScope(Pipeline& owner) noexcept
+        : pipeline(owner), state{nullptr, nullptr, {}, false, false, nullptr, std::nullopt},
+          previous(owner.callback_input_state_.active) {
+        attach();
+    }
+    CallbackInputScope(Pipeline& owner, const PolynomialContext& ctx)
+        : pipeline(owner), state{&ctx, nullptr, {}, false, false, nullptr, std::nullopt},
+          previous(owner.callback_input_state_.active) {
+        state.context_signature = Pipeline::make_context_signature(ctx);
+        attach();
+    }
     CallbackInputScope(Pipeline& owner, const PolynomialContext& ctx, const FactorBase& fb,
                        relation::StageInputFingerprint fingerprint) noexcept
-        : pipeline(owner), state{&ctx, &fb, fingerprint, false},
+        : pipeline(owner), state{&ctx, &fb, fingerprint, false, false, nullptr, std::nullopt},
           previous(owner.callback_input_state_.active) {
-        state.enclosing = previous;
-        state.owner_invalidated = previous != nullptr && previous->owner_invalidated;
-        pipeline.callback_input_state_.active = &state;
+        attach();
     }
     CallbackInputScope(const CallbackInputScope&) = delete;
     CallbackInputScope& operator=(const CallbackInputScope&) = delete;
@@ -1182,21 +1203,36 @@ struct Pipeline::CallbackInputScope final {
         pipeline.callback_input_state_.active = previous;
     }
     void verify_before_publish() {
-        if (state.callback_seen || state.owner_invalidated)
-            pipeline.verify_callback_inputs();
+        for (const auto* current = &state; current != nullptr; current = current->enclosing) {
+            if (current->callback_seen || current->owner_invalidated) {
+                pipeline.verify_callback_inputs();
+                return;
+            }
+        }
+    }
+
+private:
+    void attach() noexcept {
+        state.enclosing = previous;
+        state.owner_invalidated = previous != nullptr && previous->owner_invalidated;
+        pipeline.callback_input_state_.active = &state;
     }
 };
 
 void Pipeline::verify_callback_inputs() {
-    if (callback_input_state_.active == nullptr)
-        return;
-    if (callback_input_state_.active->owner_invalidated) {
-        throw std::invalid_argument("pipeline callback changed its active Pipeline owner");
-    }
-    if (stage_input_fingerprint(*callback_input_state_.active->context,
-                                *callback_input_state_.active->factor_base) !=
-        callback_input_state_.active->fingerprint) {
-        throw std::invalid_argument("pipeline callback changed polynomial context or factor base");
+    for (auto* state = callback_input_state_.active; state != nullptr; state = state->enclosing) {
+        if (state->owner_invalidated) {
+            throw std::invalid_argument("pipeline callback changed its active Pipeline owner");
+        }
+        if (state->context != nullptr && state->factor_base != nullptr &&
+            stage_input_fingerprint(*state->context, *state->factor_base) != state->fingerprint) {
+            throw std::invalid_argument(
+                "pipeline callback changed polynomial context or factor base");
+        }
+        if (state->context != nullptr && state->context_signature.has_value() &&
+            make_context_signature(*state->context) != *state->context_signature) {
+            throw std::invalid_argument("pipeline callback changed polynomial context");
+        }
     }
 }
 
@@ -1499,9 +1535,13 @@ PolynomialContext Pipeline::select_polynomial() {
 }
 
 PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_base) {
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
-                                                      factor_base_signature_);
-    FactorStatsExceptionRollback stats_exception_rollback(stats_);
+                                                      factor_base_signature_,
+                                                      callback_owner.state.owner_invalidated);
+    FactorStatsExceptionRollback stats_exception_rollback(stats_,
+                                                          callback_owner.state.owner_invalidated);
     emit_progress(Phase::PolynomialSelection, "Starting polynomial selection");
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
              "N=" + n_.to_string() + " bits=" + std::to_string(stats_.n_bits) +
@@ -1517,25 +1557,29 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
     if (!resume_base.empty()) {
         const std::string poly_ckpt = resume_base + ".poly_ckpt";
         if (polynomial::PolyCheckpoint::exists_and_valid(poly_ckpt)) {
+            std::optional<PolynomialContext> resumed;
             try {
                 auto ck = polynomial::PolyCheckpoint::load_for(poly_ckpt, n_);
-                auto ctx_resumed = ck.to_context();
-                require_context_contract(ctx_resumed, "select_polynomial", true);
-
-                auto t1 = std::chrono::high_resolution_clock::now();
-                stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
-
-                emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                         "checkpoint hit: m=" + ctx_resumed.m().to_string() + " degree=" +
-                             std::to_string(ctx_resumed.degree()) + " (skipped Kleinjung search)");
-                std::fprintf(stderr, "[poly-resume] ckpt=%s degree=%u skew=%g\n", poly_ckpt.c_str(),
-                             ctx_resumed.degree(), ctx_resumed.skewness());
-                emit_progress(Phase::PolynomialSelection, "Polynomial loaded from checkpoint", 1.0);
-                return ctx_resumed;
+                auto candidate = ck.to_context();
+                require_context_contract(candidate, "select_polynomial", false);
+                resumed.emplace(std::move(candidate));
             } catch (const std::exception& e) {
                 emit_log(LogLevel::Warn, Phase::PolynomialSelection,
                          std::string("poly checkpoint load failed (") + e.what() +
                              ") — falling through to fresh selection");
+            }
+            if (resumed.has_value()) {
+                require_context_contract(*resumed, "select_polynomial", true);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                stats_.timings.poly_s = std::chrono::duration<double>(t1 - t0).count();
+                emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                         "checkpoint hit: m=" + resumed->m().to_string() + " degree=" +
+                             std::to_string(resumed->degree()) + " (skipped Kleinjung search)");
+                std::fprintf(stderr, "[poly-resume] ckpt=%s degree=%u skew=%g\n", poly_ckpt.c_str(),
+                             resumed->degree(), resumed->skewness());
+                emit_progress(Phase::PolynomialSelection, "Polynomial loaded from checkpoint", 1.0);
+                callback_owner.verify_before_publish();
+                return std::move(*resumed);
             }
         }
     }
@@ -1550,20 +1594,25 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
     // Persist Phase 1 result so a follow-up run can skip it.
     if (!resume_base.empty()) {
         const std::string poly_ckpt = resume_base + ".poly_ckpt";
+        bool saved = false;
         try {
             auto ck = polynomial::PolyCheckpoint::from_context(ctx);
             ck.save(poly_ckpt);
-            emit_log(LogLevel::Info, Phase::PolynomialSelection,
-                     "poly checkpoint saved: " + poly_ckpt);
+            saved = true;
         } catch (const std::exception& e) {
             emit_log(LogLevel::Warn, Phase::PolynomialSelection,
                      std::string("poly checkpoint save failed: ") + e.what());
+        }
+        if (saved) {
+            emit_log(LogLevel::Info, Phase::PolynomialSelection,
+                     "poly checkpoint saved: " + poly_ckpt);
         }
     }
 
     emit_log(LogLevel::Info, Phase::PolynomialSelection,
              "m=" + ctx.m().to_string() + " time=" + std::to_string(stats_.timings.poly_s) + "s");
     emit_progress(Phase::PolynomialSelection, "Polynomial selected", 1.0);
+    callback_owner.verify_before_publish();
 
     return ctx;
 }
@@ -1573,8 +1622,11 @@ PolynomialContext Pipeline::select_polynomial_impl(const std::string& resume_bas
 // ============================================================
 
 FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
-                                                      factor_base_signature_);
+                                                      factor_base_signature_,
+                                                      callback_owner.state.owner_invalidated);
     const std::string resume_base = pipeline_resume_base_path();
     reject_distributed_resume_combination(resume_base);
     require_context_contract(ctx, "build_factor_base", true);
@@ -1583,10 +1635,16 @@ FactorBase Pipeline::build_factor_base(const PolynomialContext& ctx) {
 
 FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                                             const std::string& resume_base) {
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
-                                                      factor_base_signature_);
+                                                      factor_base_signature_,
+                                                      callback_owner.state.owner_invalidated);
     require_context_contract(ctx, "build_factor_base", true);
-    FactorStatsExceptionRollback stats_exception_rollback(stats_);
+    CallbackInputScope callback_inputs(*this, ctx);
+    callback_inputs.verify_before_publish();
+    FactorStatsExceptionRollback stats_exception_rollback(stats_,
+                                                          callback_owner.state.owner_invalidated);
     emit_progress(Phase::FactorBase, "Building factor base");
 
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -1607,30 +1665,17 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
     if (!resume_base.empty()) {
         const std::string fb_ckpt = resume_base + ".fb_ckpt";
         if (factor_base::FbCheckpoint::exists_and_valid(fb_ckpt)) {
+            std::optional<FactorBase> resumed;
+            std::string diagnostic;
             try {
                 auto ck = factor_base::FbCheckpoint::load(fb_ckpt);
                 auto status = ck.matches(ctx, fb_opts.rational_bound, fb_opts.algebraic_bound,
                                          fb_opts.special_q_bound, fb_opts.large_prime_bound,
                                          fb_opts.log_scale);
                 if (status == factor_base::FbCheckpoint::MatchStatus::Ok) {
-                    auto fb_resumed = ck.to_factor_base();
-                    require_factor_base_contract(ctx, fb_resumed, "build_factor_base", true);
-
-                    auto t1 = std::chrono::high_resolution_clock::now();
-                    stats_.timings.fb_s = std::chrono::duration<double>(t1 - t0).count();
-                    stats_.rational_primes = fb_resumed.rational_count();
-                    stats_.algebraic_primes = fb_resumed.algebraic_count();
-
-                    emit_log(
-                        LogLevel::Info, Phase::FactorBase,
-                        "checkpoint hit: rational=" + std::to_string(fb_resumed.rational_count()) +
-                            " algebraic=" + std::to_string(fb_resumed.algebraic_count()) +
-                            " (skipped Cantor-Zassenhaus)");
-                    std::fprintf(stderr, "[fb-resume] ckpt=%s rat=%zu alg=%zu sieve_alg=%zu\n",
-                                 fb_ckpt.c_str(), fb_resumed.rational_count(),
-                                 fb_resumed.algebraic_count(), fb_resumed.sieve_algebraic_count());
-                    emit_progress(Phase::FactorBase, "Factor base loaded from checkpoint", 1.0);
-                    return fb_resumed;
+                    auto candidate = ck.to_factor_base();
+                    require_factor_base_contract(ctx, candidate, "build_factor_base", false);
+                    resumed.emplace(std::move(candidate));
                 } else {
                     const char* reason =
                         (status == factor_base::FbCheckpoint::MatchStatus::NMismatch) ? "N mismatch"
@@ -1639,12 +1684,31 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                         : (status == factor_base::FbCheckpoint::MatchStatus::ContextMismatch)
                             ? "context mismatch"
                             : "params mismatch";
-                    emit_log(LogLevel::Warn, Phase::FactorBase,
-                             std::string("fb checkpoint stale (") + reason + ") — rebuilding");
+                    diagnostic = std::string("fb checkpoint stale (") + reason + ") — rebuilding";
                 }
             } catch (const std::exception& e) {
-                emit_log(LogLevel::Warn, Phase::FactorBase,
-                         std::string("fb checkpoint load failed (") + e.what() + ") — rebuilding");
+                diagnostic =
+                    std::string("fb checkpoint load failed (") + e.what() + ") — rebuilding";
+            }
+            if (!diagnostic.empty()) {
+                emit_log(LogLevel::Warn, Phase::FactorBase, diagnostic);
+            }
+            if (resumed.has_value()) {
+                require_factor_base_contract(ctx, *resumed, "build_factor_base", true);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                stats_.timings.fb_s = std::chrono::duration<double>(t1 - t0).count();
+                stats_.rational_primes = resumed->rational_count();
+                stats_.algebraic_primes = resumed->algebraic_count();
+                emit_log(LogLevel::Info, Phase::FactorBase,
+                         "checkpoint hit: rational=" + std::to_string(resumed->rational_count()) +
+                             " algebraic=" + std::to_string(resumed->algebraic_count()) +
+                             " (skipped Cantor-Zassenhaus)");
+                std::fprintf(stderr, "[fb-resume] ckpt=%s rat=%zu alg=%zu sieve_alg=%zu\n",
+                             fb_ckpt.c_str(), resumed->rational_count(), resumed->algebraic_count(),
+                             resumed->sieve_algebraic_count());
+                emit_progress(Phase::FactorBase, "Factor base loaded from checkpoint", 1.0);
+                callback_inputs.verify_before_publish();
+                return std::move(*resumed);
             }
         }
     }
@@ -1660,13 +1724,17 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
     // Persist Phase 2 result for follow-up runs.
     if (!resume_base.empty()) {
         const std::string fb_ckpt = resume_base + ".fb_ckpt";
+        bool saved = false;
         try {
             auto ck = factor_base::FbCheckpoint::from_factor_base(fb, ctx, fb_opts.special_q_bound);
             ck.save(fb_ckpt);
-            emit_log(LogLevel::Info, Phase::FactorBase, "fb checkpoint saved: " + fb_ckpt);
+            saved = true;
         } catch (const std::exception& e) {
             emit_log(LogLevel::Warn, Phase::FactorBase,
                      std::string("fb checkpoint save failed: ") + e.what());
+        }
+        if (saved) {
+            emit_log(LogLevel::Info, Phase::FactorBase, "fb checkpoint saved: " + fb_ckpt);
         }
     }
 
@@ -1675,6 +1743,7 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
                  " algebraic=" + std::to_string(fb.algebraic_count()) +
                  " (sieve=" + std::to_string(fb.sieve_algebraic_count()) + ")");
     emit_progress(Phase::FactorBase, "Factor base built", 1.0);
+    callback_inputs.verify_before_publish();
 
     return fb;
 }
@@ -1686,8 +1755,11 @@ FactorBase Pipeline::build_factor_base_impl(const PolynomialContext& ctx,
 relation::RelationReductionResult Pipeline::sieve_and_collect(const PolynomialContext& ctx,
                                                               const FactorBase& fb,
                                                               SieveCollectionOptions options) {
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
-                                                      factor_base_signature_);
+                                                      factor_base_signature_,
+                                                      callback_owner.state.owner_invalidated);
     const std::string resume_base = pipeline_resume_base_path();
     reject_distributed_resume_combination(resume_base);
     if (options.adaptive_round_limit == 0 ||
@@ -1719,13 +1791,16 @@ relation::RelationReductionResult
 Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase& fb,
                                  const StructuredRouteSnapshot& structured_preflight,
                                  SieveCollectionOptions options) {
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
-                                                      factor_base_signature_);
+                                                      factor_base_signature_,
+                                                      callback_owner.state.owner_invalidated);
     require_factor_base_contract(ctx, fb, "sieve_and_collect", true);
     const auto input_fingerprint = stage_input_fingerprint(ctx, fb);
     CallbackInputScope callback_inputs(*this, ctx, fb, input_fingerprint);
     auto t0 = std::chrono::high_resolution_clock::now();
-    FactorStatsRollback stats_rollback(stats_);
+    FactorStatsRollback stats_rollback(stats_, callback_owner.state.owner_invalidated);
     const int adaptive_round_limit = static_cast<int>(options.adaptive_round_limit);
     stats_.sieve_rounds_completed = 0;
     stats_.sieve_stop_reason = SieveStopReason::NotStarted;
@@ -2895,7 +2970,10 @@ Pipeline::sieve_and_collect_impl(const PolynomialContext& ctx, const FactorBase&
 // ============================================================
 
 relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relations) {
-    FactorStatsExceptionRollback stats_exception_rollback(stats_);
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
+    FactorStatsExceptionRollback stats_exception_rollback(stats_,
+                                                          callback_owner.state.owner_invalidated);
     // Validate this independent process gate before callbacks or relation
     // generation allocation, even though owned snapshots never publish the
     // direct-OOC stage record.
@@ -3028,6 +3106,7 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
             emit_log(LogLevel::Info, Phase::Filtering,
                      "after filter: " + std::to_string(reduction.size()) + " relations");
             emit_progress(Phase::Filtering, "Filtering complete", 1.0);
+            callback_owner.verify_before_publish();
             return reduction;
         }
 
@@ -3066,6 +3145,7 @@ relation::RelationReductionResult Pipeline::filter(std::vector<Relation> relatio
     std::fprintf(stderr, "[filter] after: rels=%zu lp_cols=%zu\n", reduction.size(),
                  lp_cols_after_filter);
     emit_progress(Phase::Filtering, "Filtering complete", 1.0);
+    callback_owner.verify_before_publish();
 
     return reduction;
 }
@@ -3087,8 +3167,11 @@ Pipeline::MatrixResult Pipeline::solve_matrix(relation::RelationReductionResult&
 Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult& reduction,
                                               const FactorBase& fb, const PolynomialContext& ctx,
                                               bool solve_dependencies) {
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
-                                                      factor_base_signature_);
+                                                      factor_base_signature_,
+                                                      callback_owner.state.owner_invalidated);
     if (reduction.generation == 0 || !reduction.corpus.valid()) {
         throw std::invalid_argument("matrix phase requires a valid reduction owner");
     }
@@ -3136,7 +3219,7 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
     CallbackInputScope callback_inputs(*this, ctx, fb, input_fingerprint);
     const bool verify_ooc_payload_after_callbacks =
         structured_ooc && (static_cast<bool>(progress_cb_) || static_cast<bool>(log_cb_));
-    FactorStatsRollback stats_rollback(stats_);
+    FactorStatsRollback stats_rollback(stats_, callback_owner.state.owner_invalidated);
     static_assert(std::is_nothrow_move_assignable_v<Relation>);
     static_assert(std::is_nothrow_move_assignable_v<std::vector<Relation>>);
 
@@ -3585,15 +3668,19 @@ static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& 
 
 FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase& fb,
                                        const PolynomialContext& ctx) {
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
-                                                      factor_base_signature_);
+                                                      factor_base_signature_,
+                                                      callback_owner.state.owner_invalidated);
     if (mr.stage_input_fingerprint_.has_value() &&
         *mr.stage_input_fingerprint_ != stage_input_fingerprint(ctx, fb)) {
         throw std::invalid_argument("factor extraction inputs differ from matrix inputs");
     }
     require_factor_base_contract(ctx, fb, "extract_factors", true);
     CallbackInputScope callback_inputs(*this, ctx, fb, stage_input_fingerprint(ctx, fb));
-    FactorStatsExceptionRollback stats_exception_rollback(stats_);
+    FactorStatsExceptionRollback stats_exception_rollback(stats_,
+                                                          callback_owner.state.owner_invalidated);
     emit_progress(Phase::SquareRoot, "Starting factor extraction");
 
     auto t0_sqrt = std::chrono::high_resolution_clock::now();
@@ -3778,9 +3865,13 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
 // ============================================================
 
 FactorResult Pipeline::run() {
+    CallbackInputScope callback_owner(*this);
+    callback_owner.verify_before_publish();
     PipelineBindingExceptionRollback binding_rollback(polynomial_context_signature_,
-                                                      factor_base_signature_);
-    FactorStatsExceptionRollback stats_exception_rollback(stats_);
+                                                      factor_base_signature_,
+                                                      callback_owner.state.owner_invalidated);
+    FactorStatsExceptionRollback stats_exception_rollback(stats_,
+                                                          callback_owner.state.owner_invalidated);
     // Validate the relation-filter route before any progress/log callback,
     // checkpoint read/write, fast-method probe, or generation allocation. The
     // strict flag is a process configuration error even when a fast factor
@@ -3797,12 +3888,14 @@ FactorResult Pipeline::run() {
         r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
+        callback_owner.verify_before_publish();
         return r;
     }
     if (mpz_cmp_si(n_.get_mpz(), 1) <= 0) {
         FactorResult r;
         r.n = n_; // Integer op=
         r.stats = stats_;
+        callback_owner.verify_before_publish();
         return r;
     }
 
@@ -3832,6 +3925,7 @@ FactorResult Pipeline::run() {
                     emit_log(LogLevel::Info, Phase::PolynomialSelection,
                              "Perfect power detected: " + root.to_string() + "^" +
                                  std::to_string(exp));
+                    callback_owner.verify_before_publish();
                     return r;
                 }
             }
@@ -3846,8 +3940,8 @@ FactorResult Pipeline::run() {
              "Method: " + std::string(method_name(method)) + " (" + reason + ")");
 
     // Helper: build result from a found factor
-    auto make_fast_result = [this](const Integer& f1, FactorizationMethod m,
-                                   const std::string& m_reason) -> FactorResult {
+    auto make_fast_result = [this, &callback_owner](const Integer& f1, FactorizationMethod m,
+                                                    const std::string& m_reason) -> FactorResult {
         FactorResult r;
         r.n = n_; // Integer op=
         r.success = true;
@@ -3864,6 +3958,7 @@ FactorResult Pipeline::run() {
         r.stats.method_used = m;
         r.stats.method_reason = m_reason;
         r.stats.timings.total_s = elapsed_s();
+        callback_owner.verify_before_publish();
         return r;
     };
 
@@ -3888,6 +3983,7 @@ FactorResult Pipeline::run() {
         r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
+        callback_owner.verify_before_publish();
         return r;
     }
 
@@ -3953,6 +4049,7 @@ FactorResult Pipeline::run() {
         r.n = n_; // Integer op=
         r.stats = stats_;
         r.stats.timings.total_s = elapsed_s();
+        callback_owner.verify_before_publish();
         return r;
     }
 
@@ -4069,6 +4166,7 @@ FactorResult Pipeline::run() {
             r.stats.method_used = FactorizationMethod::SIQS;
             r.stats.method_reason = std::to_string(stats_.n_digits) + "d SIQS";
             r.stats.timings.total_s = elapsed_s();
+            callback_owner.verify_before_publish();
             return r;
         }
 
@@ -4080,6 +4178,7 @@ FactorResult Pipeline::run() {
             r.n = n_; // Integer op=
             r.stats = stats_;
             r.stats.timings.total_s = elapsed_s();
+            callback_owner.verify_before_publish();
             return r;
         }
 
@@ -4102,7 +4201,7 @@ FactorResult Pipeline::run() {
     const size_t post_lp_cols = reduction.stats.output_lp_columns;
     const size_t effective_cols_post = relation::effective_column_count(matrix_cols, post_lp_cols);
 
-    return detail::handoff_after_collection(
+    auto result = detail::handoff_after_collection(
         std::move(reduction), effective_cols_post,
         [this, matrix_cols, post_lp_cols](const detail::SolverHandoffInfo& info) {
             emit_log(LogLevel::Warn, Phase::Sieving,
@@ -4117,6 +4216,8 @@ FactorResult Pipeline::run() {
             auto mr = solve_matrix(std::move(handed_off), fb, ctx);
             return extract_factors(mr, fb, ctx);
         });
+    callback_owner.verify_before_publish();
+    return result;
 }
 
 } // namespace gnfs::api
