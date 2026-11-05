@@ -4810,6 +4810,114 @@ bool test_sieve_schema3_checkpoint_is_preserved_then_schema4_recovers() {
     return true;
 }
 
+bool test_checkpoint_callback_exceptions_propagate() {
+    SieveResumeArtifacts files(gnfs::util::temp_path("gnfs_test_checkpoint_callback_" +
+                                                     std::to_string(gnfs::util::process_id())));
+    ScopedEnvironmentVariable full_resume("GNFS_RESUME", files.base);
+    ScopedEnvironmentVariable legacy_resume("GNFS_SIEVE_RESUME", std::nullopt);
+    ScopedEnvironmentVariable distributed("GNFS_DISTRIBUTED_SIEVE_WORKERS", "0");
+    Config cfg;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    cfg.verbose = false;
+    Pipeline initial(Integer(143), cfg);
+    auto ctx = initial.select_polynomial();
+    (void)initial.build_factor_base(ctx);
+    const auto poly_before = read_test_file(files.base + ".poly_ckpt");
+    const auto fb_before = read_test_file(files.base + ".fb_ckpt");
+
+    for (const bool factor_base : {false, true}) {
+        for (const bool use_log : {false, true}) {
+            Pipeline reader(Integer(143), cfg);
+            size_t fallback_warnings = 0;
+            reader.set_log_callback([&](const LogEntry& entry) {
+                if (entry.level == LogLevel::Warn)
+                    ++fallback_warnings;
+                if (use_log && entry.message.starts_with("checkpoint hit:"))
+                    throw std::runtime_error("checkpoint hit callback failure");
+            });
+            if (!use_log) {
+                reader.set_progress_callback([&](const ProgressInfo& info) {
+                    if (info.message == (factor_base ? "Factor base loaded from checkpoint"
+                                                     : "Polynomial loaded from checkpoint"))
+                        throw std::runtime_error("checkpoint hit callback failure");
+                });
+            }
+            bool propagated = false;
+            try {
+                if (factor_base)
+                    (void)reader.build_factor_base(ctx);
+                else
+                    (void)reader.select_polynomial();
+            } catch (const std::runtime_error& error) {
+                propagated = std::string_view(error.what()) == "checkpoint hit callback failure";
+            }
+            if (!propagated || fallback_warnings != 0 ||
+                read_test_file(files.base + ".poly_ckpt") != poly_before ||
+                read_test_file(files.base + ".fb_ckpt") != fb_before) {
+                std::cout << "(checkpoint hit callback was swallowed or changed artifacts) ";
+                return false;
+            }
+            reader.set_log_callback({});
+            reader.set_progress_callback({});
+            try {
+                if (factor_base)
+                    (void)reader.build_factor_base(ctx);
+                else
+                    (void)reader.select_polynomial();
+            } catch (const std::exception& error) {
+                std::cout << "(checkpoint retry failed: " << error.what() << ") ";
+                return false;
+            }
+        }
+    }
+
+    for (const bool factor_base : {false, true}) {
+        SieveResumeArtifacts fresh(gnfs::util::temp_path(
+            std::string("gnfs_test_checkpoint_save_callback_") + (factor_base ? "fb_" : "poly_") +
+            std::to_string(gnfs::util::process_id())));
+        ScopedEnvironmentVariable fresh_resume("GNFS_RESUME", fresh.base);
+        Pipeline writer(Integer(143), cfg);
+        std::optional<gnfs::core::PolynomialContext> selected;
+        if (factor_base)
+            selected.emplace(writer.select_polynomial());
+        size_t warnings = 0;
+        writer.set_log_callback([&](const LogEntry& entry) {
+            if (entry.level == LogLevel::Warn)
+                ++warnings;
+            if (entry.message.starts_with(factor_base ? "fb checkpoint saved:"
+                                                      : "poly checkpoint saved:"))
+                throw std::runtime_error("checkpoint save callback failure");
+        });
+        bool propagated = false;
+        try {
+            if (factor_base)
+                (void)writer.build_factor_base(*selected);
+            else
+                (void)writer.select_polynomial();
+        } catch (const std::runtime_error& error) {
+            propagated = std::string_view(error.what()) == "checkpoint save callback failure";
+        }
+        const std::string path = fresh.base + (factor_base ? ".fb_ckpt" : ".poly_ckpt");
+        if (!propagated || warnings != 0 || !std::filesystem::exists(path)) {
+            std::cout << "(checkpoint save callback was swallowed or save was misreported) ";
+            return false;
+        }
+        writer.set_log_callback({});
+        try {
+            if (factor_base)
+                (void)writer.build_factor_base(*selected);
+            else
+                (void)writer.select_polynomial();
+        } catch (const std::exception& error) {
+            std::cout << "(checkpoint save retry failed: " << error.what() << ") ";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool test_sieve_resume_policy_identity_preflight() {
     SieveResumeArtifacts artifacts(gnfs::util::temp_path("gnfs_test_sieve_resume_policy_identity_" +
                                                          std::to_string(gnfs::util::process_id())));
@@ -5263,6 +5371,7 @@ int main() {
     TEST(sieve_resume_fresh_no_prior_ckpt);
     TEST(sieve_resume_round_limit_preflight);
     TEST(sieve_resume_policy_identity_preflight);
+    TEST(checkpoint_callback_exceptions_propagate);
     TEST(sieve_schema3_checkpoint_is_preserved_then_schema4_recovers);
     TEST(target_environment_callback_preserves_stage_identity);
     TEST(sieve_resume_with_paired_checkpoint);
