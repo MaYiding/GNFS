@@ -525,6 +525,139 @@ void test_factor_base_rejects_unrepresentable_count() {
     require_test(overflow_seen, "factor-base count overflow was not rejected");
 }
 
+void test_dense_gauss_kernel_oracle() {
+    size_t matrices_checked = 0;
+    // Exhaust all binary matrices with up to four relation rows and one to
+    // three columns. Column zero is the sign; exponent values 2/3 distinguish
+    // parity from the exponent itself. Enumerating the image and kernel does
+    // not reuse Gaussian elimination or its pivot choices.
+    for (size_t columns = 1; columns <= 3; ++columns) {
+        for (size_t rows = 0; rows <= 4; ++rows) {
+            const uint32_t vector_count = uint32_t{1} << rows;
+            const uint32_t column_mask = (uint32_t{1} << columns) - 1;
+            const uint32_t matrix_count = uint32_t{1} << (rows * columns);
+            for (uint32_t encoding = 0; encoding < matrix_count; ++encoding) {
+                std::vector<uint32_t> row_bits(rows);
+                std::vector<SIQSRelation> relations(rows);
+                for (size_t row = 0; row < rows; ++row) {
+                    row_bits[row] = (encoding >> (row * columns)) & column_mask;
+                    relations[row].negative = (row_bits[row] & 1) != 0;
+                    relations[row].exponents.resize(columns, 0);
+                    for (size_t column = 1; column < columns; ++column)
+                        relations[row].exponents[column] =
+                            static_cast<uint8_t>(2 + ((row_bits[row] >> column) & 1));
+                }
+                std::set<uint32_t> kernel;
+                std::set<uint32_t> image;
+                for (uint32_t vector = 0; vector < vector_count; ++vector) {
+                    uint32_t product = 0;
+                    for (size_t row = 0; row < rows; ++row)
+                        if ((vector >> row) & 1)
+                            product ^= row_bits[row];
+                    image.insert(product);
+                    if (product == 0)
+                        kernel.insert(vector);
+                }
+                require_test(std::has_single_bit(image.size()),
+                             "GF(2) image size is not a power of two");
+                const size_t rank = static_cast<size_t>(std::bit_width(image.size()) - 1);
+                const size_t nullity = rows - rank;
+                require_test(kernel.size() == (size_t{1} << nullity),
+                             "independent GF(2) rank/nullity oracle disagrees");
+                const auto complete = dense_gauss_left_nullspace(
+                    relations, columns, std::numeric_limits<size_t>::max());
+                require_test(complete.size() == nullity,
+                             "dense solver omitted a kernel basis vector");
+                for (size_t limit : {size_t{0}, size_t{1}, size_t{2}, size_t{4}}) {
+                    const auto dependencies = dense_gauss_left_nullspace(relations, columns, limit);
+                    require_test(dependencies.size() == std::min(limit, nullity),
+                                 "dense solver ignored max_deps or lost a dependency");
+                    require_test(
+                        std::equal(dependencies.begin(), dependencies.end(), complete.begin()),
+                        "max_deps changed the dependency prefix");
+                    std::set<uint32_t> generated{0};
+                    for (const auto& dependency : dependencies) {
+                        require_test(!dependency.empty(), "dense solver returned the zero vector");
+                        uint32_t vector = 0;
+                        for (size_t row : dependency) {
+                            require_test(row < rows, "dense dependency has an out-of-range row");
+                            const uint32_t bit = uint32_t{1} << row;
+                            require_test((vector & bit) == 0, "dense dependency repeats a row");
+                            vector |= bit;
+                        }
+                        require_test(kernel.contains(vector),
+                                     "dense dependency is not in the GF(2) kernel");
+                        const auto previous = generated;
+                        for (uint32_t member : previous)
+                            generated.insert(member ^ vector);
+                    }
+                    require_test(generated.size() == (size_t{1} << dependencies.size()),
+                                 "dense kernel basis is linearly dependent");
+                    if (limit >= nullity)
+                        require_test(generated == kernel,
+                                     "dense basis does not span the complete kernel");
+                }
+                ++matrices_checked;
+            }
+        }
+    }
+
+    // Free-variable indices and sign dependencies must survive packed-word
+    // boundaries. A zero matrix has every unit vector; one sign row gives
+    // pairs with its first pivot and leaves the other unit vectors unchanged.
+    for (size_t rows : {size_t{63}, size_t{64}, size_t{65}, size_t{129}}) {
+        std::vector<SIQSRelation> relations(rows);
+        for (auto& relation : relations)
+            relation.exponents.resize(2, 0);
+        for (size_t limit :
+             {size_t{0}, size_t{1}, size_t{64}, std::numeric_limits<size_t>::max()}) {
+            const auto dependencies = dense_gauss_left_nullspace(relations, 2, limit);
+            require_test(dependencies.size() == std::min(rows, limit),
+                         "zero matrix lost singleton dependencies across a packed-word boundary");
+            for (size_t row = 0; row < dependencies.size(); ++row)
+                require_test(dependencies[row] == std::vector<size_t>{row},
+                             "zero matrix returned the wrong unit kernel vector");
+        }
+        relations.front().negative = true;
+        relations.back().negative = true;
+        const auto dependencies =
+            dense_gauss_left_nullspace(relations, 2, std::numeric_limits<size_t>::max());
+        require_test(dependencies.size() == rows - 1, "sign column lost its rank-one kernel");
+        for (size_t row = 1; row < rows; ++row) {
+            const std::vector<size_t> expected =
+                row + 1 == rows ? std::vector<size_t>{row, 0} : std::vector<size_t>{row};
+            require_test(dependencies[row - 1] == expected,
+                         "sign parity was not preserved across a packed-word boundary");
+        }
+    }
+    std::printf("  dense_gauss kernel oracle: PASS (%zu exhaustive matrices, 4 word boundaries)\n",
+                matrices_checked);
+}
+
+void test_dense_gauss_singleton_extraction() {
+    const Integer modulus(15);
+    const auto factor_base = build_factor_base(modulus, 1);
+    SIQSRelation relation{};
+    relation.value = Integer(4);
+    relation.exponents.resize(factor_base.size(), 0);
+    require_test(relation.value * relation.value - modulus == Integer(1),
+                 "singleton fixture is not the legal Q=1 relation");
+    const std::vector<SIQSRelation> relations{relation};
+    const std::vector<std::vector<size_t>> expected{{0}};
+    const auto dependencies = dense_gauss_left_nullspace(relations, factor_base.size());
+    require_test(dependencies == expected, "zero-parity relation lost its unit kernel vector");
+    require_test(solve_matrix(relations, factor_base.size()) == expected,
+                 "matrix dispatcher lost the singleton dependency");
+    const auto direct = try_extract(modulus, modulus, relations, dependencies.front(), factor_base);
+    require_test(direct && direct->first == Integer(3) && direct->second == Integer(5),
+                 "singleton dependency did not extract the factors 3 and 5");
+    const auto combined =
+        try_extract_with_combos(modulus, modulus, relations, dependencies, factor_base);
+    require_test(combined && combined->first == Integer(3) && combined->second == Integer(5),
+                 "production dependency consumer lost the singleton factorization");
+    std::puts("  dense_gauss singleton extraction: PASS (15 = 3 * 5)");
+}
+
 void test_init_poly_handles_large_a_factor_count() {
     // The production table currently uses at most 12 A factors, but this is
     // a valid runtime shape for the public helper.  It also covers the former
@@ -969,6 +1102,8 @@ int main() {
     test_factor_base();
     test_factor_base_cooperative_stop();
     test_factor_base_rejects_unrepresentable_count();
+    test_dense_gauss_singleton_extraction();
+    test_dense_gauss_kernel_oracle();
     test_init_poly_handles_large_a_factor_count();
     test_siqs_rejects_tiny_inputs_without_sieving();
     test_split_cofactor_edge();

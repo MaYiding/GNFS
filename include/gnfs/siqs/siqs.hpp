@@ -1709,9 +1709,9 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
                 dep.push_back(pivot_col[row]);
             }
         }
-        if (dep.size() > 1) {
-            deps.push_back(std::move(dep));
-        }
+        // A zero-parity relation contributes a unit kernel vector and can
+        // already yield a nontrivial factor from its square congruence.
+        deps.push_back(std::move(dep));
     }
     return deps;
 }
