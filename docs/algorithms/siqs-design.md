@@ -151,7 +151,8 @@ while the complete ranking supplies three coprime candidates.
 These helpers prepare candidates only. Production `factor()` still selects
 one multiplier. Its budget checks, shadow records, and result commit behavior
 remain unchanged. Candidate limits do not count started attempts or establish a time
-budget. A retry controller and its budget admission remain separate work.
+budget. Explicit internal attempt coordination is described below; the default
+facade remains unchanged.
 
 ## Native Single-Attempt Boundary
 
@@ -172,12 +173,51 @@ still pass through `commit_prefer_route`; an accepted result keeps its single
 pre-emit timing sample and is returned without a later deadline veto.
 
 This extraction preserves the default single-attempt and zero-budget behavior.
-It does not start retries or add a deadline guarantee. A future coordinator must
-filter and deduplicate the complete ranking, finish budget admission before
-counting an attempt, preserve returned committed results, and enable requested
-shadow work only on the first actual attempt. Factor-base construction, both
-linear-algebra backends, and the remaining long stages still require a coherent
-cooperative cancellation contract before an end-to-end deadline can be claimed.
+It does not change the default facade's attempt count or add a deadline guarantee.
+Factor-base construction, both linear-algebra backends, and the remaining long
+stages still require a coherent cooperative cancellation contract before an
+end-to-end deadline can be claimed.
+
+## Explicit Multiplier Coordination
+
+`siqs_factor_detail::factor_multiplier_portfolio` is an internal, explicitly
+called native entry for odd `N >= 15`. It accepts the requested shadow mode, a
+prepared `FactorAttemptContext`, and an optional limit capped at three attempts.
+It binds the real monotonic clock and `factor_once`; callers cannot supply a
+replacement executor or clock to this entry. The default public `factor()` still
+uses its historical single multiplier and has no portfolio flag.
+
+The coordinator filters the complete ranking for positive, coprime, unique
+candidates before applying the limit. It checks the shared budget immediately
+before counting and starting each attempt. Rejected candidates and expired
+admissions consume no attempt. Every attempt receives the same context and timer
+origin. Only the first actual attempt receives the requested shadow mode;
+subsequent attempts use `off`.
+
+`MultiplierPortfolioOutcome` contains fixed-capacity per-attempt records and a
+stop reason for success, expired budget, the attempt cap, candidate exhaustion,
+or a native exception. Exceptions stop retries and retain their exception pointer.
+Normal attempt records carry the native terminal and observe-commit state. An
+observe attempt that throws has an explicitly unknown commit state because it
+may have emitted before throwing. The aggregate `any_observe_record_committed`
+is `true` when a commit is known, `false` when all completed information rules it
+out, and empty when an exceptional attempt leaves it unknown. Verbose calls emit
+the per-attempt and aggregate terminal records.
+
+A successful `SIQSResult` moves through unchanged. Earlier attempts' observe
+records belong only to the portfolio summary; they do not change the successful
+result's own observe field. No clock check or timing rewrite follows a successful
+native return, so a committed preferred result keeps its pre-emit sample even
+when the emitter crosses the budget. Fixed record storage avoids additional
+allocations for coordinator accounting after receiving a result. Optional verbose
+output uses C stdio; a logging error does not veto the native result.
+
+This entry enforces admission between attempts, not a hard deadline inside native
+factor-base, solver, merge, or extraction work. A zero budget starts no portfolio
+attempt and emits its aggregate stop record when verbose. The default facade
+retains its existing zero-budget single-attempt shadow behavior. Long-stage
+cooperative cancellation and default or flag-based portfolio activation remain
+unfinished work.
 
 ## Parameter Calibration
 
