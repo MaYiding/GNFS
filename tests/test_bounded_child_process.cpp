@@ -1088,20 +1088,44 @@ void test_authenticated_linux_same_object_and_supervision(const std::filesystem:
 
     struct sigaction previous_usr1 {};
     struct sigaction previous_alrm {};
+    struct sigaction previous_abrt {};
     struct sigaction ignored_action {};
     ignored_action.sa_handler = SIG_IGN;
     CHECK(::sigemptyset(&ignored_action.sa_mask) == 0);
     CHECK(::sigaction(SIGUSR1, &ignored_action, &previous_usr1) == 0);
     CHECK(::sigaction(SIGALRM, &ignored_action, &previous_alrm) == 0);
+    CHECK(::sigaction(SIGABRT, &ignored_action, &previous_abrt) == 0);
     auto signal_image = authenticate_executable_image(held_original, *digest, current_owner());
     CHECK(static_cast<bool>(signal_image));
     if (signal_image) {
+        auto signal_spec = make_spec(held_original, {"--signal-dispositions"}, 32, 0);
+        // Keep an exec-time ASan handler from masking an inherited SIG_IGN.
+        signal_spec.environment.emplace_back("ASAN_OPTIONS=handle_abort=0");
         const auto signal_state = run_authenticated_bounded_child_process(
-            std::move(*signal_image.image),
-            make_spec(held_original, {"--signal-dispositions"}, 32, 0), "authenticated-test-probe");
+            std::move(*signal_image.image), signal_spec, "authenticated-test-probe");
         check_success(signal_state);
         CHECK(signal_state.stdout_bytes == "default\n");
     }
+    auto path_signal_spec = make_spec(held_original, {"--signal-dispositions"}, 32, 0);
+    path_signal_spec.environment.emplace_back("ASAN_OPTIONS=handle_abort=0");
+    const auto path_signal_state = run_bounded_child_process(path_signal_spec);
+    check_success(path_signal_state);
+    CHECK(path_signal_state.stdout_bytes == "default\n");
+    // Exercise the raw-fork path as well as the automatic posix_spawn route.
+    auto fallback_signal_spec = make_spec(held_original, {"--signal-dispositions"}, 32, 0);
+    fallback_signal_spec.environment.emplace_back("ASAN_OPTIONS=handle_abort=0");
+    const auto fallback_signal_state =
+        gnfs::util::detail::trusted_test::run_bounded_child_process_with_fd_closure_test_mode(
+            fallback_signal_spec,
+            gnfs::util::detail::trusted_test::LinuxPathFdClosureTestMode::force_proc_scan);
+    check_success(fallback_signal_state);
+    CHECK(fallback_signal_state.stdout_bytes == "default\n");
+    struct sigaction parent_abrt {};
+    CHECK(::sigaction(SIGABRT, nullptr, &parent_abrt) == 0);
+    CHECK(parent_abrt.sa_handler == SIG_IGN);
+    CHECK(::sigaction(SIGABRT, &previous_abrt, nullptr) == 0);
+    CHECK(::sigaction(SIGABRT, nullptr, &parent_abrt) == 0);
+    CHECK(parent_abrt.sa_handler == previous_abrt.sa_handler);
     CHECK(::sigaction(SIGALRM, &previous_alrm, nullptr) == 0);
     CHECK(::sigaction(SIGUSR1, &previous_usr1, nullptr) == 0);
 
