@@ -7560,6 +7560,7 @@ run_ctest_contract_group() {
 
     local ctest_args=(--test-dir "$BUILD_DIR" --output-on-failure --no-tests=error
         -C "$BUILD_TYPE" -R "$regex")
+    if (( FAIL_FAST )); then ctest_args+=(--stop-on-failure); fi
     if (( VERBOSE )); then ctest_args+=(--verbose); fi
     if (( QUIET )); then ctest_args+=(--quiet); fi
     ctest "${ctest_args[@]}" 2>&1 || exit_code=$?
@@ -7575,6 +7576,9 @@ run_ctest_contract_group() {
         (( FAILED_TESTS += 1 ))
         log_fail "${name} CTest 合同失败 ($(format_duration $elapsed))"
         REPORT_ENTRIES+=("{\"name\":\"${name}\",\"status\":\"fail\",\"elapsed_ms\":${elapsed},\"detail\":\"ctest-contract\"}")
+        if (( FAIL_FAST )); then
+            finish_fail_fast
+        fi
     fi
     return "$exit_code"
 }
