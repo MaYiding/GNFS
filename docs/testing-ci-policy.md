@@ -45,6 +45,13 @@ Longest measured enabled tests:
 
 Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Windows, and high CTest parallelism can change runtime by an order of magnitude.
 
+`HarnessHooks` aggregates isolated hook and runner CLI contracts, including
+fresh interpreter, fixture, and reporting processes. It retains the `instant`
+label so the existing Debug, sanitizer, coverage, and platform lanes still
+execute every contract. Its outer CTest watchdog is 30 seconds to accommodate
+aggregate process startup cost; it is not a per-case performance limit. The
+individual contract assertions and bounded child invocations remain unchanged.
+
 ### Release-active correctness checks
 
 Release builds define `NDEBUG`, so the standard `assert()` macro is not a

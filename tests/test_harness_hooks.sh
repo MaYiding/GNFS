@@ -598,8 +598,8 @@ def check_target_platforms():
                 f'Windows exclusions leaked to {host}: {report!r}')
 
 # Every case owns its build/report directory; the runner fixture stays read-only
-# until these independent groups finish. Bound concurrency to keep the existing
-# ten-second HarnessHooks budget without weakening its coverage.
+# until these independent groups finish. Bound concurrency to reduce process
+# startup overhead while preserving every case's coverage.
 with ThreadPoolExecutor(max_workers=3) as executor:
     futures = [executor.submit(check) for check in
                [check_fail_fast, check_missing_selections, check_successful_selections,
