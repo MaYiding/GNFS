@@ -726,13 +726,8 @@ int main(int argc, char* argv[]) {
             } else if (arg == "--threads" && i + 1 < argc) {
                 const std::string value_text = argv[++i];
                 try {
-                    size_t consumed = 0;
-                    const uint64_t value = std::stoull(value_text, &consumed);
-                    if (consumed != value_text.size() || value == 0 ||
-                        value > std::numeric_limits<uint32_t>::max()) {
-                        throw std::out_of_range("thread budget outside uint32 range");
-                    }
-                    cli_config.set_max_local_sieve_threads(static_cast<uint32_t>(value));
+                    cli_config.set_max_local_sieve_threads(
+                        Config::parse_uint32(value_text, "max_local_sieve_threads"));
                 } catch (const std::exception&) {
                     return cli_error(event_stream_enabled, "invalid_threads",
                                      "--threads must be an integer in [1, UINT32_MAX]");
