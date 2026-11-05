@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
