@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <mutex>
 #include <numeric>
@@ -2351,6 +2352,172 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
         fprintf(stderr, "[SIQS] All dependencies + combos failed\n");
     }
     return {std::nullopt, FactorAttemptTerminal::no_factor, shadow_proof_observe_record_committed};
+}
+
+inline constexpr size_t MULTIPLIER_ATTEMPT_CAP = 3;
+
+enum class MultiplierPortfolioStop : uint8_t {
+    factor_found,
+    budget_exhausted,
+    attempt_limit,
+    candidates_exhausted,
+    attempt_exception,
+};
+
+struct MultiplierAttemptRecord {
+    uint32_t multiplier = 0;
+    SIQSShadowProofMode shadow_mode = SIQSShadowProofMode::off;
+    // Missing terminal denotes an exception rather than a normal native return.
+    std::optional<FactorAttemptTerminal> terminal;
+    // An observe attempt that throws may have emitted before throwing.
+    std::optional<bool> observe_record_committed;
+};
+
+struct MultiplierPortfolioOutcome {
+    std::optional<SIQSResult> result;
+    std::array<MultiplierAttemptRecord, MULTIPLIER_ATTEMPT_CAP> attempts{};
+    size_t attempts_started = 0;
+    MultiplierPortfolioStop stop = MultiplierPortfolioStop::candidates_exhausted;
+    std::optional<bool> any_observe_record_committed = false;
+    std::exception_ptr failure;
+};
+
+static_assert(std::is_nothrow_move_constructible_v<MultiplierPortfolioOutcome>);
+
+/// Control-flow seam; the native entry below binds the real clock and executor.
+/// Callback results must obey the native FactorAttemptOutcome contract.
+/// All candidate allocations precede attempt execution. Once an attempt returns
+/// a committed result, only non-allocating accounting and moves remain.
+template <typename Now, typename Execute>
+inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
+    const Integer& N, std::span<const uint32_t> full_ranking, SIQSShadowProofMode requested_mode,
+    const FactorAttemptContext& context, size_t requested_limit, Now&& now, Execute&& execute) {
+    using Clock = std::chrono::steady_clock;
+    static_assert(std::is_nothrow_invocable_r_v<Clock::time_point, Now&>);
+    MultiplierPortfolioOutcome outcome;
+    const size_t limit = std::min(requested_limit, MULTIPLIER_ATTEMPT_CAP);
+    if (limit == 0) {
+        outcome.stop = MultiplierPortfolioStop::attempt_limit;
+        return outcome;
+    }
+    const auto eligible = siqs_multiplier_detail::admit_candidates(N, full_ranking, limit);
+    for (uint32_t multiplier : eligible) {
+        const auto observed = now();
+        if (context.max_seconds == 0 || observed < context.started ||
+            std::chrono::duration<double>(observed - context.started).count() >=
+                static_cast<double>(context.max_seconds)) {
+            outcome.stop = MultiplierPortfolioStop::budget_exhausted;
+            return outcome;
+        }
+        auto& record = outcome.attempts[outcome.attempts_started];
+        record.multiplier = multiplier;
+        record.shadow_mode =
+            outcome.attempts_started == 0 ? requested_mode : SIQSShadowProofMode::off;
+        ++outcome.attempts_started;
+        try {
+            auto attempt = execute(multiplier, record.shadow_mode, context);
+            record.terminal = attempt.terminal;
+            record.observe_record_committed = attempt.observe_record_committed;
+            if (attempt.observe_record_committed)
+                outcome.any_observe_record_committed = true;
+            if (attempt.result) {
+                outcome.result.emplace(std::move(*attempt.result));
+                outcome.stop = MultiplierPortfolioStop::factor_found;
+                // Keep every native result field, including the pre-emit wall
+                // sample and this attempt's own observe-commit field, unchanged.
+                return outcome;
+            }
+        } catch (...) {
+            outcome.failure = std::current_exception();
+            outcome.stop = MultiplierPortfolioStop::attempt_exception;
+            if (record.shadow_mode == SIQSShadowProofMode::observe) {
+                if (outcome.any_observe_record_committed != true)
+                    outcome.any_observe_record_committed.reset();
+            } else {
+                record.observe_record_committed = false;
+            }
+            return outcome;
+        }
+    }
+    outcome.stop = outcome.attempts_started == limit
+                       ? MultiplierPortfolioStop::attempt_limit
+                       : MultiplierPortfolioStop::candidates_exhausted;
+    return outcome;
+}
+
+[[nodiscard]] constexpr const char*
+factor_attempt_terminal_name(FactorAttemptTerminal terminal) noexcept {
+    switch (terminal) {
+    case FactorAttemptTerminal::insufficient_factor_base:
+        return "insufficient_factor_base";
+    case FactorAttemptTerminal::insufficient_relations:
+        return "insufficient_relations";
+    case FactorAttemptTerminal::no_factor:
+        return "no_factor";
+    case FactorAttemptTerminal::factor_found:
+        return "factor_found";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] constexpr const char*
+multiplier_portfolio_stop_name(MultiplierPortfolioStop stop) noexcept {
+    switch (stop) {
+    case MultiplierPortfolioStop::factor_found:
+        return "factor_found";
+    case MultiplierPortfolioStop::budget_exhausted:
+        return "budget_exhausted";
+    case MultiplierPortfolioStop::attempt_limit:
+        return "attempt_limit";
+    case MultiplierPortfolioStop::candidates_exhausted:
+        return "candidates_exhausted";
+    case MultiplierPortfolioStop::attempt_exception:
+        return "attempt_exception";
+    }
+    return "unknown";
+}
+
+/// Explicit internal multi-candidate entry for facade-validated odd N >= 15.
+/// This is an admission budget between native attempts, not a hard deadline:
+/// native long stages do not yet have complete cooperative cancellation.
+/// Default factor() remains a single historical attempt.
+inline MultiplierPortfolioOutcome
+factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode,
+                            const FactorAttemptContext& context,
+                            size_t requested_limit = MULTIPLIER_ATTEMPT_CAP) {
+    if (mpz_cmp_ui(N.get_mpz(), 15) < 0 || mpz_even_p(N.get_mpz()))
+        throw std::invalid_argument("SIQS multiplier portfolio requires odd N >= 15");
+    if (requested_mode != SIQSShadowProofMode::off &&
+        requested_mode != SIQSShadowProofMode::observe &&
+        requested_mode != SIQSShadowProofMode::prefer)
+        throw std::invalid_argument("SIQS multiplier portfolio requires a supported shadow mode");
+    const auto ranking = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
+    auto outcome = coordinate_multiplier_attempts(
+        N, ranking, requested_mode, context, requested_limit,
+        []() noexcept { return std::chrono::steady_clock::now(); },
+        [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
+            return factor_once(N, multiplier, mode, shared);
+        });
+    if (context.verbose) {
+        const auto commit_name = [](std::optional<bool> committed) noexcept {
+            return !committed.has_value() ? "unknown" : *committed ? "true" : "false";
+        };
+        for (size_t i = 0; i < outcome.attempts_started; ++i) {
+            const auto& record = outcome.attempts[i];
+            std::fprintf(
+                stderr,
+                "[SIQS] multiplier attempt=%zu k=%u shadow=%s terminal=%s observe_committed=%s\n",
+                i + 1, record.multiplier, siqs_shadow_proof_mode_name(record.shadow_mode).data(),
+                record.terminal ? factor_attempt_terminal_name(*record.terminal) : "exception",
+                commit_name(record.observe_record_committed));
+        }
+        std::fprintf(
+            stderr,
+            "[SIQS] multiplier portfolio terminal=%s attempts_started=%zu observe_committed=%s\n",
+            multiplier_portfolio_stop_name(outcome.stop), outcome.attempts_started,
+            commit_name(outcome.any_observe_record_committed));
+    }
+    return outcome;
 }
 
 } // namespace siqs_factor_detail
