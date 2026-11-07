@@ -368,16 +368,22 @@ void test_big_integer_path() {
 void test_high_valuation() {
     std::cout << "Test 10: high prime valuation..." << std::flush;
 
-    // 2^300 takes the GMP path and exceeds the old artificial exp=255 cap.
-    Integer high_power{uint64_t{1}};
-    for (int i = 0; i < 300; ++i)
-        high_power *= int64_t{2};
+    Integer mixed = gnfs::core::pow(Integer{3}, 4097);
+    mpz_mul_2exp(mixed.get_mpz(), mixed.get_mpz(), 4096);
+    const Integer residual = gnfs::core::pow(Integer{2}, 89) - Integer{1};
+    const std::vector<Integer> in = {mixed, -(mixed * residual), residual};
+    const auto br = batch_trial_divide(in, 3);
+    GNFS_TEST_CHECK(br.size() == in.size());
+    GNFS_TEST_CHECK(br.is_smooth[0] && br.remaining[0].is_one());
+    GNFS_TEST_CHECK(!br.is_smooth[1] && br.remaining[1] == residual);
+    GNFS_TEST_CHECK(!br.is_smooth[2] && br.remaining[2] == residual);
 
-    const std::vector<Integer> in = {high_power};
-    const BatchTrialResult br = batch_trial_divide(in, 2);
-    GNFS_TEST_CHECK(br.size() == 1);
-    GNFS_TEST_CHECK(br.is_smooth[0]);
-    GNFS_TEST_CHECK(br.remaining[0].is_one());
+    // Exercise the transition between word divisions and bulk odd-prime removal.
+    for (uint32_t exp : {1u, 7u, 8u, 9u, 16u}) {
+        const std::vector<Integer> values = {gnfs::core::pow(Integer{7}, exp) * residual};
+        const auto result = batch_trial_divide(values, 7);
+        GNFS_TEST_CHECK(!result.is_smooth[0] && result.remaining[0] == residual);
+    }
 
     std::cout << " PASS\n";
 }

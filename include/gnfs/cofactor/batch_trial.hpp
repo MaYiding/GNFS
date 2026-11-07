@@ -14,7 +14,7 @@
 // Design:
 //   - Lazy-static shared small-primes sieve (segmented sieve to prime_bound).
 //   - For each prime p ≤ prime_bound: sweep all K cofactors, divide out p
-//     where p | cofactor[i] (full power, exp bounded at 255 for safety).
+//     where p | cofactor[i], including the full prime power.
 //   - After the outer prime loop terminates, cofactor[i] == 1 is recorded
 //     as smooth; otherwise the residual is the "remaining" non-smooth part.
 //
@@ -141,9 +141,8 @@ inline void validate_batch_trial_prime_bound(size_t prime_bound) {
     return cache.back().primes;
 }
 
-/// Divide value by p as many times as possible; the operation is performed
-/// in-place. This result is a smoothness pre-filter and has no uint8 exponent
-/// field, so truncating the valuation would misclassify high prime powers.
+/// Remove every factor of the prime p from a known nonzero multiple of p.
+/// The smoothness pre-filter needs only the residual.
 inline void strip_prime_inplace(Integer& value, uint32_t p) {
     // Fast path: uint64 division.
     if (value.fits_uint64()) {
@@ -154,10 +153,20 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
         value = v;
         return;
     }
-    // GMP fallback for big integers.
-    while (mpz_divisible_ui_p(value.get_mpz(), p) != 0) {
-        mpz_divexact_ui(value.get_mpz(), value.get_mpz(), p);
+    if (p == 2) {
+        const auto twos = mpz_scan1(value.get_mpz(), 0);
+        mpz_tdiv_q_2exp(value.get_mpz(), value.get_mpz(), twos);
+        return;
     }
+    // Keep short valuations on word division. For a long valuation GMP can
+    // remove powers in bulk instead of repeatedly traversing the same limbs.
+    for (unsigned i = 0; i < 8; ++i) {
+        mpz_divexact_ui(value.get_mpz(), value.get_mpz(), p);
+        if (!mpz_divisible_ui_p(value.get_mpz(), p))
+            return;
+    }
+    const Integer divisor{p};
+    mpz_remove(value.get_mpz(), value.get_mpz(), divisor.get_mpz());
 }
 
 } // namespace detail
