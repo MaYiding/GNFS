@@ -1,5 +1,7 @@
 #include "distributed_sieve_bound_work_internal.hpp"
 
+#include <gnfs/core/sieve_limits.hpp>
+
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -48,6 +50,9 @@ lattice_sieve_region_is_runtime_safe(const SieveRegionWorkIdentityV1& region) no
     // Check the platform index type before projecting to SieveRegion.
     const WideUnsigned area = width * height;
     if (area > static_cast<WideUnsigned>(std::numeric_limits<std::size_t>::max())) {
+        return false;
+    }
+    if (area > static_cast<WideUnsigned>(core::SIEVE_MAX_REGION_CELLS)) {
         return false;
     }
 

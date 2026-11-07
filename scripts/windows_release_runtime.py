@@ -25,6 +25,7 @@ from windows_runtime_contract import (
     InstallPackage,
     RuntimePackage,
     WindowsRuntimeContractError,
+    load_build_packages,
     load_contract,
 )
 
@@ -117,7 +118,18 @@ def _run(command: list[str]) -> str:
     except OSError as error:
         raise RuntimeContractError(f"unable to execute {command[0]}: {error}") from error
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()[:1000]
+        details = []
+        for label, output in (("stdout", completed.stdout), ("stderr", completed.stderr)):
+            output = output.strip()
+            if not output:
+                continue
+            if len(output) > 1000:
+                output = output[:500] + "\n[... truncated ...]\n" + output[-500:]
+            details.append(f"{label}:\n{output}")
+        # pacman writes dependency details to stdout and warnings to stderr.
+        # Preserve both streams, including their tails, so warnings cannot hide
+        # the reason a pinned-package transaction was rejected.
+        detail = "\n".join(details) or "no output"
         raise RuntimeContractError(
             f"{' '.join(command)} failed with status {completed.returncode}: {detail}"
         )
@@ -324,7 +336,14 @@ def _download_pinned_package(package: InstallPackage, directory: Path) -> Path:
 
 
 def _validate_installed_packages() -> None:
-    for package in load_contract().install_packages:
+    packages = load_build_packages()
+    installed = {
+        name for name in _run(["pacman", "-Qq"]).splitlines()
+        if name.startswith("mingw-w64-ucrt-x86_64-")
+    }
+    if installed != {package.name for package in packages}:
+        raise RuntimeContractError("installed UCRT64 package set differs from the build lock")
+    for package in packages:
         identity = _run(["pacman", "-Q", package.name]).split()
         if identity != [package.name, package.version]:
             raise RuntimeContractError(
@@ -342,7 +361,7 @@ def _pinned_evidence_value() -> dict[str, Any]:
                 "sha256": package.sha256,
                 "version": package.version,
             }
-            for package in contract.install_packages
+            for package in load_build_packages()
         ],
         "runtime": contract.runtime,
         "schema_version": 1,
@@ -368,14 +387,30 @@ def install_pinned_packages(download_directory: Path, evidence_output: Path) -> 
         )
     if evidence_output.exists() or evidence_output.is_symlink():
         raise RuntimeContractError(f"refusing to overwrite pinned evidence: {evidence_output}")
+    if any(
+        name.startswith("mingw-w64-ucrt-x86_64-")
+        for name in _run(["pacman", "-Qq"]).splitlines()
+    ):
+        raise RuntimeContractError("pinned installation requires a clean UCRT64 package set")
     download_directory.parent.mkdir(parents=True, exist_ok=True)
     download_directory.mkdir()
     archives = [
         _download_pinned_package(package, download_directory)
-        for package in load_contract().install_packages
+        for package in load_build_packages()
     ]
     posix_archives = [_run(["cygpath", "-u", str(path)]).strip() for path in archives]
-    _run(["pacman", "-U", "--noconfirm", *posix_archives])
+    # No sync repositories: pacman must satisfy dependencies using this exact
+    # archive set rather than fetching rolling replacements for missing pins.
+    # Local archives retain the normal optional-signature policy; their SHA-256
+    # digests were verified above before the transaction can start.
+    pacman_config = download_directory / "pacman-frozen.conf"
+    pacman_config.write_text(
+        "[options]\nArchitecture = auto\nSigLevel = Required DatabaseOptional\n"
+        "LocalFileSigLevel = Optional\n",
+        encoding="utf-8",
+    )
+    posix_config = _run(["cygpath", "-u", str(pacman_config)]).strip()
+    _run(["pacman", "--config", posix_config, "-U", "--noconfirm", *posix_archives])
     _validate_installed_packages()
     evidence_output.parent.mkdir(parents=True, exist_ok=True)
     _write_json_exclusive(evidence_output, _pinned_evidence_value())
@@ -578,6 +613,76 @@ def bundle_runtime(
 
 
 def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="gnfs-windows-pinned-install-") as directory:
+        download = Path(directory) / "packages"
+        evidence = Path(directory) / "evidence.json"
+        with patch(__name__ + "._run", return_value="mingw-w64-ucrt-x86_64-libgcc\n"):
+            try:
+                install_pinned_packages(download, evidence)
+            except RuntimeContractError:
+                pass
+            else:
+                raise RuntimeContractError("pinned install accepted an existing UCRT64 package")
+        if download.exists() or evidence.exists():
+            raise RuntimeContractError("rejected bootstrap left installation output")
+
+        def reject_transaction(command: list[str]) -> str:
+            if command == ["pacman", "-Qq"]:
+                return "bash\npython\n"
+            if command[:2] == ["cygpath", "-u"]:
+                return command[2]
+            if command[:2] == ["pacman", "--config"]:
+                config = Path(command[2]).read_text(encoding="utf-8")
+                if any(line.startswith("[") and line != "[options]" for line in config.splitlines()):
+                    raise AssertionError("pinned install enabled a sync repository")
+                raise RuntimeContractError("unsatisfied dependency fixture")
+            raise AssertionError(f"unexpected install command: {command}")
+
+        with patch(__name__ + "._run", side_effect=reject_transaction), patch(
+            __name__ + "._download_pinned_package",
+            side_effect=lambda package, destination: destination / package.archive,
+        ):
+            try:
+                install_pinned_packages(download, evidence)
+            except RuntimeContractError as error:
+                if str(error) != "unsatisfied dependency fixture":
+                    raise
+            else:
+                raise RuntimeContractError("pinned install ignored a rejected transaction")
+        if evidence.exists():
+            raise RuntimeContractError("failed pinned transaction published success evidence")
+
+    failure_command = [
+        sys.executable,
+        "-c",
+        "import sys; "
+        "print('dependency transaction start\\n' + 'x' * 2000 + "
+        "'\\nrequires conflicting runtime'); "
+        "print('package downgrade warning', file=sys.stderr); sys.exit(7)",
+    ]
+    try:
+        _run(failure_command)
+    except RuntimeContractError as error:
+        detail = str(error).split("failed with status 7: ", 1)
+        if len(detail) != 2:
+            raise RuntimeContractError("command failure lost its exit status") from error
+        diagnostic = detail[1]
+        if not all(
+            marker in diagnostic
+            for marker in (
+                "stdout:\n",
+                "dependency transaction start",
+                "[... truncated ...]",
+                "requires conflicting runtime",
+                "stderr:\npackage downgrade warning",
+            )
+        ) or len(diagnostic) > 1200:
+            raise RuntimeContractError(
+                "command failure lost bounded stdout/stderr diagnostics"
+            ) from error
+    else:
+        raise RuntimeContractError("command failure was not rejected")
+
     fixture = (
         "libgmp-10.dll => /ucrt64/bin/libgmp-10.dll (0x0001)\n"
         "KERNEL32.DLL => /c/WINDOWS/System32/KERNEL32.DLL (0x0002)\n"

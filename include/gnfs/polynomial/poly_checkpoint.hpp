@@ -286,8 +286,30 @@ private:
                 "PolyCheckpoint::read_integer: byte_count too large (corrupt)");
         }
         if (sgn == 0) {
+            if (byte_count != 0) {
+                throw std::runtime_error(
+                    "PolyCheckpoint::read_integer: zero integer has non-zero byte count");
+            }
             x = Integer(static_cast<int64_t>(0));
             return;
+        }
+        const std::streampos current = in.tellg();
+        if (current == std::streampos(-1)) {
+            throw std::runtime_error(
+                "PolyCheckpoint::read_integer: cannot determine body position");
+        }
+        in.seekg(0, std::ios::end);
+        const std::streampos end = in.tellg();
+        if (end == std::streampos(-1) || end < current) {
+            throw std::runtime_error("PolyCheckpoint::read_integer: cannot measure body");
+        }
+        in.seekg(current);
+        if (!in) {
+            throw std::runtime_error("PolyCheckpoint::read_integer: cannot restore body position");
+        }
+        if (static_cast<uint64_t>(end - current) < byte_count) {
+            throw std::runtime_error(
+                "PolyCheckpoint::read_integer: declared body exceeds remaining file");
         }
         std::vector<unsigned char> buf(byte_count);
         if (byte_count > 0) {

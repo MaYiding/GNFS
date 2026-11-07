@@ -128,6 +128,195 @@ finite bound while allowing LP components deeper than the former fixed
 | `tests/test_siqs_shadow_prefer_route.cpp` | Instant production-adapter composition, three-gate truth table, exact candidate/fallback records, write failure, stale candidate rejection, and cross-platform environment/stderr paths |
 | `tests/test_method_selection.cpp` | Router unit tests including ENV overrides |
 
+## Multiplier Candidate Preparation
+
+`rank_multiplier_candidates(N, limit)` exposes the raw Knuth-Schroeppel ranking
+for callers that need to inspect or prepare more than one candidate. It ranks
+all 21 fixed candidates before returning the requested prefix. A zero limit
+returns an empty vector without inspecting `N`; a positive limit requires
+positive `N` and otherwise throws `std::invalid_argument`. Limits above 21
+return the complete ranking. Equal scores retain the historical candidate
+order. Floating-point score ordering is deterministic within an implementation;
+near-tie ordering across platforms is not a golden contract.
+
+`select_multiplier(N)` keeps the historical first candidate for positive `N`.
+The raw ranking and selector do not filter shared factors. The internal
+`siqs_multiplier_detail::admit_candidates` helper preserves supplied order,
+rejects zero and every `gcd(N, k) > 1` (including `k = N`), and removes duplicates
+before applying the eligible-candidate limit. Callers must supply the complete
+ranking: truncating the raw ranking first can discard available candidates.
+For example, `N = 15015` has only one admissible entry in its raw first three,
+while the complete ranking supplies three coprime candidates.
+
+These helpers prepare candidates only. Production `factor()` still selects
+one multiplier. Its budget checks, shadow records, and result commit behavior
+remain unchanged. Candidate limits do not count started attempts or establish a time
+budget. Explicit internal attempt coordination is described below; the default
+facade remains unchanged.
+
+## Native Single-Attempt Boundary
+
+The public `factor()` facade still performs its original input fast paths,
+starts the timer, selects parameters, and selects one historical multiplier in
+that order. It delegates the remaining native work to the internal
+`siqs_factor_detail::factor_once` entry with an explicit multiplier, shadow mode,
+and `FactorAttemptContext`. The context carries the original parameter choice
+and timer origin; the native attempt does not parse environment flags or reset
+the caller's clock.
+
+Every normal return supplies a `FactorAttemptOutcome`: the existing optional
+factor result, a terminal state for insufficient factor base, insufficient
+relations, exhausted factor extraction, or success, and whether an observe
+record was committed. A failed attempt therefore retains its observe commit
+metadata. This metadata grants no shadow-return authority. Preferred results
+still pass through `commit_prefer_route`; an accepted result keeps its single
+pre-emit timing sample and is returned without a later deadline veto.
+
+This extraction preserves the default single-attempt and zero-budget behavior.
+It does not change the default facade's attempt count or add a deadline guarantee.
+Factor-base construction, both linear-algebra backends, and the remaining long
+stages still require a coherent cooperative cancellation contract before an
+end-to-end deadline can be claimed.
+
+Before reserving the native relation buffer, admitting each sieve worker, and
+allocating a worker's local buffers, the attempt checks its existing shared
+elapsed budget. An already expired attempt skips that sieve work and continues
+through the ordinary empty-corpus shadow and terminal handling. Zero-budget
+observe/prefer records and committed-result authority remain unchanged.
+Expiration between a check and an operation is still possible; factor-base,
+individual polynomial, shadow, merge, solver, and extraction work do not acquire
+a hard deadline from these admission checks.
+
+Native sieve workers capture exceptions in separate per-worker slots. Every
+started worker is joined before the caller rethrows a worker failure, before
+shadow records, merging, or factor extraction can publish a partial result.
+If thread launch fails, joining owners drain the already started workers while
+their captured state remains alive. Both failure paths request stopping through
+the existing polynomial boundaries; successful worker computation is unchanged.
+Thread and exception storage is prepared only while sieve admission is open.
+
+## Explicit Multiplier Coordination
+
+`siqs_factor_detail::factor_multiplier_portfolio` is an internal, explicitly
+called native entry for odd `N >= 15`. It accepts the requested shadow mode, a
+prepared `FactorAttemptContext`, and an optional limit capped at three attempts.
+It binds the real monotonic clock and `factor_once`; callers cannot supply a
+replacement executor or clock to this entry. The default public `factor()` still
+uses its historical single multiplier and has no portfolio flag.
+
+The coordinator filters the complete ranking for positive, coprime, unique
+candidates before applying the limit. It checks the shared budget immediately
+before counting and starting each attempt. Rejected candidates and expired
+admissions consume no attempt. Every attempt receives the same context and timer
+origin. Only the first actual attempt receives the requested shadow mode;
+subsequent attempts use `off`.
+
+`MultiplierPortfolioOutcome` contains fixed-capacity per-attempt records and a
+stop reason for success, expired budget, the attempt cap, candidate exhaustion,
+or a native exception. Exceptions stop retries and retain their exception pointer.
+Normal attempt records carry the native terminal and observe-commit state. An
+observe attempt that throws has an explicitly unknown commit state because it
+may have emitted before throwing. The aggregate `any_observe_record_committed`
+is `true` when a commit is known, `false` when all completed information rules it
+out, and empty when an exceptional attempt leaves it unknown. Verbose calls emit
+the per-attempt and aggregate terminal records.
+
+A successful `SIQSResult` moves through unchanged. Earlier attempts' observe
+records belong only to the portfolio summary; they do not change the successful
+result's own observe field. No clock check or timing rewrite follows a successful
+native return, so a committed preferred result keeps its pre-emit sample even
+when the emitter crosses the budget. Fixed record storage avoids additional
+allocations for coordinator accounting after receiving a result. Optional verbose
+output uses C stdio; a logging error does not veto the native result.
+
+This entry enforces admission between attempts, not a hard deadline inside native
+factor-base, solver, merge, or extraction work. A zero budget starts no portfolio
+attempt and emits its aggregate stop record when verbose. The default facade
+retains its existing zero-budget single-attempt shadow behavior. Long-stage
+cooperative cancellation and default or flag-based portfolio activation remain
+unfinished work.
+
+### Factor-Base Stop Helper
+
+The internal `siqs_factor_base_detail::build_factor_base_until` helper accepts
+a zero-argument `noexcept` stop predicate. It checks the predicate before
+reserving storage, before each odd candidate, before each trial-divisor
+iteration, and before returning the completed factor base. The existing count
+domain check runs first. A true predicate returns `std::nullopt` immediately
+and destroys the internal vector; neither partial entries nor an empty factor
+base represent cancellation. Allocation and domain errors retain their existing
+exception behavior.
+
+The public `build_factor_base(N, count)` wrapper uses the `nullptr` template
+specialization, which removes predicate calls at compile time. It preserves
+prime order, root choice, count boundaries, and the vector return type. Neither
+path reads a clock internally. A caller that supplies a predicate owns its
+state and synchronization, and must keep each predicate call bounded.
+
+This helper is not yet connected to `factor_once`, a coordinator, or shadow
+finalization. Cancelling construction grants no factor-result or shadow-return
+authority. One allocation, GMP operation, or `tonelli_shanks` invocation can
+still run between polls; the sparse solver also lacks a native stop contract.
+This change therefore provides cooperative factor-base stopping, without
+establishing a wall-clock bound for a complete attempt.
+
+### Dense Elimination Stop Helper
+
+The internal `siqs_dense_detail::dense_gauss_left_nullspace_until` helper returns
+an optional dependency list. `nullopt` means cancellation; an engaged empty list
+means normal completion with no returned dependencies. A zero-argument `noexcept`
+predicate runs only on the calling thread. The helper checks it around dense
+workspace allocation, before each relation fill and pivot, before each serial
+target row, around parallel launch preparation, after all workers join, before
+each free column, and before publishing the result. Cancellation destroys the
+internal matrix and partial dependency list. Allocation and thread-launch
+exceptions continue to propagate after any accepted workers have joined.
+
+The parallel XOR batch runs to completion before the next poll. Workers receive
+no predicate, clock, or cancellation state. One allocation, row fill, packed row
+XOR, free-column extraction, or parallel batch can therefore delay cancellation.
+The predicate owner must keep calls bounded. This is cooperative stopping, not
+a hard deadline.
+
+The existing `dense_gauss_left_nullspace` wrapper passes `nullptr`, which removes
+predicate branches at compile time. Its return type, pivot order, dependency
+prefix, parallel threshold, partitions, and normal join order remain unchanged.
+No hot-path performance measurement is claimed. Only the explicit internal entry
+accepts cancellation; `solve_matrix`, `factor_once`, shadow finalization, and the
+multiplier coordinator retain their existing behavior and supply no stop predicate.
+
+### Native Dependency Extraction Budgets
+
+The native attempt checks zero-parity relations individually before spending its
+matrix dependency budget. Each row in the already trimmed corpus gets at most
+one singleton attempt, using one reusable index vector and the existing square
+congruence and GCD checks. A useful singleton returns immediately. Otherwise,
+the consumer removes zero-parity rows in place, preserving survivor order, and
+asks the unchanged matrix solver for at most 64 non-singleton dependencies.
+The existing combination limit remains `min(3 * dependency_count, 200)`.
+The consumer never materializes the full nullspace or copies the entire corpus.
+
+This separates two useful opportunities. A zero-parity row can itself reveal a
+factor, but many valid unit dependencies have only trivial GCDs. For an admitted
+relation satisfying the square congruence, those failed GCD attempts imply
+`X == Y` or `X == -Y` modulo the factorization target; the unit cannot improve
+later plus/minus GCD attempts. For dense Gaussian elimination, removing its
+coordinate preserves the ordered non-unit basis after remapping surviving row
+indices. The sparse backend retains its dependency budget, without a promise
+that an iterative solver chooses the same basis after zero-row removal. The
+generic dense kernel still includes unit vectors and retains its original
+`max_deps` contract.
+
+Parity alone does not authenticate a relation. `try_extract` still rejects
+invalid exponents or a failed square congruence; a rejected malformed row is
+not evidence of a valid dependency with trivial GCDs. The native policy assumes
+the ordinary admitted relation identities and grants no shadow authority.
+
+Successful legacy results retain the admitted, pre-compaction relation count,
+the existing elapsed-time sample, and their observe-commit field. Preferred
+shadow results still commit and return before this phase. No new time budget,
+cancellation propagation, or retry policy is introduced here.
+
 ## Parameter Calibration
 
 The `select_params` table is tuned against msieve, CADO-NFS, and YAFU defaults.
