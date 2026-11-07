@@ -860,6 +860,11 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME FactorBase COMMAND test_factor_base)
     set_tests_properties(FactorBase PROPERTIES LABELS "instant" TIMEOUT 30)
 
+    add_executable(test_factor_base_add_rollback tests/test_factor_base_add_rollback.cpp)
+    target_link_libraries(test_factor_base_add_rollback PRIVATE gnfs_core)
+    add_test(NAME FactorBaseAddRollback COMMAND test_factor_base_add_rollback)
+    set_tests_properties(FactorBaseAddRollback PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_special_q
         tests/test_special_q.cpp
     )
