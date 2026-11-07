@@ -13,6 +13,13 @@
 #include "gnfs/util/safe_math.hpp"
 #include "gnfs/util/temp_path.hpp"
 
+#ifndef _WIN32
+#include "support/child_process.hpp"
+
+#include <csignal>
+#include <sys/resource.h>
+#endif
+
 #include <array>
 #include <cassert>
 #include <cstdio>
@@ -26,6 +33,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <type_traits>
@@ -280,6 +288,39 @@ void test_save_load() {
 
     std::cout << "  Save/load: PASS" << std::endl;
 }
+
+#ifndef _WIN32
+static int save_with_file_limit(const char* path) {
+    RelationCollector collector;
+    if (!collector.save(path))
+        return 2;
+
+    // This child owns its file-size limit and signal disposition. Even the
+    // eight-byte empty-collector header cannot fit after the limit is applied.
+    rlimit original{};
+    if (::getrlimit(RLIMIT_FSIZE, &original) != 0 || std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR)
+        return 3;
+    const rlimit limited{0, original.rlim_max};
+    if (::setrlimit(RLIMIT_FSIZE, &limited) != 0)
+        return 4;
+    const bool saved = collector.save(path);
+    if (::setrlimit(RLIMIT_FSIZE, &original) != 0)
+        return 5;
+    return saved ? 1 : 0;
+}
+
+static void test_save_reports_buffered_write_failure(const char* executable) {
+    const auto dir = std::filesystem::path(gnfs::util::temp_path(
+        "gnfs_test_collector_save_limit_" + std::to_string(gnfs::util::process_id())));
+    CHECK(std::filesystem::create_directory(dir));
+    const auto path = dir / "save.bin";
+    const auto child =
+        gnfs::test::run_child_process(executable, {"--save-with-file-limit", path.string()});
+    std::filesystem::remove(path);
+    std::filesystem::remove(dir);
+    CHECK(child.exited && child.exit_code == 0);
+}
+#endif
 
 static void test_save_rejects_oversized_relation_without_clobbering_target() {
     std::cout << "Testing save preflight preserves target on serialization rejection..."
@@ -3494,7 +3535,12 @@ void test_ooc_writer_resume_large_payload() {
     std::cout << "  OOC writer resume large payload: PASS (150 rels, mixed weight)" << std::endl;
 }
 
-int main() {
+int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
+#ifndef _WIN32
+    if (argc == 3 && std::string_view(argv[1]) == "--save-with-file-limit")
+        return save_with_file_limit(argv[2]);
+    test_save_reports_buffered_write_failure(argv[0]);
+#endif
     std::cout << "=== Relation Collector Tests ===" << std::endl;
 
     test_basic_add();
