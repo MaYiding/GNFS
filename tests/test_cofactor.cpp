@@ -769,6 +769,23 @@ void test_special_q_root_identity_validation() {
     CHECK(!Cofactorizer::special_q_root_matches(1, 7, 7, 0));
     CHECK(!Cofactorizer::special_q_root_matches(1, 1, 7, projective_root));
 
+    // f(2) = 143 and f(1) = 9. Recording q=9 as one prime ideal
+    // would turn the even valuation of the actual prime 3 into odd parity.
+    core::PolynomialContext square_ctx(core::Integer(143),
+                                       {core::Integer(-123), core::Integer(131), core::Integer(1)},
+                                       core::Integer(2));
+    CHECK(square_ctx.verify() && square_ctx.algebraic_norm(1, 1) == core::Integer(9));
+    factor_base::FactorBase no_factors(core::FactorBaseParams{2, 2, 100});
+    Cofactorizer square_verifier(square_ctx, no_factors);
+    const auto prime = square_verifier.verify(1, 1, 3, 1);
+    CHECK(prime && prime->algebraic_large_prime.size() == 1);
+    CHECK(prime->algebraic_large_prime.front().p == 3);
+    CHECK(prime->algebraic_large_prime.front().e == 2);
+    CHECK(!square_verifier.verify(1, 1, 9, 1));
+    CHECK(!Cofactorizer::special_q_root_matches(1, 9, 9, projective_root));
+    CHECK(!Cofactorizer::special_q_root_matches(1, 1, 257u * 263u, 1));
+    CHECK(Cofactorizer::special_q_root_matches(1, 3, 3, projective_root));
+
     constexpr uint32_t LARGE_Q = 4294967291U;
     CHECK(Cofactorizer::special_q_root_matches(1, LARGE_Q - 1, LARGE_Q, LARGE_Q - 1));
     const uint32_t min_root = static_cast<uint32_t>(

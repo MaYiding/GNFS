@@ -546,11 +546,19 @@ private:
 public:
     /// Check the Special-Q ideal identity without computing b^{-1} mod q.
     /// For a finite root, a == b*r (mod q); q | b identifies the projective
-    /// root. The sieve invokes this on every candidate, so keep it O(1).
+    /// root. Primality is reused for consecutive candidates with the same q.
     [[nodiscard]] static bool special_q_root_matches(int64_t a, uint64_t b, uint32_t q,
                                                      uint32_t root) noexcept {
         if (q < 2) {
             return false;
+        }
+        // Candidates from one lattice use the same q. Check each new modulus
+        // before treating its residue as a prime ideal.
+        static thread_local uint32_t last_prime = 0;
+        if (q != last_prime) {
+            if (!util::is_prime_u32(q))
+                return false;
+            last_prime = q;
         }
 
         const uint64_t b_mod = b % q;
