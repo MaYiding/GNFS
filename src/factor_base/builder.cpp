@@ -432,7 +432,8 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
                                     opts.parallel);
     }
 
-    fb.build_index();
+    // add_rational and add_algebraic have already indexed every entry.
+    fb.reserve_index_buckets();
     return fb;
 }
 
