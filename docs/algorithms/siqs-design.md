@@ -239,6 +239,14 @@ records `factor_base_budget_exhausted`. The portfolio returns `budget_exhausted`
 even at the attempt cap. This attempt counts as started and emits no shadow record.
 A factor-base allocation or domain error follows the ordinary attempt-exception path.
 
+After the sieve workers join and their exceptions have been checked, an expired
+portfolio returns `sieve_budget_exhausted` for that attempt before starting
+shadow proof or the legacy merge. If an admitted shadow phase consumes the
+remaining time, the attempt returns `shadow_budget_exhausted` before merge and
+preserves whether it committed an observe record. Both terminals stop the
+portfolio with `budget_exhausted`, including on the final allowed attempt.
+A successful prefer decision still returns its committed result immediately.
+
 A zero budget starts no portfolio attempt and emits the aggregate stop record
 when verbose. The default facade retains its zero-budget single-attempt shadow
 behavior. Solver, merge, and extraction work can still run past the shared deadline.
