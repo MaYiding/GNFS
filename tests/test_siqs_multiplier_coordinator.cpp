@@ -266,6 +266,47 @@ void test_committed_prefer_survives_budget_crossing() {
             "budget-crossing fixture did not preserve the actual terminal decision");
 }
 
+void test_clock_range() {
+    const auto earliest = Clock::time_point::min();
+    const auto latest = Clock::time_point::max();
+    FactorAttemptContext context{earliest, 1, false, 3, select_params(3)};
+    require(multiplier_budget_exhausted(context, latest),
+            "full clock range admitted a one-second budget");
+    context.started = latest;
+    require(multiplier_budget_exhausted(context, earliest), "reversed clock range was admitted");
+
+    // At this distance a double cannot distinguish the last nanosecond from
+    // the deadline. The integral budget still admits every earlier tick.
+    context.started = earliest;
+    context.max_seconds = 1u << 25;
+    const auto cutoff = earliest + std::chrono::seconds(context.max_seconds);
+    require(!multiplier_budget_exhausted(context, cutoff - Clock::duration{1}),
+            "last tick before deadline was rejected");
+    require(multiplier_budget_exhausted(context, cutoff), "deadline equality was admitted");
+
+    const Integer n(143u);
+    context.max_seconds = 1;
+    const auto stopped = factor_multiplier_portfolio(n, SIQSShadowProofMode::off, context, 1);
+    require(stopped.stop == MultiplierPortfolioStop::budget_exhausted &&
+                stopped.attempts_started == 0,
+            "minimum start wrapped into an open native portfolio budget");
+    if constexpr (std::numeric_limits<size_t>::digits >= 64) {
+        context.max_seconds = std::numeric_limits<size_t>::max();
+        require(!multiplier_budget_exhausted(context, latest),
+                "large budget failed across the full clock range");
+        ScopedStderrCapture capture;
+        const auto admitted =
+            factor_multiplier_portfolio(n, SIQSShadowProofMode::prefer, context, 1);
+        const auto record = capture.finish();
+        require(occurrences(record, SIQS_SHADOW_PROOF_PREFER_DECISION_PREFIX) == 1,
+                "admitted minimum-start attempt lost its prefer decision");
+        require(admitted.attempts_started == 1 && admitted.result &&
+                    admitted.result->factor1 * admitted.result->factor2 == n &&
+                    admitted.result->time_seconds > 0,
+                "admitted minimum-start native attempt lost its factor or elapsed time");
+    }
+}
+
 void test_native_adapter_and_default_boundary() {
     const Integer n(143u);
     FactorAttemptContext context{Clock::now(), 10, true, 3, select_params(3)};
@@ -375,6 +416,7 @@ int main() {
         test_limits_exhaustion_and_budget();
         test_attempt_exceptions_are_terminal();
         test_committed_prefer_survives_budget_crossing();
+        test_clock_range();
         test_native_adapter_and_default_boundary();
         std::puts("SIQS explicit multiplier coordinator: all contracts PASS");
         return 0;
