@@ -164,6 +164,47 @@ void test_full_factor_base_valuations() {
     }
 }
 
+void test_relation_factor_count_limit() {
+    using core::Integer;
+    constexpr uint32_t limit = core::Relation::MAX_SERIALIZED_FACTORS;
+    factor_base::FactorBase fb(core::FactorBaseParams{2, 2, 100});
+    fb.add_rational(2, 1);
+    fb.add_algebraic(2, 1, 1);
+    for (const uint32_t exponent : {limit, limit + 1}) {
+        const Integer t = core::pow(Integer(2), exponent);
+        core::PolynomialContext both(t + Integer(5), {Integer(-8), t + Integer(7), Integer(1)},
+                                     t + Integer(1));
+        CHECK(both.verify());
+        Cofactorizer verifier(both, fb);
+        const auto relation = verifier.verify(1, 1);
+        if (exponent == limit) {
+            CHECK(relation.has_value());
+            CHECK(relation->rational_factors.size() == limit);
+            CHECK(relation->algebraic_factors.size() == limit);
+            std::ostringstream serialized;
+            relation->serialize(serialized);
+            CHECK(serialized.good() && serialized.tellp() > 0);
+        } else {
+            CHECK(!relation.has_value());
+            CHECK(verifier.stats().rational_rejects == 1);
+            CHECK(verifier.stats().full_relations == 0);
+        }
+    }
+
+    // Keep the rational value at -1 to reach the algebraic-side limit.
+    // f(2) = 143 and f(1) = t.
+    const Integer t = core::pow(Integer(2), limit + 1);
+    core::PolynomialContext algebraic(
+        Integer(143), {t + t - Integer(141), Integer(140) - t, Integer(1)}, Integer(2));
+    CHECK(algebraic.verify());
+    CHECK(algebraic.rational_value(1, 1) == Integer(-1));
+    CHECK(algebraic.algebraic_norm(1, 1) == t);
+    Cofactorizer verifier(algebraic, fb);
+    CHECK(!verifier.verify(1, 1).has_value());
+    CHECK(verifier.stats().algebraic_rejects == 1);
+    CHECK(verifier.stats().full_relations == 0);
+}
+
 // Test perfect power detection
 void test_perfect_power() {
     std::cout << "Testing perfect power detection..." << std::endl;
@@ -937,6 +978,7 @@ int main() {
     test_small_composite_classification();
     test_small_primality_oracle();
     test_full_factor_base_valuations();
+    test_relation_factor_count_limit();
     test_perfect_power();
     test_pollard_rho();
     test_cofactor_classification();
