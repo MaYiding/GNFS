@@ -3988,7 +3988,7 @@ run_50d_route_comparison() {
         log_fail "无法失效上一轮 50 位 comparison JSON: ${comparison_artifact_path}"
         return 1
     fi
-    do_build
+    do_build test_structured_ooc_50d_probe gnfs_test_process_supervisor
     if [[ ! -x "${BUILD_DIR}/test_structured_ooc_50d_probe" ]]; then
         log_fail "50 位探针二进制不存在: ${BUILD_DIR}/test_structured_ooc_50d_probe"
         return 1
