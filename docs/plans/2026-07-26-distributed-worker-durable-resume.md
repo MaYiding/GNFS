@@ -2485,6 +2485,17 @@ destination allocation. Dedicated tests freeze both digest goldens and all
 header offsets, cover every exact truncation and partial short-write boundary,
 and distinguish outer-integrity rejection from bound body validation.
 
+V1 requires strictly increasing algebraic `(p, r)` keys. For `N = 65`,
+`f(x) = x² + 1`, and `m = 8`, a builder produced `(73, 46)` and `(73, 27)`
+at indices 13 and 14. Sorting those entries assigns a different ideal to the
+same worker interval `[13, 14)`. The proposed V2 work identity would preserve
+each column ordinal in the work digest and use separate V2 work and package
+hash domains. Launch and recovery would check the package version and work
+digest against the manifest, and the worker would bind every restored entry
+to its original column before executing the chunk. Existing waves would retain
+their recorded V1 version and golden bytes and digests.
+[Worker regression](../../tests/test_distributed_sieve_worker_execution.cpp)
+
 ### M2i Anonymous Work-Package File Capability Status
 
 The source-private M2i carrier writes the immutable envelope to the fixed

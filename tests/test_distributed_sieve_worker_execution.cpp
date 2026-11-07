@@ -6,6 +6,7 @@
 #include <gnfs/relation/relation_corpus_sha256.hpp>
 #include <gnfs/relation/relation_sequence_receipt.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
+#include <gnfs/sieve/special_q.hpp>
 
 #include "distributed_sieve_bound_work_internal.hpp"
 #include "distributed_sieve_execution_policy_internal.hpp"
@@ -13,6 +14,7 @@
 #include "distributed_sieve_worker_execution_internal.hpp"
 #include "distributed_sieve_worker_runtime_internal.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cerrno>
 #include <cstddef>
@@ -152,9 +154,10 @@ frozen_skew_policy(bool adaptive = false) {
 }
 
 [[nodiscard]] sieve::DistributedSieveWorkIdentityV1
-make_identity(const PolynomialContext& polynomial, const FactorBase& factor_base,
-              const policy::DistributedSieveFrozenExecutionPolicyV1& frozen, std::uint32_t sq_begin,
-              std::uint32_t sq_end, std::uint64_t sq_cap = 0, std::uint64_t relation_cap = 0) {
+project_identity(const PolynomialContext& polynomial, const FactorBase& factor_base,
+                 const policy::DistributedSieveFrozenExecutionPolicyV1& frozen,
+                 std::uint32_t sq_begin, std::uint32_t sq_end, std::uint64_t sq_cap,
+                 std::uint64_t relation_cap) {
     sieve::DistributedSieveWorkIdentityV1 identity;
     identity.polynomial.n.decimal = polynomial.n().to_string();
     identity.polynomial.m.decimal = polynomial.m().to_string();
@@ -214,6 +217,15 @@ make_identity(const PolynomialContext& polynomial, const FactorBase& factor_base
     identity.distributed.max_consumption_attempts = 2;
     identity.execution_policy = frozen.canonical;
     identity.semantic_versions = policy::DISTRIBUTED_SIEVE_BOUND_WORK_VERSIONS_V1;
+    return identity;
+}
+
+[[nodiscard]] sieve::DistributedSieveWorkIdentityV1
+make_identity(const PolynomialContext& polynomial, const FactorBase& factor_base,
+              const policy::DistributedSieveFrozenExecutionPolicyV1& frozen, std::uint32_t sq_begin,
+              std::uint32_t sq_end, std::uint64_t sq_cap = 0, std::uint64_t relation_cap = 0) {
+    auto identity =
+        project_identity(polynomial, factor_base, frozen, sq_begin, sq_end, sq_cap, relation_cap);
     CHECK(sieve::validate_distributed_sieve_work_identity(identity));
     return identity;
 }
@@ -476,6 +488,57 @@ void test_projection_preflight_respects_sq_cap_before_writer_adoption() {
     std::cout << "PASS\n";
 }
 
+void test_v1_root_order_preserves_special_q_identity() {
+    const PolynomialContext polynomial(Integer(65), {Integer(1), Integer(0), Integer(1)},
+                                       Integer(8));
+    CHECK(polynomial.verify());
+    FactorBaseBuilder::Options options;
+    options.rational_bound = 73;
+    options.algebraic_bound = 73;
+    options.parallel = false;
+    const auto built = FactorBaseBuilder::build(polynomial, options);
+    // Reproduce the persisted column order independently of root-finder traversal.
+    // All groups are ascending except the historical pair (73,46), (73,27).
+    const auto entries = built.algebraic();
+    std::vector<gnfs::core::AlgebraicPrime> historical(entries.begin(), entries.end());
+    std::sort(historical.begin(), historical.end(), [](const auto& left, const auto& right) {
+        if (left.p != right.p)
+            return left.p < right.p;
+        return left.p == 73 ? left.r > right.r : left.r < right.r;
+    });
+    FactorBase base(built.params());
+    for (const auto& entry : built.rational())
+        base.add_rational(entry.p, entry.log_p);
+    for (const auto& entry : historical)
+        base.add_algebraic(entry.p, entry.r, entry.log_p, entry.degree);
+    base.set_sieve_algebraic_count_explicit(built.sieve_algebraic_count());
+    const auto first = base.find_special_q(73, 46);
+    const auto second = base.find_special_q(73, 27);
+    CHECK(first && second && *second == *first + 1);
+    const auto range = sieve::SpecialQRange::from_indices(*first, *second);
+    const auto original_q = sieve::SpecialQGenerator(base, range).next();
+    CHECK(original_q && original_q->q == 73 && original_q->r == 46);
+
+    const auto frozen = frozen_policy();
+    auto identity = project_identity(polynomial, base, frozen, *first, *second, 0, 0);
+    const auto digest = sieve::distributed_sieve_work_digest(identity);
+    CHECK(!digest);
+    CHECK(digest.status.error == sieve::DistributedSieveProtocolError::noncanonical_order);
+    CHECK(digest.status.element_index == *second);
+    const auto rejected = execution::rehydrate_distributed_sieve_worker_runtime_v1(identity);
+    CHECK(!rejected);
+    CHECK(rejected.status.error == sieve::DistributedSieveProtocolError::noncanonical_order);
+    CHECK(rejected.status.element_index == *second);
+
+    std::swap(identity.factor_base.algebraic[*first], identity.factor_base.algebraic[*second]);
+    const auto runtime = execution::rehydrate_distributed_sieve_worker_runtime_v1(identity);
+    CHECK(runtime);
+    const auto sorted_q = sieve::SpecialQGenerator(runtime.runtime->factor_base, range).next();
+    CHECK(sorted_q && sorted_q->index == original_q->index && sorted_q->q == 73 &&
+          sorted_q->r == 27);
+    CHECK(runtime.runtime->factor_base.find_special_q(73, 46) == *second);
+}
+
 void test_current_executable_digest_is_stable(
     [[maybe_unused]] const std::filesystem::path& executable) {
     std::cout << "[current executable digest] ... " << std::flush;
@@ -546,6 +609,7 @@ int main(int argc, char** argv) {
         test_trailing_projective_special_q_normalizes_cursor();
         test_sq_cap_preserves_cursor_before_projective_hole();
         test_projection_preflight_respects_sq_cap_before_writer_adoption();
+        test_v1_root_order_preserves_special_q_identity();
         test_current_executable_digest_is_stable(argv[0]);
         std::cout << "All distributed sieve worker execution tests passed.\n";
         return 0;
