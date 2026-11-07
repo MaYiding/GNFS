@@ -319,6 +319,12 @@ private:
 #endif
         }
 
+        // Zero has no finite prime factorization on the algebraic side.
+        if (alg_norm.is_zero()) {
+            stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
+
         // Pre-divide by the Special-Q prime if provided.
         // The SQ prime always divides the algebraic norm (by lattice construction).
         // This allows using sieve-only trial division (skipping ~10K SQ-range entries).
