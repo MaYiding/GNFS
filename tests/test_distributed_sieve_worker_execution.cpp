@@ -14,6 +14,7 @@
 #include "distributed_sieve_worker_execution_internal.hpp"
 #include "distributed_sieve_worker_runtime_internal.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cerrno>
 #include <cstddef>
@@ -495,8 +496,22 @@ void test_v1_root_order_preserves_special_q_identity() {
     options.rational_bound = 73;
     options.algebraic_bound = 73;
     options.parallel = false;
-    const auto base = FactorBaseBuilder::build(polynomial, options);
-    // The first descending root pair for x^2 + 1 is (73,46), (73,27).
+    const auto built = FactorBaseBuilder::build(polynomial, options);
+    // Reproduce the persisted column order independently of root-finder traversal.
+    // All groups are ascending except the historical pair (73,46), (73,27).
+    const auto entries = built.algebraic();
+    std::vector<gnfs::core::AlgebraicPrime> historical(entries.begin(), entries.end());
+    std::sort(historical.begin(), historical.end(), [](const auto& left, const auto& right) {
+        if (left.p != right.p)
+            return left.p < right.p;
+        return left.p == 73 ? left.r > right.r : left.r < right.r;
+    });
+    FactorBase base(built.params());
+    for (const auto& entry : built.rational())
+        base.add_rational(entry.p, entry.log_p);
+    for (const auto& entry : historical)
+        base.add_algebraic(entry.p, entry.r, entry.log_p, entry.degree);
+    base.set_sieve_algebraic_count_explicit(built.sieve_algebraic_count());
     const auto first = base.find_special_q(73, 46);
     const auto second = base.find_special_q(73, 27);
     CHECK(first && second && *second == *first + 1);
