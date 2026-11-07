@@ -487,18 +487,7 @@ ALL_TEST_BINARIES=(
 # CMake excludes these targets under WIN32. Keep platform exclusions explicit
 # so a missing ordinary target, or GNFS_BUILD_TESTS=OFF, cannot make a gate pass.
 typeset -a WINDOWS_UNAVAILABLE_TESTS
-WINDOWS_UNAVAILABLE_TESTS=(
-    test_distributed_sieve_worker_entry
-    test_distributed_sieve_worker_writer_authority
-    test_distributed_sieve_worker_execution
-    test_distributed_sieve_merge_writer_authority
-    test_distributed_sieve_wave_merge_commit
-    test_distributed_sieve_worker_cleanup_tail
-    test_distributed_sieve_worker_cleanup_authorization_publisher
-    test_distributed_sieve_worker_cleanup_orchestrator
-    test_distributed_sieve_worker_work_package_file
-    test_distributed_sieve_resume
-)
+WINDOWS_UNAVAILABLE_TESTS=("${(@f)$(cat "${PROJECT_ROOT}/scripts/test-catalog/windows-unavailable.txt")}")
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
 typeset -A MODULE_TESTS
@@ -537,196 +526,7 @@ SMOKE_CTEST_CONTRACT="^ProcessSupervisor$"
 
 # 冒烟测试子集: instant 层核心测试，绝不包含真实 GNFS pipeline / bench / stress
 typeset -a SMOKE_TESTS
-SMOKE_TESTS=(
-    test_integer
-    test_params
-    test_int_polynomial
-    test_half_gcd
-    test_poly_karatsuba
-    test_horner_batch_simd
-    test_divrem_subquadratic
-    test_poly_ntt
-    test_poly_square
-    test_poly_add_mod_simd
-    test_poly_horner_mod_simd
-    test_small_vector
-    test_sha256
-    test_relation_corpus_sha256
-    test_thread_pool
-    test_joining_thread
-    test_ordered_parallel_map
-    test_fixed_slot_executor
-    test_logger
-    test_primes
-    test_timer
-    test_process_memory
-    test_bounded_child_process
-    test_durable_immutable_file
-    test_durable_immutable_record
-    test_mmap_file
-    test_native_random_access_file
-    test_resultant
-    test_core_types
-    test_safe_math
-    test_bit_intrin
-    test_ooc_policy
-    test_v0_bfs_policy
-    test_sieve_ecore_qos
-    test_local_sieve_thread_budget
-    test_lll_lattice
-    test_adaptive_lattice
-    test_bw_rank_est
-    test_matrix_diagnostics
-    test_sge_streaming
-    test_krylov_sequence_mmap
-    test_factor_base
-    test_fb_roots_parallel
-    test_special_q
-    test_distributed_sieve_worker_process
-    test_distributed_sieve_work_identity_codec
-    test_distributed_sieve_work_package_codec
-    test_distributed_sieve_worker_cleanup_codec
-    test_distributed_sieve_merge_writer_codec
-    test_distributed_sieve_merge_writer
-    test_distributed_sieve_worker_work_package_file
-    test_distributed_sieve_seed_v2
-    test_relation_collector
-    test_relation_corpus
-    test_relation_sink
-    test_ooc_durable_handoff
-    test_filter
-    test_lp_key_contract
-    test_relation_identity
-    test_relation_reduction_engine
-    test_structured_filter
-    test_structured_filter_policy
-    test_structured_tree_basis
-    test_structured_tree_basis_property
-    test_structured_budgeted_driver
-    test_structured_conflict_batch
-    test_structured_parallel_prepare
-    test_structured_batch_commit
-    test_structured_parallel_driver
-    test_structured_parallel_failures
-    test_structured_incidence_builder
-    test_structured_materialization
-    test_filter_radix_sort
-    test_lp_bloom
-    test_lp_key_hash
-    test_merger_parallel
-    test_cofactor
-    test_cofactor_attempt_context
-    test_cofactor_seed_provider
-    test_candidate_chunk_plan
-    test_candidate_batch
-    test_linalg
-    test_sge_batch_pivots
-    test_sqrt
-    test_sqrt_debug
-    test_hensel_parallel
-    test_couveignes_large_class_group
-    test_couveignes_parallel
-    test_murphy
-    test_root_property_cache
-    test_regressions
-    test_polynomial_context
-    test_base_m
-    test_polynomial_optimizer
-    test_rotation_incremental
-    test_class_group
-    test_schirokauer_deg4
-    test_schirokauer_fastpoly
-    test_schirokauer_strip
-    test_schirokauer_parallel
-    test_edge_cases
-    test_squfof
-    test_squfof_budget_corpus
-    test_squfof_success_challenge_corpus
-    test_brent_pollard_rho
-    test_survival_predictor
-    test_i18n
-    test_method_selection
-    test_event_stream
-    test_cli_event_stream
-    test_siqs_2lp
-    test_siqs_live_sieve_capture
-    test_siqs_2lp_graph
-    test_siqs_2lp_materializer
-    test_siqs_2lp_adapter
-    test_siqs_2lp_congruence
-    test_siqs_post_merge_row
-    test_siqs_shadow_assembly
-    test_siqs_shadow_linear_algebra
-    test_siqs_shadow_proof_runner
-    test_siqs_shadow_proof_observe
-    test_siqs_shadow_proof_observe_record_codec
-    test_siqs_runtime_facts
-    test_siqs_shadow_proof_rss_probe_execution_identity
-    test_siqs_shadow_observe_rss_holdouts
-    test_siqs_shadow_proof_rss_gate
-    test_siqs_shadow_proof_rss_terminal_gate_record
-    test_siqs_shadow_proof_rss_policy_record
-    test_siqs_shadow_proof_rss_campaign
-    test_siqs_shadow_proof_rss_campaign_journal
-    test_siqs_shadow_proof_rss_campaign_journal_codec
-    test_siqs_shadow_proof_rss_campaign_journal_layout
-    test_siqs_shadow_proof_rss_campaign_artifact_layout
-    test_siqs_shadow_proof_rss_campaign_entry
-    test_siqs_shadow_proof_rss_holdout_probe_contract
-    test_siqs_shadow_proof_rss_holdout_probe_record_codec
-    test_siqs_shadow_proof_rss_holdout_stream_join
-    test_siqs_shadow_proof_prefer
-    test_siqs_shadow_prefer_route
-    test_clique_merger
-    test_3lp_cofactor
-    test_3lp_merge
-    test_trial_wheel
-    test_batch_trial
-    test_ecm_curve_pool
-    test_sigma_seed_pool
-    test_ecm_stage1_parallel
-    test_batch_inversion
-    test_trial_div_simd
-    test_cofactor_stage_timing
-    test_ecm_prime_cache
-    test_cofactor_result_cache
-    test_brent_pollard_rho_parallel
-    test_sieve_tiny_simd
-    test_sieve_region_tile
-    test_sieve_norm_tile
-    test_lattice_basis_parallel
-    test_sieve_apply_tile_parallel
-    test_lattice_coords_simd
-    test_threshold_scan_simd
-    test_saturated_sub_simd
-    test_matrix_view_concept
-    test_save_sparse_as_mmap
-    test_linalg_mmap_policy
-    test_metal_spmv
-    test_spmv_simd
-    test_transpose_blocked
-    test_popcount_simd
-    test_and_popcnt_simd
-    test_xor_words_simd
-    test_and_words_simd
-    test_xor_popcnt_simd
-    test_row_popcount_simd
-    test_krylov_compress
-    test_krylov_compression
-    test_ecm_brent_suyama
-    test_poly_checkpoint
-    test_fb_checkpoint
-    test_bl_checkpoint
-    test_memory_pool
-    test_relation_pool_integration
-    test_integer_scratch_pool
-    test_mpz_powm_parallel
-    test_linalg_progress
-    test_mpz_invert_parallel
-    test_mpz_mod_parallel
-    test_mpz_gcd_parallel
-    test_mpz_mul_parallel
-)
+SMOKE_TESTS=("${(@f)$(cat "${PROJECT_ROOT}/scripts/test-catalog/smoke.txt")}")
 
 # ThreadSanitizer 窄通道: 覆盖 util Logger/ThreadPool、候选级 cofactor 调度、
 # structured relation 有界并发和 SIQS shadow 持久消元 worker 的发布/收敛/故障边界。
@@ -1327,7 +1127,7 @@ path_to_module() {
         done
     fi
     case "$path" in
-        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
+        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_primes.cpp|tests/test_timer.cpp|tests/test_mpz_powm_parallel.cpp|tests/test_mpz_mod_parallel.cpp|tests/test_mpz_gcd_parallel.cpp|tests/test_mpz_mul_parallel.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
@@ -8052,13 +7852,7 @@ do_nightly() {
 # Exit code: 0=全部通过, 非0=有失败
 
 do_gate() {
-    local quick=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --quick) quick=1; shift ;;
-            *)       shift ;;
-        esac
-    done
+    local quick="$1"
 
     log_header "合并门禁 (Merge Gate)"
 
@@ -8761,9 +8555,14 @@ case "$MODE" in
         ;;
 
     gate)
-        do_build
+        local gate_quick=0 gate_target=gnfs_local_gate
+        if (( ${MODE_ARGS[(Ie)--quick]} )); then
+            gate_quick=1
+            gate_target=gnfs_local_gate_quick
+        fi
+        do_build "$gate_target"
         local gate_status=0
-        do_gate "${MODE_ARGS[@]}" || gate_status=$?
+        do_gate "$gate_quick" || gate_status=$?
         # Preserve the report path even if the gate returns an unrecorded error.
         if (( gate_status != 0 && FAILED_TESTS == 0 )); then
             (( TOTAL_TESTS += 1 ))

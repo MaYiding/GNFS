@@ -54,6 +54,12 @@ individual contract assertions and bounded child invocations remain unchanged.
 
 ### Local Change Selection
 
+The local `scripts/test.sh gate --quick` builds the binaries in
+`scripts/test-catalog/smoke.txt` and the
+process supervisor used by their timeout wrapper and CTest contract. The full
+local `gate` also builds and runs `test_regression_gate`. CMake builds the
+dependencies of the selected targets. `--no-build` uses existing binaries.
+
 `scripts/test.sh changed --deep` adds mapped module dependencies and the API
 contract to applicable change selections. It also selects `test_siqs_e2e` once
 when a changed path maps directly to the `siqs` module, including

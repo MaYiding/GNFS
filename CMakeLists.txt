@@ -3451,6 +3451,20 @@ if(GNFS_BUILD_TESTS)
             endif()
         endforeach()
     endif()
+
+    # One build target lets Make share dependencies across all selected tests.
+    set(_gate_catalog_dir "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-catalog")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${_gate_catalog_dir}/smoke.txt" "${_gate_catalog_dir}/windows-unavailable.txt")
+    file(STRINGS "${_gate_catalog_dir}/smoke.txt" _gate_tests)
+    if(WIN32)
+        file(STRINGS "${_gate_catalog_dir}/windows-unavailable.txt" _gate_exclusions)
+        list(REMOVE_ITEM _gate_tests ${_gate_exclusions})
+    endif()
+    add_custom_target(gnfs_local_gate_quick)
+    add_dependencies(gnfs_local_gate_quick gnfs_test_process_supervisor ${_gate_tests})
+    add_custom_target(gnfs_local_gate)
+    add_dependencies(gnfs_local_gate gnfs_local_gate_quick test_regression_gate)
 endif()
 
 # ============================================================
