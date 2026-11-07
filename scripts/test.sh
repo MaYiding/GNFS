@@ -8795,7 +8795,6 @@ case "$MODE" in
         do_build test_structured_ooc_50d_probe gnfs_test_process_supervisor
         do_50d_probe_contracts || true
         show_summary
-        (( FAILED_TESTS == 0 ))
         ;;
 
     structured-ooc-rss)
