@@ -2095,6 +2095,8 @@ enum class FactorAttemptTerminal : uint8_t {
     no_factor,
     factor_found,
     factor_base_budget_exhausted,
+    sieve_budget_exhausted,
+    shadow_budget_exhausted,
 };
 
 /// Accounting for a completed native attempt, not shadow-return authority.
@@ -2156,12 +2158,12 @@ inline DependencyExtractionOutcome extract_native_dependencies(const Integer& mo
     return outcome;
 }
 
-enum class FactorBaseBudget { unbounded, shared_deadline };
+enum class AttemptKind { single, portfolio };
 
 inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multiplier,
                                              SIQSShadowProofMode shadow_proof_mode,
                                              const FactorAttemptContext& context,
-                                             FactorBaseBudget factor_base_budget) {
+                                             AttemptKind kind) {
     if (multiplier == 0)
         throw std::invalid_argument("SIQS attempt requires a positive multiplier");
     const auto start = context.started;
@@ -2191,7 +2193,7 @@ inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multipli
 
     // Build factor base for kN (not N)
     auto prepared_fb =
-        factor_base_budget == FactorBaseBudget::shared_deadline
+        kind == AttemptKind::portfolio
             ? siqs_factor_base_detail::build_portfolio_factor_base(kN, params.fb_size,
                                                                    budget_exhausted)
             : siqs_factor_base_detail::build_factor_base_until(kN, params.fb_size, nullptr);
@@ -2435,10 +2437,12 @@ inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multipli
                 partial, num_polys, elapsed());
     }
 
+    if (kind == AttemptKind::portfolio && budget_exhausted())
+        return {std::nullopt, FactorAttemptTerminal::sieve_budget_exhausted, false};
+
     // Both explicit shadow modes read the post-join raw corpus before legacy
-    // merge mutation. Observe always continues. Prefer may return a fully
-    // revalidated candidate only after its V2 pre-route decision is written,
-    // flushed, and stream-error free on the caller's stderr stream.
+    // merge mutation. Prefer may return a revalidated candidate only after its V2
+    // pre-route decision is written, flushed, and stream-error free on stderr.
     bool shadow_proof_observe_record_committed = false;
     const SIQSShadowProofOptions shadow_options{};
     const auto run_shadow_proof = [&]() {
@@ -2496,8 +2500,16 @@ inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multipli
                         false};
             }
         } catch (...) {
-            // Explicit prefer never prevents the untouched legacy path.
+            // A prefer failure leaves the legacy route available.
         }
+    }
+
+    // A successful prefer return above has already committed. If shadow work
+    // used the remaining budget, retain its observe status and stop before merge.
+    if (kind == AttemptKind::portfolio && shadow_proof_mode != SIQSShadowProofMode::off &&
+        budget_exhausted()) {
+        return {std::nullopt, FactorAttemptTerminal::shadow_budget_exhausted,
+                shadow_proof_observe_record_committed};
     }
 
     // Merge partials
@@ -2573,7 +2585,7 @@ inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multipli
 inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
                                         SIQSShadowProofMode shadow_proof_mode,
                                         const FactorAttemptContext& context) {
-    return factor_once_impl(N, multiplier, shadow_proof_mode, context, FactorBaseBudget::unbounded);
+    return factor_once_impl(N, multiplier, shadow_proof_mode, context, AttemptKind::single);
 }
 
 inline constexpr size_t MULTIPLIER_ATTEMPT_CAP = 3;
@@ -2646,7 +2658,9 @@ inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
                 // sample and this attempt's own observe-commit field, unchanged.
                 return outcome;
             }
-            if (attempt.terminal == FactorAttemptTerminal::factor_base_budget_exhausted) {
+            if (attempt.terminal == FactorAttemptTerminal::factor_base_budget_exhausted ||
+                attempt.terminal == FactorAttemptTerminal::sieve_budget_exhausted ||
+                attempt.terminal == FactorAttemptTerminal::shadow_budget_exhausted) {
                 outcome.stop = MultiplierPortfolioStop::budget_exhausted;
                 return outcome;
             }
@@ -2675,6 +2689,10 @@ factor_attempt_terminal_name(FactorAttemptTerminal terminal) noexcept {
         return "insufficient_factor_base";
     case FactorAttemptTerminal::factor_base_budget_exhausted:
         return "factor_base_budget_exhausted";
+    case FactorAttemptTerminal::sieve_budget_exhausted:
+        return "sieve_budget_exhausted";
+    case FactorAttemptTerminal::shadow_budget_exhausted:
+        return "shadow_budget_exhausted";
     case FactorAttemptTerminal::insufficient_relations:
         return "insufficient_relations";
     case FactorAttemptTerminal::no_factor:
@@ -2703,7 +2721,7 @@ multiplier_portfolio_stop_name(MultiplierPortfolioStop stop) noexcept {
 }
 
 /// Explicit internal multi-candidate entry for facade-validated odd N >= 15.
-/// The shared budget gates attempt admission and factor-base construction.
+/// The shared budget gates native stages and polls during factor-base construction.
 /// Other native stages can still run past the deadline.
 /// Default factor() remains a single historical attempt.
 inline MultiplierPortfolioOutcome
@@ -2728,8 +2746,7 @@ factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode
         return coordinate_multiplier_attempts(
             N, ranking, requested_mode, context, requested_limit, now,
             [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
-                return factor_once_impl(N, multiplier, mode, shared,
-                                        FactorBaseBudget::shared_deadline);
+                return factor_once_impl(N, multiplier, mode, shared, AttemptKind::portfolio);
             });
     }();
     if (context.verbose) {

@@ -294,8 +294,7 @@ void test_factor_base_budget_stop() {
         const auto outcome = coordinate_multiplier_attempts(
             n, ranked, SIQSShadowProofMode::observe, context, limit, clock,
             [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
-                return factor_once_impl(n, multiplier, mode, shared,
-                                        FactorBaseBudget::shared_deadline);
+                return factor_once_impl(n, multiplier, mode, shared, AttemptKind::portfolio);
             });
         const auto log = capture.finish();
         require(outcome.attempts_started == 1 && clock.calls == 1 &&

@@ -26,6 +26,7 @@ std::atomic<bool> allocation_failure_triggered{false};
 std::thread::id caller;
 bool fail_on_caller = false;
 std::chrono::steady_clock::time_point pause_caller_until{};
+std::chrono::steady_clock::time_point pause_failure_until{};
 size_t caller_bytes = 0; // Zero observes all caller allocations.
 size_t worker_bytes = 0;
 
@@ -46,6 +47,8 @@ void* allocate(size_t bytes) {
             size_t expected = bytes;
             if (bytes != 0 &&
                 failing_bytes.compare_exchange_strong(expected, 0, std::memory_order_relaxed)) {
+                if (pause_failure_until != std::chrono::steady_clock::time_point{})
+                    std::this_thread::sleep_until(pause_failure_until);
                 allocation_failure_triggered.store(true, std::memory_order_relaxed);
                 throw std::bad_alloc{};
             }
@@ -167,13 +170,19 @@ int main() {
         GNFS_TEST_CHECK(rejected);
     }
 
-    {
-        const FactorAttemptContext context{Clock::now(), 60, false, 3, params};
-        const size_t fb_bytes = (static_cast<size_t>(params.fb_size) + 1) * sizeof(FBPrime);
+    // A worker failure still takes precedence if its join crosses the deadline.
+    const size_t fb_size = static_cast<size_t>(params.fb_size) + 1;
+    worker_bytes = static_cast<size_t>(params.sieve_half) * 2;
+    for (const bool fail_caller : {true, false}) {
+        const FactorAttemptContext context{Clock::now(), 1, false, 3, params};
+        if (!fail_caller)
+            pause_failure_until = context.started + std::chrono::seconds(context.max_seconds);
         const auto outcome = [&] {
-            ScopedObserver observer(fb_bytes, /*fail_caller=*/true);
+            ScopedObserver observer(fail_caller ? fb_size * sizeof(FBPrime) : worker_bytes,
+                                    fail_caller);
             return factor_multiplier_portfolio(n, SIQSShadowProofMode::off, context, 3);
         }();
+        pause_failure_until = {};
         GNFS_TEST_CHECK(allocation_failure_triggered.load());
         GNFS_TEST_CHECK(outcome.attempts_started == 1 && outcome.stop == Stop::attempt_exception &&
                         !outcome.result && outcome.failure && !outcome.attempts[0].terminal);
@@ -186,10 +195,19 @@ int main() {
         GNFS_TEST_CHECK(bad_alloc);
     }
 
-    // Hold the first real factor-base reserve until the shared deadline. The
-    // attempt has already entered, independently of factor-base construction speed.
-    {
-        caller_bytes = (static_cast<size_t>(params.fb_size) + 1) * sizeof(FBPrime);
+    // Hold a real caller allocation in each stage until the shared deadline.
+    // The injected delay starts after the portfolio admits the attempt.
+    const struct {
+        size_t allocation;
+        FactorAttemptTerminal terminal;
+        bool observe_committed;
+    } stages[] = {
+        {fb_size * sizeof(FBPrime), FactorAttemptTerminal::factor_base_budget_exhausted, false},
+        {(fb_size + 50) * 10 * sizeof(SIQSRelation), FactorAttemptTerminal::sieve_budget_exhausted,
+         false},
+        {fb_size * sizeof(uint32_t), FactorAttemptTerminal::shadow_budget_exhausted, true}};
+    for (const auto& stage : stages) {
+        caller_bytes = stage.allocation;
         ScopedStderrCapture capture;
         const FactorAttemptContext context{Clock::now(), 1, false, 3, params};
         pause_caller_until = context.started + std::chrono::seconds(context.max_seconds);
@@ -199,18 +217,19 @@ int main() {
         }();
         pause_caller_until = {};
         const auto log = capture.finish();
-        GNFS_TEST_CHECK(caller_requests.load() == 1 && outcome.attempts_started == 1);
-        GNFS_TEST_CHECK(outcome.attempts[0].terminal ==
-                        FactorAttemptTerminal::factor_base_budget_exhausted);
+        GNFS_TEST_CHECK(caller_requests.load() >= 1 && outcome.attempts_started == 1);
+        GNFS_TEST_CHECK(outcome.attempts[0].terminal == stage.terminal);
         GNFS_TEST_CHECK(outcome.stop == Stop::budget_exhausted && !outcome.result &&
                         !outcome.failure);
-        GNFS_TEST_CHECK(outcome.any_observe_record_committed == false && log.empty());
+        GNFS_TEST_CHECK(outcome.attempts[0].observe_record_committed == stage.observe_committed &&
+                        outcome.any_observe_record_committed == stage.observe_committed);
+        GNFS_TEST_CHECK(occurrences(log, SIQS_SHADOW_PROOF_OBSERVE_PREFIX) ==
+                        static_cast<size_t>(stage.observe_committed));
     }
 
     // Match the native initial relation reserve and each worker's sieve buffer.
     // The unexpired native control below verifies both observations still fire.
-    caller_bytes = (static_cast<size_t>(params.fb_size) + 1 + 50) * 10 * sizeof(SIQSRelation);
-    worker_bytes = static_cast<size_t>(params.sieve_half) * 2;
+    caller_bytes = (fb_size + 50) * 10 * sizeof(SIQSRelation);
     {
         ScopedObserver observer;
         void* memory = ::operator new(caller_bytes);
