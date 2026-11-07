@@ -63,7 +63,6 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
-#include <unordered_set>
 
 namespace gnfs::api {
 
@@ -1363,8 +1362,9 @@ void Pipeline::require_factor_base_contract(const PolynomialContext& ctx, const 
     }
     const uint32_t max_algebraic_prime = std::max(params_.algebraic_bound, params_.special_q_max);
     uint32_t previous_algebraic_prime = 0;
-    std::unordered_set<uint32_t> roots_for_prime;
-    for (const auto& prime : fb.algebraic()) {
+    const auto algebraic = fb.algebraic();
+    for (size_t i = 0; i < algebraic.size(); ++i) {
+        const auto& prime = algebraic[i];
         if (prime.p < 2 || prime.p > max_algebraic_prime || !gnfs::util::is_prime_u32(prime.p) ||
             mpz_divisible_ui_p(ctx.n().get_mpz(), prime.p) != 0) {
             throw std::invalid_argument("Pipeline::" + std::string(phase) +
@@ -1374,13 +1374,13 @@ void Pipeline::require_factor_base_contract(const PolynomialContext& ctx, const 
             throw std::invalid_argument("Pipeline::" + std::string(phase) +
                                         " algebraic factor-base primes must be nondecreasing");
         }
-        if (prime.p != previous_algebraic_prime) {
-            roots_for_prime.clear();
-            previous_algebraic_prime = prime.p;
-        }
-        if (!roots_for_prime.insert(prime.r).second) {
-            throw std::invalid_argument("Pipeline::" + std::string(phase) +
-                                        " factor base contains a duplicate algebraic prime/root");
+        previous_algebraic_prime = prime.p;
+        // Each prime/root key must map back to this column. A duplicate maps
+        // to its last occurrence and therefore fails at the earlier column.
+        if (fb.find_algebraic(prime.p, prime.r) != i) {
+            throw std::invalid_argument(
+                "Pipeline::" + std::string(phase) +
+                " factor base contains a duplicate algebraic prime/root or an inconsistent index");
         }
         if (prime.degree == 0) {
             throw std::invalid_argument("Pipeline::" + std::string(phase) +
