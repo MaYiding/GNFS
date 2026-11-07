@@ -535,6 +535,21 @@ inline std::optional<std::vector<FBPrime>> build_factor_base_until(const Integer
     return fb;
 }
 
+// Sample the shared clock at entry and publication. During construction, spread
+// clock reads across candidate and trial-divisor probes.
+template <typename Expired>
+inline std::optional<std::vector<FBPrime>>
+build_portfolio_factor_base(const Integer& N, size_t count, Expired&& expired) {
+    static_assert(std::is_nothrow_invocable_r_v<bool, Expired&>);
+    constexpr unsigned clock_poll_interval = 256;
+    unsigned polls = 0;
+    const auto stop = [&]() noexcept { return polls++ % clock_poll_interval == 0 && expired(); };
+    auto fb = build_factor_base_until(N, count, stop);
+    if (fb && expired())
+        return std::nullopt;
+    return fb;
+}
+
 } // namespace siqs_factor_base_detail
 
 /// Build factor base: primes p where Legendre(N, p) = 1
@@ -2079,6 +2094,7 @@ enum class FactorAttemptTerminal : uint8_t {
     insufficient_relations,
     no_factor,
     factor_found,
+    factor_base_budget_exhausted,
 };
 
 /// Accounting for a completed native attempt, not shadow-return authority.
@@ -2140,14 +2156,12 @@ inline DependencyExtractionOutcome extract_native_dependencies(const Integer& mo
     return outcome;
 }
 
-/// Run one explicit multiplier for facade-validated input. Multiplier
-/// admission belongs to the caller; the default facade retains its historical
-/// single selection. The caller supplies parameters and the shared timer origin.
-/// This entry does not rank candidates, reset the budget, or implement complete
-/// cancellation of factor-base construction or the linear-algebra backends.
-inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
-                                        SIQSShadowProofMode shadow_proof_mode,
-                                        const FactorAttemptContext& context) {
+enum class FactorBaseBudget { unbounded, shared_deadline };
+
+inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multiplier,
+                                             SIQSShadowProofMode shadow_proof_mode,
+                                             const FactorAttemptContext& context,
+                                             FactorBaseBudget factor_base_budget) {
     if (multiplier == 0)
         throw std::invalid_argument("SIQS attempt requires a positive multiplier");
     const auto start = context.started;
@@ -2159,7 +2173,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
                    attempt_elapsed(start, std::chrono::steady_clock::now()))
             .count();
     };
-    const auto budget_exhausted = [&]() {
+    const auto budget_exhausted = [&]() noexcept {
         return multiplier_budget_exhausted(context, std::chrono::steady_clock::now());
     };
 
@@ -2176,7 +2190,14 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     }
 
     // Build factor base for kN (not N)
-    auto fb = build_factor_base(kN, params.fb_size);
+    auto prepared_fb =
+        factor_base_budget == FactorBaseBudget::shared_deadline
+            ? siqs_factor_base_detail::build_portfolio_factor_base(kN, params.fb_size,
+                                                                   budget_exhausted)
+            : siqs_factor_base_detail::build_factor_base_until(kN, params.fb_size, nullptr);
+    if (!prepared_fb)
+        return {std::nullopt, FactorAttemptTerminal::factor_base_budget_exhausted, false};
+    const auto& fb = *prepared_fb;
     size_t fb_size = fb.size();
 
     size_t odd_factor_base_primes = 0;
@@ -2548,6 +2569,13 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     return {std::nullopt, FactorAttemptTerminal::no_factor, shadow_proof_observe_record_committed};
 }
 
+/// Historical single attempt. Its zero-budget shadow path uses a complete factor base.
+inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
+                                        SIQSShadowProofMode shadow_proof_mode,
+                                        const FactorAttemptContext& context) {
+    return factor_once_impl(N, multiplier, shadow_proof_mode, context, FactorBaseBudget::unbounded);
+}
+
 inline constexpr size_t MULTIPLIER_ATTEMPT_CAP = 3;
 
 enum class MultiplierPortfolioStop : uint8_t {
@@ -2618,6 +2646,10 @@ inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
                 // sample and this attempt's own observe-commit field, unchanged.
                 return outcome;
             }
+            if (attempt.terminal == FactorAttemptTerminal::factor_base_budget_exhausted) {
+                outcome.stop = MultiplierPortfolioStop::budget_exhausted;
+                return outcome;
+            }
         } catch (...) {
             outcome.failure = std::current_exception();
             outcome.stop = MultiplierPortfolioStop::attempt_exception;
@@ -2641,6 +2673,8 @@ factor_attempt_terminal_name(FactorAttemptTerminal terminal) noexcept {
     switch (terminal) {
     case FactorAttemptTerminal::insufficient_factor_base:
         return "insufficient_factor_base";
+    case FactorAttemptTerminal::factor_base_budget_exhausted:
+        return "factor_base_budget_exhausted";
     case FactorAttemptTerminal::insufficient_relations:
         return "insufficient_relations";
     case FactorAttemptTerminal::no_factor:
@@ -2669,8 +2703,8 @@ multiplier_portfolio_stop_name(MultiplierPortfolioStop stop) noexcept {
 }
 
 /// Explicit internal multi-candidate entry for facade-validated odd N >= 15.
-/// This is an admission budget between native attempts, not a hard deadline:
-/// native long stages do not yet have complete cooperative cancellation.
+/// The shared budget gates attempt admission and factor-base construction.
+/// Other native stages can still run past the deadline.
 /// Default factor() remains a single historical attempt.
 inline MultiplierPortfolioOutcome
 factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode,
@@ -2694,7 +2728,8 @@ factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode
         return coordinate_multiplier_attempts(
             N, ranking, requested_mode, context, requested_limit, now,
             [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
-                return factor_once(N, multiplier, mode, shared);
+                return factor_once_impl(N, multiplier, mode, shared,
+                                        FactorBaseBudget::shared_deadline);
             });
     }();
     if (context.verbose) {
