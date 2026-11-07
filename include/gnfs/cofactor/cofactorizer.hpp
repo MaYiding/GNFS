@@ -339,8 +339,8 @@ private:
             }
         }
 
-        auto alg_result =
-            divider_.divide_algebraic(std::move(alg_norm), a, b, fb_.sieve_algebraic_count());
+        auto alg_result = divider_.divide_algebraic_prefix(std::move(alg_norm), a, b,
+                                                           fb_.sieve_algebraic_count());
 
         // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify.
         // allow_3lp 时阈值升到 B³.

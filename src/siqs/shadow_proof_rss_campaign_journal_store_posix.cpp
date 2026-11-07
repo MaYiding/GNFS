@@ -2525,7 +2525,8 @@ public:
                                                    StoreObject::journal_record,
                                                    taint_record.sequence_number));
             }
-            if (StoreDiagnostic diagnostic = verify_authority();
+            // A confirmed start may outlive changes to an existing artifact.
+            if (StoreDiagnostic diagnostic = confirm_prepublication_snapshot_unchanged();
                 diagnostic.error != StoreError::none) {
                 return fail(std::move(diagnostic));
             }
@@ -2741,6 +2742,10 @@ public:
                 SIQSShadowProofRssArtifactKind::joined_gate_sample,
             };
             const std::array bytes_by_kind{stdout_bytes, stderr_bytes, joined_bytes};
+            if (StoreDiagnostic diagnostic = confirm_prepublication_snapshot_unchanged();
+                diagnostic.error != StoreError::none) {
+                return fail(std::move(diagnostic));
+            }
             SessionArtifactBatchResult result;
             for (std::size_t index = 0; index < kinds.size(); ++index) {
                 const auto kind = kinds[index];
