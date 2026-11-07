@@ -570,6 +570,12 @@ void test_builder_root_chunks_preserve_projective_roots() {
     set_fb_roots_env(nullptr);
     gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing();
 
+    GNFS_TEST_CHECK(sequential.rational_count() == parallel.rational_count());
+    for (size_t i = 0; i < sequential.rational_count(); ++i) {
+        const auto p = sequential.rational()[i].p;
+        GNFS_TEST_CHECK(sequential.find_rational(p) == i);
+        GNFS_TEST_CHECK(parallel.find_rational(p) == i);
+    }
     GNFS_TEST_CHECK(sequential.algebraic_count() == parallel.algebraic_count());
     GNFS_TEST_CHECK(sequential.sieve_algebraic_count() == parallel.sieve_algebraic_count());
     bool ordinary_projective = false;
@@ -579,6 +585,8 @@ void test_builder_root_chunks_preserve_projective_roots() {
         const auto& actual = parallel.algebraic()[i];
         GNFS_TEST_CHECK(expected.p == actual.p && expected.r == actual.r &&
                         expected.log_p == actual.log_p && expected.degree == actual.degree);
+        GNFS_TEST_CHECK(sequential.find_algebraic(expected.p, expected.r) == i);
+        GNFS_TEST_CHECK(parallel.find_algebraic(actual.p, actual.r) == i);
         if (actual.r == AlgebraicPrime::PROJECTIVE_ROOT) {
             ordinary_projective |= actual.p == 3 && i < parallel.sieve_algebraic_count();
             special_q_projective |= actual.p == 61 && i >= parallel.sieve_algebraic_count();
