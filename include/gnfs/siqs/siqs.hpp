@@ -535,6 +535,21 @@ inline std::optional<std::vector<FBPrime>> build_factor_base_until(const Integer
     return fb;
 }
 
+// Sample the shared clock at entry and publication. During construction, spread
+// clock reads across candidate and trial-divisor probes.
+template <typename Expired>
+inline std::optional<std::vector<FBPrime>>
+build_portfolio_factor_base(const Integer& N, size_t count, Expired&& expired) {
+    static_assert(std::is_nothrow_invocable_r_v<bool, Expired&>);
+    constexpr unsigned clock_poll_interval = 256;
+    unsigned polls = 0;
+    const auto stop = [&]() noexcept { return polls++ % clock_poll_interval == 0 && expired(); };
+    auto fb = build_factor_base_until(N, count, stop);
+    if (fb && expired())
+        return std::nullopt;
+    return fb;
+}
+
 } // namespace siqs_factor_base_detail
 
 /// Build factor base: primes p where Legendre(N, p) = 1
@@ -2051,11 +2066,37 @@ struct FactorAttemptContext {
     SIQSParams params;
 };
 
+// Ordered time points can span the entire unsigned tick range, even though
+// subtracting their signed durations would overflow.
+inline auto attempt_elapsed(std::chrono::steady_clock::time_point started,
+                            std::chrono::steady_clock::time_point observed) noexcept {
+    using Clock = std::chrono::steady_clock;
+    using Tick = std::make_unsigned_t<Clock::rep>;
+    using Elapsed = std::chrono::duration<Tick, Clock::period>;
+    if (observed < started)
+        return Elapsed::zero();
+    const auto end = static_cast<Tick>(observed.time_since_epoch().count());
+    const auto begin = static_cast<Tick>(started.time_since_epoch().count());
+    return Elapsed{end - begin};
+}
+
+inline bool multiplier_budget_exhausted(const FactorAttemptContext& context,
+                                        std::chrono::steady_clock::time_point observed) noexcept {
+    if (observed < context.started)
+        return true;
+    using Seconds = std::chrono::duration<uintmax_t>;
+    const auto elapsed = attempt_elapsed(context.started, observed);
+    return std::chrono::duration_cast<Seconds>(elapsed).count() >= context.max_seconds;
+}
+
 enum class FactorAttemptTerminal : uint8_t {
     insufficient_factor_base,
     insufficient_relations,
     no_factor,
     factor_found,
+    factor_base_budget_exhausted,
+    sieve_budget_exhausted,
+    shadow_budget_exhausted,
 };
 
 /// Accounting for a completed native attempt, not shadow-return authority.
@@ -2117,23 +2158,25 @@ inline DependencyExtractionOutcome extract_native_dependencies(const Integer& mo
     return outcome;
 }
 
-/// Run one explicit multiplier for facade-validated input. Multiplier
-/// admission belongs to the caller; the default facade retains its historical
-/// single selection. The caller supplies parameters and the shared timer origin.
-/// This entry does not rank candidates, reset the budget, or implement complete
-/// cancellation of factor-base construction or the linear-algebra backends.
-inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
-                                        SIQSShadowProofMode shadow_proof_mode,
-                                        const FactorAttemptContext& context) {
+enum class AttemptKind { single, portfolio };
+
+inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multiplier,
+                                             SIQSShadowProofMode shadow_proof_mode,
+                                             const FactorAttemptContext& context,
+                                             AttemptKind kind) {
     if (multiplier == 0)
         throw std::invalid_argument("SIQS attempt requires a positive multiplier");
     const auto start = context.started;
-    const auto max_seconds = context.max_seconds;
     const auto verbose = context.verbose;
     const auto digits = context.digits;
     const auto& params = context.params;
-    auto elapsed = [&]() {
-        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const auto elapsed = [&]() {
+        return std::chrono::duration<double>(
+                   attempt_elapsed(start, std::chrono::steady_clock::now()))
+            .count();
+    };
+    const auto budget_exhausted = [&]() noexcept {
+        return multiplier_budget_exhausted(context, std::chrono::steady_clock::now());
     };
 
     Integer kN;
@@ -2149,7 +2192,14 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     }
 
     // Build factor base for kN (not N)
-    auto fb = build_factor_base(kN, params.fb_size);
+    auto prepared_fb =
+        kind == AttemptKind::portfolio
+            ? siqs_factor_base_detail::build_portfolio_factor_base(kN, params.fb_size,
+                                                                   budget_exhausted)
+            : siqs_factor_base_detail::build_factor_base_until(kN, params.fb_size, nullptr);
+    if (!prepared_fb)
+        return {std::nullopt, FactorAttemptTerminal::factor_base_budget_exhausted, false};
+    const auto& fb = *prepared_fb;
     size_t fb_size = fb.size();
 
     size_t odd_factor_base_primes = 0;
@@ -2206,7 +2256,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     size_t target_usable = fb_size + 50;
 
     std::vector<SIQSRelation> all_relations;
-    if (elapsed() < static_cast<double>(max_seconds))
+    if (!budget_exhausted())
         all_relations.reserve(target_usable * 10);
     std::mutex relations_mutex;
 
@@ -2246,7 +2296,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     auto sieve_worker = [&](unsigned thread_id) {
         // Admission may expire between the caller's launch check and entry.
         // Leave the empty corpus for the ordinary post-join terminal handling.
-        if (elapsed() >= static_cast<double>(max_seconds))
+        if (budget_exhausted())
             return;
         std::mt19937 local_rng(42 + thread_id * 1000);
         std::vector<SIQSRelation> local_relations;
@@ -2257,7 +2307,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
         size_t local_full = 0, local_1lp = 0, local_2lp = 0;
 
         while (!enough.load(std::memory_order_relaxed) &&
-               elapsed() < static_cast<double>(max_seconds)) {
+               !budget_exhausted()) {
             SIQSPoly poly;
             choose_A(kN, params.sieve_half, params.num_a_factors, fb, local_rng, poly.a_indices,
                      poly.A);
@@ -2312,7 +2362,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
 
                 if (enough.load(std::memory_order_relaxed))
                     break;
-                if (elapsed() >= static_cast<double>(max_seconds))
+                if (budget_exhausted())
                     break;
 
                 // Gray code switch to next B
@@ -2354,12 +2404,12 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     // Keep thread owners after every captured object so failed launches drain
     // their workers before any referenced state is destroyed.
     std::vector<util::JoiningThread> threads;
-    if (elapsed() < static_cast<double>(max_seconds)) {
+    if (!budget_exhausted()) {
         worker_failures.resize(num_threads);
         threads.reserve(num_threads);
     }
     try {
-        for (unsigned t = 0; t < num_threads && elapsed() < static_cast<double>(max_seconds); t++) {
+        for (unsigned t = 0; t < num_threads && !budget_exhausted(); t++) {
             threads.emplace_back(guarded_sieve_worker, t);
         }
     } catch (...) {
@@ -2387,10 +2437,12 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
                 partial, num_polys, elapsed());
     }
 
+    if (kind == AttemptKind::portfolio && budget_exhausted())
+        return {std::nullopt, FactorAttemptTerminal::sieve_budget_exhausted, false};
+
     // Both explicit shadow modes read the post-join raw corpus before legacy
-    // merge mutation. Observe always continues. Prefer may return a fully
-    // revalidated candidate only after its V2 pre-route decision is written,
-    // flushed, and stream-error free on the caller's stderr stream.
+    // merge mutation. Prefer may return a revalidated candidate only after its V2
+    // pre-route decision is written, flushed, and stream-error free on stderr.
     bool shadow_proof_observe_record_committed = false;
     const SIQSShadowProofOptions shadow_options{};
     const auto run_shadow_proof = [&]() {
@@ -2431,13 +2483,10 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
             }
 
             const auto decision_wall_end = std::chrono::steady_clock::now();
-            const auto decision_wall_count =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(decision_wall_end - start)
-                    .count();
+            using Nanoseconds = std::chrono::duration<uint64_t, std::nano>;
             const uint64_t decision_wall_ns =
-                decision_wall_count > 0 && std::in_range<uint64_t>(decision_wall_count)
-                    ? static_cast<uint64_t>(decision_wall_count)
-                    : 0;
+                std::chrono::duration_cast<Nanoseconds>(attempt_elapsed(start, decision_wall_end))
+                    .count();
             SIQSShadowProofPreferDecision decision =
                 finalize_siqs_shadow_proof_prefer(std::move(draft), decision_wall_ns);
 
@@ -2451,8 +2500,16 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
                         false};
             }
         } catch (...) {
-            // Explicit prefer never prevents the untouched legacy path.
+            // A prefer failure leaves the legacy route available.
         }
+    }
+
+    // A successful prefer return above has already committed. If shadow work
+    // used the remaining budget, retain its observe status and stop before merge.
+    if (kind == AttemptKind::portfolio && shadow_proof_mode != SIQSShadowProofMode::off &&
+        budget_exhausted()) {
+        return {std::nullopt, FactorAttemptTerminal::shadow_budget_exhausted,
+                shadow_proof_observe_record_committed};
     }
 
     // Merge partials
@@ -2524,6 +2581,13 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     return {std::nullopt, FactorAttemptTerminal::no_factor, shadow_proof_observe_record_committed};
 }
 
+/// Historical single attempt. Its zero-budget shadow path uses a complete factor base.
+inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
+                                        SIQSShadowProofMode shadow_proof_mode,
+                                        const FactorAttemptContext& context) {
+    return factor_once_impl(N, multiplier, shadow_proof_mode, context, AttemptKind::single);
+}
+
 inline constexpr size_t MULTIPLIER_ATTEMPT_CAP = 3;
 
 enum class MultiplierPortfolioStop : uint8_t {
@@ -2572,10 +2636,7 @@ inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
     }
     const auto eligible = siqs_multiplier_detail::admit_candidates(N, full_ranking, limit);
     for (uint32_t multiplier : eligible) {
-        const auto observed = now();
-        if (context.max_seconds == 0 || observed < context.started ||
-            std::chrono::duration<double>(observed - context.started).count() >=
-                static_cast<double>(context.max_seconds)) {
+        if (multiplier_budget_exhausted(context, now())) {
             outcome.stop = MultiplierPortfolioStop::budget_exhausted;
             return outcome;
         }
@@ -2595,6 +2656,12 @@ inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
                 outcome.stop = MultiplierPortfolioStop::factor_found;
                 // Keep every native result field, including the pre-emit wall
                 // sample and this attempt's own observe-commit field, unchanged.
+                return outcome;
+            }
+            if (attempt.terminal == FactorAttemptTerminal::factor_base_budget_exhausted ||
+                attempt.terminal == FactorAttemptTerminal::sieve_budget_exhausted ||
+                attempt.terminal == FactorAttemptTerminal::shadow_budget_exhausted) {
+                outcome.stop = MultiplierPortfolioStop::budget_exhausted;
                 return outcome;
             }
         } catch (...) {
@@ -2620,6 +2687,12 @@ factor_attempt_terminal_name(FactorAttemptTerminal terminal) noexcept {
     switch (terminal) {
     case FactorAttemptTerminal::insufficient_factor_base:
         return "insufficient_factor_base";
+    case FactorAttemptTerminal::factor_base_budget_exhausted:
+        return "factor_base_budget_exhausted";
+    case FactorAttemptTerminal::sieve_budget_exhausted:
+        return "sieve_budget_exhausted";
+    case FactorAttemptTerminal::shadow_budget_exhausted:
+        return "shadow_budget_exhausted";
     case FactorAttemptTerminal::insufficient_relations:
         return "insufficient_relations";
     case FactorAttemptTerminal::no_factor:
@@ -2648,8 +2721,8 @@ multiplier_portfolio_stop_name(MultiplierPortfolioStop stop) noexcept {
 }
 
 /// Explicit internal multi-candidate entry for facade-validated odd N >= 15.
-/// This is an admission budget between native attempts, not a hard deadline:
-/// native long stages do not yet have complete cooperative cancellation.
+/// The shared budget gates native stages and polls during factor-base construction.
+/// Other native stages can still run past the deadline.
 /// Default factor() remains a single historical attempt.
 inline MultiplierPortfolioOutcome
 factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode,
@@ -2661,13 +2734,21 @@ factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode
         requested_mode != SIQSShadowProofMode::observe &&
         requested_mode != SIQSShadowProofMode::prefer)
         throw std::invalid_argument("SIQS multiplier portfolio requires a supported shadow mode");
-    const auto ranking = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
-    auto outcome = coordinate_multiplier_attempts(
-        N, ranking, requested_mode, context, requested_limit,
-        []() noexcept { return std::chrono::steady_clock::now(); },
-        [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
-            return factor_once(N, multiplier, mode, shared);
-        });
+    const auto now = []() noexcept { return std::chrono::steady_clock::now(); };
+    auto outcome = [&] {
+        if (requested_limit == 0 || multiplier_budget_exhausted(context, now())) {
+            MultiplierPortfolioOutcome skipped;
+            skipped.stop = requested_limit == 0 ? MultiplierPortfolioStop::attempt_limit
+                                                : MultiplierPortfolioStop::budget_exhausted;
+            return skipped;
+        }
+        const auto ranking = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
+        return coordinate_multiplier_attempts(
+            N, ranking, requested_mode, context, requested_limit, now,
+            [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
+                return factor_once_impl(N, multiplier, mode, shared, AttemptKind::portfolio);
+            });
+    }();
     if (context.verbose) {
         const auto commit_name = [](std::optional<bool> committed) noexcept {
             return !committed.has_value() ? "unknown" : *committed ? "true" : "false";

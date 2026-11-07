@@ -200,9 +200,14 @@ Thread and exception storage is prepared only while sieve admission is open.
 `siqs_factor_detail::factor_multiplier_portfolio` is an internal, explicitly
 called native entry for odd `N >= 15`. It accepts the requested shadow mode, a
 prepared `FactorAttemptContext`, and an optional limit capped at three attempts.
-It binds the real monotonic clock and `factor_once`; callers cannot supply a
+It binds the real monotonic clock and native attempt; callers cannot supply a
 replacement executor or clock to this entry. The default public `factor()` still
 uses its historical single multiplier and has no portfolio flag.
+
+After validating the input and shadow mode, the explicit entry checks admission
+before ranking. A zero attempt limit returns `attempt_limit` even when the time
+budget is exhausted. A zero budget, an expired budget, or a clock reading before
+the supplied start returns `budget_exhausted`.
 
 The coordinator filters the complete ranking for positive, coprime, unique
 candidates before applying the limit. It checks the shared budget immediately
@@ -229,12 +234,22 @@ when the emitter crosses the budget. Fixed record storage avoids additional
 allocations for coordinator accounting after receiving a result. Optional verbose
 output uses C stdio; a logging error does not veto the native result.
 
-This entry enforces admission between attempts, not a hard deadline inside native
-factor-base, solver, merge, or extraction work. A zero budget starts no portfolio
-attempt and emits its aggregate stop record when verbose. The default facade
-retains its existing zero-budget single-attempt shadow behavior. Long-stage
-cooperative cancellation and default or flag-based portfolio activation remain
-unfinished work.
+When an admitted attempt exhausts its budget during factor-base construction, it
+records `factor_base_budget_exhausted`. The portfolio returns `budget_exhausted`
+even at the attempt cap. This attempt counts as started and emits no shadow record.
+A factor-base allocation or domain error follows the ordinary attempt-exception path.
+
+After the sieve workers join and their exceptions have been checked, an expired
+portfolio returns `sieve_budget_exhausted` for that attempt before starting
+shadow proof or the legacy merge. If an admitted shadow phase consumes the
+remaining time, the attempt returns `shadow_budget_exhausted` before merge and
+preserves whether it committed an observe record. Both terminals stop the
+portfolio with `budget_exhausted`, including on the final allowed attempt.
+A successful prefer decision still returns its committed result immediately.
+
+A zero budget starts no portfolio attempt and emits the aggregate stop record
+when verbose. The default facade retains its zero-budget single-attempt shadow
+behavior. Solver, merge, and extraction work can still run past the shared deadline.
 
 ### Factor-Base Stop Helper
 
@@ -253,12 +268,11 @@ prime order, root choice, count boundaries, and the vector return type. Neither
 path reads a clock internally. A caller that supplies a predicate owns its
 state and synchronization, and must keep each predicate call bounded.
 
-This helper is not yet connected to `factor_once`, a coordinator, or shadow
-finalization. Cancelling construction grants no factor-result or shadow-return
-authority. One allocation, GMP operation, or `tonelli_shanks` invocation can
-still run between polls; the sparse solver also lacks a native stop contract.
-This change therefore provides cooperative factor-base stopping, without
-establishing a wall-clock bound for a complete attempt.
+Explicit portfolio attempts read the shared clock before reserve, once per 256
+builder polls during construction, and before publishing the completed base.
+The default single attempt builds its complete factor base. One allocation, GMP
+operation, or `tonelli_shanks` invocation can run between polls. Cancellation
+grants no factor-result or shadow-return authority.
 
 ### Dense Elimination Stop Helper
 
