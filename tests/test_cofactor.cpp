@@ -7,8 +7,10 @@
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/relation/filter.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -819,6 +821,72 @@ void test_special_q_root_identity_validation() {
     std::cout << "  Special-Q root identity validation: PASSED" << std::endl;
 }
 
+void test_special_q_valuation_chunks() {
+    // f(x) = (x-2)^2 + c(x-2) + norm. Choosing c = 1 + (norm mod (6*91))
+    // gives f(1) = 0 mod N, with roots 1 mod 2 and 1,2 mod 3.
+    const core::Integer one(1), two(2), four(4);
+    factor_base::FactorBase fb(core::FactorBaseParams{2, 2, 100});
+    fb.add_rational(2, 1);
+    fb.add_algebraic(2, 1, 1);
+    fb.add_algebraic(3, 1, 1);
+    fb.add_algebraic(3, 2, 1);
+    fb.set_sieve_algebraic_count_explicit(1);
+
+    const auto verify = [&](unsigned exponent, unsigned residual, bool allow_1lp, bool accepted) {
+        const core::Integer norm = core::pow(core::Integer(3), exponent) * core::Integer(residual);
+        const core::Integer c = one + norm % core::Integer(6 * 91);
+        core::PolynomialContext ctx(core::Integer(91), {norm + four - two * c, c - four, one}, one);
+        CHECK(ctx.verify());
+        CHECK(ctx.rational_value(2, 1) == one && ctx.algebraic_norm(2, 1) == norm);
+        CHECK(ctx.evaluate_mod(1, 2) == 0);
+        CHECK(ctx.evaluate_mod(1, 3) == 0 && ctx.evaluate_mod(2, 3) == 0);
+        CofactorizerConfig config;
+        config.allow_1lp = allow_1lp;
+        config.allow_2lp = false;
+        config.allow_3lp = false;
+        Cofactorizer cofactorizer(ctx, fb, config);
+        const auto rel = cofactorizer.verify(2, 1, 3, 2);
+        const auto stats = cofactorizer.stats();
+        CHECK(rel.has_value() == accepted);
+        CHECK(stats.total_candidates == 1 && stats.algebraic_rejects == !accepted);
+        const unsigned odd_keys = exponent % 2 + (residual != 1);
+        CHECK(stats.full_relations == (accepted && odd_keys == 0));
+        CHECK(stats.partial_1lp == (accepted && odd_keys == 1));
+        CHECK(stats.partial_2lp == (accepted && odd_keys == 2));
+        CHECK(stats.partial_3lp == 0);
+        if (!accepted)
+            return;
+
+        const size_t chunks = (exponent + 254) / 255;
+        CHECK(rel->rational_factors.empty() && rel->rational_large_prime.empty());
+        CHECK(rel->algebraic_factors.empty());
+        CHECK(rel->algebraic_large_prime.size() == chunks + (residual != 1));
+        unsigned remaining = exponent;
+        for (size_t i = 0; i < chunks; ++i) {
+            const auto& factor = rel->algebraic_large_prime[i];
+            CHECK(factor.p == 3 && factor.r == 2);
+            CHECK(factor.e == std::min(remaining, 255u));
+            remaining -= factor.e;
+        }
+        if (residual != 1) {
+            const auto& factor = rel->algebraic_large_prime.back();
+            CHECK(factor.p == residual && factor.r == 2 && factor.e == 1);
+        }
+        std::stringstream stream;
+        rel->serialize(stream);
+        CHECK(core::Relation::deserialize(stream).algebraic_large_prime ==
+              rel->algebraic_large_prime);
+    };
+
+    verify(255, 1, false, true);
+    verify(256, 1, false, true);
+    verify(256, 5, false, false);
+    verify(15 * 255, 5, true, true);
+    verify(16 * 255, 1, false, true);
+    verify(16 * 255, 5, true, false);
+    verify(16 * 255 + 1, 1, true, false);
+}
+
 // compute_alg_lp_root: 当 p | b 时,b 不可逆 mod p,LP 对应"投影根"理想 (p, 1/α)。
 // 返回 AlgebraicPrime::PROJECTIVE_ROOT 让 matrix_builder 把该 LP 合并到投影根列。
 // 此测试锁住该边界:对几个 (a, b, p) 组合验证返回 PROJECTIVE_ROOT 标记。
@@ -906,6 +974,7 @@ int main() {
     test_factor_base_params_uint64_lpb();
     test_cofactorizer_large_prime_storage();
     test_special_q_root_identity_validation();
+    test_special_q_valuation_chunks();
     test_compute_alg_lp_root_projective();
     test_compute_alg_lp_root_input_guards();
 
