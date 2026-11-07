@@ -7,14 +7,18 @@
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/relation/filter.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace gnfs;
 using namespace gnfs::cofactor;
@@ -861,6 +865,81 @@ void test_compute_alg_lp_root_input_guards() {
     std::cout << "  compute_alg_lp_root input guards: PASSED" << std::endl;
 }
 
+void test_explicit_empty_algebraic_prefix() {
+    std::cout << "Testing explicit empty algebraic sieve prefix..." << std::endl;
+    core::PolynomialContext ctx(core::Integer(143),
+                                {core::Integer(-1), core::Integer(0), core::Integer(1)},
+                                core::Integer(1));
+    CHECK(ctx.verify());
+    CHECK(ctx.rational_value(5, 2) == core::Integer(3));
+    CHECK(ctx.algebraic_norm(5, 2) == core::Integer(21));
+    for (bool include_other_sq : {false, true}) {
+        factor_base::FactorBase fb(core::FactorBaseParams{3, 2, 100});
+        fb.add_rational(3, 1);
+        if (include_other_sq) {
+            fb.add_algebraic(3, 1, 1);
+        }
+        fb.add_algebraic(7, 6, 1);
+        fb.set_sieve_algebraic_count_explicit(0);
+        CHECK(fb.sieve_algebraic_count() == 0);
+        for (bool allow_one : {false, true}) {
+            CofactorizerConfig cfg;
+            cfg.allow_1lp = allow_one;
+            cfg.allow_2lp = false;
+            cfg.allow_3lp = false;
+            Cofactorizer cofactorizer(ctx, fb, cfg);
+            auto rel = cofactorizer.verify(5, 2, 7, 6);
+            CHECK(rel.has_value() == allow_one);
+            if (rel) {
+                CHECK(rel->rational_factors == std::vector<uint32_t>{0});
+                CHECK(rel->algebraic_factors.empty());
+                CHECK(rel->algebraic_large_prime.size() == 2);
+                const auto has_prime = [&](uint64_t prime, uint64_t root) {
+                    return std::any_of(
+                        rel->algebraic_large_prime.begin(), rel->algebraic_large_prime.end(),
+                        [&](const core::PrimePower& factor) {
+                            return factor.p == prime && factor.r == root && factor.e == 1;
+                        });
+                };
+                CHECK(has_prime(3, 1));
+                CHECK(has_prime(7, 6));
+                CHECK(rel->algebraic_large_prime[0].p * rel->algebraic_large_prime[1].p == 21);
+            }
+        }
+    }
+
+    factor_base::FactorBase legacy(core::FactorBaseParams{3, 7, 100});
+    legacy.add_algebraic(3, 1, 1);
+    legacy.add_algebraic(7, 6, 1);
+    CHECK(!legacy.has_explicit_sieve_algebraic_count());
+    CHECK(legacy.sieve_algebraic_count() == 2);
+    TrialDivider divider(legacy);
+    for (unsigned shift : {0u, 70u, 140u}) {
+        core::Integer power(1);
+        mpz_mul_2exp(power.get_mpz(), power.get_mpz(), shift);
+        const core::Integer input = power * core::Integer(21);
+        const auto empty = divider.divide_algebraic_prefix(input, 5, 2, 0);
+        CHECK(empty.factor_indices.empty());
+        CHECK(empty.cofactor == input);
+        const auto all_default = divider.divide_algebraic(input, 5, 2);
+        const auto all_zero = divider.divide_algebraic(input, 5, 2, 0);
+        const auto first = divider.divide_algebraic_prefix(input, 5, 2, 1);
+        const auto all_legacy =
+            divider.divide_algebraic_prefix(input, 5, 2, legacy.sieve_algebraic_count());
+        CHECK(first.factor_indices == std::vector<uint32_t>{0});
+        CHECK(first.exponents == std::vector<uint8_t>{1});
+        CHECK(first.cofactor == power * core::Integer(7));
+        CHECK(!first.is_smooth);
+        for (const auto* result : {&all_default, &all_zero, &all_legacy}) {
+            CHECK((result->factor_indices == std::vector<uint32_t>{0, 1}));
+            CHECK((result->exponents == std::vector<uint8_t>{1, 1}));
+            CHECK(result->cofactor == power);
+            CHECK(result->is_smooth == (shift == 0));
+        }
+    }
+    std::cout << "  Explicit empty algebraic sieve prefix: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Cofactorization Tests ===" << std::endl;
     std::cout << std::endl;
@@ -883,6 +962,7 @@ int main() {
     test_factor_base_params_uint64_lpb();
     test_cofactorizer_large_prime_storage();
     test_special_q_root_identity_validation();
+    test_explicit_empty_algebraic_prefix();
     test_compute_alg_lp_root_projective();
     test_compute_alg_lp_root_input_guards();
 
