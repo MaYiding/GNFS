@@ -294,7 +294,7 @@ case_index = 0
 
 def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
            relative_build=False, tsan=False, check_target=False, check_exit=0,
-           generator='Unix Makefiles'):
+           generator='Unix Makefiles', shadow_records=None):
     global case_index
     case_index += 1
     build = fixture / str(case_index) / "build with spaces"
@@ -313,6 +313,13 @@ def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
     if check_target:
         (build / 'Makefile').write_text(
             'cmake_check_build_system: \n' if check_target is True else check_target)
+    if shadow_records is not None:
+        for mode, records in shadow_records.items():
+            (build / (mode + '.txt')).write_text(records)
+        for name in ('test_siqs_shadow_cross_size', 'test_siqs_shadow_prefer_route'):
+            executable(build / name, "raise SystemExit(0)\n")
+        executable(build / 'test_siqs_shadow_matrix_bench',
+                   "print(pathlib.Path(__file__).with_name(sys.argv[1] + '.txt').read_text())\n")
     if not missing_binary:
         executable(build / 'test_integer', "raise SystemExit(0)\n")
     executable(build / 'gnfs_test_process_supervisor',
@@ -329,6 +336,58 @@ def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
 def require(condition, detail):
     if not condition:
         raise SystemExit(detail)
+
+def shadow_gate_records(mode, fb, rows, workers, implementations):
+    # Mirror the configuration and result emitters in test_siqs_shadow_matrix_bench.
+    workload = (f'factor_base_entries={fb} rows={rows} odd_weight=20 '
+                'parallel_threshold=0 warmups=0 reps=1')
+    meta = (f'mode={mode} build_contract=release_ndebug cmake_build_type=Release '
+            'timing_asserted=false seed=0x53a9f19d97e8c641')
+    records = [f'GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1 {meta} {workload} '
+               'projected_single_dense_bytes=128 projected_peak_packed_bytes=256 force_dense=false']
+    for worker in workers.split(','):
+        for impl in implementations:
+            prototype = 'benchmark_only' if impl == 'benchmark_only_queued_thread_pool' else 'false'
+            dep = '0x1ab' if mode == 'solve' else 'na'
+            records.append(f'GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1 status=ok {meta} {workload} '
+                           f'implementation={impl} prototype={prototype} workers={worker} '
+                           'inner_iterations=1 wall_min_ns=1 wall_median_ns=2 wall_max_ns=3 '
+                           f'dependency_digest={dep} result_digest=0x1ab')
+    return workload, records
+
+
+gate_records = {}
+for mode, fb, rows, workers, impls in [
+        ('solve', 1601, 1701, '1,2,4', ['public_solver']),
+        ('kernel', 4000, 4100, '1,4', ['legacy_per_pivot_jthread',
+                                        'benchmark_only_queued_thread_pool', 'production_persistent_worker_team'])]:
+    workload, records = shadow_gate_records(mode, fb, rows, workers, impls)
+    gate_records[mode] = '\n'.join(records)
+    command = ['awk', '-v', 'mode=' + mode, '-v', 'requested_workers=' + workers,
+               '-v', 'workload=' + workload, '-f', str(project / 'scripts/lib/siqs_shadow_bench.awk')]
+    for field in workload.split():
+        for index in (0, len(records) - 1):
+            for replacement in ('', field.split('=')[0] + '=99'):
+                mutated = records.copy()
+                mutated[index] = mutated[index].replace(' ' + field + ' ', ' ' + replacement + ' ')
+                require(subprocess.run(command, input='\n'.join(mutated), text=True).returncode == 1,
+                        f'{mode}: accepted wrong or missing {field} in record {index}')
+
+result, calls, _ = invoke(['gate-siqs-shadow'], shadow_records=gate_records)
+require(result.returncode == 0 and 'GNFS_SIQS_SHADOW_MATRIX_GATE_V1 status=pass' in result.stdout,
+        result.stdout)
+builds = [c for c in calls if c[:2] == ['cmake', '--build']]
+targets = {'test_siqs_shadow_cross_size', 'test_siqs_shadow_prefer_route',
+           'test_siqs_shadow_matrix_bench', 'gnfs_test_process_supervisor'}
+require(len(builds) == 1 and '--target' in builds[0] and
+        set(builds[0][builds[0].index('--target') + 1:]) == targets, f'wrong gate build: {builds!r}')
+gate_records['kernel'] = gate_records['kernel'].replace('rows=4100', 'rows=5')
+result, calls, _ = invoke(['gate-siqs-shadow'], shadow_records=gate_records)
+require(result.returncode != 0 and 'GNFS_SIQS_SHADOW_MATRIX_GATE_V1 status=pass' not in result.stdout,
+        'gate published a pass for a different kernel workload')
+result, calls, _ = invoke(['gate-siqs-shadow'], shadow_records=gate_records, build_exit=41)
+require(result.returncode != 0 and not any(c[0] in targets for c in calls),
+        f'gate ran stale binaries after a failed build: {calls!r}')
 
 build_cases = [(['run', 'integer', '--suite', 'value with spaces'], False, 'Unix Makefiles')]
 build_cases += [(['-v', 'run', 'test_integer'], True, generator) for generator in

@@ -1386,138 +1386,35 @@ do_module_map_check() {
     log_success "测试模块映射合同通过 (${checked} 个注册测试)"
 }
 
-# Validate the machine-readable records emitted by one bounded shadow-matrix
-# benchmark invocation. The benchmark itself checks mathematical identity;
-# this wrapper checks that the runner saw the complete requested worker and
-# implementation matrix before accepting the gate case.
-validate_siqs_shadow_gate_bench() {
-    local mode="$1"
-    local requested_workers="$2"
-    local label="$3"
-
+# Both the standalone benchmark and the gate check the reported worker matrix.
+# The gate also binds every record to the workload it requested.
+validate_siqs_shadow_bench() {
+    local mode="$1" requested_workers="$2" label="$3" workload="${4:-}"
     if printf '%s\n' "$RUN_OUTPUT" | awk \
-        -v mode="$mode" -v requested_workers="$requested_workers" '
-        function has_field(line, key, value) {
-            return index(" " line " ", " " key "=" value " ") != 0
-        }
-        function field(line, key,    count, index_, fields, prefix) {
-            count = split(line, fields, " ")
-            prefix = key "="
-            for (index_ = 1; index_ <= count; ++index_) {
-                if (index(fields[index_], prefix) == 1) {
-                    return substr(fields[index_], length(prefix) + 1)
-                }
-            }
-            return ""
-        }
-        index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1 ") == 1 {
-            configs++
-            if (!has_field($0, "mode", mode) ||
-                !has_field($0, "build_contract", "release_ndebug") ||
-                !has_field($0, "cmake_build_type", "Release") ||
-                !has_field($0, "timing_asserted", "false") ||
-                !has_field($0, "seed", "0x53a9f19d97e8c641")) {
-                invalid = 1
-            }
-        }
-        index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1 ") == 1 {
-            results++
-            worker = field($0, "workers")
-            implementation = field($0, "implementation")
-            digest = field($0, "result_digest")
-            dependency_digest = field($0, "dependency_digest")
-            minimum = field($0, "wall_min_ns") + 0
-            median = field($0, "wall_median_ns") + 0
-            maximum = field($0, "wall_max_ns") + 0
-            if (!has_field($0, "status", "ok") ||
-                !has_field($0, "mode", mode) ||
-                !has_field($0, "build_contract", "release_ndebug") ||
-                !has_field($0, "cmake_build_type", "Release") ||
-                !has_field($0, "timing_asserted", "false") ||
-                !has_field($0, "seed", "0x53a9f19d97e8c641") ||
-                $0 !~ / wall_min_ns=[0-9]+ / ||
-                $0 !~ / wall_median_ns=[0-9]+ / ||
-                $0 !~ / wall_max_ns=[0-9]+ / ||
-                $0 !~ / result_digest=0x[0-9a-f]+$/ ||
-                minimum > median || median > maximum) {
-                invalid = 1
-            }
-            if (reference_digest == "") {
-                reference_digest = digest
-            } else if (digest != reference_digest) {
-                invalid = 1
-            }
-            if (mode == "solve") {
-                if (implementation != "public_solver" || dependency_digest != digest) {
-                    invalid = 1
-                }
-            } else if (mode == "kernel") {
-                if (dependency_digest != "na" ||
-                    (implementation != "legacy_per_pivot_jthread" &&
-                     implementation != "benchmark_only_queued_thread_pool" &&
-                     implementation != "production_persistent_worker_team")) {
-                    invalid = 1
-                }
-            }
-            seen[worker, implementation]++
-        }
-        END {
-            if (configs != 1 || results == 0) {
-                invalid = 1
-            }
-            expected_count = split(requested_workers, expected, ",")
-            if (mode == "solve") {
-                if (results != expected_count) {
-                    invalid = 1
-                }
-                for (index_ = 1; index_ <= expected_count; ++index_) {
-                    if (seen[expected[index_], "public_solver"] != 1) {
-                        invalid = 1
-                    }
-                }
-            } else if (mode == "kernel") {
-                if (results != expected_count * 3) {
-                    invalid = 1
-                }
-                for (index_ = 1; index_ <= expected_count; ++index_) {
-                    if (seen[expected[index_], "legacy_per_pivot_jthread"] != 1 ||
-                        seen[expected[index_], "benchmark_only_queued_thread_pool"] != 1 ||
-                        seen[expected[index_], "production_persistent_worker_team"] != 1) {
-                        invalid = 1
-                    }
-                }
-            } else {
-                invalid = 1
-            }
-            if (invalid) {
-                exit 1
-            }
-        }
-    '; then
+        -v mode="$mode" -v requested_workers="$requested_workers" -v workload="$workload" \
+        -f "$PROJECT_ROOT/scripts/lib/siqs_shadow_bench.awk"; then
         printf '%s\n' "$RUN_OUTPUT" | awk '
-            index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1 ") == 1 ||
-            index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1 ") == 1 { print }
+            /^GNFS_SIQS_SHADOW_MATRIX_BENCH_(CONFIG|RESULT)_V1 / { print }
         '
         log_success "${label} schema、构建合同、worker/implementation 矩阵与 digest 均有效"
         return 0
     fi
 
-    log_fail "${label} benchmark schema 或 worker/implementation identity 无效"
+    log_fail "${label} benchmark 记录与请求的工作负载或结果合同不符"
     return 1
 }
 
 run_siqs_shadow_gate_bench() {
-    local mode="$1"
-    local requested_workers="$2"
-    local label="$3"
-    shift 3
+    local mode="$1" requested_workers="$2" label="$3" fb="$4" rows="$5"
+    local weight=20 warmups=0 reps=1 parallel_threshold=0
 
-    local _status=0
-    run_single_test test_siqs_shadow_matrix_bench "$mode" "$@" || _status=$?
-    if (( _status != 0 )); then
-        return "$_status"
-    fi
-    if ! validate_siqs_shadow_gate_bench "$mode" "$requested_workers" "$label"; then
+    run_single_test test_siqs_shadow_matrix_bench "$mode" --fb "$fb" --rows "$rows" \
+        --weight "$weight" --workers "$requested_workers" --parallel-threshold "$parallel_threshold" \
+        --warmups "$warmups" --reps "$reps" || return $?
+
+    local workload="factor_base_entries=$fb rows=$rows odd_weight=$weight"
+    workload+=" parallel_threshold=$parallel_threshold warmups=$warmups reps=$reps"
+    if ! validate_siqs_shadow_bench "$mode" "$requested_workers" "$label" "$workload"; then
         (( FAILED_TESTS += 1 ))
         return 1
     fi
@@ -1543,7 +1440,8 @@ do_siqs_shadow_gate() {
         return 1
     fi
 
-    do_build
+    do_build test_siqs_shadow_cross_size test_siqs_shadow_prefer_route \
+        test_siqs_shadow_matrix_bench gnfs_test_process_supervisor || return 1
     if [[ ! -x "${BUILD_DIR}/test_siqs_shadow_cross_size" ||
           ! -x "${BUILD_DIR}/test_siqs_shadow_prefer_route" ||
           ! -x "${BUILD_DIR}/test_siqs_shadow_matrix_bench" ]]; then
@@ -1582,9 +1480,7 @@ do_siqs_shadow_gate() {
 
     log_section "Worker determinism"
     _status=0
-    run_siqs_shadow_gate_bench solve 1,2,4 "solve 50-digit-shaped" \
-        --fb 1601 --rows 1701 --weight 20 --workers 1,2,4 \
-        --parallel-threshold 0 --warmups 0 --reps 1 || _status=$?
+    run_siqs_shadow_gate_bench solve 1,2,4 "solve 50-digit-shaped" 1601 1701 || _status=$?
     if (( _status != 0 || FAILED_TESTS > baseline_failed )); then
         if (( FAILED_TESTS == baseline_failed )); then
             (( FAILED_TESTS += 1 ))
@@ -1595,9 +1491,7 @@ do_siqs_shadow_gate() {
 
     log_section "Kernel implementation identity"
     _status=0
-    run_siqs_shadow_gate_bench kernel 1,4 "kernel crossover-shaped" \
-        --fb 4000 --rows 4100 --weight 20 --workers 1,4 \
-        --parallel-threshold 0 --warmups 0 --reps 1 || _status=$?
+    run_siqs_shadow_gate_bench kernel 1,4 "kernel crossover-shaped" 4000 4100 || _status=$?
     if (( _status != 0 || FAILED_TESTS > baseline_failed )); then
         if (( FAILED_TESTS == baseline_failed )); then
             (( FAILED_TESTS += 1 ))
@@ -1693,13 +1587,13 @@ do_build() {
     # CMake 配置
     if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
         log_info "首次配置 CMake..."
-        cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -5
+        cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -5 || return 1
     else
         local cached_type
         cached_type=$(grep -m1 'CMAKE_BUILD_TYPE:' "${BUILD_DIR}/CMakeCache.txt" | cut -d= -f2)
         if [[ "$cached_type" != "$BUILD_TYPE" ]]; then
             log_warn "构建类型变更: ${cached_type} ${ARROW} ${BUILD_TYPE}"
-            cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -3
+            cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -3 || return 1
         fi
     fi
 
@@ -10402,108 +10296,7 @@ case "$MODE" in
         run_single_test test_siqs_shadow_matrix_bench "${MODE_ARGS[@]}" ||
             _shadow_status=$?
         if (( _shadow_status == 0 )); then
-            if printf '%s\n' "$RUN_OUTPUT" | awk \
-                -v mode="$_shadow_mode" -v requested_workers="$_shadow_workers" '
-                function has_field(line, key, value) {
-                    return index(" " line " ", " " key "=" value " ") != 0
-                }
-                function field(line, key,    count, index_, fields, prefix) {
-                    count = split(line, fields, " ")
-                    prefix = key "="
-                    for (index_ = 1; index_ <= count; ++index_) {
-                        if (index(fields[index_], prefix) == 1) {
-                            return substr(fields[index_], length(prefix) + 1)
-                        }
-                    }
-                    return ""
-                }
-                index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1 ") == 1 {
-                    configs++
-                    if (!has_field($0, "mode", mode) ||
-                        !has_field($0, "build_contract", "release_ndebug") ||
-                        !has_field($0, "cmake_build_type", "Release") ||
-                        !has_field($0, "timing_asserted", "false") ||
-                        !has_field($0, "seed", "0x53a9f19d97e8c641")) invalid = 1
-                }
-                index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1 ") == 1 {
-                    results++
-                    worker = field($0, "workers")
-                    implementation = field($0, "implementation")
-                    digest = field($0, "result_digest")
-                    dependency_digest = field($0, "dependency_digest")
-                    minimum = field($0, "wall_min_ns") + 0
-                    median = field($0, "wall_median_ns") + 0
-                    maximum = field($0, "wall_max_ns") + 0
-                    if (!has_field($0, "status", "ok") ||
-                        !has_field($0, "mode", mode) ||
-                        !has_field($0, "build_contract", "release_ndebug") ||
-                        !has_field($0, "cmake_build_type", "Release") ||
-                        !has_field($0, "timing_asserted", "false") ||
-                        !has_field($0, "seed", "0x53a9f19d97e8c641") ||
-                        $0 !~ / wall_min_ns=[0-9]+ / ||
-                        $0 !~ / wall_median_ns=[0-9]+ / ||
-                        $0 !~ / wall_max_ns=[0-9]+ / ||
-                        $0 !~ / result_digest=0x[0-9a-f]+$/) invalid = 1
-                    if (minimum > median || median > maximum) invalid = 1
-                    if (reference_digest == "") reference_digest = digest
-                    else if (digest != reference_digest) invalid = 1
-
-                    if (mode == "solve") {
-                        if (implementation != "public_solver" ||
-                            dependency_digest != digest) invalid = 1
-                        seen[worker, implementation]++
-                    } else if (mode == "kernel") {
-                        if (dependency_digest != "na" ||
-                            (implementation != "legacy_per_pivot_jthread" &&
-                             implementation != "benchmark_only_queued_thread_pool" &&
-                             implementation != "production_persistent_worker_team")) invalid = 1
-                        seen[worker, implementation]++
-                    } else if (mode == "prepare") {
-                        if (worker != "1" || dependency_digest != "na" ||
-                            (implementation != "public_identity_wrapper" &&
-                             implementation != "prevalidated_identity_helper")) invalid = 1
-                        seen[worker, implementation]++
-                    } else if (mode == "fbcheck") {
-                        if (worker != "1" || dependency_digest != "na" ||
-                            implementation != "factor_base_validation") invalid = 1
-                        seen[worker, implementation]++
-                    }
-                }
-                END {
-                    if (configs != 1) invalid = 1
-                    expected_count = split(requested_workers, expected, ",")
-                    if (mode == "solve") {
-                        if (results != expected_count) invalid = 1
-                        for (index_ = 1; index_ <= expected_count; ++index_)
-                            if (seen[expected[index_], "public_solver"] != 1) invalid = 1
-                    } else if (mode == "kernel") {
-                        if (results != expected_count * 3) invalid = 1
-                        for (index_ = 1; index_ <= expected_count; ++index_) {
-                            if (seen[expected[index_], "legacy_per_pivot_jthread"] != 1)
-                                invalid = 1
-                            if (seen[expected[index_],
-                                     "benchmark_only_queued_thread_pool"] != 1)
-                                invalid = 1
-                            if (seen[expected[index_],
-                                     "production_persistent_worker_team"] != 1)
-                                invalid = 1
-                        }
-                    } else if (mode == "prepare") {
-                        if (results != 2 || seen["1", "public_identity_wrapper"] != 1 ||
-                            seen["1", "prevalidated_identity_helper"] != 1) invalid = 1
-                    } else if (mode == "fbcheck") {
-                        if (results != 1 || seen["1", "factor_base_validation"] != 1) invalid = 1
-                    }
-                    if (invalid) exit 1
-                }
-            '; then
-                printf '%s\n' "$RUN_OUTPUT" | awk '
-                    index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1 ") == 1 ||
-                    index($0, "GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1 ") == 1 { print }
-                '
-                log_success "SIQS shadow ${_shadow_mode} 基准 schema、构建合同与结果身份均有效"
-            else
-                log_fail "SIQS shadow benchmark CONFIG/RESULT schema 或身份字段无效"
+            if ! validate_siqs_shadow_bench "$_shadow_mode" "$_shadow_workers" "SIQS shadow ${_shadow_mode}"; then
                 (( FAILED_TESTS += 1 ))
             fi
         fi

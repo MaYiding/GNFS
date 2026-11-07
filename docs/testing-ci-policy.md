@@ -332,11 +332,13 @@ The mode always uses one Release/NDEBUG build for the current tree and rejects
 `--no-build`, non-Release `-t`, and automatic `--retry`. It then runs the
 cross-size constructed corpus, the explicit-prefer legacy-fallback route, a
 50-digit-shaped public solve with workers `1,2,4`, and a crossover-shaped
-kernel comparison with workers `1,4`. The solve and kernel invocations use
-`test_siqs_shadow_matrix_bench` with one measured pass and a zero parallel
-threshold. The runner requires one configuration record, the complete
-worker/implementation result matrix, monotonic wall-time fields, and one
-shared result digest. A missing or malformed record fails the gate.
+kernel comparison with workers `1,4`. The solve case uses 1,601 factor-base
+entries and 1,701 rows. The kernel case uses 4,000 entries and 4,100 rows.
+Each case uses an odd weight of 20, zero warmups, one repetition, and a
+parallel threshold of zero. The configuration record and every result must
+report those parameters. The runner also checks the complete set of requested
+workers and implementations, ordered timing statistics, and a shared result
+digest within each case.
 
 The gate does not promote the shadow route, enable 2LP collection, or assert a
 wall-time budget. It emits one closed
