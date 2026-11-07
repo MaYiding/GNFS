@@ -735,6 +735,28 @@ void test_cofactorizer_large_prime_storage() {
     std::cout << "  Cofactorizer large prime storage: PASSED" << std::endl;
 }
 
+void test_zero_algebraic_norm_rejected() {
+    core::PolynomialContext ctx(core::Integer(143),
+                                {core::Integer(-1), core::Integer(0), core::Integer(1)},
+                                core::Integer(1));
+    CHECK(ctx.verify());
+    CHECK(ctx.rational_value(-1, 1) == core::Integer(-2));
+    CHECK(ctx.algebraic_norm(-1, 1).is_zero());
+    factor_base::FactorBaseBuilder::Options options;
+    options.rational_bound = 5;
+    options.algebraic_bound = 2;
+    options.special_q_bound = 5;
+    options.parallel = false;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, options);
+    Cofactorizer cofactorizer(ctx, fb);
+    const auto ordinary = cofactorizer.verify(-1, 1);
+    const auto special_q = cofactorizer.verify(-1, 1, 3, 2);
+    CHECK(!ordinary.has_value());
+    CHECK(!special_q.has_value());
+    CHECK(cofactorizer.stats().algebraic_rejects == 2);
+    CHECK(cofactorizer.verify(3, 1).has_value());
+}
+
 // Special-Q metadata identifies a prime ideal, so verify() must reject a root
 // that does not match the candidate's a/b identity. CHECK stays active in
 // Release builds, where ordinary assert() is compiled out.
@@ -871,6 +893,7 @@ int main() {
     test_perfect_power();
     test_pollard_rho();
     test_cofactor_classification();
+    test_zero_algebraic_norm_rejected();
     test_trial_division();
     test_relation_filter();
     test_large_prime_counting();
