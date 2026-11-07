@@ -1250,12 +1250,12 @@ public:
     /// 保存到文件 (legacy 序列化协议; 与 OOC store 协议独立)
     /// OOC 模式不兼容 — 请用 ooc_base_path 直接访问 .reldata/.relidx
     /// Pool 模式 (W6 T4): 支持 — 走 pmr::vector 路径序列化。
+    /// 写入或关闭失败返回 false，目标文件可能只包含部分内容。
     bool save(const std::string& filename) const {
         std::lock_guard<std::mutex> lock(mutex_);
         if (config_.ooc_enabled)
             return false; // OOC mode: legacy save disabled
 
-        // Validate every relation before opening the destination with truncation.
         // Validate every relation before opening the destination with truncation.
         // Relation::serialize() repeats the check defensively, but preflighting
         // keeps a malformed LP from clobbering an existing save.
@@ -1286,6 +1286,7 @@ public:
             }
         }
 
+        ofs.close();
         return ofs.good();
     }
 
