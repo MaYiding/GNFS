@@ -54,6 +54,12 @@ individual contract assertions and bounded child invocations remain unchanged.
 
 ### Local Change Selection
 
+The local `scripts/test.sh gate --quick` builds the binaries in
+`scripts/test-catalog/smoke.txt` and the
+process supervisor used by their timeout wrapper and CTest contract. The full
+local `gate` also builds and runs `test_regression_gate`. CMake builds the
+dependencies of the selected targets. `--no-build` uses existing binaries.
+
 `scripts/test.sh changed --deep` adds mapped module dependencies and the API
 contract to applicable change selections. It also selects `test_siqs_e2e` once
 when a changed path maps directly to the `siqs` module, including
@@ -319,6 +325,33 @@ The runner uses a dedicated `build-tsan-relation` Debug directory, disables nati
 The binaries run serially with a default 120-second timeout per binary. An explicit `--timeout` overrides that default. The Linux CI job has a separate 20-minute outer timeout, so configuration or compilation cannot leave the lane unbounded.
 
 The runner supports Linux and macOS. On any other host it prints an explicit unsupported message, records the lane as skipped, and exits successfully. On Linux or macOS, CMake requires a Clang or GNU toolchain that can compile and link the ThreadSanitizer runtime; configuration fails instead of silently executing uninstrumented binaries when that contract is not met. `--no-build` likewise refuses a cache unless it records `GNFS_ENABLE_TSAN=ON`.
+
+## SIQS Shadow Matrix Gate
+
+Run the bounded SIQS shadow correctness and benchmark-schema gate with:
+
+```bash
+./scripts/test.sh gate-siqs-shadow
+```
+
+The mode always uses one Release/NDEBUG build for the current tree and rejects
+`--no-build`, non-Release `-t`, and automatic `--retry`. It then runs the
+cross-size constructed corpus, the explicit-prefer legacy-fallback route, a
+50-digit-shaped public solve with workers `1,2,4`, and a crossover-shaped
+kernel comparison with workers `1,4`. The solve case uses 1,601 factor-base
+entries and 1,701 rows. The kernel case uses 4,000 entries and 4,100 rows.
+Each case uses an odd weight of 20, zero warmups, one repetition, and a
+parallel threshold of zero. The configuration record and every result must
+report those parameters. The runner also checks the complete set of requested
+workers and implementations, ordered timing statistics, and a shared result
+digest within each case.
+
+The gate does not promote the shadow route, enable 2LP collection, or assert a
+wall-time budget. It emits one closed
+`GNFS_SIQS_SHADOW_MATRIX_GATE_V1` summary with `promotion=false`; timing values
+remain diagnostic evidence. The mode is intentionally a script-level gate,
+not a CTest entry, because the benchmark executable is Release-only and its
+measurements must come from the same build as the correctness checks.
 
 ## Resource Measurement Lanes
 

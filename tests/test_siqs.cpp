@@ -121,7 +121,7 @@ std::vector<uint32_t> reference_scoring_primes() {
 
 // Independent small-input score oracle: enumerate primes and quadratic
 // residues instead of using the production prime table or modular exponentiation.
-std::vector<uint32_t> reference_multiplier_ranking(uint32_t n) {
+std::vector<std::pair<uint32_t, double>> reference_multiplier_scores(uint32_t n) {
     const auto primes = reference_scoring_primes();
     std::vector<std::pair<uint32_t, double>> scores;
     for (uint32_t k = 1; k <= 73; k += 2) {
@@ -149,14 +149,7 @@ std::vector<uint32_t> reference_multiplier_ranking(uint32_t n) {
         }
         scores.emplace_back(k, score);
     }
-    std::stable_sort(scores.begin(), scores.end(),
-                     [](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
-    std::vector<uint32_t> ranked;
-    for (const auto& [multiplier, score] : scores) {
-        (void)score;
-        ranked.push_back(multiplier);
-    }
-    return ranked;
+    return scores;
 }
 
 std::vector<uint32_t>
@@ -183,8 +176,22 @@ void test_multiplier_ranking_and_admission() {
     // Check complete ordering with an independent oracle on a bounded sample.
     for (uint32_t n : {1u, 15u, 17u, 105u, 303u, 1001u, 1999u, 2003u, 15015u}) {
         const Integer modulus(n);
-        const auto reference = reference_multiplier_ranking(n);
-        require_test(reference.size() == 21, "reference candidate set size changed");
+        auto expected_scores = reference_multiplier_scores(n);
+        const auto scored = siqs_multiplier_detail::score_candidates(modulus);
+        require_test(expected_scores.size() == scored.size(),
+                     "reference candidate set size changed");
+        for (size_t i = 0; i < scored.size(); ++i) {
+            const auto& [k, expected] = expected_scores[i];
+            require_test(scored[i].multiplier == k && scored[i].ordinal == i &&
+                             std::bit_cast<uint64_t>(scored[i].score) ==
+                                 std::bit_cast<uint64_t>(expected),
+                         "multiplier score differs from independent residue enumeration");
+        }
+        std::stable_sort(expected_scores.begin(), expected_scores.end(),
+                         [](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
+        std::vector<uint32_t> reference;
+        for (const auto& candidate : expected_scores)
+            reference.push_back(candidate.first);
         const auto complete = rank_multiplier_candidates(modulus, limits.back());
         require_test(complete == reference, "multiplier score ordering differs from oracle");
         require_test(select_multiplier(modulus) == reference.front(),

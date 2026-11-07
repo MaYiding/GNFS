@@ -5,8 +5,10 @@
 #include "../factor_base/factor_base.hpp"
 #include "wheel235.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace gnfs::cofactor {
@@ -36,6 +38,7 @@ inline void trial_integer_from_u128(Integer& out, __uint128_t value) {
 
 /// 试除结果
 struct TrialDivisionResult {
+    // A valuation above UINT8_MAX uses consecutive entries for the same column.
     std::vector<uint32_t> factor_indices; // 因子基中的索引
     std::vector<uint8_t> exponents;       // 对应的指数
     Integer cofactor;                     // 剩余的未分解部分
@@ -135,11 +138,7 @@ public:
         const auto& rationals = fb_.rational();
         for (uint32_t idx = 0; idx < rationals.size(); ++idx) {
             uint32_t p = rationals[idx].p;
-            uint8_t exp = 0;
-            while (divisible_by(value, p) && exp < 255) {
-                divide_exact(value, p);
-                ++exp;
-            }
+            const uint8_t exp = divide_gmp_prime(value, p, idx, result);
             if (exp > 0) {
                 result.factor_indices.push_back(idx);
                 result.exponents.push_back(exp);
@@ -177,12 +176,18 @@ public:
     /// 对代数侧范数进行试除
     /// @param norm 代数侧范数 |N(a, b)|
     /// @param a, b 用于确定哪个根 r 整除
-    /// @param max_entries 最大遍历条目数 (0 = all)。传 sieve_algebraic_count()
-    ///   可跳过 SQ 范围条目，让 classify_cofactor 处理它们。
+    /// @param max_entries 最大遍历条目数 (0 = all, for legacy callers)
     /// @return 试除结果
     [[nodiscard]] TrialDivisionResult divide_algebraic(Integer norm, int64_t a, uint64_t b,
                                                        size_t max_entries = 0) const {
+        const size_t limit = max_entries == 0 ? fb_.algebraic_count() : max_entries;
+        return divide_algebraic_prefix(std::move(norm), a, b, limit);
+    }
 
+    /// Divide by exactly the available entries in the requested prefix. A
+    /// limit of zero is an empty prefix, including for a special-Q-only base.
+    [[nodiscard]] TrialDivisionResult divide_algebraic_prefix(Integer norm, int64_t a, uint64_t b,
+                                                              size_t prefix_size) const {
         TrialDivisionResult result;
         // Reserve: typical relation has 8-15 distinct alg FB factors.
         result.factor_indices.reserve(16);
@@ -201,8 +206,7 @@ public:
 
         // 对每个代数因子基素理想进行试除
         const auto& algebraics = fb_.algebraic();
-        size_t alg_limit =
-            (max_entries > 0 && max_entries < algebraics.size()) ? max_entries : algebraics.size();
+        const size_t alg_limit = prefix_size < algebraics.size() ? prefix_size : algebraics.size();
 
         // Three-tier fast path: uint64 → uint128 → GMP
         bool use_u64 = norm.fits_uint64();
@@ -273,10 +277,7 @@ public:
                 }
 #endif
             } else {
-                while (divisible_by(norm, p) && exp < 255) {
-                    divide_exact(norm, p);
-                    ++exp;
-                }
+                exp = divide_gmp_prime(norm, p, idx, result);
                 // Check for upgrade to uint128 or uint64
                 if (norm.fits_uint64()) {
                     use_u64 = true;
@@ -345,8 +346,11 @@ public:
     /// 快速检查是否可能光滑（不完全分解，只检查小素数）
     /// @param value 要检查的值
     /// @param limit 检查的素数数量限制
-    /// @return 剩余的 cofactor
+    /// @return 剩余的 cofactor，输入为零时返回零
     [[nodiscard]] Integer quick_divide(Integer value, size_t limit = 100) const {
+        if (value.is_zero()) {
+            return value;
+        }
         if (value.is_negative()) {
             value.negate();
         }
@@ -390,6 +394,27 @@ private:
             // get_mpz() returns mpz_t& which decays to mpz_ptr
             mpz_divexact_ui(value.get_mpz(), value.get_mpz(), p);
         }
+    }
+
+    // Emit full exponent chunks here and let the caller append the last chunk.
+    static uint8_t divide_gmp_prime(Integer& value, uint32_t p, uint32_t idx,
+                                    TrialDivisionResult& result) {
+        uint8_t exponent = 0;
+        while (exponent < UINT8_MAX && divisible_by(value, p)) {
+            divide_exact(value, p);
+            ++exponent;
+        }
+        if (exponent == UINT8_MAX && p >= 2 && mpz_divisible_ui_p(value.get_mpz(), p)) {
+            const Integer prime(p);
+            mp_bitcnt_t remaining = mpz_remove(value.get_mpz(), value.get_mpz(), prime.get_mpz());
+            while (remaining > 0) {
+                result.factor_indices.push_back(idx);
+                result.exponents.push_back(exponent);
+                exponent = static_cast<uint8_t>(std::min<mp_bitcnt_t>(remaining, UINT8_MAX));
+                remaining -= exponent;
+            }
+        }
+        return exponent;
     }
 
     /// 纯 uint64 有理试除（从指定 FB 索引开始）

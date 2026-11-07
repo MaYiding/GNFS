@@ -125,9 +125,7 @@ public:
             throw std::overflow_error(
                 "FactorBase::add_rational: rational-prime count exceeds uint32_t");
         }
-        uint32_t idx = static_cast<uint32_t>(rational_.size());
-        rational_.push_back(RationalPrime{p, log_p});
-        rat_index_[p] = idx;
+        append_indexed_prime(rational_, rat_index_, p, RationalPrime{p, log_p});
     }
 
     /// 添加代数侧素理想
@@ -136,10 +134,8 @@ public:
             throw std::overflow_error(
                 "FactorBase::add_algebraic: algebraic-prime count exceeds uint32_t");
         }
-        uint32_t idx = static_cast<uint32_t>(algebraic_.size());
-        algebraic_.push_back(AlgebraicPrime{p, r, log_p, degree});
-        uint64_t key = (static_cast<uint64_t>(p) << 32) | r;
-        alg_index_[key] = idx;
+        const uint64_t key = (static_cast<uint64_t>(p) << 32) | r;
+        append_indexed_prime(algebraic_, alg_index_, key, AlgebraicPrime{p, r, log_p, degree});
     }
 
     /// 设置参数
@@ -170,21 +166,16 @@ public:
             throw std::overflow_error(
                 "FactorBase::build_index: algebraic-prime count exceeds uint32_t");
         }
-        rat_index_.clear();
-        alg_index_.clear();
-        // Reserve exact sizes to avoid rehashing during build.
-        rat_index_.reserve(rational_.size());
-        alg_index_.reserve(algebraic_.size());
-
-        for (size_t i = 0; i < rational_.size(); ++i) {
-            rat_index_[rational_[i].p] = static_cast<uint32_t>(i);
-        }
-
-        for (size_t i = 0; i < algebraic_.size(); ++i) {
-            const auto& ap = algebraic_[i];
-            uint64_t key = (static_cast<uint64_t>(ap.p) << 32) | ap.r;
-            alg_index_[key] = static_cast<uint32_t>(i);
-        }
+        auto rational = replacement_index(rational_, rat_index_,
+                                          [](const RationalPrime& prime) { return prime.p; });
+        auto algebraic = replacement_index(algebraic_, alg_index_, [](const AlgebraicPrime& prime) {
+            return (static_cast<uint64_t>(prime.p) << 32) | prime.r;
+        });
+        // Publish only after both sides have completed every allocation.
+        if (rational)
+            rat_index_.swap(*rational);
+        if (algebraic)
+            alg_index_.swap(*algebraic);
     }
 
     // ==================== 序列化 ====================
@@ -212,6 +203,50 @@ public:
     }
 
 private:
+    template <typename Entries, typename Index, typename KeyOf>
+    static std::optional<Index> replacement_index(const Entries& entries, const Index& index,
+                                                  KeyOf key_of) {
+        const auto is_current = [&] {
+            for (const auto& [key, column] : index) {
+                if (column >= entries.size() || key_of(entries[column]) != key)
+                    return false;
+            }
+            for (size_t i = 0; i < entries.size(); ++i) {
+                const auto it = index.find(key_of(entries[i]));
+                // For repeated keys the mapped column must be the last one.
+                if (it == index.end() || it->second < i)
+                    return false;
+            }
+            return true;
+        };
+        if (is_current())
+            return std::nullopt;
+
+        Index replacement;
+        replacement.reserve(entries.size());
+        for (size_t i = 0; i < entries.size(); ++i)
+            replacement[key_of(entries[i])] = static_cast<uint32_t>(i);
+        return replacement;
+    }
+
+    template <typename Prime, typename Key>
+    static void append_indexed_prime(std::vector<Prime>& primes,
+                                     std::unordered_map<Key, uint32_t>& index, Key key,
+                                     Prime prime) {
+        // Stage a new key before growing the vector so a failed add also keeps
+        // existing spans valid. Duplicate keys change columns only on success.
+        const auto column = static_cast<uint32_t>(primes.size());
+        const auto [entry, inserted] = index.try_emplace(key, column);
+        try {
+            primes.push_back(prime);
+        } catch (...) {
+            if (inserted)
+                index.erase(entry);
+            throw;
+        }
+        entry->second = column;
+    }
+
     [[nodiscard]] static constexpr size_t max_serialized_count() noexcept {
         return static_cast<size_t>((std::numeric_limits<uint32_t>::max)());
     }
@@ -228,6 +263,13 @@ private:
     // 快速查找表
     std::unordered_map<uint32_t, uint32_t> rat_index_; // p -> index
     std::unordered_map<uint64_t, uint32_t> alg_index_; // (p << 32 | r) -> index
+
+    friend class FactorBaseBuilder;
+
+    void reserve_index_buckets() {
+        rat_index_.reserve(rational_.size());
+        alg_index_.reserve(algebraic_.size());
+    }
 };
 
 /// 计算对数值（用于筛法的定点数）
