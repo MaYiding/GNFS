@@ -215,13 +215,15 @@ assert_unknown_module_rejected() {
     # inside TEST_TMPDIR instead of touching the checkout's build directory.
     mkdir -p "${runner_root}/scripts/lib" "${runner_root}/build"
     cp "${PROJECT_ROOT}/scripts/test.sh" "${runner_root}/scripts/test.sh"
+    cp -R "${PROJECT_ROOT}/scripts/test-catalog" "${runner_root}/scripts/"
     cp "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh" \
         "${runner_root}/scripts/lib/process_tree_timeout.zsh"
     cp "${PROJECT_ROOT}/scripts/lib/changed_files.zsh" \
         "${runner_root}/scripts/lib/changed_files.zsh"
 
     set +e
-    zsh "${runner_root}/scripts/test.sh" --no-build --no-color module \
+    GNFS_BUILD_DIR="${runner_root}/build" \
+        zsh "${runner_root}/scripts/test.sh" --no-build --no-color module \
         "${unknown_module}" >"${output}" 2>&1
     runner_status=$?
     set -e
@@ -294,7 +296,7 @@ case_index = 0
 
 def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
            relative_build=False, tsan=False, check_target=False, check_exit=0,
-           generator='Unix Makefiles'):
+           generator='Unix Makefiles', shadow_records=None):
     global case_index
     case_index += 1
     build = fixture / str(case_index) / "build with spaces"
@@ -313,6 +315,13 @@ def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
     if check_target:
         (build / 'Makefile').write_text(
             'cmake_check_build_system: \n' if check_target is True else check_target)
+    if shadow_records is not None:
+        for mode, records in shadow_records.items():
+            (build / (mode + '.txt')).write_text(records)
+        for name in ('test_siqs_shadow_cross_size', 'test_siqs_shadow_prefer_route'):
+            executable(build / name, "raise SystemExit(0)\n")
+        executable(build / 'test_siqs_shadow_matrix_bench',
+                   "print(pathlib.Path(__file__).with_name(sys.argv[1] + '.txt').read_text())\n")
     if not missing_binary:
         executable(build / 'test_integer', "raise SystemExit(0)\n")
     executable(build / 'gnfs_test_process_supervisor',
@@ -329,6 +338,58 @@ def invoke(options, *, cached=False, build_exit=0, missing_binary=False,
 def require(condition, detail):
     if not condition:
         raise SystemExit(detail)
+
+def shadow_gate_records(mode, fb, rows, workers, implementations):
+    # Mirror the configuration and result emitters in test_siqs_shadow_matrix_bench.
+    workload = (f'factor_base_entries={fb} rows={rows} odd_weight=20 '
+                'parallel_threshold=0 warmups=0 reps=1')
+    meta = (f'mode={mode} build_contract=release_ndebug cmake_build_type=Release '
+            'timing_asserted=false seed=0x53a9f19d97e8c641')
+    records = [f'GNFS_SIQS_SHADOW_MATRIX_BENCH_CONFIG_V1 {meta} {workload} '
+               'projected_single_dense_bytes=128 projected_peak_packed_bytes=256 force_dense=false']
+    for worker in workers.split(','):
+        for impl in implementations:
+            prototype = 'benchmark_only' if impl == 'benchmark_only_queued_thread_pool' else 'false'
+            dep = '0x1ab' if mode == 'solve' else 'na'
+            records.append(f'GNFS_SIQS_SHADOW_MATRIX_BENCH_RESULT_V1 status=ok {meta} {workload} '
+                           f'implementation={impl} prototype={prototype} workers={worker} '
+                           'inner_iterations=1 wall_min_ns=1 wall_median_ns=2 wall_max_ns=3 '
+                           f'dependency_digest={dep} result_digest=0x1ab')
+    return workload, records
+
+
+gate_records = {}
+for mode, fb, rows, workers, impls in [
+        ('solve', 1601, 1701, '1,2,4', ['public_solver']),
+        ('kernel', 4000, 4100, '1,4', ['legacy_per_pivot_jthread',
+                                        'benchmark_only_queued_thread_pool', 'production_persistent_worker_team'])]:
+    workload, records = shadow_gate_records(mode, fb, rows, workers, impls)
+    gate_records[mode] = '\n'.join(records)
+    command = ['awk', '-v', 'mode=' + mode, '-v', 'requested_workers=' + workers,
+               '-v', 'workload=' + workload, '-f', str(project / 'scripts/lib/siqs_shadow_bench.awk')]
+    for field in workload.split():
+        for index in (0, len(records) - 1):
+            for replacement in ('', field.split('=')[0] + '=99'):
+                mutated = records.copy()
+                mutated[index] = mutated[index].replace(' ' + field + ' ', ' ' + replacement + ' ')
+                require(subprocess.run(command, input='\n'.join(mutated), text=True).returncode == 1,
+                        f'{mode}: accepted wrong or missing {field} in record {index}')
+
+result, calls, _ = invoke(['gate-siqs-shadow'], shadow_records=gate_records)
+require(result.returncode == 0 and 'GNFS_SIQS_SHADOW_MATRIX_GATE_V1 status=pass' in result.stdout,
+        result.stdout)
+builds = [c for c in calls if c[:2] == ['cmake', '--build']]
+targets = {'test_siqs_shadow_cross_size', 'test_siqs_shadow_prefer_route',
+           'test_siqs_shadow_matrix_bench', 'gnfs_test_process_supervisor'}
+require(len(builds) == 1 and '--target' in builds[0] and
+        set(builds[0][builds[0].index('--target') + 1:]) == targets, f'wrong gate build: {builds!r}')
+gate_records['kernel'] = gate_records['kernel'].replace('rows=4100', 'rows=5')
+result, calls, _ = invoke(['gate-siqs-shadow'], shadow_records=gate_records)
+require(result.returncode != 0 and 'GNFS_SIQS_SHADOW_MATRIX_GATE_V1 status=pass' not in result.stdout,
+        'gate published a pass for a different kernel workload')
+result, calls, _ = invoke(['gate-siqs-shadow'], shadow_records=gate_records, build_exit=41)
+require(result.returncode != 0 and not any(c[0] in targets for c in calls),
+        f'gate ran stale binaries after a failed build: {calls!r}')
 
 build_cases = [(['run', 'integer', '--suite', 'value with spaces'], False, 'Unix Makefiles')]
 build_cases += [(['-v', 'run', 'test_integer'], True, generator) for generator in
@@ -434,6 +495,12 @@ require('-DGNFS_ENABLE_TSAN=ON' in cmake_calls[0], 'TSAN instrumentation option 
 result, calls, _ = invoke(['build'], cached=True, check_target=True)
 require(result.returncode == 0 and not any('--target' in c for c in calls),
         f'build mode no longer builds the full catalog: {calls!r}, {result.stdout}')
+
+for flags, target in [([], 'gnfs_local_gate'), (['--quick'], 'gnfs_local_gate_quick')]:
+    result, calls, build = invoke(['gate', *flags], build_exit=41)
+    require(result.returncode != 0 and len(calls) == 2 and
+            calls[-1][-2:] == ['--target', target] and not (build / 'test_report.json').exists(),
+            f'failed gate target build launched tests or used the wrong selection: {calls!r}')
 
 # Exercise CMake's actual dependency tracking without compiling any language or
 # GNFS library. The recorder above remains available without Make installed.
@@ -641,22 +708,26 @@ import sys
 
 project, fixture, zsh = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 (fixture / 'scripts/lib').mkdir(parents=True)
-for name in ['test.sh', 'lib/changed_files.zsh']:
+(fixture / 'scripts/test-catalog').mkdir()
+for name in ['test.sh', 'lib/changed_files.zsh', 'test-catalog/windows-unavailable.txt']:
     shutil.copy2(project / 'scripts' / name, fixture / 'scripts' / name)
 # Process supervision has separate contracts. This fixture supplies child
 # results directly and exercises the real selection, aggregation, and reports.
 (fixture / 'scripts/lib/process_tree_timeout.zsh').write_text(
     'run_with_timeout() {\n    shift\n    RUN_OUTPUT=""\n    "$@"\n}\n')
 runner = (project / 'scripts/test.sh').read_text()
-optional_match = re.search(r'WINDOWS_UNAVAILABLE_TESTS=\(\n(.*?)\n\)', runner, re.S)
-optional_targets = optional_match.group(1).split() if optional_match else []
-# Exercise the real aggregation logic with small synthetic catalogs. Running
-# every production placeholder would only duplicate the same launch contract.
-fixture_runner = re.sub(r'(?ms)^SMOKE_TESTS=\(\n.*?^\)',
-                        'SMOKE_TESTS=(\n    test_integer\n    test_fb_checkpoint\n)', runner, count=1)
-fixture_sieve = ' '.join(['test_sieve_basic', *optional_targets])
-fixture_runner = re.sub(r'(?m)^    sieve\s+"[^"]*"',
-                        '    sieve "' + fixture_sieve + '"', fixture_runner, count=1)
+optional_targets = (project / 'scripts/test-catalog/windows-unavailable.txt').read_text().split()
+# Exercise the real aggregation logic with small synthetic catalogs.
+(fixture / 'scripts/test-catalog/smoke.txt').write_text('test_integer\ntest_fb_checkpoint\n')
+factor_base_tests = ['test_factor_base', 'test_fb_checkpoint', 'test_fb_roots_parallel']
+sieve_tests = ['test_sieve_basic', *optional_targets]
+fixture_modules = ('MODULE_TESTS=(\n'
+                   f'    factor_base "{" ".join(factor_base_tests)}"\n'
+                   f'    sieve "{" ".join(sieve_tests)}"\n)')
+fixture_runner, replacements = re.subn(r'(?ms)^MODULE_TESTS=\(\n.*?^\)', fixture_modules,
+                                       runner, count=1)
+if replacements != 1:
+    raise SystemExit('required-binary fixture could not install its module catalog')
 (fixture / 'scripts/test.sh').write_text(fixture_runner)
 (fixture / 'src/factor_base').mkdir(parents=True)
 source = fixture / 'src/factor_base/builder.cpp'
@@ -668,8 +739,7 @@ for args in [['init', '-q'], ['add', '.'],
     subprocess.run(['git', *args], cwd=fixture, check=True, stdout=subprocess.DEVNULL)
 base = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=fixture, text=True).strip()
 source.write_text('// changed\n')
-all_tests = ['test_factor_base', 'test_fb_checkpoint', 'test_fb_roots_parallel',
-             'test_integer', 'test_regression_gate', 'test_sieve_basic', *optional_targets]
+all_tests = [*factor_base_tests, 'test_integer', 'test_regression_gate', *sieve_tests]
 cache = fixture / '.cache'
 bin_dir = cache / 'bin'
 bin_dir.mkdir(parents=True)
@@ -755,10 +825,13 @@ def check_fail_fast():
 
 def check_missing_selections():
     result, report = invoke(['--no-build', 'module', 'factor_base'], empty=True)
-    require(result.returncode != 0 and report['failed'] == 3 and report['skipped'] == 0,
-            f'empty required module succeeded: {report!r}, {result.stdout}')
-    result, report = invoke(['--no-build', 'module', *(['factor_base'] * 256)], empty=True)
-    require(result.returncode == 1 and report['failed'] == 768 and report['skipped'] == 0,
+    require(result.returncode == 1 and report['failed'] == len(factor_base_tests) and
+            report['skipped'] == 0 and all(entry['detail'] == 'binary_missing' for entry in report['tests']),
+            f'empty module did not report every required binary as missing: {report!r}, {result.stdout}')
+    repetitions = 256
+    result, report = invoke(['--no-build', 'module', *(['factor_base'] * repetitions)], empty=True)
+    require(result.returncode == 1 and report['failed'] == len(factor_base_tests) * repetitions and
+            report['skipped'] == 0,
             f'failure count wrapped to a successful exit: {report!r}')
     for options in [['module', 'factor_base'], ['--no-build', 'mod', 'factor_base'],
                     ['--no-build', 'changed'], ['diff']]:
@@ -771,18 +844,19 @@ def check_missing_selections():
 def check_successful_selections():
     for options in [['module', 'factor_base'], ['--no-build', 'changed']]:
         result, report = invoke(options)
-        require(result.returncode == 0 and report['passed'] == 3 and report['failed'] == 0 and
-                report['skipped'] == 0 and {entry['name'] for entry in report['tests']} ==
-                {'test_factor_base', 'test_fb_checkpoint', 'test_fb_roots_parallel'},
+        require(result.returncode == 0 and report['passed'] == len(factor_base_tests) and
+                report['failed'] == 0 and report['skipped'] == 0 and
+                {entry['name'] for entry in report['tests']} == set(factor_base_tests),
                 f'complete selection did not pass: {report!r}')
     result, report = invoke(['--no-build', 'module', 'factor_base'], exit_77={'test_fb_checkpoint'})
-    require(result.returncode == 0 and report['passed'] == 2 and report['failed'] == 0 and
-            report['skipped'] == 1 and any(entry['detail'] == 'exit_code=77' for entry in report['tests']),
+    skipped = [(entry['name'], entry['detail']) for entry in report['tests'] if entry['status'] == 'skip']
+    require(result.returncode == 0 and report['passed'] == len(factor_base_tests) - 1 and
+            report['failed'] == 0 and report['skipped'] == 1 and skipped == [('test_fb_checkpoint', 'exit_code=77')],
             f'platform exit 77 stopped being a skip: {report!r}')
 
 # This allowlist follows CMake's target availability, not whether any arbitrary
 # build cache disabled all tests. Guard the deliberate cross-file contract.
-windows_optional = set(re.search(r'WINDOWS_UNAVAILABLE_TESTS=\(\n(.*?)\n\)', runner, re.S).group(1).split())
+windows_optional = set(optional_targets)
 cmake_optional = set()
 conditions = []
 for match in re.finditer(r'(?im)^\s*(if|elseif|else|endif|add_executable)\s*\(([^)]*)\)',

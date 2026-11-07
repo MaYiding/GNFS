@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -29,6 +30,7 @@
 #include <system_error>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace gnfs;
@@ -1319,6 +1321,82 @@ void test_ooc_duplicate_rejection() {
     assert(rels.size() == 1);
 
     std::cout << "  OOC duplicate rejection: PASS" << std::endl;
+}
+
+void test_merged_relation_validation() {
+    // m=12 is a root of x²-1 modulo 143. The primary pair gives -7.
+    // The repeated negative pair gives -29, whereas (23,1) gives 11 | N.
+    const Integer n(143);
+    const Integer m(12);
+    Relation good(5, 1);
+    good.extra_ab_pairs = {{-5, 2}, {-5, 2}, {19, 1}};
+    Relation bad = good;
+    bad.extra_ab_pairs.emplace_back(23, 1);
+    auto check_rows = [&](const RelationCollector& collector) {
+        const auto rows = collector.get_relations();
+        CHECK(rows.size() == 1);
+        CHECK(rows.front().ab() == good.ab());
+        CHECK(rows.front().extra_ab_pairs == good.extra_ab_pairs);
+    };
+    for (bool ooc : {false, true}) {
+        CollectorConfig config;
+        config.ooc_enabled = ooc;
+        config.ooc_base_path = make_tmp_ooc_path("merged_admission");
+        OOCArtifacts cleanup(config.ooc_base_path);
+        RelationCollector collector(config);
+        collector.set_polynomial_context(n, m);
+        size_t callbacks = 0;
+        collector.set_callback([&](const Relation&) { ++callbacks; });
+        CHECK(!collector.add(Relation(bad)));
+        auto wide = good;
+        // For b=2^32+1, 5-12*b is divisible by 11. Truncating b to 1 gives -7.
+        wide.extra_ab_pairs.emplace_back(5, (UINT64_C(1) << 32) + 1);
+        CHECK(!collector.add(std::move(wide)));
+        auto noncoprime = good;
+        noncoprime.extra_ab_pairs.emplace_back(4, 2);
+        CHECK(!collector.add(std::move(noncoprime)));
+        auto zero = good;
+        zero.extra_ab_pairs.emplace_back(1, 0);
+        CHECK(!collector.add(std::move(zero)));
+        CHECK(collector.size() == 0);
+        CHECK(callbacks == 0);
+        CHECK(collector.stats().invalid_rejected == 2);
+        CHECK(collector.stats().n_divisible_rejected == 2);
+        CHECK(collector.add(Relation(good)));
+        CHECK(callbacks == 1);
+        CHECK(collector.stats().duplicates_rejected == 0);
+        check_rows(collector);
+    }
+
+    // A source without N can contain either row. A destination with N must
+    // reject the bad row before dedup sees their shared primary coordinates.
+    CollectorConfig source_config;
+    source_config.check_duplicates = false;
+    RelationCollector source(source_config);
+    CHECK(source.add(Relation(bad)));
+    CHECK(source.add(Relation(good)));
+    const auto file = make_tmp_ooc_path("merged_load");
+    CHECK(source.save(file));
+    RelationCollector loaded;
+    loaded.set_polynomial_context(n, m);
+    CHECK(loaded.load(file));
+    std::filesystem::remove(file);
+    CHECK(loaded.stats().n_divisible_rejected == 1);
+    CHECK(loaded.stats().duplicates_rejected == 0);
+    check_rows(loaded);
+
+    RelationCollector merged;
+    merged.set_polynomial_context(n, m);
+    size_t callbacks = 0;
+    merged.set_callback([&](const Relation& row) {
+        CHECK(row.extra_ab_pairs == good.extra_ab_pairs);
+        ++callbacks;
+    });
+    CHECK(merged.merge(source) == 1);
+    CHECK(callbacks == 1);
+    CHECK(merged.stats().n_divisible_rejected == 1);
+    CHECK(merged.stats().duplicates_rejected == 0);
+    check_rows(merged);
 }
 
 void test_ooc_n_divisibility() {
@@ -3530,6 +3608,7 @@ int main() {
     test_merge_callback_exception_preserves_prefix();
     test_merge_callback_rejects_source_mutation();
     test_n_divisibility_rejection();
+    test_merged_relation_validation();
 
     std::cout << "\n=== OOC mode tests (BACKLOG #11c) ===" << std::endl;
     test_ooc_basic_add();

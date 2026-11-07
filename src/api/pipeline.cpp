@@ -63,6 +63,7 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 
 namespace gnfs::api {
 
@@ -78,6 +79,26 @@ bool detail::parse_structured_filter_stage_telemetry(const char* raw_value) {
 }
 
 namespace {
+
+std::atomic<uint64_t> g_linalg_mmap_scratch_nonce{0};
+
+class LinalgMmapScratchCleanup final {
+public:
+    explicit LinalgMmapScratchCleanup(std::string path) : path_(std::move(path)) {}
+
+    LinalgMmapScratchCleanup(const LinalgMmapScratchCleanup&) = delete;
+    LinalgMmapScratchCleanup& operator=(const LinalgMmapScratchCleanup&) = delete;
+
+    ~LinalgMmapScratchCleanup() noexcept {
+        if (!path_.empty()) {
+            std::error_code ignored;
+            (void)std::filesystem::remove(path_, ignored);
+        }
+    }
+
+private:
+    std::string path_;
+};
 
 // Rollback guards borrow a flag from an owner scope declared before them.
 // The scope therefore outlives every guard, including during unwinding.
@@ -1361,11 +1382,26 @@ void Pipeline::require_factor_base_contract(const PolynomialContext& ctx, const 
         previous_rational_prime = prime.p;
     }
     const uint32_t max_algebraic_prime = std::max(params_.algebraic_bound, params_.special_q_max);
-    for (const auto& prime : fb.algebraic()) {
+    uint32_t previous_algebraic_prime = 0;
+    const auto algebraic = fb.algebraic();
+    for (size_t i = 0; i < algebraic.size(); ++i) {
+        const auto& prime = algebraic[i];
         if (prime.p < 2 || prime.p > max_algebraic_prime || !gnfs::util::is_prime_u32(prime.p) ||
             mpz_divisible_ui_p(ctx.n().get_mpz(), prime.p) != 0) {
             throw std::invalid_argument("Pipeline::" + std::string(phase) +
                                         " factor base contains an invalid algebraic prime");
+        }
+        if (prime.p < previous_algebraic_prime) {
+            throw std::invalid_argument("Pipeline::" + std::string(phase) +
+                                        " algebraic factor-base primes must be nondecreasing");
+        }
+        previous_algebraic_prime = prime.p;
+        // Each prime/root key must map back to this column. A duplicate maps
+        // to its last occurrence and therefore fails at the earlier column.
+        if (fb.find_algebraic(prime.p, prime.r) != i) {
+            throw std::invalid_argument(
+                "Pipeline::" + std::string(phase) +
+                " factor base contains a duplicate algebraic prime/root or an inconsistent index");
         }
         if (prime.degree == 0) {
             throw std::invalid_argument("Pipeline::" + std::string(phase) +
@@ -3587,8 +3623,12 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
             // .csrmat file (v2 layout, uint64_t row_offsets), open it
             // as MmapCSRMatrix, and route through the view-based BW
             // entry point that bypasses SparseMatrix internally.
-            const std::string mmap_path = gnfs::util::temp_path(
-                "gnfs_linalg_" + std::to_string(gnfs::util::process_id()) + ".csrmat");
+            const uint64_t scratch_nonce =
+                g_linalg_mmap_scratch_nonce.fetch_add(1, std::memory_order_relaxed);
+            const std::string mmap_path =
+                gnfs::util::temp_path("gnfs_linalg_" + std::to_string(gnfs::util::process_id()) +
+                                      "_n" + std::to_string(scratch_nonce) + ".csrmat");
+            LinalgMmapScratchCleanup mmap_cleanup(mmap_path);
             char log_buf[512];
             std::snprintf(log_buf, sizeof(log_buf), "[linalg-mmap] policy=%s nnz=%llu path=%s",
                           policy == linalg::MmapPolicy::On ? "on" : "auto",
@@ -3608,9 +3648,6 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                 std::fprintf(stderr, "[linalg-mmap] fallback to in-memory: %s\n", ex.what());
                 dependencies = bw_solver.find_dependencies(sge_red);
             }
-
-            // Best-effort cleanup; ok if already gone.
-            std::remove(mmap_path.c_str());
         } else {
             // Default in-memory path — bit-identical to pre-Phase-5 behaviour.
             dependencies = bw_solver.find_dependencies(sge_red);

@@ -3,12 +3,14 @@
 #include "fixtures/siqs_multi_a_cycle_profile_v2.hpp"
 #include "fixtures/siqs_multi_a_proof_profile_v4.hpp"
 #include "fixtures/siqs_multi_a_scale_profile_v3.hpp"
+#include "support/siqs_scale_row_snapshot.hpp"
 
 #include <gnfs/siqs/post_merge_dependency.hpp>
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/siqs.hpp>
 #include <gnfs/util/fixed_slot_executor.hpp>
+#include <gnfs/util/native_random_access_file.hpp>
 #include <gnfs/util/process_memory.hpp>
 
 #include <algorithm>
@@ -19,6 +21,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -73,6 +76,7 @@ using gnfs::siqs::SIQSShadowAssemblyFingerprints;
 using gnfs::siqs::SIQSShadowAssemblyOptions;
 using gnfs::siqs::SIQSShadowAssemblyStats;
 using gnfs::siqs::SIQSShadowAssemblyStatus;
+using gnfs::siqs::SIQSShadowMatrixBackend;
 using gnfs::siqs::SIQSShadowMatrixOptions;
 using gnfs::siqs::SIQSShadowMatrixStatus;
 using gnfs::siqs::SIQSShadowRow;
@@ -2533,6 +2537,10 @@ enum class ScaleProofTerminalStatus : uint8_t {
         return "resource_limit";
     case SIQSShadowMatrixStatus::unsupported_backend:
         return "unsupported_backend";
+    case SIQSShadowMatrixStatus::no_dependencies:
+        return "no_dependencies";
+    case SIQSShadowMatrixStatus::solver_failure:
+        return "solver_failure";
     }
     return "unknown";
 }
@@ -2611,7 +2619,7 @@ struct ScaleProofRecord final {
     proof.options = SIQSShadowMatrixOptions{
         SCALE_SOLVER_MAX_DEPENDENCIES,          requested_workers,
         SCALE_SOLVER_PARALLEL_COLUMN_THRESHOLD, SCALE_SOLVER_MAX_DENSE_MATRIX_BYTES,
-        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT,
+        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT,  SIQSShadowMatrixBackend::dense_only,
     };
     return proof;
 }
@@ -2937,7 +2945,8 @@ void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations)
 }
 
 [[nodiscard]] ScaleProfileRecord run_scale_profile(const ProfileOptions& options,
-                                                   ScaleProofRecord* proof = nullptr) {
+                                                   ScaleProofRecord* proof = nullptr,
+                                                   std::vector<std::byte>* snapshot = nullptr) {
     const auto started = std::chrono::steady_clock::now();
     const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
     ScaleProfileRecord record;
@@ -3280,10 +3289,14 @@ void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations)
                 "shadow assembly rejected the deterministic scale corpus");
         record.assembly = assembled.assembly()->stats;
         record.fingerprints = assembled.assembly()->fingerprints;
-        if (proof != nullptr) {
-            const size_t proof_raw_relation_count = relations.size();
-            apply_scale_assembly_gate(record, proof_raw_relation_count);
-            if (record.status == ScaleTerminalStatus::solver_ready) {
+        apply_scale_assembly_gate(record, relations.size());
+        if (record.status == ScaleTerminalStatus::solver_ready) {
+            if (snapshot != nullptr) {
+                *snapshot = gnfs::tests::siqs_scale_row_snapshot::encode(
+                    assembled.assembly()->rows, factor_base_span, sieved_modulus,
+                    SHADOW_TRIM_EXCESS);
+            }
+            if (proof != nullptr) {
                 std::vector<SIQSRelation>().swap(relations);
                 std::vector<RelationProvenance>().swap(provenances);
                 require(relations.empty() && relations.capacity() == 0 && provenances.empty() &&
@@ -3298,9 +3311,6 @@ void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations)
                 }
             }
         }
-    }
-    if (proof == nullptr) {
-        apply_scale_assembly_gate(record, relations.size());
     }
 
     const auto analysis_finished = std::chrono::steady_clock::now();
@@ -3640,16 +3650,83 @@ void emit_scale_records(const ScaleProfileRecord& record, const ScaleProofRecord
     }
 }
 
+void replay_scale_rows(const std::filesystem::path& file) {
+    const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    const Integer modulus(std::string(fixture.modulus));
+    const Integer square_modulus = modulus * Integer(select_multiplier(modulus));
+    const auto factor_base = build_factor_base(square_modulus, fixture.factor_base_size);
+    std::vector<uint32_t> primes;
+    for (const auto& prime : factor_base) {
+        primes.push_back(prime.p);
+    }
+    const auto rows = gnfs::tests::siqs_scale_row_snapshot::decode(
+        gnfs::tests::siqs_scale_row_snapshot::read(file), primes, square_modulus,
+        SHADOW_TRIM_EXCESS);
+    std::ostringstream summary;
+    for (const auto backend :
+         {SIQSShadowMatrixBackend::dense_only, SIQSShadowMatrixBackend::sparse_only}) {
+        SIQSShadowMatrixOptions options;
+        options.backend = backend;
+        options.sparse_worker_threads = 1;
+        const auto matrix = solve_siqs_shadow_matrix(rows, primes, square_modulus, options);
+        require(matrix.solution() &&
+                    matrix.solution()->dependencies.size() == options.max_dependencies,
+                "incomplete V3 replay dependency set");
+        size_t successful = 0;
+        for (const auto& dependency : matrix.solution()->dependencies) {
+            const auto verified =
+                verify_siqs_post_merge_dependency(rows, dependency, primes, square_modulus);
+            require(verified.is_valid(), "V3 replay dependency verification failed");
+            const auto extracted = extract_siqs_post_merge_factor(verified, modulus);
+            if (extracted.factors()) {
+                require(extracted.factors()->factor.to_string() == fixture.factor_p &&
+                            extracted.factors()->cofactor.to_string() == fixture.factor_q,
+                        "unexpected V3 replay factorization");
+                ++successful;
+            } else {
+                require(extracted.status() == SIQSPostMergeFactorStatus::no_factor,
+                        "V3 replay factor extraction failed");
+            }
+        }
+        require(successful != 0, "V3 replay found no factor");
+        summary << "GNFS_SIQS_256A_ROW_REPLAY_V1 backend="
+                << (backend == SIQSShadowMatrixBackend::dense_only ? "dense_only" : "sparse_only")
+                << " rows=" << rows.size() << " columns=" << primes.size()
+                << " verified=" << matrix.solution()->dependencies.size()
+                << " factorizations=" << successful << " factor=" << fixture.factor_p
+                << " cofactor=" << fixture.factor_q << '\n';
+    }
+    std::cout << summary.str();
+}
+
 [[maybe_unused]] int run_v3_main(int argc, char** argv) {
     try {
         require(BUILD_TYPE == "Release",
                 "profile requires a Release build; observed " + std::string(BUILD_TYPE));
         require(RELEASE_ASSERTIONS_DISABLED, "profile requires NDEBUG to be defined");
-        const ProfileOptions options = parse_options(argc, argv);
+        if (argc == 3 && std::string_view(argv[1]) == "--replay-rows") {
+            replay_scale_rows(argv[2]);
+            return 0;
+        }
+        const bool export_rows = argc == 5 && std::string_view(argv[3]) == "--stage-rows";
+        const ProfileOptions options = parse_options(export_rows ? 3 : argc, argv);
         self_check_scale_global_admission();
         self_check_unique_a_collision_path();
         self_check_canonical_duplicate_provenance();
-        const ScaleProfileRecord record = run_scale_profile(options);
+        std::vector<std::byte> snapshot;
+        const ScaleProfileRecord record =
+            run_scale_profile(options, nullptr, export_rows ? &snapshot : nullptr);
+        if (export_rows) {
+            require(record.status == ScaleTerminalStatus::solver_ready && !snapshot.empty(),
+                    "V3 snapshot requires validated selected rows");
+            // The runner publishes the private staged file only after validating the V3 transcript.
+            const std::filesystem::path staging(argv[4]);
+            require(std::filesystem::create_directory(staging),
+                    "V3 snapshot staging directory already exists");
+            auto file = gnfs::util::NativeRandomAccessFile::create_truncated(staging / "rows.bin");
+            file.write_exact_at(0, snapshot);
+            file.sync();
+        }
         emit_scale_records(record);
         return 0;
     } catch (const std::exception& error) {

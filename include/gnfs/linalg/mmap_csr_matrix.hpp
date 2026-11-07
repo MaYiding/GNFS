@@ -201,16 +201,27 @@ public:
     }
 
     [[nodiscard]] const uint32_t* row_begin(size_t i) const noexcept {
-        return col_indices_ + row_offsets_[i];
+        return column_data() + row_offsets_[i];
     }
     [[nodiscard]] const uint32_t* row_end(size_t i) const noexcept {
-        return col_indices_ + row_offsets_[i + 1];
+        return column_data() + row_offsets_[i + 1];
     }
     [[nodiscard]] size_t row_nnz(size_t i) const noexcept {
         return row_offsets_[i + 1] - row_offsets_[i];
     }
 
 private:
+    [[nodiscard]] static const uint32_t* empty_column_data() noexcept {
+        static const uint32_t sentinel = 0;
+        return &sentinel;
+    }
+
+    [[nodiscard]] const uint32_t* column_data() const noexcept {
+        // A zero-NNZ mmap has no column payload. Keep the MatrixView pointer
+        // range valid for callers that compare or subtract empty row bounds.
+        return nnz_ == 0 ? empty_column_data() : col_indices_;
+    }
+
     gnfs::util::MmapFile file_;
     size_t num_rows_ = 0;
     size_t num_cols_ = 0;

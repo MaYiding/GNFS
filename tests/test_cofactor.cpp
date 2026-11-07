@@ -7,14 +7,19 @@
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/relation/filter.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace gnfs;
 using namespace gnfs::cofactor;
@@ -94,6 +99,130 @@ void test_small_composite_classification() {
     CHECK(semiprime.type == CofactorClass::Semiprime);
     CHECK(semiprime.factor1 == 7 && semiprime.factor2 == 11);
     std::cout << "  Small composite classification: PASSED" << std::endl;
+}
+
+void test_full_factor_base_valuations() {
+    using core::Integer;
+    const Integer power = core::pow(Integer(2), 256);
+    // f(1) = power and f(m) = 2 * power * N. Both sides of (1, 1)
+    // have magnitude 2^256, with 2 in the factor base on both sides.
+    const Integer n = power + Integer(5);
+    const Integer m = power + Integer(1);
+    core::PolynomialContext ctx(n, {Integer(-8), power + Integer(7), Integer(1)}, m);
+    CHECK(ctx.verify());
+    CHECK(ctx.rational_value(1, 1) == -power);
+    CHECK(ctx.algebraic_norm(1, 1) == power);
+    CHECK(core::gcd(power, n).is_one());
+    factor_base::FactorBaseBuilder::Options options;
+    options.rational_bound = 2;
+    options.algebraic_bound = 2;
+    options.parallel = false;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, options);
+    const auto rat_index = fb.find_rational(2);
+    const auto alg_index = fb.find_algebraic(2, 1);
+    CHECK(rat_index.has_value() && alg_index.has_value());
+    TrialDivider divider(fb);
+    for (const unsigned exponent : {254u, 255u, 256u, 510u, 511u}) {
+        const Integer magnitude = core::pow(Integer(2), exponent) * Integer(3);
+        const auto check_valuation = [&](const TrialDivisionResult& divided, uint32_t column) {
+            CHECK(divided.cofactor == Integer(3));
+            CHECK(divided.factor_indices.size() == divided.exponents.size());
+            unsigned recovered = 0;
+            for (size_t i = 0; i < divided.factor_indices.size(); ++i) {
+                CHECK(divided.factor_indices[i] == column);
+                CHECK(divided.exponents[i] > 0);
+                recovered += divided.exponents[i];
+            }
+            CHECK(recovered == exponent);
+        };
+        check_valuation(divider.divide_rational(-magnitude), *rat_index);
+        check_valuation(divider.divide_algebraic(magnitude, 1, 1), *alg_index);
+    }
+    CofactorizerConfig config;
+    config.allow_1lp = false;
+    config.allow_2lp = false;
+    config.allow_3lp = false;
+    Cofactorizer cofactorizer(ctx, fb, config);
+    const auto relation = cofactorizer.verify(1, 1);
+    CHECK(relation.has_value());
+    CHECK(relation->rational_factors == std::vector<uint32_t>(256, *rat_index));
+    CHECK(relation->algebraic_factors == std::vector<uint32_t>(256, *alg_index));
+    CHECK(relation->rational_large_prime.empty());
+    CHECK(relation->algebraic_large_prime.empty());
+
+    factor_base::FactorBase mixed(core::FactorBaseParams{3, 3, 100});
+    mixed.add_rational(2, 1);
+    mixed.add_rational(3, 1);
+    mixed.add_algebraic(2, 1, 1);
+    mixed.add_algebraic(3, 1, 1);
+    TrialDivider mixed_divider(mixed);
+    const Integer product = core::pow(Integer(2), 255) * core::pow(Integer(3), 256) * Integer(5);
+    const auto rational = mixed_divider.divide_rational(product);
+    const auto algebraic = mixed_divider.divide_algebraic(product, 1, 1);
+    for (const auto* result : {&rational, &algebraic}) {
+        CHECK(result->cofactor == Integer(5));
+        CHECK((result->factor_indices == std::vector<uint32_t>{0, 1, 1}));
+        CHECK((result->exponents == std::vector<uint8_t>{255, 255, 1}));
+    }
+}
+
+void test_relation_factor_count_limit() {
+    using core::Integer;
+    constexpr uint32_t limit = core::Relation::MAX_SERIALIZED_FACTORS;
+    factor_base::FactorBase fb(core::FactorBaseParams{2, 2, 100});
+    fb.add_rational(2, 1);
+    fb.add_algebraic(2, 1, 1);
+    for (const uint32_t exponent : {limit, limit + 1}) {
+        const Integer t = core::pow(Integer(2), exponent);
+        core::PolynomialContext both(t + Integer(5), {Integer(-8), t + Integer(7), Integer(1)},
+                                     t + Integer(1));
+        CHECK(both.verify());
+        Cofactorizer verifier(both, fb);
+        const auto relation = verifier.verify(1, 1);
+        if (exponent == limit) {
+            CHECK(relation.has_value());
+            CHECK(relation->rational_factors.size() == limit);
+            CHECK(relation->algebraic_factors.size() == limit);
+            std::ostringstream serialized;
+            relation->serialize(serialized);
+            CHECK(serialized.good() && serialized.tellp() > 0);
+        } else {
+            CHECK(!relation.has_value());
+            CHECK(verifier.stats().rational_rejects == 1);
+            CHECK(verifier.stats().full_relations == 0);
+        }
+    }
+
+    // Keep the rational value at -1 to reach the algebraic-side limit.
+    // f(2) = 143 and f(1) = t.
+    const Integer t = core::pow(Integer(2), limit + 1);
+    core::PolynomialContext algebraic(
+        Integer(143), {t + t - Integer(141), Integer(140) - t, Integer(1)}, Integer(2));
+    CHECK(algebraic.verify());
+    CHECK(algebraic.rational_value(1, 1) == Integer(-1));
+    CHECK(algebraic.algebraic_norm(1, 1) == t);
+    Cofactorizer verifier(algebraic, fb);
+    CHECK(!verifier.verify(1, 1).has_value());
+    CHECK(verifier.stats().algebraic_rejects == 1);
+    CHECK(verifier.stats().full_relations == 0);
+}
+
+void test_large_valuation_outside_sieve_prefix() {
+    using core::Integer;
+    constexpr uint32_t exponent = core::Relation::MAX_SERIALIZED_LARGE_PRIMES * UINT8_MAX + 1;
+    const Integer t = core::pow(Integer(3), exponent);
+    core::PolynomialContext ctx(Integer(143), {t + t - Integer(141), Integer(140) - t, Integer(1)},
+                                Integer(2));
+    CHECK(ctx.verify() && ctx.algebraic_norm(1, 1) == t);
+    factor_base::FactorBase fb(core::FactorBaseParams{2, 2, 100});
+    fb.add_algebraic(3, 1, 1);
+    fb.set_sieve_algebraic_count_explicit(0);
+    CofactorizerConfig config;
+    config.allow_1lp = config.allow_2lp = config.allow_3lp = false;
+    Cofactorizer verifier(ctx, fb, config);
+    // With no designated special-q, this factor is outside the trial prefix.
+    CHECK(!verifier.verify(1, 1).has_value());
+    CHECK(verifier.stats().algebraic_rejects == 1);
 }
 
 // Test perfect power detection
@@ -289,6 +418,17 @@ void test_trial_division() {
     assert(result.cofactor.to_uint64() == 101);
 
     std::cout << "  Trial division: PASSED" << std::endl;
+}
+
+void test_quick_divide_remainder() {
+    factor_base::FactorBase fb(core::FactorBaseParams{3, 3, 100});
+    fb.add_rational(2, 1);
+    fb.add_rational(3, 1);
+    TrialDivider divider(fb);
+    CHECK(divider.quick_divide(core::Integer(0)).is_zero());
+    CHECK(divider.quick_divide(core::Integer(0), 0).is_zero());
+    CHECK(divider.quick_divide(core::Integer(-84), 1) == core::Integer(21));
+    CHECK(divider.quick_divide(core::Integer(-84)) == core::Integer(7));
 }
 
 // Test relation filter
@@ -735,6 +875,28 @@ void test_cofactorizer_large_prime_storage() {
     std::cout << "  Cofactorizer large prime storage: PASSED" << std::endl;
 }
 
+void test_zero_algebraic_norm_rejected() {
+    core::PolynomialContext ctx(core::Integer(143),
+                                {core::Integer(-1), core::Integer(0), core::Integer(1)},
+                                core::Integer(1));
+    CHECK(ctx.verify());
+    CHECK(ctx.rational_value(-1, 1) == core::Integer(-2));
+    CHECK(ctx.algebraic_norm(-1, 1).is_zero());
+    factor_base::FactorBaseBuilder::Options options;
+    options.rational_bound = 5;
+    options.algebraic_bound = 2;
+    options.special_q_bound = 5;
+    options.parallel = false;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, options);
+    Cofactorizer cofactorizer(ctx, fb);
+    const auto ordinary = cofactorizer.verify(-1, 1);
+    const auto special_q = cofactorizer.verify(-1, 1, 3, 2);
+    CHECK(!ordinary.has_value());
+    CHECK(!special_q.has_value());
+    CHECK(cofactorizer.stats().algebraic_rejects == 2);
+    CHECK(cofactorizer.verify(3, 1).has_value());
+}
+
 // Special-Q metadata identifies a prime ideal, so verify() must reject a root
 // that does not match the candidate's a/b identity. CHECK stays active in
 // Release builds, where ordinary assert() is compiled out.
@@ -769,6 +931,23 @@ void test_special_q_root_identity_validation() {
     CHECK(!Cofactorizer::special_q_root_matches(1, 7, 7, 0));
     CHECK(!Cofactorizer::special_q_root_matches(1, 1, 7, projective_root));
 
+    // f(2) = 143 and f(1) = 9. Recording q=9 as one prime ideal
+    // would turn the even valuation of the actual prime 3 into odd parity.
+    core::PolynomialContext square_ctx(core::Integer(143),
+                                       {core::Integer(-123), core::Integer(131), core::Integer(1)},
+                                       core::Integer(2));
+    CHECK(square_ctx.verify() && square_ctx.algebraic_norm(1, 1) == core::Integer(9));
+    factor_base::FactorBase no_factors(core::FactorBaseParams{2, 2, 100});
+    Cofactorizer square_verifier(square_ctx, no_factors);
+    const auto prime = square_verifier.verify(1, 1, 3, 1);
+    CHECK(prime && prime->algebraic_large_prime.size() == 1);
+    CHECK(prime->algebraic_large_prime.front().p == 3);
+    CHECK(prime->algebraic_large_prime.front().e == 2);
+    CHECK(!square_verifier.verify(1, 1, 9, 1));
+    CHECK(!Cofactorizer::special_q_root_matches(1, 9, 9, projective_root));
+    CHECK(!Cofactorizer::special_q_root_matches(1, 1, 257u * 263u, 1));
+    CHECK(Cofactorizer::special_q_root_matches(1, 3, 3, projective_root));
+
     constexpr uint32_t LARGE_Q = 4294967291U;
     CHECK(Cofactorizer::special_q_root_matches(1, LARGE_Q - 1, LARGE_Q, LARGE_Q - 1));
     const uint32_t min_root = static_cast<uint32_t>(
@@ -794,7 +973,89 @@ void test_special_q_root_identity_validation() {
     CHECK(projective->algebraic_large_prime[0].e == 1);
     CHECK(!projective_cofactorizer.verify(2, 7, 7, 0).has_value());
 
+    // Both candidates have rational and algebraic value 7. A congruence
+    // for q=11 alone does not make it a factor of either algebraic norm.
+    CHECK(ordinary_cofactorizer.verify(8, 1).has_value());
+    CHECK(ordinary_cofactorizer.verify(18, 11).has_value());
+    CHECK(Cofactorizer::special_q_root_matches(8, 1, 11, 8));
+    CHECK(Cofactorizer::special_q_root_matches(18, 11, 11, projective_root));
+    const auto rejects = ordinary_cofactorizer.stats().algebraic_rejects;
+    CHECK(!ordinary_cofactorizer.verify(8, 1, 11, 8));
+    CHECK(!ordinary_cofactorizer.verify(18, 11, 11, projective_root));
+    CHECK(ordinary_cofactorizer.stats().algebraic_rejects == rejects + 2);
+
     std::cout << "  Special-Q root identity validation: PASSED" << std::endl;
+}
+
+void test_special_q_valuation_chunks() {
+    // f(x) = (x-2)^2 + c(x-2) + norm. Choosing c = 1 + (norm mod (6*91))
+    // gives f(1) = 0 mod N, with roots 1 mod 2 and 1,2 mod 3.
+    const core::Integer one(1), two(2), four(4);
+    factor_base::FactorBase fb(core::FactorBaseParams{2, 2, 100});
+    fb.add_rational(2, 1);
+    fb.add_algebraic(2, 1, 1);
+    fb.add_algebraic(3, 1, 1);
+    fb.add_algebraic(3, 2, 1);
+    fb.set_sieve_algebraic_count_explicit(1);
+
+    const auto verify = [&](unsigned exponent, unsigned residual, bool allow_1lp, bool accepted) {
+        const core::Integer norm = core::pow(core::Integer(3), exponent) * core::Integer(residual);
+        const core::Integer c = one + norm % core::Integer(6 * 91);
+        core::PolynomialContext ctx(core::Integer(91), {norm + four - two * c, c - four, one}, one);
+        CHECK(ctx.verify());
+        CHECK(ctx.rational_value(2, 1) == one && ctx.algebraic_norm(2, 1) == norm);
+        CHECK(ctx.evaluate_mod(1, 2) == 0);
+        CHECK(ctx.evaluate_mod(1, 3) == 0 && ctx.evaluate_mod(2, 3) == 0);
+        CofactorizerConfig config;
+        config.allow_1lp = allow_1lp;
+        config.allow_2lp = false;
+        config.allow_3lp = false;
+        Cofactorizer cofactorizer(ctx, fb, config);
+        const auto rel = cofactorizer.verify(2, 1, 3, 2);
+        const auto stats = cofactorizer.stats();
+        CHECK(rel.has_value() == accepted);
+        CHECK(stats.total_candidates == 1 && stats.algebraic_rejects == !accepted);
+        const unsigned odd_keys = exponent % 2 + (residual != 1);
+        CHECK(stats.full_relations == (accepted && odd_keys == 0));
+        CHECK(stats.partial_1lp == (accepted && odd_keys == 1));
+        CHECK(stats.partial_2lp == (accepted && odd_keys == 2));
+        CHECK(stats.partial_3lp == 0);
+        if (!accepted)
+            return;
+
+        const size_t chunks = (exponent + 254) / 255;
+        CHECK(rel->rational_factors.empty() && rel->rational_large_prime.empty());
+        CHECK(rel->algebraic_factors.empty());
+        CHECK(rel->algebraic_large_prime.size() == chunks + (residual != 1));
+        unsigned remaining = exponent;
+        for (size_t i = 0; i < chunks; ++i) {
+            const auto& factor = rel->algebraic_large_prime[i];
+            CHECK(factor.p == 3 && factor.r == 2);
+            CHECK(factor.e == std::min(remaining, 255u));
+            remaining -= factor.e;
+        }
+        if (residual != 1) {
+            const auto& factor = rel->algebraic_large_prime.back();
+            CHECK(factor.p == residual && factor.r == 2 && factor.e == 1);
+        }
+        std::stringstream stream;
+        rel->serialize(stream);
+        CHECK(core::Relation::deserialize(stream).algebraic_large_prime ==
+              rel->algebraic_large_prime);
+    };
+
+    verify(255, 1, false, true);
+    verify(256, 1, false, true);
+    verify(256, 5, false, false);
+    verify(15 * 255, 5, true, true);
+    verify(16 * 255, 1, false, true);
+    verify(16 * 255, 5, true, false);
+    verify(16 * 255 + 1, 1, true, false);
+
+    fb.set_sieve_algebraic_count_explicit(0);
+    verify(15 * 255, 5, true, true);
+    verify(15 * 255 + 1, 1, false, true);
+    verify(15 * 255 + 1, 5, true, false);
 }
 
 // compute_alg_lp_root: 当 p | b 时,b 不可逆 mod p,LP 对应"投影根"理想 (p, 1/α)。
@@ -861,6 +1122,81 @@ void test_compute_alg_lp_root_input_guards() {
     std::cout << "  compute_alg_lp_root input guards: PASSED" << std::endl;
 }
 
+void test_explicit_empty_algebraic_prefix() {
+    std::cout << "Testing explicit empty algebraic sieve prefix..." << std::endl;
+    core::PolynomialContext ctx(core::Integer(143),
+                                {core::Integer(-1), core::Integer(0), core::Integer(1)},
+                                core::Integer(1));
+    CHECK(ctx.verify());
+    CHECK(ctx.rational_value(5, 2) == core::Integer(3));
+    CHECK(ctx.algebraic_norm(5, 2) == core::Integer(21));
+    for (bool include_other_sq : {false, true}) {
+        factor_base::FactorBase fb(core::FactorBaseParams{3, 2, 100});
+        fb.add_rational(3, 1);
+        if (include_other_sq) {
+            fb.add_algebraic(3, 1, 1);
+        }
+        fb.add_algebraic(7, 6, 1);
+        fb.set_sieve_algebraic_count_explicit(0);
+        CHECK(fb.sieve_algebraic_count() == 0);
+        for (bool allow_one : {false, true}) {
+            CofactorizerConfig cfg;
+            cfg.allow_1lp = allow_one;
+            cfg.allow_2lp = false;
+            cfg.allow_3lp = false;
+            Cofactorizer cofactorizer(ctx, fb, cfg);
+            auto rel = cofactorizer.verify(5, 2, 7, 6);
+            CHECK(rel.has_value() == allow_one);
+            if (rel) {
+                CHECK(rel->rational_factors == std::vector<uint32_t>{0});
+                CHECK(rel->algebraic_factors.empty());
+                CHECK(rel->algebraic_large_prime.size() == 2);
+                const auto has_prime = [&](uint64_t prime, uint64_t root) {
+                    return std::any_of(
+                        rel->algebraic_large_prime.begin(), rel->algebraic_large_prime.end(),
+                        [&](const core::PrimePower& factor) {
+                            return factor.p == prime && factor.r == root && factor.e == 1;
+                        });
+                };
+                CHECK(has_prime(3, 1));
+                CHECK(has_prime(7, 6));
+                CHECK(rel->algebraic_large_prime[0].p * rel->algebraic_large_prime[1].p == 21);
+            }
+        }
+    }
+
+    factor_base::FactorBase legacy(core::FactorBaseParams{3, 7, 100});
+    legacy.add_algebraic(3, 1, 1);
+    legacy.add_algebraic(7, 6, 1);
+    CHECK(!legacy.has_explicit_sieve_algebraic_count());
+    CHECK(legacy.sieve_algebraic_count() == 2);
+    TrialDivider divider(legacy);
+    for (unsigned shift : {0u, 70u, 140u}) {
+        core::Integer power(1);
+        mpz_mul_2exp(power.get_mpz(), power.get_mpz(), shift);
+        const core::Integer input = power * core::Integer(21);
+        const auto empty = divider.divide_algebraic_prefix(input, 5, 2, 0);
+        CHECK(empty.factor_indices.empty());
+        CHECK(empty.cofactor == input);
+        const auto all_default = divider.divide_algebraic(input, 5, 2);
+        const auto all_zero = divider.divide_algebraic(input, 5, 2, 0);
+        const auto first = divider.divide_algebraic_prefix(input, 5, 2, 1);
+        const auto all_legacy =
+            divider.divide_algebraic_prefix(input, 5, 2, legacy.sieve_algebraic_count());
+        CHECK(first.factor_indices == std::vector<uint32_t>{0});
+        CHECK(first.exponents == std::vector<uint8_t>{1});
+        CHECK(first.cofactor == power * core::Integer(7));
+        CHECK(!first.is_smooth);
+        for (const auto* result : {&all_default, &all_zero, &all_legacy}) {
+            CHECK((result->factor_indices == std::vector<uint32_t>{0, 1}));
+            CHECK((result->exponents == std::vector<uint8_t>{1, 1}));
+            CHECK(result->cofactor == power);
+            CHECK(result->is_smooth == (shift == 0));
+        }
+    }
+    std::cout << "  Explicit empty algebraic sieve prefix: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Cofactorization Tests ===" << std::endl;
     std::cout << std::endl;
@@ -868,13 +1204,19 @@ int main() {
     test_primality();
     test_small_composite_classification();
     test_small_primality_oracle();
+    test_full_factor_base_valuations();
+    test_relation_factor_count_limit();
+    test_large_valuation_outside_sieve_prefix();
     test_perfect_power();
     test_pollard_rho();
     test_cofactor_classification();
+    test_zero_algebraic_norm_rejected();
     test_trial_division();
+    test_quick_divide_remainder();
     test_relation_filter();
     test_large_prime_counting();
     test_effective_large_prime_stats();
+    test_special_q_valuation_chunks();
     test_relation_requirements();
     test_separate_relations();
     test_quick_cofactor_check();
@@ -883,6 +1225,7 @@ int main() {
     test_factor_base_params_uint64_lpb();
     test_cofactorizer_large_prime_storage();
     test_special_q_root_identity_validation();
+    test_explicit_empty_algebraic_prefix();
     test_compute_alg_lp_root_projective();
     test_compute_alg_lp_root_input_guards();
 

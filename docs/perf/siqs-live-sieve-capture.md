@@ -236,10 +236,17 @@ prepare_two_large_prime_corpus
 build_two_large_prime_cycle_basis
 materialize_two_large_prime_cycle_checked
 assemble_siqs_shadow_rows_bounded
-solve_siqs_shadow_matrix (only when its existing resource gates admit the shape)
+solve_siqs_shadow_matrix (automatic, dense_only, or sparse_only, subject to the
+                         selected dense or sparse admission gates)
 verify_siqs_post_merge_dependency
 extract_siqs_post_merge_factor
 ```
+
+The sparse admission gates are checked CSR bytes, parity-entry count, and the
+2GiB peak-workspace estimate. `automatic` selects sparse only after dense
+admission fails; `dense_only` preserves typed dense rejection, and `sparse_only`
+requires the sparse gates directly. The current capture stops before this
+solver call and only projects the bounded matrix shape.
 
 `normalize_two_large_prime()` remains the only admission boundary for an
 unresolved candidate split. A failed split, a non-prime endpoint, an endpoint
@@ -373,7 +380,7 @@ matrix:
   status: one of not_run, valid, invalid_modulus, invalid_factor_base,
           invalid_options, size_overflow, invalid_row, row_identity_mismatch,
           worker_failure, internal_invariant_failure, resource_limit,
-          unsupported_backend
+          unsupported_backend, no_dependencies, solver_failure
   rows: uint64
   columns: uint64
   dependencies: uint64 or null
@@ -500,16 +507,20 @@ and audit its bounded adapter, graph, and assembly artifacts. It must not
 override the existing shadow solver limits of 100000 variables and 256MiB of
 packed dense matrix payload.
 
-If the bounded row shape exceeds either gate, the matrix stage must retain the
-typed `unsupported_backend` or `resource_limit` result. The runner must not
-allocate a larger dense matrix, substitute the legacy matrix path, or count the
-capture as sparse-backend evidence. Production 90-digit promotion requires a
-direct sparse backend with typed failure and verified dependencies.
+If the bounded row shape exceeds either dense gate, `automatic` may select the
+implemented direct sparse backend, but only after checked CSR, nonzero-count,
+and 2GiB peak-workspace admission. `dense_only` retains the typed
+`unsupported_backend` or `resource_limit` result. The runner must not allocate
+a larger dense matrix or substitute the legacy matrix path. A capture that
+does not invoke the matrix solver is not sparse-backend evidence. Production
+90-digit promotion still requires bounded sparse execution with typed failure,
+verified dependencies, rank proof, complete workspace accounting, and live
+cross-size calibration.
 
 The current fixed 90-digit capture produces one full row. Its projected dense
-shape is admitted, so it does not exercise either sparse-backend gate. This is
-valid live-distribution evidence, not evidence that the 90-digit sparse boundary
-has been implemented or tested.
+shape is admitted, so it does not exercise the sparse-backend gates. This is
+valid live-distribution evidence, not evidence that the 90-digit sparse route
+was selected or calibrated.
 
 ## Implemented Runner Interface
 
@@ -595,7 +606,44 @@ matrix-solver claim. In particular, 397 selected rows are well below the
 rows). The next scale experiment should extend the same serial A plan to a
 bounded 256-A prefix before any collector or `factor()` integration is
 considered. That experiment still cannot replace the 70- and 90-digit gates or
-the direct sparse-backend work.
+the existing bounded sparse-backend admission and verification evidence.
+
+## Replay Selected 256-A Rows
+
+The fixed 50-digit V3 scale profile can export its selected matrix for a
+fresh-process replay. Use a new snapshot name for each capture.
+
+```bash
+./scripts/test.sh profile-siqs-256a 2 --snapshot example
+./scripts/test.sh profile-siqs-256a --replay example
+```
+
+The runner validates the usual six capture records and the scale gate before
+publishing `siqs-256a-example.bin` under its build directory. Publication creates
+a hard link to the validated file, so the build filesystem must support hard links.
+If any file, directory, or symlink already occupies the destination name at
+publication, the capture fails and preserves that entry. The snapshot holds
+up to 4MiB and uses the V1 canonical post-merge row wire. Its header binds
+the fixed profile, both moduli, the ordered factor base, the trim policy, and
+the frozen plan, raw corpus, source, pretrim, and selected-row fingerprints.
+Each frame stores its row origin, a little-endian 32-bit payload length, and
+one complete row wire record. Frame order carries the selected row ordinal.
+
+Replay checks the header against the current V3 fixture, validates each row
+modulo the sieved modulus, and recomputes the selected-row fingerprint. It
+then runs the dense and sparse selectors, verifies every returned dependency,
+and checks extracted factors against the original modulus. This fixture falls
+within the sparse selector's bounded exact solver. The snapshot covers the
+selected matrix and its source IDs. Rebuilding the sieve or discarded rows
+requires the original capture.
+
+The manual regressions check damaged snapshots, capture failures, and concurrent
+publication at an occupied name.
+
+```bash
+python3 tests/test_siqs_256a_row_replay.py build/test_siqs_256a_scale_profile build/siqs-256a-example.bin
+python3 tests/test_siqs_256a_snapshot_publication.py build
+```
 
 ## Current Fixed-Plan Evidence
 

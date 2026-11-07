@@ -139,9 +139,11 @@ Relation make_relation(int64_t a, uint64_t b, uint32_t seed) {
         {static_cast<uint64_t>(1009 + seed), 0, static_cast<uint8_t>(1 + seed % 2)}};
     relation.algebraic_large_prime = {
         {static_cast<uint64_t>(2003 + seed), static_cast<uint64_t>(17 + seed), 1}};
+    // Consecutive magnitudes keep each merged coordinate pair coprime.
+    const int64_t coordinate = static_cast<int64_t>(seed) + 1;
     relation.extra_ab_pairs = {
-        {static_cast<int64_t>(a - 10), b + 1},
-        {static_cast<int64_t>(a + 20), b + 2},
+        {coordinate - 1, static_cast<uint64_t>(coordinate)},
+        {-coordinate, static_cast<uint64_t>(coordinate + 1)},
     };
     return relation;
 }

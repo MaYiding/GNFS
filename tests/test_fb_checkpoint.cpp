@@ -14,6 +14,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace gnfs::factor_base;
@@ -753,6 +754,56 @@ void test_serialized_rational_order() {
     std::cout << "  Checkpoint rational-prime order: PASS" << std::endl;
 }
 
+void test_serialized_algebraic_order() {
+    std::cout << "Testing checkpoint algebraic-prime order..." << std::endl;
+    const auto path = tmp_ckpt_path("algebraic_order");
+    CkptCleanup cleanup{path};
+    using Entry = std::pair<uint32_t, uint32_t>;
+    const std::vector<std::vector<Entry>> cases{
+        {{3, 2}, {3, 1}, {67, 66}, {67, 1}},
+        {{7, 6}, {3, 1}},
+        {{3, 1}, {3, 2}, {3, 1}},
+    };
+    for (const bool fingerprint : {false, true}) {
+        for (size_t c = 0; c < cases.size(); ++c) {
+            FbCheckpoint checkpoint;
+            checkpoint.algebraic_bound = 97;
+            checkpoint.ctx_n = Integer(143);
+            checkpoint.ctx_fingerprint_present = fingerprint;
+            for (const auto& [prime, root] : cases[c]) {
+                checkpoint.algebraic.push_back(AlgebraicPrime{prime, root, 1, 1});
+            }
+            checkpoint.sieve_algebraic_count = cases[c].size();
+            checkpoint.save(path);
+            const auto original = read_bytes(path, std::filesystem::file_size(path));
+            std::optional<FbCheckpoint> loaded;
+            std::string rejection;
+            try {
+                loaded.emplace(FbCheckpoint::load(path));
+            } catch (const std::runtime_error& error) {
+                rejection = error.what();
+            }
+            GNFS_TEST_CHECK(loaded.has_value() == (c == 0));
+            if (loaded) {
+                GNFS_TEST_CHECK(loaded->ctx_fingerprint_present == fingerprint);
+                const auto fb = loaded->to_factor_base();
+                GNFS_TEST_CHECK(fb.algebraic_count() == cases[c].size());
+                for (size_t i = 0; i < cases[c].size(); ++i) {
+                    GNFS_TEST_CHECK(fb.algebraic()[i].p == cases[c][i].first);
+                    GNFS_TEST_CHECK(fb.algebraic()[i].r == cases[c][i].second);
+                    GNFS_TEST_CHECK(fb.find_algebraic(cases[c][i].first, cases[c][i].second) == i);
+                }
+            } else {
+                GNFS_TEST_CHECK(rejection.find(c == 1 ? "not nondecreasing" : "duplicate") !=
+                                std::string::npos);
+            }
+            GNFS_TEST_CHECK(std::filesystem::file_size(path) == original.size());
+            GNFS_TEST_CHECK(read_bytes(path, original.size()) == original);
+        }
+    }
+    std::cout << "  Checkpoint algebraic-prime order: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "===== FbCheckpoint Tests =====" << std::endl;
     test_roundtrip_small_fb();
@@ -769,6 +820,7 @@ int main() {
     test_version_mismatch_rejected();
     test_malformed_entries_rejected();
     test_serialized_rational_order();
+    test_serialized_algebraic_order();
     test_truncated_payload_rejected_before_allocation();
     test_remove_and_nonexistent();
     std::cout << "\n===== All FbCheckpoint tests PASSED =====" << std::endl;
