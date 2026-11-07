@@ -584,6 +584,12 @@ public:
         if (p < 2) {
             return INVALID_ROOT;
         }
+        // Large-prime roots identify prime ideals. A composite modulus may
+        // still admit an inverse for b, but its residue is not a valid LP
+        // root and must not enter relation metadata.
+        if (!gnfs::util::is_prime_u64(p)) {
+            return INVALID_ROOT;
+        }
         if (b % p == 0) {
             return static_cast<uint64_t>(core::AlgebraicPrime::PROJECTIVE_ROOT);
         }

@@ -1,12 +1,14 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../util/bit_intrin.hpp"
@@ -21,11 +23,9 @@ public:
 
     SparseRow() = default;
 
-    /// 从列索引列表构造
-    explicit SparseRow(IndexList indices) : indices_(std::move(indices)) {
-        // 确保排序
-        std::sort(indices_.begin(), indices_.end());
-        sorted_ = true;
+    /// 从列索引列表构造，重复列按 GF(2) 奇偶性合并
+    explicit SparseRow(IndexList indices) : indices_(std::move(indices)), sorted_(false) {
+        ensure_sorted();
     }
 
     /// 设置位（添加列索引）- 幂等：多次 set(col) 等效于一次

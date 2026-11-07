@@ -279,6 +279,10 @@ struct FbCheckpoint {
             if (!rational_keys.insert(rp.p).second) {
                 throw std::runtime_error("FbCheckpoint::load: duplicate rational-prime value");
             }
+            if (!ck.rational.empty() && rp.p < ck.rational.back().p) {
+                throw std::runtime_error(
+                    "FbCheckpoint::load: rational primes are not strictly increasing");
+            }
             ck.rational.push_back(rp);
         }
 

@@ -54,7 +54,12 @@ gnfs_run_process_supervisor() {
         else
             supervisor_exit_code=$?
         fi
-        (( supervisor_exit_code == 125 )) && observed_supervisor_failure=1
+        if (( supervisor_exit_code == 125 )); then
+            observed_supervisor_failure=1
+            # This is a completed child status, not an interrupted wait. A
+            # second wait can only report that the PID has already been reaped.
+            break
+        fi
         if (( gnfs_forwarded_signal_generation == signal_generation_before_wait )); then
             break
         fi

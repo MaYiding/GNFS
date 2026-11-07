@@ -16,6 +16,13 @@ bool is_valid_string_base(int base) {
     return base >= 2 && base <= 62;
 }
 
+const char* checked_integer_string(const std::string& str) {
+    if (str.find('\0') != std::string::npos) {
+        throw std::invalid_argument("Integer string contains an embedded NUL");
+    }
+    return str.c_str();
+}
+
 void set_mpz_from_uint64(mpz_t dest, uint64_t value) {
     mpz_import(dest, 1, 1, sizeof(value), 0, 0, &value);
 }
@@ -123,7 +130,7 @@ Integer::Integer(const char* str, int base) {
     }
 }
 
-Integer::Integer(const std::string& str, int base) : Integer(str.c_str(), base) {}
+Integer::Integer(const std::string& str, int base) : Integer(checked_integer_string(str), base) {}
 
 Integer::Integer(const Integer& other) {
     mpz_init_set(value_, other.value_);
@@ -308,6 +315,17 @@ bool Integer::operator==(int64_t rhs) const {
     return mpz_cmp(value_, rhs_int.value_) == 0;
 }
 
+bool Integer::operator==(uint64_t rhs) const {
+    // GMP's mpz_cmp_ui takes unsigned long. On LLP64 targets that is only
+    // 32 bits, so construct an exact temporary instead of truncating rhs.
+    if constexpr (sizeof(unsigned long) >= sizeof(uint64_t)) {
+        return mpz_cmp_ui(value_, static_cast<unsigned long>(rhs)) == 0;
+    } else {
+        Integer rhs_int(rhs);
+        return mpz_cmp(value_, rhs_int.value_) == 0;
+    }
+}
+
 bool Integer::operator!=(const Integer& other) const {
     return mpz_cmp(value_, other.value_) != 0;
 }
@@ -442,7 +460,20 @@ Integer lcm(const Integer& a, const Integer& b) {
 }
 
 Integer powmod(const Integer& base, const Integer& exp, const Integer& mod) {
+    if (mod.is_zero()) {
+        throw std::domain_error("Integer modular exponentiation with zero modulus");
+    }
     Integer result;
+    if (exp.is_negative()) {
+        // GMP raises a divide-by-zero signal for a nonexistent inverse. Check
+        // it explicitly and reuse the inverse for the positive exponentiation.
+        if (mpz_invert(result.get_mpz(), base.get_mpz(), mod.get_mpz()) == 0) {
+            throw std::domain_error("Integer modular exponentiation requires an invertible base");
+        }
+        const Integer positive_exp = -exp;
+        mpz_powm(result.get_mpz(), result.get_mpz(), positive_exp.get_mpz(), mod.get_mpz());
+        return result;
+    }
     mpz_powm(result.get_mpz(), base.get_mpz(), exp.get_mpz(), mod.get_mpz());
     return result;
 }
@@ -454,6 +485,9 @@ Integer pow(const Integer& base, uint32_t exp) {
 }
 
 Integer sqrt(const Integer& n) {
+    if (n.is_negative()) {
+        throw std::domain_error("Integer square root of a negative value");
+    }
     Integer result;
     mpz_sqrt(result.get_mpz(), n.get_mpz());
     return result;
@@ -478,31 +512,34 @@ size_t Integer::num_digits(int base) const {
     if (!is_valid_string_base(base)) {
         throw std::invalid_argument("Integer digit-count base must be in [2,62]");
     }
-    return mpz_sizeinbase(value_, base);
+    // GMP is exact for powers of two, and otherwise overestimates by at most one.
+    const size_t estimate = mpz_sizeinbase(value_, base);
+    if ((base & (base - 1)) == 0 || estimate <= 1) {
+        return estimate;
+    }
+    // mpz_ui_pow_ui uses unsigned long, which is narrower than size_t on LLP64.
+    if (estimate - 1 > (std::numeric_limits<unsigned long>::max)()) {
+        const std::string digits = to_string(base);
+        return digits.size() - static_cast<size_t>(digits.front() == '-');
+    }
+    Integer boundary;
+    mpz_ui_pow_ui(boundary.value_, static_cast<unsigned long>(base),
+                  static_cast<unsigned long>(estimate - 1));
+    return estimate - static_cast<size_t>(mpz_cmpabs(value_, boundary.value_) < 0);
 }
 
 bool Integer::fits_uint64() const {
-    if (mpz_sgn(value_) < 0)
-        return false;
-    mpz_t max;
-    mpz_init(max);
-    set_mpz_from_uint64(max, std::numeric_limits<uint64_t>::max());
-    const bool fits = mpz_cmp(value_, max) <= 0;
-    mpz_clear(max);
-    return fits;
+    return mpz_sgn(value_) >= 0 && mpz_sizeinbase(value_, 2) <= 64;
 }
 
 bool Integer::fits_int64() const {
-    mpz_t min_value;
-    mpz_t max_value;
-    mpz_init(min_value);
-    mpz_init(max_value);
-    set_mpz_from_int64(min_value, std::numeric_limits<int64_t>::min());
-    set_mpz_from_int64(max_value, std::numeric_limits<int64_t>::max());
-    const bool fits = mpz_cmp(value_, min_value) >= 0 && mpz_cmp(value_, max_value) <= 0;
-    mpz_clear(min_value);
-    mpz_clear(max_value);
-    return fits;
+    const size_t bits = mpz_sizeinbase(value_, 2);
+    if (bits <= 63) {
+        return true;
+    }
+    // The only representable magnitude with 64 bits is 2^63, and only
+    // when negative. GMP's divisibility predicate accepts negative values.
+    return bits == 64 && mpz_sgn(value_) < 0 && mpz_divisible_2exp_p(value_, 63) != 0;
 }
 
 bool Integer::is_odd() const {

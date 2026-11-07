@@ -399,8 +399,10 @@ GNFS_COFACTOR_RESULT_CACHE_SIZE=9999999 ./gnfs <N> # clamp 到 1M
   命中: `splice` 到 list front (MRU promote), 返回 value-copy. 未命中:
   `std::nullopt`. Disabled cache 总是返回 nullopt.
 - `void put(cofactor, B, lp_bound, result)` — 存在 key 时更新 value + 提升
-  MRU. 新 key + 未满: `push_front` + insert. 新 key + 已满: evict
-  `list.back()` (LRU), 然后 `push_front`. Disabled cache 是 no-op.
+  MRU. 新 key 先以事务方式建立 `list` 节点和 `unordered_map` 索引；任一
+  分配失败都会回滚新节点并保留旧缓存。已满时仅在新索引成功后淘汰
+  `list.back()`（LRU），因此不会因插入异常丢失旧条目。Disabled cache 是
+  no-op.
 - `size() / capacity() / clear()` — 测试 / debug helper.
 - `cofactor_result_cache_size()` — cached `std::once_flag` + `std::size_t`
   ENV reader.
@@ -431,7 +433,8 @@ GNFS_COFACTOR_RESULT_CACHE_SIZE=9999999 ./gnfs <N> # clamp 到 1M
 
 **Bit-for-bit guarantee**: `put(K, V)` 后 `get(K)` 返回 V 的 byte-identical
 copy (`type`, `factor1`, `factor2`, `factor3`, `power` 字段). 单元测试
-`test_cofactor_result_cache` 19 个测试强制覆盖.
+`test_cofactor_result_cache` 覆盖 19 个基础场景，以及 256 次满容量淘汰后的
+索引一致性和 `clear()` 重用回归场景。
 
 **ROI 与定位**:
 - 主要 ROI: cofactor pipeline 重复查询时跳过整个 trial/SQUFOF/Brent/Pollard/
@@ -466,10 +469,11 @@ copy (`type`, `factor1`, `factor2`, `factor3`, `power` 字段). 单元测试
 **集成点** (W14 T3, 2026-05-23):
 - `include/gnfs/cofactor/result_cache.hpp` — 350+ 行 header-only, textbook
   LRU + 三字段 key + splitmix64 hash + ENV gate + process singleton
-- `tests/test_cofactor_result_cache.cpp` — 19 个测试 (9 ENV 解析 + capacity=0
+- `tests/test_cofactor_result_cache.cpp` — 20 个测试 (9 ENV 解析 + capacity=0
   disabled / put-get 5 种 CofactorClass / LRU eviction / LRU promotion /
   clear+reuse / 同 cofactor 不同 (B, lp) 独立 / 重复 put 更新+提升 /
-  accessor / shared singleton / 4 thread x 100 mixed / 16 key hash sweep)
+  accessor / 256 次满容量淘汰与 clear/reuse / shared singleton /
+  4 thread x 100 mixed / 16 key hash sweep)
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   cofactor 模块
 

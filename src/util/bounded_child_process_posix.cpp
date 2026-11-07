@@ -625,6 +625,36 @@ mark_all_nonstandard_fds_cloexec_with_proc_fallback(PathFdClosureMode mode) noex
     return false;
 }
 
+#if defined(__GLIBC__)
+[[nodiscard]] int reset_descriptor_child_abort_signal() noexcept {
+#if defined(SYS_rt_sigaction)
+    // A concurrent _Fork can leave another thread's glibc abort-lock reader in
+    // this child's address space. libc sigaction(SIGABRT) then waits forever for
+    // that absent reader. Reset only this disposition through the kernel.
+    // SIG_DFL, flags, restorer and mask are all zero in the Linux kernel ABI;
+    // this zero buffer is only for the default disposition, not general actions.
+    alignas(struct sigaction) static constexpr std::array<unsigned char, sizeof(struct sigaction)>
+        default_action{};
+    constexpr std::size_t word_bits = sizeof(unsigned long) * CHAR_BIT;
+    constexpr std::size_t signal_set_bytes =
+        ((NSIG - 1 + word_bits - 1) / word_bits) * sizeof(unsigned long);
+#if defined(__sparc__)
+    const long status =
+        ::syscall(SYS_rt_sigaction, SIGABRT, default_action.data(), nullptr, 0UL, signal_set_bytes);
+#elif defined(__alpha__)
+    const long status =
+        ::syscall(SYS_rt_sigaction, SIGABRT, default_action.data(), nullptr, signal_set_bytes, 0UL);
+#else
+    const long status =
+        ::syscall(SYS_rt_sigaction, SIGABRT, default_action.data(), nullptr, signal_set_bytes);
+#endif
+    return status == 0 ? 0 : errno;
+#else
+    return ENOSYS;
+#endif
+}
+#endif
+
 [[nodiscard]] int reset_descriptor_child_signals() noexcept {
     struct sigaction default_action {};
     default_action.sa_handler = SIG_DFL;
@@ -635,6 +665,14 @@ mark_all_nonstandard_fds_cloexec_with_proc_fallback(PathFdClosureMode mode) noex
         if (signal_number == SIGKILL || signal_number == SIGSTOP) {
             continue;
         }
+#if defined(__GLIBC__)
+        if (signal_number == SIGABRT) {
+            if (const int error = reset_descriptor_child_abort_signal(); error != 0) {
+                return error;
+            }
+            continue;
+        }
+#endif
         if (::sigaction(signal_number, &default_action, nullptr) != 0 && errno != EINVAL) {
             return errno;
         }

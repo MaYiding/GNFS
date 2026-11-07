@@ -23,6 +23,7 @@
 #include <gnfs/siqs/two_large_prime.hpp>
 #include <gnfs/siqs/two_large_prime_parallel_capture.hpp>
 #include <gnfs/util/bit_intrin.hpp>
+#include <gnfs/util/joining_thread.hpp>
 #include <gnfs/util/primes.hpp>
 
 #include <algorithm>
@@ -30,10 +31,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <mutex>
 #include <numeric>
@@ -310,9 +313,18 @@ struct FBPrime {
 // Knuth-Schroeppel multiplier selection
 // ================================================================
 
-/// Select optimal multiplier k for N. Returns k such that kN has a dense factor base.
-/// Score = -0.5*log(kN) + Σ_{p small, kN is QR mod p} log(p)/(p-1)
-inline uint32_t select_multiplier(const Integer& N) {
+namespace siqs_multiplier_detail {
+
+struct ScoredCandidate {
+    uint32_t multiplier;
+    double score;
+    size_t ordinal;
+};
+
+inline auto score_candidates(const Integer& N) {
+    if (mpz_sgn(N.get_mpz()) <= 0)
+        throw std::invalid_argument("SIQS multiplier scoring requires a positive N");
+
     static const uint32_t candidates[] = {1,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31,
                                           37, 41, 43, 47, 53, 59, 61, 67, 71, 73};
     // Small primes for scoring
@@ -321,8 +333,8 @@ inline uint32_t select_multiplier(const Integer& N) {
         59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131,
         137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199};
 
-    double best_score = -1e30;
-    uint32_t best_k = 1;
+    std::array<ScoredCandidate, sizeof(candidates) / sizeof(candidates[0])> scored{};
+    size_t ordinal = 0;
 
     for (uint32_t k : candidates) {
         Integer kN;
@@ -362,22 +374,94 @@ inline uint32_t select_multiplier(const Integer& N) {
             }
         }
 
-        if (score > best_score) {
-            best_score = score;
-            best_k = k;
-        }
+        scored[ordinal] = {k, score, ordinal};
+        ++ordinal;
     }
-    return best_k;
+    return scored;
 }
 
-/// Build factor base: primes p where Legendre(N, p) = 1
-inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
+/// Return the unique positive coprime candidates in their supplied order.
+/// Filter the complete ranking before applying the eligible-candidate limit;
+/// this limit does not count started attempts or grant a runtime budget.
+inline std::vector<uint32_t> admit_candidates(const Integer& N, std::span<const uint32_t> ranked,
+                                              size_t limit) {
+    if (limit == 0)
+        return {};
+    if (mpz_sgn(N.get_mpz()) <= 0)
+        throw std::invalid_argument("SIQS multiplier admission requires a positive N");
+
+    std::vector<uint32_t> eligible;
+    eligible.reserve(std::min(limit, ranked.size()));
+    for (uint32_t multiplier : ranked) {
+        if (multiplier == 0 ||
+            std::find(eligible.begin(), eligible.end(), multiplier) != eligible.end())
+            continue;
+        const auto residue = static_cast<uint32_t>(mpz_fdiv_ui(N.get_mpz(), multiplier));
+        if (std::gcd(multiplier, residue) != 1)
+            continue;
+        eligible.push_back(multiplier);
+        if (eligible.size() == limit)
+            break;
+    }
+    return eligible;
+}
+
+} // namespace siqs_multiplier_detail
+
+/// Rank all fixed Knuth-Schroeppel candidates, then return at most limit entries.
+/// Zero limit returns empty; positive limits require a positive N. The raw
+/// ranking is unfiltered by gcd(N, k). Equal scores retain historical candidate
+/// order; floating-point ordering is deterministic within one implementation.
+/// Callers preparing multiple attempts must filter the complete ranking before
+/// applying their eligible-candidate limit. This function starts no attempt.
+inline std::vector<uint32_t> rank_multiplier_candidates(const Integer& N, size_t limit) {
+    if (limit == 0)
+        return {};
+    auto scored = siqs_multiplier_detail::score_candidates(N);
+    std::sort(scored.begin(), scored.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.score == rhs.score)
+            return lhs.ordinal < rhs.ordinal;
+        return lhs.score > rhs.score;
+    });
+    const size_t count = std::min(limit, scored.size());
+    std::vector<uint32_t> ranked;
+    ranked.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+        ranked.push_back(scored[i].multiplier);
+    return ranked;
+}
+
+/// Select the historical top-ranked multiplier for positive N, without coprime
+/// filtering. Score = -0.5*log(kN) + small-prime quadratic-residue contributions.
+inline uint32_t select_multiplier(const Integer& N) {
+    const auto scored = siqs_multiplier_detail::score_candidates(N);
+    return std::max_element(scored.begin(), scored.end(),
+                            [](const auto& lhs, const auto& rhs) { return lhs.score < rhs.score; })
+        ->multiplier;
+}
+
+namespace siqs_factor_base_detail {
+
+/// A true stop predicate discards the internal factor base and returns nullopt.
+/// The zero-argument predicate must not throw. nullptr removes polling at compile time.
+template <typename StopPredicate>
+inline std::optional<std::vector<FBPrime>> build_factor_base_until(const Integer& N, size_t count,
+                                                                   StopPredicate&& stop) {
+    constexpr bool cancellable =
+        !std::is_same_v<std::remove_cvref_t<StopPredicate>, std::nullptr_t>;
+    static_assert(!cancellable || std::is_nothrow_invocable_r_v<bool, StopPredicate&>);
+
     // FB entries use uint32_t prime values.  There are at most one sentinel,
     // p=2, and one entry for each odd uint32_t candidate.
     constexpr size_t max_factor_base_entries =
         static_cast<size_t>(std::numeric_limits<uint32_t>::max() / 2u) + 2;
     if (count >= max_factor_base_entries) {
         throw std::overflow_error("SIQS factor-base count exceeds uint32_t prime domain");
+    }
+
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
     }
 
     std::vector<FBPrime> fb;
@@ -389,16 +473,21 @@ inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
     // N mod p for small primes — use GMP
     mpz_srcptr nz = N.get_mpz();
 
-    auto is_prime = [](uint32_t n) -> bool {
+    auto is_prime = [&](uint32_t n) -> std::optional<bool> {
         if (n < 2)
             return false;
         if (n < 4)
             return true;
         if (n % 2 == 0 || n % 3 == 0)
             return false;
-        for (uint32_t i = 5; i <= n / i; i += 6)
+        for (uint32_t i = 5; i <= n / i; i += 6) {
+            if constexpr (cancellable) {
+                if (stop())
+                    return std::nullopt;
+            }
             if (n % i == 0 || n % (i + 2) == 0)
                 return false;
+        }
         return true;
     };
 
@@ -411,11 +500,18 @@ inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
     }
 
     for (uint64_t candidate = 3; fb.size() <= count; candidate += 2) {
+        if constexpr (cancellable) {
+            if (stop())
+                return std::nullopt;
+        }
         if (candidate > std::numeric_limits<uint32_t>::max()) {
             throw std::overflow_error("SIQS factor-base prime candidate exceeds uint32_t");
         }
         const uint32_t p = static_cast<uint32_t>(candidate);
-        if (!is_prime(p))
+        const auto prime = is_prime(p);
+        if (!prime.has_value())
+            return std::nullopt;
+        if (!*prime)
             continue;
 
         uint64_t n_mod_p = mpz_fdiv_ui(nz, p);
@@ -433,7 +529,19 @@ inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
         fb.push_back({p, sq, logp});
     }
 
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     return fb;
+}
+
+} // namespace siqs_factor_base_detail
+
+/// Build factor base: primes p where Legendre(N, p) = 1
+inline std::vector<FBPrime> build_factor_base(const Integer& N, size_t count) {
+    auto result = siqs_factor_base_detail::build_factor_base_until(N, count, nullptr);
+    return std::move(*result);
 }
 
 // ================================================================
@@ -1502,18 +1610,40 @@ inline std::vector<SIQSRelation> merge_partials(std::vector<SIQSRelation>& relat
 /// Dense GF(2) Gaussian elimination — much faster than sparse for SIQS matrices
 /// Finds the left null space of M (row dependencies).
 /// Matrix layout: ncols rows × nrows cols (transposed), packed in 64-bit words
-inline std::vector<std::vector<size_t>>
-dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb_size,
-                           size_t max_deps = 64) {
+namespace siqs_dense_detail {
+
+/// Cooperative cancellation discards all intermediate state and returns nullopt.
+/// Only the calling thread invokes the noexcept predicate. nullptr disables polling.
+template <typename StopPredicate>
+inline std::optional<std::vector<std::vector<size_t>>>
+dense_gauss_left_nullspace_until(const std::vector<SIQSRelation>& relations, size_t fb_size,
+                                 size_t max_deps, StopPredicate&& stop) {
+    constexpr bool cancellable =
+        !std::is_same_v<std::remove_cvref_t<StopPredicate>, std::nullptr_t>;
+    static_assert(!cancellable || std::is_nothrow_invocable_r_v<bool, StopPredicate&>);
     size_t nrows = relations.size();
     size_t ncols = fb_size;
 
     // Build M^T as dense packed matrix (ncols rows × nrows columns)
     // Each row is a word-packed bit vector of nrows bits
     size_t words_per_row = (nrows + 63) / 64;
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     std::vector<std::vector<uint64_t>> M(ncols, std::vector<uint64_t>(words_per_row, 0));
 
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
+
     for (size_t r = 0; r < nrows; r++) {
+        if constexpr (cancellable) {
+            if (stop())
+                return std::nullopt;
+        }
+
         const auto& rel = relations[r];
         size_t word = r / 64, bit = r % 64;
         if (rel.negative)
@@ -1527,10 +1657,28 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
 
     // Gaussian elimination on M^T (ncols × nrows)
     // Find pivot in each row (column of M^T = relation index)
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     std::vector<size_t> pivot_col(ncols, SIZE_MAX);
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
     std::vector<bool> is_pivot(nrows, false);
 
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
+    }
+
     for (size_t row = 0; row < ncols; row++) {
+        if constexpr (cancellable) {
+            if (stop())
+                return std::nullopt;
+        }
+
         // Find leftmost set bit
         size_t pc = SIZE_MAX;
         for (size_t w = 0; w < words_per_row; w++) {
@@ -1550,6 +1698,11 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
         const uint64_t* pivot_row_data = M[row].data();
 
         if (ncols > 20000) {
+            if constexpr (cancellable) {
+                if (stop())
+                    return std::nullopt;
+            }
+
             // Parallel elimination only for very large matrices
             // (thread creation per pivot: ~70μs overhead vs ~10μs work for ncols<10K)
             unsigned nt = std::max(1u, std::thread::hardware_concurrency());
@@ -1565,7 +1718,14 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
                 }
             };
             size_t chunk = (ncols + nt - 1) / nt;
-            std::vector<std::thread> threads;
+            // Join earlier workers if a later thread constructor throws.
+            std::vector<gnfs::util::JoiningThread> threads;
+            threads.reserve(nt);
+            if constexpr (cancellable) {
+                if (stop())
+                    return std::nullopt;
+            }
+
             for (unsigned t = 0; t < nt; t++) {
                 size_t s = t * chunk, e = std::min(s + chunk, ncols);
                 if (s < e)
@@ -1573,8 +1733,17 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
             }
             for (auto& t : threads)
                 t.join();
+            if constexpr (cancellable) {
+                if (stop())
+                    return std::nullopt;
+            }
+
         } else {
             for (size_t other = 0; other < ncols; other++) {
+                if constexpr (cancellable) {
+                    if (stop())
+                        return std::nullopt;
+                }
                 if (other == row)
                     continue;
                 if (M[other][w_pc] & mask) {
@@ -1591,6 +1760,10 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
     for (size_t col = 0; col < nrows && deps.size() < max_deps; col++) {
         if (is_pivot[col])
             continue;
+        if constexpr (cancellable) {
+            if (stop())
+                return std::nullopt;
+        }
         // Free variable col → null vector
         std::vector<size_t> dep;
         dep.push_back(col);
@@ -1603,11 +1776,24 @@ dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb
                 dep.push_back(pivot_col[row]);
             }
         }
-        if (dep.size() > 1) {
-            deps.push_back(std::move(dep));
-        }
+        // A zero-parity relation contributes a unit kernel vector and can
+        // already yield a nontrivial factor from its square congruence.
+        deps.push_back(std::move(dep));
+    }
+    if constexpr (cancellable) {
+        if (stop())
+            return std::nullopt;
     }
     return deps;
+}
+
+} // namespace siqs_dense_detail
+
+inline std::vector<std::vector<size_t>>
+dense_gauss_left_nullspace(const std::vector<SIQSRelation>& relations, size_t fb_size,
+                           size_t max_deps = 64) {
+    return std::move(*siqs_dense_detail::dense_gauss_left_nullspace_until(relations, fb_size,
+                                                                          max_deps, nullptr));
 }
 
 /// Build GF(2) matrix from relations and find null space
@@ -1847,43 +2033,110 @@ static_assert(noexcept(siqs_factor_detail::commit_prefer_route(
     nullptr, std::declval<const Integer&>(), std::declval<const SIQSShadowProofPreferDecision&>(),
     std::nullopt)));
 
-inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3600,
-                                        bool verbose = true) {
-    const SIQSShadowProofMode shadow_proof_mode =
-        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
+namespace siqs_factor_detail {
 
-    // SIQS is a medium-size composite factorer. Reject non-positive and
-    // tiny odd inputs before parameter selection; handle even composites
-    // directly so an empty/degenerate A-factor set cannot reach the Gray-code
-    // shift below. The trivial N=2/3 cases have no non-trivial factor.
-    if (mpz_cmp_ui(N.get_mpz(), 4) < 0) {
-        return std::nullopt;
-    }
-    if (mpz_even_p(N.get_mpz())) {
-        SIQSResult result;
-        result.factor1 = int64_t(2);
-        mpz_fdiv_q_2exp(result.factor2.get_mpz(), N.get_mpz(), 1);
-        result.time_seconds = 0.0;
-        result.relations_found = 0;
-        result.polynomials_used = 0;
-        result.resolved_sieve_workers = 0;
-        result.shadow_proof_observe_record_committed = false;
-        return result;
-    }
-    if (mpz_cmp_ui(N.get_mpz(), 15) < 0) {
-        return std::nullopt;
+/// Scores saturate at 255. Bound their threshold before narrowing, retaining
+/// the historical floor for low estimates and unordered (NaN) comparisons.
+inline uint8_t bounded_sieve_threshold(double estimate) noexcept {
+    constexpr double max_score = std::numeric_limits<uint8_t>::max();
+    return estimate > 10.0 ? static_cast<uint8_t>(std::min(estimate, max_score)) : uint8_t{10};
+}
+
+/// Prepared by the facade before starting one native attempt. The shared timer
+/// origin includes parameter and multiplier selection; it is not reset here.
+struct FactorAttemptContext {
+    std::chrono::steady_clock::time_point started;
+    size_t max_seconds;
+    bool verbose;
+    size_t digits;
+    SIQSParams params;
+};
+
+enum class FactorAttemptTerminal : uint8_t {
+    insufficient_factor_base,
+    insufficient_relations,
+    no_factor,
+    factor_found,
+};
+
+/// Accounting for a completed native attempt, not shadow-return authority.
+/// Only commit_prefer_route can authorize the preferred result inside the
+/// attempt. Failure still retains whether an observe record was committed.
+struct FactorAttemptOutcome {
+    std::optional<SIQSResult> result;
+    FactorAttemptTerminal terminal;
+    bool observe_record_committed;
+};
+
+struct DependencyExtractionOutcome {
+    std::optional<std::pair<Integer, Integer>> factors;
+    size_t singleton_attempts = 0;
+    size_t matrix_rows = 0;
+    size_t non_singleton_dependencies = 0;
+};
+
+/// Consume an already admitted and trimmed native relation corpus. Try each
+/// zero-parity row once, then compact it away before the existing 64-vector
+/// matrix budget. This keeps unit vectors from displacing non-unit attempts.
+inline DependencyExtractionOutcome extract_native_dependencies(const Integer& mod_N,
+                                                               const Integer& gcd_N,
+                                                               std::vector<SIQSRelation>& relations,
+                                                               const std::vector<FBPrime>& fb) {
+    DependencyExtractionOutcome outcome;
+    const auto zero_parity = [fb_size = fb.size()](const SIQSRelation& relation) noexcept {
+        if (relation.negative)
+            return false;
+        for (size_t column = 1; column < fb_size && column < relation.exponents.size(); ++column)
+            if (relation.exponents[column] & 1u)
+                return false;
+        return true;
+    };
+    std::vector<size_t> singleton{0};
+    for (size_t row = 0; row < relations.size(); ++row) {
+        if (!zero_parity(relations[row]))
+            continue;
+        singleton[0] = row;
+        ++outcome.singleton_attempts;
+        outcome.factors = try_extract(mod_N, gcd_N, relations, singleton, fb);
+        if (outcome.factors)
+            return outcome;
     }
 
-    auto start = std::chrono::steady_clock::now();
+    // Admitted native relations satisfy the square congruence. For a valid
+    // unit dependency, failure to extract leaves X == +/-Y (mod gcd_N), which
+    // cannot improve a later +/-GCD attempt. try_extract still rejects malformed
+    // parity or square congruences; no rejected row authorizes a factor result.
+    // Preserve survivor order and avoid copying the corpus or storing its full
+    // nullspace: the existing solver still retains at most 64 dependencies.
+    std::erase_if(relations, zero_parity);
+    outcome.matrix_rows = relations.size();
+    if (relations.empty())
+        return outcome;
+    const auto dependencies = solve_matrix(relations, fb.size());
+    outcome.non_singleton_dependencies = dependencies.size();
+    outcome.factors = try_extract_with_combos(mod_N, gcd_N, relations, dependencies, fb);
+    return outcome;
+}
+
+/// Run one explicit multiplier for facade-validated input. Multiplier
+/// admission belongs to the caller; the default facade retains its historical
+/// single selection. The caller supplies parameters and the shared timer origin.
+/// This entry does not rank candidates, reset the budget, or implement complete
+/// cancellation of factor-base construction or the linear-algebra backends.
+inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
+                                        SIQSShadowProofMode shadow_proof_mode,
+                                        const FactorAttemptContext& context) {
+    if (multiplier == 0)
+        throw std::invalid_argument("SIQS attempt requires a positive multiplier");
+    const auto start = context.started;
+    const auto max_seconds = context.max_seconds;
+    const auto verbose = context.verbose;
+    const auto digits = context.digits;
+    const auto& params = context.params;
     auto elapsed = [&]() {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     };
 
-    size_t digits = N.to_string().size();
-    auto params = select_params(digits);
-
-    // Knuth-Schroeppel multiplier selection
-    uint32_t multiplier = select_multiplier(N);
     Integer kN;
     if (multiplier > 1) {
         mpz_mul_ui(kN.get_mpz(), N.get_mpz(), multiplier); // kN = N * k (skip source copy)
@@ -1909,7 +2162,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         if (verbose) {
             fprintf(stderr, "[SIQS] Factor base has insufficient odd primes for A; giving up\n");
         }
-        return std::nullopt;
+        return {std::nullopt, FactorAttemptTerminal::insufficient_factor_base, false};
     }
 
     if (verbose) {
@@ -1936,7 +2189,7 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     }
 
     double thr_d = log_Qmax_d - lp_bits - params.sieve_error - small_contrib;
-    uint8_t threshold = (thr_d > 10.0) ? static_cast<uint8_t>(thr_d) : 10;
+    const uint8_t threshold = bounded_sieve_threshold(thr_d);
 
     // 2LP: DISABLED entirely. 2LP cycles cause extraction failures for certain
     // multipliers (all 64 deps fail). 1LP merge provides enough usable relations.
@@ -1954,7 +2207,8 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     size_t target_usable = fb_size + 50;
 
     std::vector<SIQSRelation> all_relations;
-    all_relations.reserve(target_usable * 10);
+    if (elapsed() < static_cast<double>(max_seconds))
+        all_relations.reserve(target_usable * 10);
     std::mutex relations_mutex;
 
     // Use atomic counters to avoid expensive estimate_usable under mutex
@@ -1991,6 +2245,10 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
     std::atomic<bool> enough{false};
 
     auto sieve_worker = [&](unsigned thread_id) {
+        // Admission may expire between the caller's launch check and entry.
+        // Leave the empty corpus for the ordinary post-join terminal handling.
+        if (elapsed() >= static_cast<double>(max_seconds))
+            return;
         std::mt19937 local_rng(42 + thread_id * 1000);
         std::vector<SIQSRelation> local_relations;
         local_relations.reserve(target_usable);
@@ -2083,13 +2341,39 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         }
     };
 
-    // Launch threads
-    std::vector<std::thread> threads;
-    for (unsigned t = 0; t < num_threads; t++) {
-        threads.emplace_back(sieve_worker, t);
+    // Each worker owns its exception slot; the caller reads only after join.
+    std::vector<std::exception_ptr> worker_failures;
+    auto guarded_sieve_worker = [&](unsigned thread_id) noexcept {
+        try {
+            sieve_worker(thread_id);
+        } catch (...) {
+            worker_failures[thread_id] = std::current_exception();
+            enough.store(true, std::memory_order_relaxed);
+        }
+    };
+
+    // Keep thread owners after every captured object so failed launches drain
+    // their workers before any referenced state is destroyed.
+    std::vector<util::JoiningThread> threads;
+    if (elapsed() < static_cast<double>(max_seconds)) {
+        worker_failures.resize(num_threads);
+        threads.reserve(num_threads);
+    }
+    try {
+        for (unsigned t = 0; t < num_threads && elapsed() < static_cast<double>(max_seconds); t++) {
+            threads.emplace_back(guarded_sieve_worker, t);
+        }
+    } catch (...) {
+        enough.store(true, std::memory_order_relaxed);
+        throw;
     }
     for (auto& t : threads)
         t.join();
+    // Resource failures must not publish a partial corpus or a shadow record.
+    for (const auto& failure : worker_failures) {
+        if (failure)
+            std::rethrow_exception(failure);
+    }
     num_polys = atomic_polys.load();
 
     if (verbose) {
@@ -2162,7 +2446,10 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
                 siqs_factor_detail::commit_prefer_route(stderr, N, decision,
                                                         std::move(prepared_shadow_result));
             if (routed_shadow_result.has_value()) {
-                return routed_shadow_result;
+                // The result is bound to the committed pre-emit sample.
+                // Do not veto or retime it after the emitter returns.
+                return {std::move(routed_shadow_result), FactorAttemptTerminal::factor_found,
+                        false};
             }
         } catch (...) {
             // Explicit prefer never prevents the untouched legacy path.
@@ -2182,7 +2469,8 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
             fprintf(stderr, "[SIQS] Not enough relations (%zu <= %zu), giving up\n",
                     relations.size(), fb_size);
         }
-        return std::nullopt;
+        return {std::nullopt, FactorAttemptTerminal::insufficient_relations,
+                shadow_proof_observe_record_committed};
     }
 
     // Trim excess relations to reduce LA cost.
@@ -2194,27 +2482,30 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
         relations.resize(max_rels);
     }
 
-    // Linear algebra
+    const size_t admitted_relation_count = relations.size();
     if (verbose) {
-        fprintf(stderr, "[SIQS] Starting linear algebra (%zux%zu)...\n", relations.size(), fb_size);
+        fprintf(stderr, "[SIQS] Preparing dependencies (%zux%zu)...\n", relations.size(), fb_size);
     }
 
-    auto deps = solve_matrix(relations, fb_size);
+    // Use ORIGINAL N for GCD (not kN), retaining the complete kN congruence
+    // check. Unit prechecks have a separate budget from the 64 matrix vectors.
+    auto extraction = extract_native_dependencies(kN, N, relations, fb);
 
     if (verbose) {
-        fprintf(stderr, "[SIQS] Found %zu dependencies (%.3fs)\n", deps.size(), elapsed());
+        fprintf(stderr,
+                "[SIQS] Dependency extraction: %zu singleton attempts, %zu non-singleton "
+                "dependencies (%zu matrix rows, %.3fs)\n",
+                extraction.singleton_attempts, extraction.non_singleton_dependencies,
+                extraction.matrix_rows, elapsed());
     }
 
-    // Try dependencies — use ORIGINAL N for GCD (not kN)
-    // Since kN | (X²-Y²), we have N | (X²-Y²), so gcd(X-Y, N) works directly.
-    // Compute X,Y mod kN (for correct arithmetic), but gcd against N.
-    auto result = try_extract_with_combos(kN, N, relations, deps, fb);
+    auto result = std::move(extraction.factors);
     if (result) {
         SIQSResult sr;
         sr.factor1 = std::move(result->first);
         sr.factor2 = std::move(result->second);
         sr.time_seconds = elapsed();
-        sr.relations_found = relations.size();
+        sr.relations_found = admitted_relation_count;
         sr.polynomials_used = num_polys;
         sr.resolved_sieve_workers = num_threads;
         sr.shadow_proof_observe_record_committed = shadow_proof_observe_record_committed;
@@ -2224,13 +2515,221 @@ inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3
                     sr.factor1.to_string().c_str(), sr.factor2.to_string().c_str(), sr.time_seconds,
                     num_polys);
         }
-        return sr;
+        return {std::move(sr), FactorAttemptTerminal::factor_found,
+                shadow_proof_observe_record_committed};
     }
 
     if (verbose) {
         fprintf(stderr, "[SIQS] All dependencies + combos failed\n");
     }
-    return std::nullopt;
+    return {std::nullopt, FactorAttemptTerminal::no_factor, shadow_proof_observe_record_committed};
+}
+
+inline constexpr size_t MULTIPLIER_ATTEMPT_CAP = 3;
+
+enum class MultiplierPortfolioStop : uint8_t {
+    factor_found,
+    budget_exhausted,
+    attempt_limit,
+    candidates_exhausted,
+    attempt_exception,
+};
+
+struct MultiplierAttemptRecord {
+    uint32_t multiplier = 0;
+    SIQSShadowProofMode shadow_mode = SIQSShadowProofMode::off;
+    // Missing terminal denotes an exception rather than a normal native return.
+    std::optional<FactorAttemptTerminal> terminal;
+    // An observe attempt that throws may have emitted before throwing.
+    std::optional<bool> observe_record_committed;
+};
+
+struct MultiplierPortfolioOutcome {
+    std::optional<SIQSResult> result;
+    std::array<MultiplierAttemptRecord, MULTIPLIER_ATTEMPT_CAP> attempts{};
+    size_t attempts_started = 0;
+    MultiplierPortfolioStop stop = MultiplierPortfolioStop::candidates_exhausted;
+    std::optional<bool> any_observe_record_committed = false;
+    std::exception_ptr failure;
+};
+
+static_assert(std::is_nothrow_move_constructible_v<MultiplierPortfolioOutcome>);
+
+/// Control-flow seam; the native entry below binds the real clock and executor.
+/// Callback results must obey the native FactorAttemptOutcome contract.
+/// All candidate allocations precede attempt execution. Once an attempt returns
+/// a committed result, only non-allocating accounting and moves remain.
+template <typename Now, typename Execute>
+inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
+    const Integer& N, std::span<const uint32_t> full_ranking, SIQSShadowProofMode requested_mode,
+    const FactorAttemptContext& context, size_t requested_limit, Now&& now, Execute&& execute) {
+    using Clock = std::chrono::steady_clock;
+    static_assert(std::is_nothrow_invocable_r_v<Clock::time_point, Now&>);
+    MultiplierPortfolioOutcome outcome;
+    const size_t limit = std::min(requested_limit, MULTIPLIER_ATTEMPT_CAP);
+    if (limit == 0) {
+        outcome.stop = MultiplierPortfolioStop::attempt_limit;
+        return outcome;
+    }
+    const auto eligible = siqs_multiplier_detail::admit_candidates(N, full_ranking, limit);
+    for (uint32_t multiplier : eligible) {
+        const auto observed = now();
+        if (context.max_seconds == 0 || observed < context.started ||
+            std::chrono::duration<double>(observed - context.started).count() >=
+                static_cast<double>(context.max_seconds)) {
+            outcome.stop = MultiplierPortfolioStop::budget_exhausted;
+            return outcome;
+        }
+        auto& record = outcome.attempts[outcome.attempts_started];
+        record.multiplier = multiplier;
+        record.shadow_mode =
+            outcome.attempts_started == 0 ? requested_mode : SIQSShadowProofMode::off;
+        ++outcome.attempts_started;
+        try {
+            auto attempt = execute(multiplier, record.shadow_mode, context);
+            record.terminal = attempt.terminal;
+            record.observe_record_committed = attempt.observe_record_committed;
+            if (attempt.observe_record_committed)
+                outcome.any_observe_record_committed = true;
+            if (attempt.result) {
+                outcome.result.emplace(std::move(*attempt.result));
+                outcome.stop = MultiplierPortfolioStop::factor_found;
+                // Keep every native result field, including the pre-emit wall
+                // sample and this attempt's own observe-commit field, unchanged.
+                return outcome;
+            }
+        } catch (...) {
+            outcome.failure = std::current_exception();
+            outcome.stop = MultiplierPortfolioStop::attempt_exception;
+            if (record.shadow_mode == SIQSShadowProofMode::observe) {
+                if (outcome.any_observe_record_committed != true)
+                    outcome.any_observe_record_committed.reset();
+            } else {
+                record.observe_record_committed = false;
+            }
+            return outcome;
+        }
+    }
+    outcome.stop = outcome.attempts_started == limit
+                       ? MultiplierPortfolioStop::attempt_limit
+                       : MultiplierPortfolioStop::candidates_exhausted;
+    return outcome;
+}
+
+[[nodiscard]] constexpr const char*
+factor_attempt_terminal_name(FactorAttemptTerminal terminal) noexcept {
+    switch (terminal) {
+    case FactorAttemptTerminal::insufficient_factor_base:
+        return "insufficient_factor_base";
+    case FactorAttemptTerminal::insufficient_relations:
+        return "insufficient_relations";
+    case FactorAttemptTerminal::no_factor:
+        return "no_factor";
+    case FactorAttemptTerminal::factor_found:
+        return "factor_found";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] constexpr const char*
+multiplier_portfolio_stop_name(MultiplierPortfolioStop stop) noexcept {
+    switch (stop) {
+    case MultiplierPortfolioStop::factor_found:
+        return "factor_found";
+    case MultiplierPortfolioStop::budget_exhausted:
+        return "budget_exhausted";
+    case MultiplierPortfolioStop::attempt_limit:
+        return "attempt_limit";
+    case MultiplierPortfolioStop::candidates_exhausted:
+        return "candidates_exhausted";
+    case MultiplierPortfolioStop::attempt_exception:
+        return "attempt_exception";
+    }
+    return "unknown";
+}
+
+/// Explicit internal multi-candidate entry for facade-validated odd N >= 15.
+/// This is an admission budget between native attempts, not a hard deadline:
+/// native long stages do not yet have complete cooperative cancellation.
+/// Default factor() remains a single historical attempt.
+inline MultiplierPortfolioOutcome
+factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode,
+                            const FactorAttemptContext& context,
+                            size_t requested_limit = MULTIPLIER_ATTEMPT_CAP) {
+    if (mpz_cmp_ui(N.get_mpz(), 15) < 0 || mpz_even_p(N.get_mpz()))
+        throw std::invalid_argument("SIQS multiplier portfolio requires odd N >= 15");
+    if (requested_mode != SIQSShadowProofMode::off &&
+        requested_mode != SIQSShadowProofMode::observe &&
+        requested_mode != SIQSShadowProofMode::prefer)
+        throw std::invalid_argument("SIQS multiplier portfolio requires a supported shadow mode");
+    const auto ranking = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
+    auto outcome = coordinate_multiplier_attempts(
+        N, ranking, requested_mode, context, requested_limit,
+        []() noexcept { return std::chrono::steady_clock::now(); },
+        [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
+            return factor_once(N, multiplier, mode, shared);
+        });
+    if (context.verbose) {
+        const auto commit_name = [](std::optional<bool> committed) noexcept {
+            return !committed.has_value() ? "unknown" : *committed ? "true" : "false";
+        };
+        for (size_t i = 0; i < outcome.attempts_started; ++i) {
+            const auto& record = outcome.attempts[i];
+            std::fprintf(
+                stderr,
+                "[SIQS] multiplier attempt=%zu k=%u shadow=%s terminal=%s observe_committed=%s\n",
+                i + 1, record.multiplier, siqs_shadow_proof_mode_name(record.shadow_mode).data(),
+                record.terminal ? factor_attempt_terminal_name(*record.terminal) : "exception",
+                commit_name(record.observe_record_committed));
+        }
+        std::fprintf(
+            stderr,
+            "[SIQS] multiplier portfolio terminal=%s attempts_started=%zu observe_committed=%s\n",
+            multiplier_portfolio_stop_name(outcome.stop), outcome.attempts_started,
+            commit_name(outcome.any_observe_record_committed));
+    }
+    return outcome;
+}
+
+} // namespace siqs_factor_detail
+
+inline std::optional<SIQSResult> factor(const Integer& N, size_t max_seconds = 3600,
+                                        bool verbose = true) {
+    const SIQSShadowProofMode shadow_proof_mode =
+        parse_siqs_shadow_proof_mode(std::getenv(SIQS_SHADOW_PROOF_ENV));
+
+    // SIQS is a medium-size composite factorer. Reject non-positive and
+    // tiny odd inputs before parameter selection; handle even composites
+    // directly so an empty/degenerate A-factor set cannot reach the Gray-code
+    // shift below. The trivial N=2/3 cases have no non-trivial factor.
+    if (mpz_cmp_ui(N.get_mpz(), 4) < 0) {
+        return std::nullopt;
+    }
+    if (mpz_even_p(N.get_mpz())) {
+        SIQSResult result;
+        result.factor1 = int64_t(2);
+        mpz_fdiv_q_2exp(result.factor2.get_mpz(), N.get_mpz(), 1);
+        result.time_seconds = 0.0;
+        result.relations_found = 0;
+        result.polynomials_used = 0;
+        result.resolved_sieve_workers = 0;
+        result.shadow_proof_observe_record_committed = false;
+        return result;
+    }
+    if (mpz_cmp_ui(N.get_mpz(), 15) < 0) {
+        return std::nullopt;
+    }
+
+    auto start = std::chrono::steady_clock::now();
+
+    size_t digits = N.to_string().size();
+    auto params = select_params(digits);
+
+    // Knuth-Schroeppel multiplier selection
+    uint32_t multiplier = select_multiplier(N);
+    const siqs_factor_detail::FactorAttemptContext context{start, max_seconds, verbose, digits,
+                                                           params};
+    return siqs_factor_detail::factor_once(N, multiplier, shadow_proof_mode, context).result;
 }
 
 } // namespace gnfs::siqs
