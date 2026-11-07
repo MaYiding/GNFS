@@ -21,23 +21,31 @@ namespace {
 std::atomic<bool> observing{false};
 std::atomic<size_t> caller_requests{0};
 std::atomic<size_t> worker_requests{0};
-std::atomic<size_t> failing_worker_bytes{0};
+std::atomic<size_t> failing_bytes{0};
 std::atomic<bool> allocation_failure_triggered{false};
 std::thread::id caller;
+bool fail_on_caller = false;
+std::chrono::steady_clock::time_point pause_caller_until{};
 size_t caller_bytes = 0; // Zero observes all caller allocations.
 size_t worker_bytes = 0;
 
 void* allocate(size_t bytes) {
     if (observing.load(std::memory_order_relaxed)) {
-        if (std::this_thread::get_id() == caller) {
-            if (caller_bytes == 0 || bytes == caller_bytes)
+        const bool on_caller = std::this_thread::get_id() == caller;
+        if (on_caller) {
+            if (caller_bytes == 0 || bytes == caller_bytes) {
                 caller_requests.fetch_add(1, std::memory_order_relaxed);
+                if (pause_caller_until != std::chrono::steady_clock::time_point{})
+                    std::this_thread::sleep_until(pause_caller_until);
+            }
         } else {
             if (bytes == worker_bytes)
                 worker_requests.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (on_caller == fail_on_caller) {
             size_t expected = bytes;
-            if (bytes != 0 && failing_worker_bytes.compare_exchange_strong(
-                                  expected, 0, std::memory_order_relaxed)) {
+            if (bytes != 0 &&
+                failing_bytes.compare_exchange_strong(expected, 0, std::memory_order_relaxed)) {
                 allocation_failure_triggered.store(true, std::memory_order_relaxed);
                 throw std::bad_alloc{};
             }
@@ -50,11 +58,12 @@ void* allocate(size_t bytes) {
 
 class ScopedObserver final {
 public:
-    explicit ScopedObserver(size_t fail_bytes = 0) noexcept {
+    explicit ScopedObserver(size_t fail_bytes = 0, bool fail_caller = false) noexcept {
+        fail_on_caller = fail_caller;
         caller = std::this_thread::get_id();
         caller_requests.store(0, std::memory_order_relaxed);
         worker_requests.store(0, std::memory_order_relaxed);
-        failing_worker_bytes.store(fail_bytes, std::memory_order_relaxed);
+        failing_bytes.store(fail_bytes, std::memory_order_relaxed);
         allocation_failure_triggered.store(false, std::memory_order_relaxed);
         observing.store(true, std::memory_order_relaxed);
     }
@@ -156,6 +165,46 @@ int main() {
             rejected = true;
         }
         GNFS_TEST_CHECK(rejected);
+    }
+
+    {
+        const FactorAttemptContext context{Clock::now(), 60, false, 3, params};
+        const size_t fb_bytes = (static_cast<size_t>(params.fb_size) + 1) * sizeof(FBPrime);
+        const auto outcome = [&] {
+            ScopedObserver observer(fb_bytes, /*fail_caller=*/true);
+            return factor_multiplier_portfolio(n, SIQSShadowProofMode::off, context, 3);
+        }();
+        GNFS_TEST_CHECK(allocation_failure_triggered.load());
+        GNFS_TEST_CHECK(outcome.attempts_started == 1 && outcome.stop == Stop::attempt_exception &&
+                        !outcome.result && outcome.failure && !outcome.attempts[0].terminal);
+        bool bad_alloc = false;
+        try {
+            std::rethrow_exception(outcome.failure);
+        } catch (const std::bad_alloc&) {
+            bad_alloc = true;
+        }
+        GNFS_TEST_CHECK(bad_alloc);
+    }
+
+    // Hold the first real factor-base reserve until the shared deadline. The
+    // attempt has already entered, independently of factor-base construction speed.
+    {
+        caller_bytes = (static_cast<size_t>(params.fb_size) + 1) * sizeof(FBPrime);
+        ScopedStderrCapture capture;
+        const FactorAttemptContext context{Clock::now(), 1, false, 3, params};
+        pause_caller_until = context.started + std::chrono::seconds(context.max_seconds);
+        const auto outcome = [&] {
+            ScopedObserver observer;
+            return factor_multiplier_portfolio(n, SIQSShadowProofMode::observe, context, 1);
+        }();
+        pause_caller_until = {};
+        const auto log = capture.finish();
+        GNFS_TEST_CHECK(caller_requests.load() == 1 && outcome.attempts_started == 1);
+        GNFS_TEST_CHECK(outcome.attempts[0].terminal ==
+                        FactorAttemptTerminal::factor_base_budget_exhausted);
+        GNFS_TEST_CHECK(outcome.stop == Stop::budget_exhausted && !outcome.result &&
+                        !outcome.failure);
+        GNFS_TEST_CHECK(outcome.any_observe_record_committed == false && log.empty());
     }
 
     // Match the native initial relation reserve and each worker's sieve buffer.
