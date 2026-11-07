@@ -172,9 +172,7 @@ public:
         }
         rat_index_.clear();
         alg_index_.clear();
-        // Reserve exact sizes to avoid rehashing during build.
-        rat_index_.reserve(rational_.size());
-        alg_index_.reserve(algebraic_.size());
+        reserve_index_buckets();
 
         for (size_t i = 0; i < rational_.size(); ++i) {
             rat_index_[rational_[i].p] = static_cast<uint32_t>(i);
@@ -228,6 +226,13 @@ private:
     // 快速查找表
     std::unordered_map<uint32_t, uint32_t> rat_index_; // p -> index
     std::unordered_map<uint64_t, uint32_t> alg_index_; // (p << 32 | r) -> index
+
+    friend class FactorBaseBuilder;
+
+    void reserve_index_buckets() {
+        rat_index_.reserve(rational_.size());
+        alg_index_.reserve(algebraic_.size());
+    }
 };
 
 /// 计算对数值（用于筛法的定点数）
