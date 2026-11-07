@@ -619,8 +619,10 @@ fresh-process replay. Use a new snapshot name for each capture.
 ```
 
 The runner validates the usual six capture records and the scale gate before
-publishing `siqs-256a-example/rows.bin` under its build directory. A competing
-or repeated capture cannot replace an existing snapshot. The snapshot holds
+publishing `siqs-256a-example.bin` under its build directory. Publication creates
+a hard link to the validated file, so the build filesystem must support hard links.
+If any file, directory, or symlink already occupies the destination name at
+publication, the capture fails and preserves that entry. The snapshot holds
 up to 4MiB and uses the V1 canonical post-merge row wire. Its header binds
 the fixed profile, both moduli, the ordered factor base, the trim policy, and
 the frozen plan, raw corpus, source, pretrim, and selected-row fingerprints.
@@ -635,10 +637,12 @@ within the sparse selector's bounded exact solver. The snapshot covers the
 selected matrix and its source IDs. Rebuilding the sieve or discarded rows
 requires the original capture.
 
-The manual regression checks a captured file and a set of damaged copies.
+The manual regressions check damaged snapshots, capture failures, and concurrent
+publication at an occupied name.
 
 ```bash
-python3 tests/test_siqs_256a_row_replay.py build/test_siqs_256a_scale_profile build/siqs-256a-example/rows.bin
+python3 tests/test_siqs_256a_row_replay.py build/test_siqs_256a_scale_profile build/siqs-256a-example.bin
+python3 tests/test_siqs_256a_snapshot_publication.py build
 ```
 
 ## Current Fixed-Plan Evidence

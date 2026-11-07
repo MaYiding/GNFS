@@ -6535,8 +6535,7 @@ run_siqs_256a_profile_process() {
     return 0
 }
 
-# Rename a private, nonempty directory after the stock transcript validator succeeds.
-# Concurrent attempts cannot replace an already published nonempty snapshot.
+# A hard link publishes the validated file atomically and fails if the name is taken.
 write_siqs_256a_snapshot() {
     local workers="$1" destination="$2" staging
     if [[ -e "$destination" || -L "$destination" ]]; then
@@ -6548,12 +6547,12 @@ write_siqs_256a_snapshot() {
         run_siqs_256a_profile_process "$workers" --stage-rows "${staging}/snapshot" || return 1
         [[ -f "${staging}/snapshot/rows.bin" && -s "${staging}/snapshot/rows.bin" &&
            ! -L "${staging}/snapshot/rows.bin" ]] || { log_fail "missing staged rows"; return 1; }
-        python3 - "${staging}/snapshot" "$destination" <<'PYTHON' || return 1
+        python3 - "${staging}/snapshot/rows.bin" "$destination" <<'PYTHON' || return 1
 import os
 import sys
 
 try:
-    os.rename(sys.argv[1], sys.argv[2])
+    os.link(sys.argv[1], sys.argv[2])
 except OSError as error:
     sys.exit(f"Cannot publish V3 row snapshot: {error}")
 PYTHON
@@ -9832,7 +9831,7 @@ case "$MODE" in
         ;;
 
     profile-siqs-256a)
-        local _scale_workers="" _snapshot_name="" _snapshot_dir="" _replay=0
+        local _scale_workers="" _snapshot_name="" _snapshot_file="" _replay=0
         if (( ${#MODE_ARGS[@]} == 2 )) && [[ "${MODE_ARGS[1]}" == "--replay" ]]; then
             _replay=1
             _snapshot_name="${MODE_ARGS[2]}"
@@ -9852,7 +9851,7 @@ case "$MODE" in
         if (( ${#MODE_ARGS[@]} > 1 )); then
             [[ "$_snapshot_name" =~ '^[a-zA-Z0-9_-]{1,64}$' ]] ||
                 usage_error "snapshot name must contain 1-64 letters, digits, underscores or hyphens"
-            _snapshot_dir="${BUILD_DIR}/siqs-256a-${_snapshot_name}"
+            _snapshot_file="${BUILD_DIR}/siqs-256a-${_snapshot_name}.bin"
         fi
         if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
             log_fail "profile-siqs-256a 只接受 Release 构建 (传入: ${BUILD_TYPE})"
@@ -9877,20 +9876,19 @@ case "$MODE" in
         fi
         do_build test_siqs_256a_scale_profile gnfs_test_process_supervisor
         if (( _replay )); then
-            [[ -d "$_snapshot_dir" && ! -L "$_snapshot_dir" &&
-               -f "${_snapshot_dir}/rows.bin" && ! -L "${_snapshot_dir}/rows.bin" ]] ||
+            [[ -f "$_snapshot_file" && ! -L "$_snapshot_file" ]] ||
                 usage_error "missing V3 row snapshot: ${_snapshot_name}"
             local replay_status=0
-            run_with_timeout 60 "${BUILD_DIR}/test_siqs_256a_scale_profile" --replay-rows "${_snapshot_dir}/rows.bin" || replay_status=$?
+            run_with_timeout 60 "${BUILD_DIR}/test_siqs_256a_scale_profile" --replay-rows "$_snapshot_file" || replay_status=$?
             printf '%s\n' "$RUN_OUTPUT"
             exit "$replay_status"
         fi
         log_header "SIQS 固定 50 位 256x32 A scale profile"
         log_info "Release/NDEBUG；fresh process；workers=${_scale_workers}；timeout=1800s"
-        if [[ -n "$_snapshot_dir" ]]; then
-            write_siqs_256a_snapshot "$_scale_workers" "$_snapshot_dir" || exit 1
+        if [[ -n "$_snapshot_file" ]]; then
+            write_siqs_256a_snapshot "$_scale_workers" "$_snapshot_file" || exit 1
             printf '%s\n' "$SIQS_256A_PROFILE_OUTPUT"
-            log_success "V3 snapshot: ${_snapshot_dir}/rows.bin"
+            log_success "V3 snapshot: $_snapshot_file"
         elif run_siqs_256a_profile_process "$_scale_workers"; then
             printf '%s\n' "$SIQS_256A_PROFILE_OUTPUT"
             log_success "严格六行 V3 transcript、全守恒与 solver_ready/RSS scale 证据均有效"
