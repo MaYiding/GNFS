@@ -9,6 +9,7 @@
 
 #include "distributed_sieve_bound_work_internal.hpp"
 #include "distributed_sieve_execution_policy_internal.hpp"
+#include "distributed_sieve_work_identity_codec_internal.hpp"
 #include "distributed_sieve_worker_chunk_internal.hpp"
 #include "distributed_sieve_worker_execution_internal.hpp"
 #include "distributed_sieve_worker_runtime_internal.hpp"
@@ -287,6 +288,39 @@ void test_runtime_rehydration_and_real_chunk_determinism() {
     std::cout << "PASS (" << first.relations.size() << " relations)\n";
 }
 
+void test_rehydrate_only_special_q_factor_base() {
+    // f(13) = 185. There are no roots modulo 2 and two roots modulo 3.
+    const PolynomialContext polynomial(Integer(185), {Integer(3), Integer(1), Integer(1)},
+                                       Integer(13));
+    CHECK(polynomial.verify());
+    FactorBaseBuilder::Options options;
+    options.rational_bound = 2;
+    options.algebraic_bound = 2;
+    options.special_q_bound = 3;
+    options.log_scale = 16;
+    options.parallel = false;
+    const auto base = FactorBaseBuilder::build(polynomial, options);
+    CHECK(base.sieve_algebraic_count() == 0);
+    CHECK(base.algebraic_count() == 2);
+    const auto identity = make_identity(polynomial, base, frozen_policy(), 0, 2);
+
+    namespace codec = sieve::distributed_sieve_work_identity_codec_detail;
+    const auto encoded = codec::encode_distributed_sieve_work_identity_v1(identity);
+    CHECK(encoded);
+    const auto decoded = codec::decode_distributed_sieve_work_identity_v1(*encoded.bytes);
+    CHECK(decoded);
+    CHECK(decoded.identity->factor_base.sieve_algebraic_count == 0);
+    const auto runtime =
+        execution::rehydrate_distributed_sieve_worker_runtime_v1(*decoded.identity);
+    CHECK(runtime);
+    const auto& restored = runtime.runtime->factor_base;
+    CHECK(restored.has_explicit_sieve_algebraic_count());
+    CHECK(restored.sieve_algebraic_count() == 0);
+    CHECK(restored.algebraic_count() == 2);
+    CHECK(restored.find_special_q(3, 0) == 0);
+    CHECK(restored.find_special_q(3, 2) == 1);
+}
+
 void test_sq_and_relation_cap_boundary_priority() {
     std::cout << "[SQ/relation cap boundary priority] ... " << std::flush;
     auto polynomial = seeded_polynomial();
@@ -539,6 +573,7 @@ int main(int argc, char** argv) {
 #endif
     try {
         CHECK(argc >= 1);
+        test_rehydrate_only_special_q_factor_base();
         test_runtime_rehydration_and_real_chunk_determinism();
         test_sq_and_relation_cap_boundary_priority();
         test_sink_failure_is_terminal_and_preserves_residue_signal();
