@@ -2954,6 +2954,7 @@ try:
     remainder_record = record
     remainder_comparison_replacements = {
         "max_special_q": "5",
+        "max_special_q_batch_workers": "4",
         "special_q_processed": "5",
         "special_q_batch_worker_limit": "4",
         "special_q_batch_peak_workers": "4",
@@ -3434,6 +3435,13 @@ self_check_50d_probe_contracts() {
     comparison_fixture+=" timing_scope=fresh_process_per_route"
     comparison_fixture+=" rss_scope=fresh_process_per_route"
     comparison_fixture+=" timing_asserted=false rss_asserted=false promotion=false"
+
+    # A one-worker measurement must also accept the internal four-worker remainder fixture.
+    validate_50d_route_comparison_v2_schema \
+        "${comparison_fixture/max_special_q_batch_workers=4/max_special_q_batch_workers=1}" \
+        "50 位 comparison 单 worker 合同 fixture" \
+        "${legacy_fixture_record/max_special_q_batch_workers=4/max_special_q_batch_workers=1}" \
+        "${fixture_record/max_special_q_batch_workers=4/max_special_q_batch_workers=1}" || return 1
 
     local comparison_contract_dir comparison_contract_artifact
     if ! comparison_contract_dir=$(mktemp -d \
@@ -3988,7 +3996,7 @@ run_50d_route_comparison() {
         log_fail "无法失效上一轮 50 位 comparison JSON: ${comparison_artifact_path}"
         return 1
     fi
-    do_build
+    do_build test_structured_ooc_50d_probe gnfs_test_process_supervisor
     if [[ ! -x "${BUILD_DIR}/test_structured_ooc_50d_probe" ]]; then
         log_fail "50 位探针二进制不存在: ${BUILD_DIR}/test_structured_ooc_50d_probe"
         return 1
@@ -8784,10 +8792,9 @@ case "$MODE" in
             log_fail "用法: $0 check-50d-contracts"
             exit 1
         fi
-        do_build
+        do_build test_structured_ooc_50d_probe gnfs_test_process_supervisor
         do_50d_probe_contracts || true
         show_summary
-        (( FAILED_TESTS == 0 ))
         ;;
 
     structured-ooc-rss)

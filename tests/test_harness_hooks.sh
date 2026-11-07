@@ -754,6 +754,10 @@ def check_fail_fast():
 
 
 def check_missing_selections():
+    result, report = invoke(['--no-build', 'check-50d-contracts'], empty=True, stale_report=True)
+    require(result.returncode == 1 and report['failed'] == 1 and report['passed'] == 0 and
+            report['tests'][0]['name'] == 'test_structured_ooc_50d_contract',
+            f'missing 50-digit probe left an incorrect report: {report!r}, {result.stdout}')
     result, report = invoke(['--no-build', 'module', 'factor_base'], empty=True)
     require(result.returncode != 0 and report['failed'] == 3 and report['skipped'] == 0,
             f'empty required module succeeded: {report!r}, {result.stdout}')
