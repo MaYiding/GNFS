@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -95,15 +94,15 @@ void test_env_parser() {
 
     // Unset
     unsetenv("GNFS_COFACTOR_BATCH_SIZE");
-    assert(batch_trial_size_from_env() == 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
 
     // Empty string
     setenv("GNFS_COFACTOR_BATCH_SIZE", "", 1);
-    assert(batch_trial_size_from_env() == 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
 
     // Junk
     setenv("GNFS_COFACTOR_BATCH_SIZE", "abc", 1);
-    assert(batch_trial_size_from_env() == 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
 
     // Numeric prefixes followed by non-whitespace are invalid. Accepting
     // these would silently turn a malformed deployment value into opt-in.
@@ -118,26 +117,26 @@ void test_env_parser() {
 
     // Zero / one (treated as disabled)
     setenv("GNFS_COFACTOR_BATCH_SIZE", "0", 1);
-    assert(batch_trial_size_from_env() == 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
     setenv("GNFS_COFACTOR_BATCH_SIZE", "1", 1);
-    assert(batch_trial_size_from_env() == 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
 
     // A leading minus must remain disabled. strtoul treats "-2" as a large
     // unsigned value, so this guards the parser against accidental opt-in.
     setenv("GNFS_COFACTOR_BATCH_SIZE", "-2", 1);
-    assert(batch_trial_size_from_env() == 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
     setenv("GNFS_COFACTOR_BATCH_SIZE", "  -2", 1);
-    assert(batch_trial_size_from_env() == 1);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 1);
 
     // Normal values
     setenv("GNFS_COFACTOR_BATCH_SIZE", "2", 1);
-    assert(batch_trial_size_from_env() == 2);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 2);
     setenv("GNFS_COFACTOR_BATCH_SIZE", "16", 1);
-    assert(batch_trial_size_from_env() == 16);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 16);
 
     // Overflow / cap
     setenv("GNFS_COFACTOR_BATCH_SIZE", "999999", 1);
-    assert(batch_trial_size_from_env() == 4096);
+    GNFS_TEST_CHECK(batch_trial_size_from_env() == 4096);
 
     unsetenv("GNFS_COFACTOR_BATCH_SIZE");
 
@@ -159,9 +158,9 @@ void test_k1_parity_single() {
         BatchTrialResult br = batch_trial_divide(in, prime_bound);
         NaiveResult nr = naive_trial_divide(Integer{s}, prime_bound);
 
-        assert(br.size() == 1);
-        assert(br.is_smooth[0] == nr.is_smooth);
-        assert(br.remaining[0].compare(nr.remaining) == 0);
+        GNFS_TEST_CHECK(br.size() == 1);
+        GNFS_TEST_CHECK(br.is_smooth[0] == nr.is_smooth);
+        GNFS_TEST_CHECK(br.remaining[0].compare(nr.remaining) == 0);
     }
 
     std::cout << " PASS\n";
@@ -188,18 +187,18 @@ void test_k4_mixed() {
 
     BatchTrialResult br = batch_trial_divide(in, prime_bound);
 
-    assert(br.size() == 4);
-    assert(br.is_smooth[0] == true);
-    assert(br.remaining[0].to_uint64() == 1);
+    GNFS_TEST_CHECK(br.size() == 4);
+    GNFS_TEST_CHECK(br.is_smooth[0] == true);
+    GNFS_TEST_CHECK(br.remaining[0].to_uint64() == 1);
 
-    assert(br.is_smooth[1] == true);
-    assert(br.remaining[1].to_uint64() == 1);
+    GNFS_TEST_CHECK(br.is_smooth[1] == true);
+    GNFS_TEST_CHECK(br.remaining[1].to_uint64() == 1);
 
-    assert(br.is_smooth[2] == false);
-    assert(br.remaining[2].to_uint64() == 101);
+    GNFS_TEST_CHECK(br.is_smooth[2] == false);
+    GNFS_TEST_CHECK(br.remaining[2].to_uint64() == 101);
 
-    assert(br.is_smooth[3] == false);
-    assert(br.remaining[3].to_uint64() == 9973);
+    GNFS_TEST_CHECK(br.is_smooth[3] == false);
+    GNFS_TEST_CHECK(br.remaining[3].to_uint64() == 9973);
 
     std::cout << " PASS\n";
 }
@@ -213,10 +212,10 @@ void test_empty_input() {
     std::vector<Integer> in;
     BatchTrialResult br = batch_trial_divide(in, 100);
 
-    assert(br.empty());
-    assert(br.size() == 0);
-    assert(br.is_smooth.empty());
-    assert(br.remaining.empty());
+    GNFS_TEST_CHECK(br.empty());
+    GNFS_TEST_CHECK(br.size() == 0);
+    GNFS_TEST_CHECK(br.is_smooth.empty());
+    GNFS_TEST_CHECK(br.remaining.empty());
 
     std::cout << " PASS\n";
 }
@@ -238,8 +237,8 @@ void test_all_smooth() {
     BatchTrialResult br = batch_trial_divide(in, prime_bound);
 
     for (size_t i = 0; i < br.size(); ++i) {
-        assert(br.is_smooth[i] == true);
-        assert(br.remaining[i].to_uint64() == 1);
+        GNFS_TEST_CHECK(br.is_smooth[i] == true);
+        GNFS_TEST_CHECK(br.remaining[i].to_uint64() == 1);
     }
 
     std::cout << " PASS\n";
@@ -262,12 +261,12 @@ void test_all_nonsmooth() {
     BatchTrialResult br = batch_trial_divide(in, prime_bound);
 
     for (size_t i = 0; i < br.size(); ++i) {
-        assert(br.is_smooth[i] == false);
+        GNFS_TEST_CHECK(br.is_smooth[i] == false);
     }
-    assert(br.remaining[0].to_uint64() == 101);
-    assert(br.remaining[1].to_uint64() == 103);
-    assert(br.remaining[2].to_uint64() == 211);
-    assert(br.remaining[3].to_uint64() == 9973);
+    GNFS_TEST_CHECK(br.remaining[0].to_uint64() == 101);
+    GNFS_TEST_CHECK(br.remaining[1].to_uint64() == 103);
+    GNFS_TEST_CHECK(br.remaining[2].to_uint64() == 211);
+    GNFS_TEST_CHECK(br.remaining[3].to_uint64() == 9973);
 
     std::cout << " PASS\n";
 }
@@ -286,14 +285,14 @@ void test_zero_and_one() {
     BatchTrialResult br = batch_trial_divide(in, 100);
 
     // 0 → treat as smooth, remaining becomes 1
-    assert(br.is_smooth[0] == true);
-    assert(br.remaining[0].to_uint64() == 1);
+    GNFS_TEST_CHECK(br.is_smooth[0] == true);
+    GNFS_TEST_CHECK(br.remaining[0].to_uint64() == 1);
     // 1 → smooth, remaining 1
-    assert(br.is_smooth[1] == true);
-    assert(br.remaining[1].to_uint64() == 1);
+    GNFS_TEST_CHECK(br.is_smooth[1] == true);
+    GNFS_TEST_CHECK(br.remaining[1].to_uint64() == 1);
     // 2 → smooth, remaining 1
-    assert(br.is_smooth[2] == true);
-    assert(br.remaining[2].to_uint64() == 1);
+    GNFS_TEST_CHECK(br.is_smooth[2] == true);
+    GNFS_TEST_CHECK(br.remaining[2].to_uint64() == 1);
 
     std::cout << " PASS\n";
 }
@@ -320,13 +319,13 @@ void test_large_k128() {
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    assert(br.size() == K);
+    GNFS_TEST_CHECK(br.size() == K);
 
     // Spot-check each against naive.
     for (size_t i = 0; i < K; ++i) {
         NaiveResult nr = naive_trial_divide(in[i], prime_bound);
-        assert(br.is_smooth[i] == nr.is_smooth);
-        assert(br.remaining[i].compare(nr.remaining) == 0);
+        GNFS_TEST_CHECK(br.is_smooth[i] == nr.is_smooth);
+        GNFS_TEST_CHECK(br.remaining[i].compare(nr.remaining) == 0);
     }
 
     std::cout << " PASS (" << ms << " ms)\n";
@@ -354,11 +353,11 @@ void test_big_integer_path() {
     std::vector<Integer> in = {smooth_big, nonsmooth_big};
     BatchTrialResult br = batch_trial_divide(in, 100);
 
-    assert(br.is_smooth[0] == true);
-    assert(br.remaining[0].to_uint64() == 1);
+    GNFS_TEST_CHECK(br.is_smooth[0] == true);
+    GNFS_TEST_CHECK(br.remaining[0].to_uint64() == 1);
 
-    assert(br.is_smooth[1] == false);
-    assert(br.remaining[1].to_uint64() == 9973);
+    GNFS_TEST_CHECK(br.is_smooth[1] == false);
+    GNFS_TEST_CHECK(br.remaining[1].to_uint64() == 9973);
 
     std::cout << " PASS\n";
 }
@@ -486,14 +485,14 @@ void test_degenerate_bound() {
     };
 
     BatchTrialResult br0 = batch_trial_divide(in, 0);
-    assert(br0.size() == 2);
-    assert(br0.is_smooth[0] == true); // 1 trivially smooth
-    assert(br0.remaining[0].to_uint64() == 1);
-    assert(br0.is_smooth[1] == false); // nothing stripped
-    assert(br0.remaining[1].to_uint64() == 6);
+    GNFS_TEST_CHECK(br0.size() == 2);
+    GNFS_TEST_CHECK(br0.is_smooth[0] == true); // 1 trivially smooth
+    GNFS_TEST_CHECK(br0.remaining[0].to_uint64() == 1);
+    GNFS_TEST_CHECK(br0.is_smooth[1] == false); // nothing stripped
+    GNFS_TEST_CHECK(br0.remaining[1].to_uint64() == 6);
 
     BatchTrialResult br1 = batch_trial_divide(in, 1);
-    assert(br1.is_smooth[1] == false);
+    GNFS_TEST_CHECK(br1.is_smooth[1] == false);
 
     std::cout << " PASS\n";
 }
@@ -510,11 +509,11 @@ void test_negative_input() {
     std::vector<Integer> in = {neg30, neg101};
     BatchTrialResult br = batch_trial_divide(in, 100);
 
-    assert(br.is_smooth[0] == true); // |-30| = 30 = 2*3*5
-    assert(br.remaining[0].to_uint64() == 1);
+    GNFS_TEST_CHECK(br.is_smooth[0] == true); // |-30| = 30 = 2*3*5
+    GNFS_TEST_CHECK(br.remaining[0].to_uint64() == 1);
 
-    assert(br.is_smooth[1] == false); // |-101| = 101 > 100
-    assert(br.remaining[1].to_uint64() == 101);
+    GNFS_TEST_CHECK(br.is_smooth[1] == false); // |-101| = 101 > 100
+    GNFS_TEST_CHECK(br.remaining[1].to_uint64() == 101);
 
     std::cout << " PASS\n";
 }
@@ -543,7 +542,7 @@ void test_random_soak() {
                 std::cerr << "\nMISMATCH iter=" << iter << " i=" << i << " in=" << in[i].to_string()
                           << " br=(" << br.is_smooth[i] << "," << br.remaining[i].to_string() << ")"
                           << " nr=(" << nr.is_smooth << "," << nr.remaining.to_string() << ")\n";
-                assert(false);
+                throw std::runtime_error("batch trial residual differs from naive trial division");
             }
         }
     }
