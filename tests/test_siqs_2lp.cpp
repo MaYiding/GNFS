@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <mutex>
@@ -14,7 +15,6 @@
 #include <optional>
 #include <random>
 #include <stdexcept>
-#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -549,46 +549,55 @@ collect_native_relations_with_seven(const char* cofactor_text,
     return relation;
 }
 
-[[nodiscard]] SIQSShadowTwoLargePrimeCaptureWorkerSet
-make_parallel_capture_workers(size_t worker_count) {
+constexpr int parallel_capture_modulus = 2041;
+
+[[nodiscard]] std::array<SIQSPoly, 3> parallel_capture_polynomials() {
+    // At x=0, B^2 - 2041 is -2^7 * 15, -2^5 * 21, or 2^4 * 35.
+    // At x=-1 each odd residual exceeds the supplemental bound of 100.
+    constexpr std::array<int, 3> shifts{11, 37, 51};
+    std::array<SIQSPoly, 3> polynomials;
+    for (size_t i = 0; i < shifts.size(); ++i) {
+        polynomials[i].A = Integer(1);
+        polynomials[i].B = Integer(shifts[i]);
+        polynomials[i].solns = {{0, 0}, {1, 1}};
+    }
+    return polynomials;
+}
+
+[[nodiscard]] SIQSShadowTwoLargePrimeCaptureWorkerSet make_parallel_capture_workers(
+    size_t worker_count,
+    const std::array<SIQSPoly, 3>& polynomials = parallel_capture_polynomials()) {
     SIQSShadowTwoLargePrimeCaptureWorkerSet workers(SIQSShadowTwoLargePrimeCaptureWorkerSetConfig{
         worker_count,
         SIQSShadowTwoLargePrimeCaptureConfig{100, {8, 1024}},
     });
-
-    constexpr std::array<std::pair<uint64_t, uint64_t>, 3> relations{{
-        {15, 2},
-        {21, 3},
-        {35, 5},
-    }};
-    constexpr SIQSLiveSieveRelationPayloadShape payload{1, 2, 1, 0};
-    std::vector<uint8_t> captured(relations.size(), 0);
-    std::vector<std::thread> threads;
-    threads.reserve(worker_count);
+    const Integer modulus(parallel_capture_modulus);
+    const std::vector<FBPrime> factor_base{{0, 0, 0}, {2, 1, 1}};
+    std::vector<std::future<size_t>> results;
+    results.reserve(worker_count);
     for (size_t worker = 0; worker < worker_count; ++worker) {
-        auto* sink = &workers.worker_sink(worker);
-        threads.emplace_back([sink, worker, &captured, &relations, payload, worker_count] {
-            for (size_t index = worker; index < relations.size(); index += worker_count) {
-                const auto [cofactor, value] = relations[index];
-                captured[index] =
-                    static_cast<uint8_t>(sink->try_capture(cofactor, payload, [cofactor, value] {
-                        return make_parallel_capture_relation(cofactor, value);
-                    }));
+        results.push_back(std::async(std::launch::async, [&, worker] {
+            std::vector<SIQSRelation> legacy;
+            std::mutex legacy_mutex;
+            std::vector<uint8_t> sieve_buffer;
+            std::vector<uint8_t> exponent_buffer(factor_base.size(), 0);
+            auto& sink = workers.worker_sink(worker);
+            for (size_t index = worker; index < polynomials.size(); index += worker_count) {
+                sieve_polynomial(polynomials[index], modulus, factor_base, 1, 0, 3, 100, 0, legacy,
+                                 legacy_mutex, sieve_buffer, exponent_buffer, nullptr, &sink);
             }
-        });
+            return legacy.size();
+        }));
     }
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    for (const uint8_t did_capture : captured) {
-        CHECK(did_capture != 0);
+    for (auto& result : results) {
+        CHECK(result.get() == 0);
     }
     const auto snapshots = workers.snapshots();
     CHECK(snapshots.size() == worker_count);
     for (size_t worker = 0; worker < worker_count && worker < snapshots.size(); ++worker) {
         const size_t expected_count =
-            worker < relations.size()
-                ? (relations.size() - worker + worker_count - 1) / worker_count
+            worker < polynomials.size()
+                ? (polynomials.size() - worker + worker_count - 1) / worker_count
                 : 0;
         CHECK(snapshots[worker].captured_relations == expected_count);
     }
@@ -668,8 +677,8 @@ void test_parallel_capture_worker_order_and_cycle_determinism() {
     const auto materialize = [](size_t worker_count) {
         auto workers = make_parallel_capture_workers(worker_count);
         return materialize_siqs_two_large_prime_worker_capture(
-            workers, 2, 100, Integer(97), TwoLargePrimeCycleBasisLimits{16, 16, 64},
-            split_cofactor_64);
+            workers, 2, 100, Integer(parallel_capture_modulus),
+            TwoLargePrimeCycleBasisLimits{16, 16, 64}, split_cofactor_64);
     };
 
     auto one_worker = materialize(1);
@@ -685,9 +694,19 @@ void test_parallel_capture_worker_order_and_cycle_determinism() {
         CHECK(one_worker.capture->raw_relations.size() == 3);
         CHECK(two_workers.capture->raw_relations.size() == 3);
         CHECK(four_workers.capture->raw_relations.size() == 3);
-        CHECK(two_workers.capture->raw_relations[0].large_prime == 15);
-        CHECK(two_workers.capture->raw_relations[1].large_prime == 21);
-        CHECK(two_workers.capture->raw_relations[2].large_prime == 35);
+        if (two_workers.capture->raw_relations.size() == 3) {
+            CHECK(two_workers.capture->raw_relations[0].large_prime == 15);
+            CHECK(two_workers.capture->raw_relations[1].large_prime == 21);
+            CHECK(two_workers.capture->raw_relations[2].large_prime == 35);
+        }
+        CHECK(two_workers.capture->materialized_cycles.size() == 1);
+        if (two_workers.capture->materialized_cycles.size() == 1) {
+            const auto& cycle = two_workers.capture->materialized_cycles.front();
+            CHECK(cycle.value_modulus == Integer(347));
+            CHECK(!cycle.negative);
+            CHECK(cycle.factor_base_exponents == std::vector<uint32_t>({0, 16}));
+            CHECK(cycle.large_prime_square_roots == std::vector<uint64_t>({3, 5, 7}));
+        }
     }
 }
 
@@ -698,6 +717,11 @@ void test_parallel_capture_fail_closed_and_bounded_stop_is_invalid() {
                 0, SIQSShadowTwoLargePrimeCaptureConfig{100, {8, 1024}}});
         (void)workers;
     }));
+
+    auto invalid_polynomials = parallel_capture_polynomials();
+    invalid_polynomials[1].solns.clear();
+    CHECK(throws_as<std::invalid_argument>(
+        [&] { (void)make_parallel_capture_workers(2, invalid_polynomials); }));
 
     auto workers = make_parallel_capture_workers(2);
     CHECK(throws_as<std::out_of_range>([&] { (void)workers.worker_sink(2); }));
