@@ -3,6 +3,7 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/siqs/post_merge_dependency.hpp>
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/shadow_proof_runner.hpp>
 #include <gnfs/util/process.hpp>
@@ -495,21 +496,63 @@ void test_matrix_status_mapping_contract() {
 
 [[nodiscard]] bool dependency_is_zero(const std::vector<SIQSShadowRow>& rows,
                                       const std::vector<size_t>& dependency, size_t column_count) {
+    if (column_count == 0 || dependency.empty()) {
+        return false;
+    }
     std::vector<uint8_t> parity(column_count, uint8_t{0});
     for (const size_t row_index : dependency) {
         if (row_index >= rows.size()) {
             return false;
+        }
+        if (rows[row_index].row.q_negative) {
+            parity[0] ^= uint8_t{1};
         }
         for (const SIQSFactorPower& power : rows[row_index].row.factor_powers) {
             if ((power.exponent & 1U) != 0) {
                 if (power.factor_base_index == 0 || power.factor_base_index >= column_count) {
                     return false;
                 }
-                parity[power.factor_base_index - 1] ^= uint8_t{1};
+                parity[power.factor_base_index] ^= uint8_t{1};
             }
         }
     }
     return std::all_of(parity.begin(), parity.end(), [](uint8_t bit) { return bit == 0; });
+}
+
+void test_signed_sparse_dependency_extracts_factors() {
+    auto first = make_zero_shadow_row(0);
+    auto second = make_zero_shadow_row(1);
+    // 8 and 18 are distinct square roots of -1 modulo 65.
+    first.row.x_modulus = Integer(8);
+    second.row.x_modulus = Integer(18);
+    first.row.q_negative = true;
+    second.row.q_negative = true;
+    const std::vector<SIQSShadowRow> rows{first, second};
+    CHECK(!dependency_is_zero(rows, {0}, 1));
+    CHECK(dependency_is_zero(rows, {0, 1}, 1));
+
+    const std::vector<uint32_t> factor_base{0};
+    const Integer modulus(65);
+    SIQSShadowMatrixOptions options;
+    options.backend = SIQSShadowMatrixBackend::sparse_only;
+    const auto solved = solve_siqs_shadow_matrix(rows, factor_base, modulus, options);
+    CHECK(solved.solution().has_value());
+    if (!solved.solution()) {
+        return;
+    }
+    const std::vector<std::vector<size_t>> expected{{0, 1}};
+    CHECK(solved.solution()->dependencies == expected);
+    if (solved.solution()->dependencies.size() != 1) {
+        return;
+    }
+    const auto verified = gnfs::siqs::verify_siqs_post_merge_dependency(
+        rows, solved.solution()->dependencies.front(), factor_base, modulus);
+    const auto extracted = gnfs::siqs::extract_siqs_post_merge_factor(verified, modulus);
+    CHECK(extracted.factors().has_value());
+    if (extracted.factors()) {
+        CHECK(extracted.factors()->factor == Integer(5));
+        CHECK(extracted.factors()->cofactor == Integer(13));
+    }
 }
 
 void test_sparse_dispatch_and_automatic_promotion() {
@@ -1079,6 +1122,7 @@ int main() {
     test_seeded_view_zero_column_boundary();
     test_seeded_empty_view_validation_order();
     test_matrix_status_mapping_contract();
+    test_signed_sparse_dependency_extracts_factors();
     test_sparse_dispatch_and_automatic_promotion();
     test_dense_route_options_contract();
     test_sparse_solver_returns_verified_basis();
