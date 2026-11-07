@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace gnfs::cofactor {
@@ -175,12 +176,18 @@ public:
     /// 对代数侧范数进行试除
     /// @param norm 代数侧范数 |N(a, b)|
     /// @param a, b 用于确定哪个根 r 整除
-    /// @param max_entries 最大遍历条目数 (0 = all)。传 sieve_algebraic_count()
-    ///   可跳过 SQ 范围条目，让 classify_cofactor 处理它们。
+    /// @param max_entries 最大遍历条目数 (0 = all, for legacy callers)
     /// @return 试除结果
     [[nodiscard]] TrialDivisionResult divide_algebraic(Integer norm, int64_t a, uint64_t b,
                                                        size_t max_entries = 0) const {
+        const size_t limit = max_entries == 0 ? fb_.algebraic_count() : max_entries;
+        return divide_algebraic_prefix(std::move(norm), a, b, limit);
+    }
 
+    /// Divide by exactly the available entries in the requested prefix. A
+    /// limit of zero is an empty prefix, including for a special-Q-only base.
+    [[nodiscard]] TrialDivisionResult divide_algebraic_prefix(Integer norm, int64_t a, uint64_t b,
+                                                              size_t prefix_size) const {
         TrialDivisionResult result;
         // Reserve: typical relation has 8-15 distinct alg FB factors.
         result.factor_indices.reserve(16);
@@ -199,8 +206,7 @@ public:
 
         // 对每个代数因子基素理想进行试除
         const auto& algebraics = fb_.algebraic();
-        size_t alg_limit =
-            (max_entries > 0 && max_entries < algebraics.size()) ? max_entries : algebraics.size();
+        const size_t alg_limit = prefix_size < algebraics.size() ? prefix_size : algebraics.size();
 
         // Three-tier fast path: uint64 → uint128 → GMP
         bool use_u64 = norm.fits_uint64();
