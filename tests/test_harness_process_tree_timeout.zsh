@@ -3,6 +3,69 @@
 set -eu
 unsetopt BG_NICE
 
+if [[ "${1:-}" == "--wait-status-contract" ]]; then
+    case_dir="${2:A}"
+    zsh_executable="${3:A}"
+    source "${0:A:h:h}/scripts/lib/process_tree_timeout.zsh"
+
+    # Inject TERM between the real wait and the wrapper's status check.
+    # Observe the helper directly because outer wrappers replay TERM as 143.
+    typeset -a wait_statuses
+    wait() {
+        local wait_status=0
+        builtin wait "$@" || wait_status=$?
+        wait_statuses+=("$wait_status")
+        if (( ${#wait_statuses} == 1 )); then
+            kill -TERM "$$"
+            if (( wait_status > 128 )); then
+                # Let the sender acknowledge TERM before waiting again so a
+                # repeated USR1 cannot interrupt the second wait.
+                for (( i = 0; i < 100; ++i )); do
+                    [[ -e "$case_dir/term-seen" ]] && break
+                    zselect -t 1 || true
+                done
+            fi
+        fi
+        return "$wait_status"
+    }
+    for expected in 0 23 124 125 126 127 128; do
+        wait_statuses=()
+        actual=0
+        gnfs_run_process_supervisor "$case_dir/control" "$zsh_executable" \
+            -fc 'exit "$1"' _ "$expected" || actual=$?
+        if (( actual != expected || GNFS_TEST_PROCESS_FORWARDED_SIGNAL_STATUS != 143 )) ||
+           [[ "${(j:,:)wait_statuses}" != "$expected" ]]; then
+            print -u2 -r -- "post-reap TERM: expected=$expected actual=$actual waits=${(j:,:)wait_statuses}"
+            exit 1
+        fi
+    done
+
+    # A caller's trap can interrupt wait with a platform-specific signal.
+    # The child repeats USR1 until the forwarded TERM ends its cleanup.
+    zmodload zsh/zselect
+    trap ':' USR1
+    usr1_status=$((128 + $(kill -l USR1)))
+    wait_statuses=()
+    actual=0
+    gnfs_run_process_supervisor "$case_dir/control" "$zsh_executable" -fc '
+        case_dir=$2
+        finish_cleanup() { : > "$case_dir/term-seen"; exit 23; }
+        trap finish_cleanup TERM
+        zmodload zsh/zselect || exit 126
+        for (( i = 0; i < 100; ++i )); do
+            kill -USR1 "$1" || exit 126
+            zselect -t 1 || true
+        done
+        exit 126
+    ' _ "$$" "$case_dir" || actual=$?
+    if (( actual != 23 || GNFS_TEST_PROCESS_FORWARDED_SIGNAL_STATUS != 143 )) ||
+       [[ "${(j:,:)wait_statuses}" != "$usr1_status,23" ]]; then
+        print -u2 -r -- "interrupted wait: actual=$actual waits=${(j:,:)wait_statuses}"
+        exit 1
+    fi
+    exit 0
+fi
+
 if [[ "${1:-}" == "--wrapper-signal-contract" ]]; then
     if (( $# != 7 && $# != 9 )); then
         exit 64
@@ -74,6 +137,12 @@ source "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh"
 
 test_directory=$(mktemp -d "${TMPDIR:-/tmp}/gnfs-harness-timeout.XXXXXX")
 trap 'rm -r -- "$test_directory"' EXIT
+wait_stderr="${test_directory}/wait-status.stderr"
+if ! "$zsh_executable" "${0:A}" --wait-status-contract "$test_directory" "$zsh_executable" \
+    2>"$wait_stderr" || [[ -s "$wait_stderr" ]]; then
+    cat -- "$wait_stderr" >&2
+    exit 1
+fi
 typeset -a cancellation_survived_files
 cancellation_survived_files=()
 
