@@ -2,10 +2,15 @@
 #include "gnfs/polynomial/int_polynomial.hpp"
 #include "support/test_check.hpp"
 
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace gnfs::polynomial;
 using gnfs::core::Integer;
@@ -305,6 +310,44 @@ void test_scalar_multiply() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_scalar_multiply_coefficient_alias() {
+    std::cout << "Testing coefficient-aliased scalar multiplication..." << std::endl;
+
+    // Each coefficient can supply the scalar, including a negative, zero, or
+    // multi-limb value. Use exact coefficient products as an independent oracle.
+    std::vector<Integer> coefficients{Integer(2), Integer(-3), Integer(0),
+                                      Integer("18446744073709551617"), Integer(5)};
+    const IntPolynomial original(std::move(coefficients));
+    for (size_t scalar_index = 0; scalar_index < original.coefficients().size(); ++scalar_index) {
+        auto actual = original.clone();
+        const Integer scalar = original[scalar_index];
+        actual *= actual[scalar_index];
+
+        const auto& result = actual;
+        for (size_t i = 0; i < original.coefficients().size(); ++i) {
+            GNFS_TEST_CHECK(result[i].compare(original[i] * scalar) == 0);
+        }
+        GNFS_TEST_CHECK(actual.is_zero() == scalar.is_zero());
+        GNFS_TEST_CHECK(actual.degree() == (scalar.is_zero() ? 0 : original.degree()));
+    }
+
+    // A single coefficient aliases both the polynomial and its scalar.
+    IntPolynomial constant(-7);
+    constant *= constant[0];
+    GNFS_TEST_CHECK(constant[0].to_int64() == 49);
+
+    // A separate scalar must remain unchanged after the operation.
+    auto external = original.clone();
+    const Integer scalar(-11);
+    external *= scalar;
+    GNFS_TEST_CHECK(scalar.to_int64() == -11);
+    for (size_t i = 0; i < original.coefficients().size(); ++i) {
+        GNFS_TEST_CHECK(external[i].compare(original[i] * scalar) == 0);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_polynomial_multiply() {
     std::cout << "Testing polynomial multiplication..." << std::endl;
 
@@ -588,6 +631,7 @@ int main() {
     test_addition();
     test_subtraction();
     test_scalar_multiply();
+    test_scalar_multiply_coefficient_alias();
     test_polynomial_multiply();
     test_derivative();
     test_translate();

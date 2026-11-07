@@ -40,6 +40,8 @@ public:
 public:
     // Find roots of f(x) ≡ 0 mod p using Cantor-Zassenhaus algorithm.
     // Throws std::invalid_argument when p is not prime.
+    // For p >= 64, throws std::runtime_error if f is zero modulo p.
+    // For p < 64, a zero polynomial returns every residue in ascending order.
     // (公开为静态工具,主要给测试用 — p<64 走 brute-force,p≥64 走 CZ
     // 含 random splitting 多根分离)。
     static std::vector<uint32_t> find_roots_mod_p(const PolynomialContext& ctx, uint32_t p);

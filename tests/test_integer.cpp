@@ -1,14 +1,20 @@
 #include "gnfs/core/integer.hpp"
+#include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/core/relation.hpp"
 #include "gnfs/util/safe_math.hpp"
 #include "support/test_check.hpp"
 
 #include <climits>
+#include <cstdint>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace gnfs::core;
 
@@ -87,6 +93,38 @@ void test_comparison() {
     GNFS_TEST_CHECK(a != b);
 
     std::cout << "  Comparison: PASS" << std::endl;
+}
+
+void test_primitive_comparison_boundaries() {
+    std::cout << "Testing primitive comparison boundaries..." << std::endl;
+
+    const uint64_t two63 = uint64_t{1} << 63;
+    const uint64_t max_value = UINT64_MAX;
+
+    // Values outside int64_t must not be narrowed to a negative operand.
+    Integer max_value_integer(max_value);
+    GNFS_TEST_CHECK(max_value_integer == max_value);
+    GNFS_TEST_CHECK(!(max_value_integer != max_value));
+
+    Integer two63_integer(two63);
+    GNFS_TEST_CHECK(two63_integer == two63);
+    GNFS_TEST_CHECK(two63_integer != max_value);
+    GNFS_TEST_CHECK(!(two63_integer == static_cast<int64_t>(-1)));
+
+    // Keep existing signed and small unsigned literal calls unambiguous.
+    Integer zero(0);
+    GNFS_TEST_CHECK(zero == 0);
+    GNFS_TEST_CHECK(zero == 0u);
+    GNFS_TEST_CHECK(zero != 1);
+    GNFS_TEST_CHECK(zero != 1u);
+
+    // Distinct native-width types are used on LP64 versus LLP64 systems.
+    const unsigned long native_unsigned_long = 42UL;
+    const unsigned long long native_unsigned_long_long = 43ULL;
+    GNFS_TEST_CHECK(Integer(42) == native_unsigned_long);
+    GNFS_TEST_CHECK(Integer(43) == native_unsigned_long_long);
+
+    std::cout << "  Primitive comparison boundaries: PASS" << std::endl;
 }
 
 void test_bit_operations() {
@@ -172,6 +210,87 @@ void test_powmod() {
     std::cout << "  Powmod: PASS" << std::endl;
 }
 
+void test_powmod_negative_exponents() {
+    std::cout << "Testing powmod negative exponents..." << std::endl;
+
+    for (int modulus : {5, -5}) {
+        GNFS_TEST_CHECK(powmod(Integer(2), Integer(-1), Integer(modulus)).to_int64() == 3);
+        GNFS_TEST_CHECK(powmod(Integer(2), Integer(-3), Integer(modulus)).to_int64() == 2);
+        GNFS_TEST_CHECK(powmod(Integer(-2), Integer(-3), Integer(modulus)).to_int64() == 3);
+        // Exponents remain arbitrary precision, including the signed boundary.
+        GNFS_TEST_CHECK(powmod(Integer(2), Integer(INT64_MIN), Integer(modulus)).is_one());
+        GNFS_TEST_CHECK(
+            powmod(Integer(2), Integer("-18446744073709551617"), Integer(modulus)).to_int64() == 3);
+    }
+    const Integer wide_modulus("18446744073709551617");
+    const Integer wide_inverse("9223372036854775809");
+    GNFS_TEST_CHECK(powmod(Integer(2), Integer(-1), wide_modulus) == wide_inverse);
+    GNFS_TEST_CHECK(powmod(Integer(2), Integer(-1), -wide_modulus) == wide_inverse);
+
+    // GMP accepts the zero ring for either modulus sign, including 0^-1.
+    for (int modulus : {1, -1}) {
+        for (int base : {0, 2, -2}) {
+            for (int exponent : {-1, 0, 1}) {
+                GNFS_TEST_CHECK(
+                    powmod(Integer(base), Integer(exponent), Integer(modulus)).is_zero());
+            }
+        }
+    }
+    // Noninvertible bases remain valid for nonnegative exponents.
+    GNFS_TEST_CHECK(powmod(Integer(2), Integer(3), Integer(-4)).is_zero());
+    GNFS_TEST_CHECK(powmod(Integer(0), Integer(0), Integer(7)).is_one());
+
+    std::cout << "  Negative exponents: PASS" << std::endl;
+}
+
+void test_arithmetic_domain_errors() {
+    std::cout << "Testing arithmetic domain errors..." << std::endl;
+
+    const auto expect_domain_error = [](auto&& operation) {
+        bool threw = false;
+        try {
+            operation();
+        } catch (const std::domain_error&) {
+            threw = true;
+        }
+        GNFS_TEST_CHECK(threw);
+    };
+
+    for (int exponent : {-3, 0, 3}) {
+        expect_domain_error([&] { (void)powmod(Integer(2), Integer(exponent), Integer(0)); });
+    }
+    for (int modulus : {4, -4}) {
+        for (int base : {0, 2, -2}) {
+            expect_domain_error(
+                [&] { (void)powmod(Integer(base), Integer(-1), Integer(modulus)); });
+        }
+    }
+    expect_domain_error([] { (void)sqrt(Integer(-1)); });
+    expect_domain_error([] { (void)sqrt(Integer("-18446744073709551616")); });
+
+    std::cout << "  Arithmetic domain errors: PASS" << std::endl;
+}
+
+void test_sqrt_values() {
+    std::cout << "Testing integer square roots..." << std::endl;
+
+    for (int value : {0, 1, 2, 15, 16, 17}) {
+        const Integer n(value);
+        const Integer root = sqrt(n);
+        const Integer next = root + Integer(1);
+        GNFS_TEST_CHECK(!root.is_negative());
+        GNFS_TEST_CHECK(root * root <= n);
+        GNFS_TEST_CHECK(next * next > n);
+    }
+    const Integer expected("18446744073709551617");
+    const Integer square = expected * expected;
+    GNFS_TEST_CHECK(sqrt(square) == expected);
+    GNFS_TEST_CHECK(sqrt(square - Integer(1)) == expected - Integer(1));
+    GNFS_TEST_CHECK(sqrt(square + Integer(1)) == expected);
+
+    std::cout << "  Integer square roots: PASS" << std::endl;
+}
+
 void test_primality() {
     std::cout << "Testing primality..." << std::endl;
 
@@ -243,6 +362,63 @@ void test_string_conversion_base_boundaries() {
     GNFS_TEST_CHECK(null_threw);
 
     std::cout << "  String conversion bases: PASS" << std::endl;
+}
+
+void test_string_embedded_nul() {
+    std::cout << "Testing complete string parsing..." << std::endl;
+    for (const auto& input : {std::string({'\0', '1', '4', '3'}), std::string("143\0junk", 8),
+                              std::string("143\0", 4)}) {
+        for (const int base : {2, 10, 62}) {
+            bool rejected = false;
+            try {
+                (void)Integer(input, base);
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            }
+            GNFS_TEST_CHECK(rejected);
+        }
+    }
+    GNFS_TEST_CHECK(Integer(std::string("101"), 2) == Integer(5));
+    GNFS_TEST_CHECK(Integer(std::string("Z"), 62) == Integer(35));
+    const char terminated[] = {'1', '4', '3', '\0', '9', '\0'};
+    GNFS_TEST_CHECK(Integer(terminated) == Integer(143));
+    std::cout << "  Complete string parsing: PASS" << std::endl;
+}
+
+void test_exact_digit_counts() {
+    std::cout << "Testing exact digit counts..." << std::endl;
+    const auto check = [](uint64_t value, int base) {
+        size_t expected = 1;
+        for (uint64_t n = value; n >= static_cast<uint64_t>(base); ++expected) {
+            n /= static_cast<uint64_t>(base);
+        }
+        const Integer number(value);
+        GNFS_TEST_CHECK(number.num_digits(base) == expected);
+        GNFS_TEST_CHECK((-number).num_digits(base) == expected);
+    };
+    for (int base = 2; base <= 62; ++base) {
+        for (uint64_t value = 0; value <= 256; ++value) {
+            check(value, base);
+        }
+        uint64_t power = 1;
+        while (power <= std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(base)) {
+            power *= static_cast<uint64_t>(base);
+            check(power - 1, base);
+            check(power, base);
+            if (power < std::numeric_limits<uint64_t>::max()) {
+                check(power + 1, base);
+            }
+        }
+        check(std::numeric_limits<uint64_t>::max(), base);
+    }
+    const Integer below_power("99999999999999999999999999999999999999999999999999");
+    GNFS_TEST_CHECK(below_power.num_digits() == 50);
+    GNFS_TEST_CHECK((below_power + Integer(1)).num_digits() == 51);
+    std::vector<Integer> coefficients;
+    coefficients.emplace_back(1);
+    const PolynomialContext ctx(Integer(8), std::move(coefficients), Integer(0));
+    GNFS_TEST_CHECK(ctx.n_digits() == 1);
+    std::cout << "  Exact digit counts: PASS" << std::endl;
 }
 
 void test_uint64_construction() {
@@ -475,6 +651,47 @@ void test_int64_min_boundaries() {
     std::cout << "  INT64_MIN/MAX/UINT64_MAX boundaries: PASS" << std::endl;
 }
 
+void test_integer_fit_oracle() {
+    std::cout << "Testing integer fit boundaries against comparison oracle..." << std::endl;
+    const Integer signed_min("-9223372036854775808");
+    const Integer signed_max("9223372036854775807");
+    const Integer unsigned_max("18446744073709551615");
+    const Integer zero(0);
+    for (unsigned bit = 0; bit <= 256; ++bit) {
+        Integer power(1);
+        mpz_mul_2exp(power.get_mpz(), power.get_mpz(), bit);
+        for (const int offset : {-1, 0, 1}) {
+            for (const int sign : {-1, 1}) {
+                Integer value = power + Integer(offset);
+                if (sign < 0) {
+                    value.negate();
+                }
+                const bool expected_signed =
+                    value.compare(signed_min) >= 0 && value.compare(signed_max) <= 0;
+                const bool expected_unsigned =
+                    value.compare(zero) >= 0 && value.compare(unsigned_max) <= 0;
+                GNFS_TEST_CHECK(value.fits_int64() == expected_signed);
+                GNFS_TEST_CHECK(value.fits_uint64() == expected_unsigned);
+                bool signed_threw = false;
+                try {
+                    GNFS_TEST_CHECK(Integer(value.to_int64()) == value);
+                } catch (const std::overflow_error&) {
+                    signed_threw = true;
+                }
+                GNFS_TEST_CHECK(signed_threw != expected_signed);
+                bool unsigned_threw = false;
+                try {
+                    GNFS_TEST_CHECK(Integer(value.to_uint64()) == value);
+                } catch (const std::overflow_error&) {
+                    unsigned_threw = true;
+                }
+                GNFS_TEST_CHECK(unsigned_threw != expected_unsigned);
+            }
+        }
+    }
+    std::cout << "  Integer fit boundaries: PASS" << std::endl;
+}
+
 void test_uint64_arithmetic_boundaries() {
     std::cout << "Testing Integer uint64_t arithmetic boundaries..." << std::endl;
 
@@ -560,19 +777,26 @@ int main() {
     test_construction();
     test_arithmetic();
     test_comparison();
+    test_primitive_comparison_boundaries();
     test_bit_operations();
     test_move_semantics();
     test_gcd();
     test_powmod();
+    test_powmod_negative_exponents();
+    test_arithmetic_domain_errors();
+    test_sqrt_values();
     test_primality();
     test_stream_output();
     test_string_conversion_base_boundaries();
+    test_string_embedded_nul();
+    test_exact_digit_counts();
     test_uint64_construction();
     test_safe_abs();
     test_relation_ab_int64_min();
     test_safe_gcd_with_int64_min();
     test_int64_min_boundaries();
     test_uint64_arithmetic_boundaries();
+    test_integer_fit_oracle();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

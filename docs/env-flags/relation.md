@@ -263,7 +263,7 @@ GNFS_OVERRIDE_LP_BITS=27 ./gnfs <N>          # any size with lp_bits=27
 ## V0 weight-3 merge (GNFS_V0_WEIGHT3)
 
 `Pipeline::sieve_and_collect()` captures the effective merge policy once, before
-any callback, and binds it into sieve run-identity schema 3. The same frozen
+any callback, and binds it into sieve run-identity schema 4. The same frozen
 values drive every adaptive round and terminal recovery reduction; changing
 them across restart rejects the checkpoint before opening the OOC store.
 Standalone merger/reduction calls still resolve their default policy when the

@@ -45,6 +45,33 @@ Longest measured enabled tests:
 
 Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Windows, and high CTest parallelism can change runtime by an order of magnitude.
 
+`HarnessHooks` aggregates isolated hook and runner CLI contracts, including
+fresh interpreter, fixture, and reporting processes. It retains the `instant`
+label so the existing Debug, sanitizer, coverage, and platform lanes still
+execute every contract. Its outer CTest watchdog is 30 seconds to accommodate
+aggregate process startup cost; it is not a per-case performance limit. The
+individual contract assertions and bounded child invocations remain unchanged.
+
+### Local Change Selection
+
+`scripts/test.sh changed --deep` adds mapped module dependencies and the API
+contract to applicable change selections. It also selects `test_siqs_e2e` once
+when a changed path maps directly to the `siqs` module, including
+`tests/test_siqs_e2e.cpp`. Reaching SIQS only through another module's dependency
+list does not select this E2E test. Ordinary `changed` and `smoke` keep their
+existing selection.
+
+The `changed` mode and its `diff` alias accept only one optional `--deep` mode
+argument. Unsupported or repeated arguments fail before CMake configuration.
+`--slow` belongs to `module`; passing it to `changed` is an error.
+
+The SIQS E2E includes a native attempt with a 600-second budget; its runner and
+CTest timeout remains 700 seconds to accommodate the other cases and setup.
+Use `scripts/test.sh run test_siqs_e2e` or `scripts/test.sh module siqs --slow`
+for an explicit selection. Local `changed --deep` does not enable every slow,
+heavy, benchmark, or stress test. The Linux Release deep gate uses the separate
+CI label selection described below.
+
 ### Release-active correctness checks
 
 Release builds define `NDEBUG`, so the standard `assert()` macro is not a
@@ -241,7 +268,9 @@ and native-architecture tuning disabled; that tree builds only
 This separately proves the ordinary child transport on the published glibc
 2.31 floor without changing the release artifact closure. Its Windows 2022 job
 installs the digest-pinned UCRT64
-compiler and runtime packages, configures the build with
+compiler, build tools, and their complete package dependency closure. A clean
+UCRT64 package set and a repository-free `pacman -U` transaction prevent rolling
+bootstrap packages from replacing the runtime pins. It configures the build with
 `GNFS_ENABLE_NTL=OFF`, derives the four-DLL closure with `ldd`, launches the
 packaged CLI with `/ucrt64/bin` removed from `PATH`, creates the deterministic
 ZIP, and validates its package, license, DLL, and corresponding-source
@@ -1456,3 +1485,11 @@ When adding or changing tests:
 - For candidate, structured-relation, or SIQS shadow concurrency changes, run
   `./scripts/test.sh tsan-relation` on a supported toolchain.
 - Re-run at least `./scripts/test.sh list`, `ctest --show-only=json-v1`, and the affected local test subset.
+
+## Protected Build Boundary
+
+The distributed-sieve receipt checker preserves the committed build commands that can change protected target sources, dependencies, compiler settings, include search, or generated code. It excludes independent test executables with literal `tests/*.cpp` sources, private links to project libraries or `Threads::Threads`, and ordinary CTest registration. Protected sources and targets, duplicate target or test names, dynamic source paths, and changes to shared build settings remain checked. The test-platform marker is accepted only when its content directly encodes the actual CMake `WIN32` condition. Literal overrides and other generated files remain checked because the runner consumes this marker when deciding which binaries are required.
+
+Adding an ordinary independent test does not require updating the checker. More complex build changes still require reviewing the retained command boundary and the existing target dependency and compiler provenance checks. The boundary digest is derived from the previously accepted build after the same projection; it is not regenerated from each proposed change.
+
+Runner catalog checks count each required binary in its actual binary, module, timeout, tier, and path-mapping declarations. Platform-support metadata may reference the same binary without registering it again. Duplicate declarations, appends, element overrides, and unexpected smoke registration remain failures.

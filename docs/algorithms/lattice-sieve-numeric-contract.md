@@ -71,17 +71,41 @@ so validating an extreme `int64_t` candidate cannot overflow.
 
 - positive width and height, each at most `INT32_MAX`;
 - an area representable as `size_t` and allocatable as `vector<uint16_t>`;
+- an area no larger than `core::SIEVE_MAX_REGION_CELLS` (512 Mi cells,
+  or 1 GiB of score storage);
 - all four `(a,b)` projection corners representable as `int64_t` for the
   current basis.
 
-The default-region generator adds a policy cap of 256 Mi cells. Explicit
-regions are governed by the representation and allocation checks above rather
-than that default-generation policy.
+The default-region generator applies a tighter policy cap of 256 Mi cells.
+Explicit regions use the shared 512 Mi-cell materialization cap in addition to
+the representation and allocation checks above; this keeps configuration and
+direct `LatticeSieve::set_region()` callers on the same fail-closed boundary.
+The distributed bound-work preflight repeats this cap before worker runtime
+objects or launch-side effects are created.
 
 The compact row-major path stores small-prime state in `int16_t`, making width
 32768 its inclusive upper boundary. A wider valid region routes the complete
 prime set through the full region-bucket path. Width 32769 is therefore valid
 when the other geometry, projection, and allocation requirements hold.
+
+## Candidate Threshold Semantics
+
+The additive sieve stores each cell's accumulated score and applies the
+candidate predicate
+
+$$\text{accumulated} \ge I - T,$$
+
+where $I$ is the estimated initial log and $T$ is
+`SieveParams::combined_threshold()`. The predicate applies only when $I > T$.
+The candidate residual is `max(I - accumulated, 0)` and is clamped to
+`uint8_t`.
+
+For every $I \le T$, including $T = 0$, collection fails closed and returns no
+candidates. Without this guard, the clamped effective threshold would admit
+every cell when a low or non-finite initial estimate is unavailable, flooding
+downstream stages. A zero threshold therefore does not bypass this safety
+guard; it permits the normal predicate only after a positive initial estimate
+has been established.
 
 ## Factor-Base Admission
 

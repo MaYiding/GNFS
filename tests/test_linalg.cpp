@@ -11,6 +11,7 @@
 #include <gnfs/linalg/sparse_matrix.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -81,6 +82,71 @@ void test_sparse_row() {
     GNFS_TEST_CHECK(!row.test(7));
 
     std::cout << "  SparseRow: PASSED" << std::endl;
+}
+
+void test_sparse_row_constructor_parity() {
+    std::cout << "Testing SparseRow constructor GF(2) parity..." << std::endl;
+
+    constexpr size_t columns = 8;
+    const std::vector<SparseRow::IndexList> inputs{
+        {3, 3}, {}, {5, 1, 3, 1, 3, 3, 5}, {7, 7, 0, 7, 0, 2, 2, 2}, {0, 0, 0, 7, 7, 7}};
+    const auto check_row = [](const SparseRow& row, const std::vector<bool>& dense) {
+        SparseRow::IndexList expected_indices;
+        for (size_t column = 0; column < dense.size(); ++column) {
+            GNFS_TEST_CHECK(row.test(static_cast<uint32_t>(column)) == dense[column]);
+            if (dense[column])
+                expected_indices.push_back(static_cast<uint32_t>(column));
+        }
+        GNFS_TEST_CHECK(row.indices() == expected_indices);
+        GNFS_TEST_CHECK(row.weight() == expected_indices.size());
+        GNFS_TEST_CHECK(row.empty() == expected_indices.empty());
+        GNFS_TEST_CHECK(row.first_nonzero() ==
+                        (expected_indices.empty() ? UINT32_MAX : expected_indices.front()));
+        GNFS_TEST_CHECK(row.last_nonzero() ==
+                        (expected_indices.empty() ? UINT32_MAX : expected_indices.back()));
+    };
+
+    for (const auto& input : inputs) {
+        // Independent dense oracle: each occurrence toggles its GF(2) bit.
+        std::vector<bool> dense(columns, false);
+        for (uint32_t column : input)
+            dense[column] = !dense[column];
+        SparseRow row(input);
+        check_row(row, dense);
+
+        SparseMatrix matrix(1, columns);
+        matrix.row(0) = row;
+        const auto transposed = matrix.transpose();
+        for (size_t column = 0; column < columns; ++column) {
+            std::vector<bool> basis(columns, false);
+            basis[column] = true;
+            GNFS_TEST_CHECK(matrix.multiply(basis)[0] == dense[column]);
+            GNFS_TEST_CHECK(transposed.test(column, 0) == dense[column]);
+        }
+
+        row.clear(3);
+        dense[3] = false;
+        check_row(row, dense);
+        row.flip(1);
+        dense[1] = !dense[1];
+        check_row(row, dense);
+
+        const SparseRow::IndexList rhs_indices{0, 1, 1, 5, 5, 5};
+        const SparseRow rhs(rhs_indices);
+        row.xor_with(rhs);
+        for (uint32_t column : rhs_indices)
+            dense[column] = !dense[column];
+        check_row(row, dense);
+
+        row.set(0);
+        row.set(0);
+        dense[0] = true;
+        check_row(row, dense);
+        row.xor_with(row);
+        check_row(row, std::vector<bool>(columns, false));
+    }
+
+    std::cout << "  SparseRow constructor parity: PASSED" << std::endl;
 }
 
 // Test SparseRow XOR
@@ -420,6 +486,37 @@ void test_gaussian_larger() {
     GNFS_TEST_CHECK(result.rank == 2);
 
     std::cout << "  Gaussian (larger): PASSED" << std::endl;
+}
+
+// Regression: free columns must be unique when elimination continues after
+// the last pivot while dependent rows are still available.
+void test_gaussian_free_columns_unique() {
+    std::cout << "Testing Gaussian free-column uniqueness..." << std::endl;
+
+    // Three rows, one independent row, and four columns.  The duplicate row
+    // becomes zero after the first pivot, leaving columns 1..3 free while
+    // pivot_row is still below num_rows and exercising the old duplicate path.
+    SparseMatrix matrix(3, 4);
+    matrix.set(0, 0);
+    matrix.set(0, 3);
+    matrix.set(1, 0);
+    matrix.set(1, 3);
+
+    GaussianConfig config;
+    config.compute_null_space = true;
+    GaussianEliminator eliminator(config);
+    const auto result = eliminator.eliminate(matrix);
+
+    GNFS_TEST_CHECK(result.rank == 1);
+    GNFS_TEST_CHECK(result.free_cols == std::vector<size_t>({1, 2, 3}));
+    GNFS_TEST_CHECK(result.null_space.size() == 3);
+    GNFS_TEST_CHECK(result.null_space[0].test(1));
+    GNFS_TEST_CHECK(result.null_space[1].test(2));
+    GNFS_TEST_CHECK(result.null_space[2].test(3));
+    GNFS_TEST_CHECK(!result.null_space[0].test(2));
+    GNFS_TEST_CHECK(!result.null_space[0].test(3));
+
+    std::cout << "  Gaussian free-column uniqueness: PASSED" << std::endl;
 }
 
 // Test matrix builder with relations
@@ -1602,6 +1699,7 @@ int main() {
     std::cout << std::endl;
 
     test_sparse_row();
+    test_sparse_row_constructor_parity();
     test_sparse_row_xor();
     test_sparse_matrix();
     test_sparse_matrix_bounds();
@@ -1613,6 +1711,7 @@ int main() {
     test_bitvector_contract();
     test_gaussian_simple();
     test_gaussian_larger();
+    test_gaussian_free_columns_unique();
     test_matrix_builder();
     test_matrix_builder_sign_wide_b();
     test_default_schirokauer_primes();

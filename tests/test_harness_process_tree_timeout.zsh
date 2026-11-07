@@ -25,8 +25,20 @@ if [[ "${1:-}" == "--wrapper-signal-contract" ]]; then
     trap 'print -r -- HUP >"$trap_marker"' HUP
     trap 'print -r -- INT >"$trap_marker"' INT
     trap 'print -r -- TERM >"$trap_marker"' TERM
+    if [[ "$wrapper_mode" == "completed-failure" ]]; then
+        # Deliver a signal after the real wait has reaped a failed supervisor,
+        # before the wrapper examines the status and signal generation.
+        wait() {
+            local completed_status=0
+            builtin wait "$@" || completed_status=$?
+            if (( completed_status == 125 )); then
+                kill -TERM "$$"
+            fi
+            return "$completed_status"
+        }
+    fi
     contract_status=0
-    if [[ "$wrapper_mode" == "combined" && $# == 7 ]]; then
+    if [[ ( "$wrapper_mode" == "combined" || "$wrapper_mode" == "completed-failure" ) && $# == 7 ]]; then
         run_with_timeout 10 "$fake_child" --timeout-tree \
             "$survived_file" 1000 "$ready_file" || contract_status=$?
         print -r -- "$RUN_OUTPUT"
@@ -234,7 +246,28 @@ contract_status=0
 wait "$wrapper_pid" || contract_status=$?
 if (( contract_status != 125 )) || [[ -e "$failure_trap" ]] ||
    [[ -s "$failure_stderr" ]]; then
-    print -u2 -r -- "supervisor cleanup failure was masked by wrapper signal status"
+    print -u2 -r -- \
+        "supervisor cleanup failure contract: status=$contract_status trap=$([[ -e "$failure_trap" ]] && print present || print absent)"
+    [[ ! -s "$failure_stderr" ]] || cat -- "$failure_stderr" >&2
+    exit 1
+fi
+
+completed_failure_supervisor="${test_directory}/completed-failure-supervisor.zsh"
+print -r -- $'#!/usr/bin/env zsh\nexit 125' >"$completed_failure_supervisor"
+chmod +x "$completed_failure_supervisor"
+completed_failure_trap="${test_directory}/completed-failure.trap"
+completed_failure_stderr="${test_directory}/completed-failure.stderr"
+contract_status=0
+"$zsh_executable" "${0:A}" --wrapper-signal-contract \
+    "$completed_failure_supervisor" "$fake_child" \
+    "${test_directory}/completed-failure.ready" "${test_directory}/completed-failure.survived" \
+    completed-failure "$completed_failure_trap" \
+    >"${test_directory}/completed-failure.stdout" 2>"$completed_failure_stderr" || contract_status=$?
+if (( contract_status != 125 )) || [[ -e "$completed_failure_trap" ]] ||
+   [[ -s "$completed_failure_stderr" ]]; then
+    print -u2 -r -- \
+        "completed supervisor failure contract: status=$contract_status trap=$([[ -e "$completed_failure_trap" ]] && print present || print absent)"
+    [[ ! -s "$completed_failure_stderr" ]] || cat -- "$completed_failure_stderr" >&2
     exit 1
 fi
 
