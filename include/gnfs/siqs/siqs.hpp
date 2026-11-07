@@ -120,7 +120,7 @@ inline uint32_t mod_mul32(uint32_t a, uint32_t b, uint32_t m) {
     return static_cast<uint32_t>(static_cast<uint64_t>(a) * b % m);
 }
 
-inline uint32_t mod_pow32(uint32_t base, uint32_t exp, uint32_t mod) {
+constexpr uint32_t mod_pow32(uint32_t base, uint32_t exp, uint32_t mod) {
     uint64_t result = 1, b = base % mod;
     while (exp > 0) {
         if (exp & 1)
@@ -324,57 +324,56 @@ inline auto score_candidates(const Integer& N) {
     if (mpz_sgn(N.get_mpz()) <= 0)
         throw std::invalid_argument("SIQS multiplier scoring requires a positive N");
 
-    static const uint32_t candidates[] = {1,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31,
-                                          37, 41, 43, 47, 53, 59, 61, 67, 71, 73};
-    // Small primes for scoring
-    static const uint32_t test_primes[] = {
-        2,   3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,
-        59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131,
-        137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199};
-
-    std::array<ScoredCandidate, sizeof(candidates) / sizeof(candidates[0])> scored{};
-    size_t ordinal = 0;
-
-    for (uint32_t k : candidates) {
-        Integer kN;
-        mpz_mul_ui(kN.get_mpz(), N.get_mpz(), k); // kN = N * k (skip source copy)
-        double log_kN =
-            static_cast<double>(mpz_sizeinbase(kN.get_mpz(), 2)) * 0.6931; // log(2) * bits
-        double score = -0.5 * log_kN;
-
-        // Special handling for p=2
-        uint32_t kN_mod8 = static_cast<uint32_t>(mpz_fdiv_ui(kN.get_mpz(), 8));
-        if (kN_mod8 == 1)
-            score += 2.0 * std::log(2.0); // both roots
-        else if (kN_mod8 == 5)
-            score += std::log(2.0); // one root
-
-        for (size_t i = 1; i < sizeof(test_primes) / sizeof(test_primes[0]); i++) {
-            uint32_t p = test_primes[i];
-            // 当 v_p(kN) = 1(典型情况:k 候选都是 squarefree、gcd(k,N)=1),
-            // x² ≡ kN mod p 只有 x≡0 mod p 单根,且 **不能** Hensel lift 到
-            // mod p²(geometric sum 不适用)。贡献为 log(p)/p,而非
-            // log(p)/(p-1)。msieve 与 Silverman 标准实现采用此公式。
-            //
-            // 边界:若 p² | kN(罕见,N 含平方因子),x² ≡ kN/p² mod p 又是 QR
-            // 时会有额外二次贡献 ≈ 2 log(p)/(p²·(p-1)),数量级可忽略。
-            if (k % p == 0) {
-                score += std::log(static_cast<double>(p)) / p;
-                continue;
-            }
-            uint32_t kN_mod_p = static_cast<uint32_t>(mpz_fdiv_ui(kN.get_mpz(), p));
-            if (kN_mod_p == 0) {
-                // p | N 但 p ∤ k:同上,v_p(kN)=v_p(N) 时根不 lift。
-                score += std::log(static_cast<double>(p)) / p;
-            } else if (mod_pow32(kN_mod_p, (p - 1) / 2, p) == 1) {
-                // p ∤ kN 且 kN is QR mod p — 2 个根,Hensel lift 几何和:
-                // 2 log(p)/(p-1)
-                score += 2.0 * std::log(static_cast<double>(p)) / (p - 1);
-            }
+    static constexpr std::array<uint32_t, 21> candidates{1,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31,
+                                                         37, 41, 43, 47, 53, 59, 61, 67, 71, 73};
+    static constexpr std::array<uint32_t, 45> odd_primes{
+        3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,
+        59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127,
+        131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199};
+    // Euler's criterion encodes (k|p) as 0, 1, or p-1.
+    static constexpr auto candidate_symbols = [] {
+        std::array<std::array<uint32_t, candidates.size()>, odd_primes.size()> symbols{};
+        for (size_t i = 0; i < odd_primes.size(); ++i) {
+            const uint32_t p = odd_primes[i];
+            for (size_t j = 0; j < candidates.size(); ++j)
+                symbols[i][j] = mod_pow32(candidates[j], (p - 1) / 2, p);
         }
+        return symbols;
+    }();
 
-        scored[ordinal] = {k, score, ordinal};
-        ++ordinal;
+    std::array<ScoredCandidate, candidates.size()> scored{};
+    const auto n_mod8 = static_cast<uint32_t>(mpz_fdiv_ui(N.get_mpz(), 8));
+    Integer kN;
+    for (size_t j = 0; j < candidates.size(); ++j) {
+        const uint32_t k = candidates[j];
+        mpz_mul_ui(kN.get_mpz(), N.get_mpz(), k);
+        const double log_kN = static_cast<double>(mpz_sizeinbase(kN.get_mpz(), 2)) * 0.6931;
+        double score = -0.5 * log_kN;
+        const uint32_t kN_mod8 = k * n_mod8 % 8;
+        if (kN_mod8 == 1)
+            score += 2.0 * std::log(2.0);
+        else if (kN_mod8 == 5)
+            score += std::log(2.0);
+        scored[j] = {k, score, j};
+    }
+
+    // For nonzero symbols, kN is a quadratic residue exactly when (k|p) = (N|p).
+    // Visit primes in scoring order so each candidate keeps its floating-point sum.
+    for (size_t i = 0; i < odd_primes.size(); ++i) {
+        const uint32_t p = odd_primes[i];
+        const auto residue = static_cast<uint32_t>(mpz_fdiv_ui(N.get_mpz(), p));
+        const uint32_t n_symbol = mod_pow32(residue, (p - 1) / 2, p);
+        const double log_p = std::log(static_cast<double>(p));
+        // The historical score assigns log(p)/p to p | kN, even when p^2 divides kN.
+        const double single_root = log_p / p;
+        const double two_roots = 2.0 * log_p / (p - 1);
+        for (size_t j = 0; j < candidates.size(); ++j) {
+            const uint32_t k_symbol = candidate_symbols[i][j];
+            if (k_symbol == 0 || n_symbol == 0)
+                scored[j].score += single_root;
+            else if (k_symbol == n_symbol)
+                scored[j].score += two_roots;
+        }
     }
     return scored;
 }
