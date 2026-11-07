@@ -924,6 +924,11 @@ int main(int argc, char* argv[]) {
                                  std::string(TR(S::ERR_OPEN_FILE)) + " " + output_file);
             }
             ofs << output;
+            ofs.close();
+            if (!ofs) {
+                return cli_error(false, "write_output_failed",
+                                 std::string(TR(S::ERR_WRITE_FILE)) + " " + output_file);
+            }
             if (!quiet)
                 std::cerr << TR(S::REPL_WRITTEN_TO) << " " << output_file << "\n";
         } else if (!output.empty()) {

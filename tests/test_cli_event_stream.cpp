@@ -2,6 +2,12 @@
 
 #include <gnfs/util/bounded_child_process.hpp>
 
+#ifndef _WIN32
+#include <csignal>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -556,6 +562,32 @@ void test_configured_output(const std::filesystem::path& executable,
     }
 }
 
+void test_output_errors(const std::filesystem::path& executable,
+                        [[maybe_unused]] const std::filesystem::path& test_executable,
+                        const std::filesystem::path& temporary_root) {
+    const auto check_error = [](const BoundedChildProcessResult& run,
+                                const std::string& diagnostic) {
+        const auto context = diagnostic + " " + describe(run);
+        CHECK_CONTEXT(run.error == BoundedChildProcessError::normal_nonzero, context);
+        CHECK_CONTEXT(run.termination.kind == BoundedChildTerminationKind::exited &&
+                          run.termination.exit_code == 1,
+                      context);
+        CHECK_CONTEXT(run.stdout_bytes.empty(), context);
+        CHECK_CONTEXT(run.stderr_bytes.find(diagnostic) != std::string::npos, context);
+        CHECK_CONTEXT(run.stderr_bytes.find("Result written to") == std::string::npos, context);
+    };
+
+    const auto missing = (temporary_root / "missing" / "result.txt").string();
+    check_error(run_cli(executable, {"--lang", "en", "--output", missing, "360"}),
+                "Cannot open output file: " + missing);
+#ifndef _WIN32
+    const auto output = (temporary_root / "limited result.txt").string();
+    check_error(run_cli(test_executable, {"--with-file-limit", executable.string(), "--lang", "en",
+                                          "--output", output, "360"}),
+                "Cannot write output file: " + output);
+#endif
+}
+
 void test_input_errors(const std::filesystem::path& executable) {
     const auto invalid = validate_protocol(executable, {"--event-stream", "not-a-number"}, 1,
                                            EventKind::error, false, "invalid input");
@@ -648,6 +680,17 @@ void test_incompatible_options(const std::filesystem::path& executable,
 } // namespace
 
 int main(int argc, char* argv[]) {
+#ifndef _WIN32
+    if (argc >= 3 && std::string_view(argv[1]) == "--with-file-limit") {
+        // Only the new CLI process inherits this limit. Its captured output
+        // streams are pipes, so diagnostics can still be read in full.
+        const rlimit limit{4, 4};
+        if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR || ::setrlimit(RLIMIT_FSIZE, &limit) != 0)
+            return 2;
+        ::execv(argv[2], argv + 2);
+        return 2;
+    }
+#endif
     if (argc < 1 || argc > 2) {
         std::cerr << "Usage: test_cli_event_stream [gnfs-executable]\n";
         return 2;
@@ -665,6 +708,7 @@ int main(int argc, char* argv[]) {
         test_success_cases(executable);
         test_verbose_cases(executable, temporary.path());
         test_configured_output(executable, temporary.path());
+        test_output_errors(executable, test_executable, temporary.path());
         test_input_errors(executable);
         test_unsigned_option_values(executable);
         test_event_stream_token_used_as_value(executable);
