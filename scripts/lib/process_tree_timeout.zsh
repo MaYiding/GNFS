@@ -45,7 +45,6 @@ gnfs_run_process_supervisor() {
     fi
 
     local supervisor_exit_code=0
-    local observed_supervisor_failure=0
     local wait_retried_after_signal=0
     while true; do
         local signal_generation_before_wait=$gnfs_forwarded_signal_generation
@@ -54,20 +53,15 @@ gnfs_run_process_supervisor() {
         else
             supervisor_exit_code=$?
         fi
-        if (( supervisor_exit_code == 125 )); then
-            observed_supervisor_failure=1
-            # This is a completed child status, not an interrupted wait. A
-            # second wait can only report that the PID has already been reaped.
-            break
-        fi
-        if (( gnfs_forwarded_signal_generation == signal_generation_before_wait )); then
+        # A trapped signal interrupts wait with 128 + its signal number.
+        # A lower status already consumed the child, including cleanup failure 125.
+        if (( supervisor_exit_code <= 128 ||
+              gnfs_forwarded_signal_generation == signal_generation_before_wait )); then
             break
         fi
         wait_retried_after_signal=1
     done
-    if (( observed_supervisor_failure )); then
-        supervisor_exit_code=125
-    elif (( wait_retried_after_signal && supervisor_exit_code == 127 &&
+    if (( wait_retried_after_signal && supervisor_exit_code == 127 &&
             gnfs_forwarded_signal_status != 0 )); then
         supervisor_exit_code=$gnfs_forwarded_signal_status
     fi
