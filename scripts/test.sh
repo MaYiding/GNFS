@@ -1587,13 +1587,13 @@ do_build() {
     # CMake 配置
     if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
         log_info "首次配置 CMake..."
-        cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -5 || return 1
+        cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -5 || return $?
     else
         local cached_type
         cached_type=$(grep -m1 'CMAKE_BUILD_TYPE:' "${BUILD_DIR}/CMakeCache.txt" | cut -d= -f2)
         if [[ "$cached_type" != "$BUILD_TYPE" ]]; then
             log_warn "构建类型变更: ${cached_type} ${ARROW} ${BUILD_TYPE}"
-            cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -3 || return 1
+            cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -3 || return $?
         fi
     fi
 
