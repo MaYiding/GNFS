@@ -608,6 +608,39 @@ bounded 256-A prefix before any collector or `factor()` integration is
 considered. That experiment still cannot replace the 70- and 90-digit gates or
 the existing bounded sparse-backend admission and verification evidence.
 
+## Replay Selected 256-A Rows
+
+The fixed 50-digit V3 scale profile can export its selected matrix for a
+fresh-process replay. Use a new snapshot name for each capture.
+
+```bash
+./scripts/test.sh profile-siqs-256a 2 --snapshot example
+./scripts/test.sh profile-siqs-256a --replay example
+```
+
+The runner validates the usual six capture records and the scale gate before
+publishing `siqs-256a-example/rows.bin` under its build directory. A competing
+or repeated capture cannot replace an existing snapshot. The snapshot holds
+up to 4MiB and uses the V1 canonical post-merge row wire. Its header binds
+the fixed profile, both moduli, the ordered factor base, the trim policy, and
+the frozen plan, raw corpus, source, pretrim, and selected-row fingerprints.
+Each frame stores its row origin, a little-endian 32-bit payload length, and
+one complete row wire record. Frame order carries the selected row ordinal.
+
+Replay checks the header against the current V3 fixture, validates each row
+modulo the sieved modulus, and recomputes the selected-row fingerprint. It
+then runs the dense and sparse selectors, verifies every returned dependency,
+and checks extracted factors against the original modulus. This fixture falls
+within the sparse selector's bounded exact solver. The snapshot covers the
+selected matrix and its source IDs. Rebuilding the sieve or discarded rows
+requires the original capture.
+
+The manual regression checks a captured file and a set of damaged copies.
+
+```bash
+python3 tests/test_siqs_256a_row_replay.py build/test_siqs_256a_scale_profile build/siqs-256a-example/rows.bin
+```
+
 ## Current Fixed-Plan Evidence
 
 The following evidence was reproduced on 2026-07-23 with one, two, and four
