@@ -138,17 +138,21 @@ void check_index_rebuild(bool stale) {
             GNFS_TEST_CHECK(base.find_rational(11) == 0);
             GNFS_TEST_CHECK(base.find_algebraic(3, 1) == 1);
             GNFS_TEST_CHECK(!base.find_algebraic(7, 1));
-            if (!stale)
+            if (!stale) {
                 GNFS_TEST_CHECK(!failed);
-        } else {
-            GNFS_TEST_CHECK(ordinal > 0);
-            GNFS_TEST_CHECK(base.find_rational(3) == 2);
-            GNFS_TEST_CHECK(!base.find_rational(11));
-            GNFS_TEST_CHECK(base.find_algebraic(3, 1) == 0);
-            GNFS_TEST_CHECK(base.find_algebraic(7, 1) == 1);
+                return;
+            }
+            // Retry on the same object after verifying both original lookups.
+            base.build_index();
         }
-        if (!failed)
+        GNFS_TEST_CHECK(base.find_rational(3) == 2);
+        GNFS_TEST_CHECK(!base.find_rational(11));
+        GNFS_TEST_CHECK(base.find_algebraic(3, 1) == 0);
+        GNFS_TEST_CHECK(base.find_algebraic(7, 1) == 1);
+        if (!failed) {
+            GNFS_TEST_CHECK(ordinal > 0);
             break;
+        }
     }
 }
 
