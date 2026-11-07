@@ -2051,6 +2051,29 @@ struct FactorAttemptContext {
     SIQSParams params;
 };
 
+// Ordered time points can span the entire unsigned tick range, even though
+// subtracting their signed durations would overflow.
+inline auto attempt_elapsed(std::chrono::steady_clock::time_point started,
+                            std::chrono::steady_clock::time_point observed) noexcept {
+    using Clock = std::chrono::steady_clock;
+    using Tick = std::make_unsigned_t<Clock::rep>;
+    using Elapsed = std::chrono::duration<Tick, Clock::period>;
+    if (observed < started)
+        return Elapsed::zero();
+    const auto end = static_cast<Tick>(observed.time_since_epoch().count());
+    const auto begin = static_cast<Tick>(started.time_since_epoch().count());
+    return Elapsed{end - begin};
+}
+
+inline bool multiplier_budget_exhausted(const FactorAttemptContext& context,
+                                        std::chrono::steady_clock::time_point observed) noexcept {
+    if (observed < context.started)
+        return true;
+    using Seconds = std::chrono::duration<uintmax_t>;
+    const auto elapsed = attempt_elapsed(context.started, observed);
+    return std::chrono::duration_cast<Seconds>(elapsed).count() >= context.max_seconds;
+}
+
 enum class FactorAttemptTerminal : uint8_t {
     insufficient_factor_base,
     insufficient_relations,
@@ -2128,12 +2151,16 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     if (multiplier == 0)
         throw std::invalid_argument("SIQS attempt requires a positive multiplier");
     const auto start = context.started;
-    const auto max_seconds = context.max_seconds;
     const auto verbose = context.verbose;
     const auto digits = context.digits;
     const auto& params = context.params;
-    auto elapsed = [&]() {
-        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const auto elapsed = [&]() {
+        return std::chrono::duration<double>(
+                   attempt_elapsed(start, std::chrono::steady_clock::now()))
+            .count();
+    };
+    const auto budget_exhausted = [&]() {
+        return multiplier_budget_exhausted(context, std::chrono::steady_clock::now());
     };
 
     Integer kN;
@@ -2206,7 +2233,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     size_t target_usable = fb_size + 50;
 
     std::vector<SIQSRelation> all_relations;
-    if (elapsed() < static_cast<double>(max_seconds))
+    if (!budget_exhausted())
         all_relations.reserve(target_usable * 10);
     std::mutex relations_mutex;
 
@@ -2246,7 +2273,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     auto sieve_worker = [&](unsigned thread_id) {
         // Admission may expire between the caller's launch check and entry.
         // Leave the empty corpus for the ordinary post-join terminal handling.
-        if (elapsed() >= static_cast<double>(max_seconds))
+        if (budget_exhausted())
             return;
         std::mt19937 local_rng(42 + thread_id * 1000);
         std::vector<SIQSRelation> local_relations;
@@ -2257,7 +2284,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
         size_t local_full = 0, local_1lp = 0, local_2lp = 0;
 
         while (!enough.load(std::memory_order_relaxed) &&
-               elapsed() < static_cast<double>(max_seconds)) {
+               !budget_exhausted()) {
             SIQSPoly poly;
             choose_A(kN, params.sieve_half, params.num_a_factors, fb, local_rng, poly.a_indices,
                      poly.A);
@@ -2312,7 +2339,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
 
                 if (enough.load(std::memory_order_relaxed))
                     break;
-                if (elapsed() >= static_cast<double>(max_seconds))
+                if (budget_exhausted())
                     break;
 
                 // Gray code switch to next B
@@ -2354,12 +2381,12 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     // Keep thread owners after every captured object so failed launches drain
     // their workers before any referenced state is destroyed.
     std::vector<util::JoiningThread> threads;
-    if (elapsed() < static_cast<double>(max_seconds)) {
+    if (!budget_exhausted()) {
         worker_failures.resize(num_threads);
         threads.reserve(num_threads);
     }
     try {
-        for (unsigned t = 0; t < num_threads && elapsed() < static_cast<double>(max_seconds); t++) {
+        for (unsigned t = 0; t < num_threads && !budget_exhausted(); t++) {
             threads.emplace_back(guarded_sieve_worker, t);
         }
     } catch (...) {
@@ -2431,13 +2458,10 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
             }
 
             const auto decision_wall_end = std::chrono::steady_clock::now();
-            const auto decision_wall_count =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(decision_wall_end - start)
-                    .count();
+            using Nanoseconds = std::chrono::duration<uint64_t, std::nano>;
             const uint64_t decision_wall_ns =
-                decision_wall_count > 0 && std::in_range<uint64_t>(decision_wall_count)
-                    ? static_cast<uint64_t>(decision_wall_count)
-                    : 0;
+                std::chrono::duration_cast<Nanoseconds>(attempt_elapsed(start, decision_wall_end))
+                    .count();
             SIQSShadowProofPreferDecision decision =
                 finalize_siqs_shadow_proof_prefer(std::move(draft), decision_wall_ns);
 
@@ -2553,13 +2577,6 @@ struct MultiplierPortfolioOutcome {
 };
 
 static_assert(std::is_nothrow_move_constructible_v<MultiplierPortfolioOutcome>);
-
-inline bool multiplier_budget_exhausted(const FactorAttemptContext& context,
-                                        std::chrono::steady_clock::time_point observed) noexcept {
-    return context.max_seconds == 0 || observed < context.started ||
-           std::chrono::duration<double>(observed - context.started).count() >=
-               static_cast<double>(context.max_seconds);
-}
 
 /// Control-flow seam; the native entry below binds the real clock and executor.
 /// Callback results must obey the native FactorAttemptOutcome contract.
