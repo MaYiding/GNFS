@@ -204,6 +204,11 @@ It binds the real monotonic clock and `factor_once`; callers cannot supply a
 replacement executor or clock to this entry. The default public `factor()` still
 uses its historical single multiplier and has no portfolio flag.
 
+After validating the input and shadow mode, the explicit entry checks admission
+before ranking. A zero attempt limit returns `attempt_limit` even when the time
+budget is exhausted. A zero budget, an expired budget, or a clock reading before
+the supplied start returns `budget_exhausted`.
+
 The coordinator filters the complete ranking for positive, coprime, unique
 candidates before applying the limit. It checks the shared budget immediately
 before counting and starting each attempt. Rejected candidates and expired
