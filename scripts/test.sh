@@ -88,7 +88,8 @@
 #                                         # 固定 50 位 1/4/16/64 A cycle-density profile
 #   ./scripts/test.sh compare-siqs-cycle-density
 #                                         # 同一新构建的 1/2/4 profile 独立进程对照
-#   ./scripts/test.sh profile-siqs-256a <1|2|4>
+#   ./scripts/test.sh profile-siqs-256a <1|2|4> [--snapshot NAME]
+#   ./scripts/test.sh profile-siqs-256a --replay NAME
 #                                         # 固定 50 位 256x32 A scale 证据
 #   ./scripts/test.sh compare-siqs-256a
 #                                         # 同一新构建的 1/2/4 scale 独立进程对照
@@ -6460,6 +6461,7 @@ EOF
 
 run_siqs_256a_profile_process() {
     local workers="$1"
+    shift
     local binary="${BUILD_DIR}/test_siqs_256a_scale_profile"
     local stdout_file stderr_file
     stdout_file=$(mktemp "${TMPDIR:-/tmp}/gnfs_siqs_256a_stdout.XXXXXX")
@@ -6469,7 +6471,7 @@ run_siqs_256a_profile_process() {
     start_ms=$(timer_start_ms)
     run_with_timeout 1800 /bin/sh -c \
         'stdout_path=$1; stderr_path=$2; shift 2; exec "$@" >"$stdout_path" 2>"$stderr_path"' \
-        sh "$stdout_file" "$stderr_file" "$binary" --workers "$workers" || exit_code=$?
+        sh "$stdout_file" "$stderr_file" "$binary" --workers "$workers" "$@" || exit_code=$?
     local end_ms
     end_ms=$(timer_start_ms)
     local elapsed=$((end_ms - start_ms))
@@ -6528,6 +6530,39 @@ run_siqs_256a_profile_process() {
     (( PASSED_TESTS += 1 ))
     REPORT_ENTRIES+=("{\"name\":\"test_siqs_256a_scale_profile_w${workers}\",\"status\":\"pass\",\"elapsed_ms\":${elapsed}}")
     return 0
+}
+
+# Rename a private, nonempty directory after the stock transcript validator succeeds.
+# Concurrent attempts cannot replace an already published nonempty snapshot.
+write_siqs_256a_snapshot() {
+    local workers="$1" destination="$2" staging
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        log_fail "Snapshot already exists: $destination"
+        return 1
+    fi
+    staging=$(mktemp -d "${BUILD_DIR}/.siqs-256a-rows.XXXXXXXX") || return 1
+    {
+        run_siqs_256a_profile_process "$workers" --stage-rows "${staging}/snapshot" || return 1
+        [[ -f "${staging}/snapshot/rows.bin" && -s "${staging}/snapshot/rows.bin" &&
+           ! -L "${staging}/snapshot/rows.bin" ]] || { log_fail "missing staged rows"; return 1; }
+        python3 - "${staging}/snapshot" "$destination" <<'PYTHON' || return 1
+import os
+import sys
+
+try:
+    os.rename(sys.argv[1], sys.argv[2])
+except OSError as error:
+    sys.exit(f"Cannot publish V3 row snapshot: {error}")
+PYTHON
+    } always {
+        if [[ -d "$staging" ]]; then
+            if [[ -d "${staging}/snapshot" ]]; then
+                rm -f "${staging}/snapshot/rows.bin"
+                rmdir "${staging}/snapshot"
+            fi
+            rmdir "$staging"
+        fi
+    }
 }
 
 # V4 reuses the first four V3 gate records. We mechanically downgrade those
@@ -8589,7 +8624,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}compare-siqs-live-sieve <band>${RESET} — 同一新构建的 1/2/4 独立进程身份对照"
     echo "  ${BULLET} ${CYAN}profile-siqs-cycle-density <workers>${RESET} — 固定 50 位 1/4/16/64 A cycle-density profile"
     echo "  ${BULLET} ${CYAN}compare-siqs-cycle-density${RESET} — 同一新构建的 1/2/4 profile 独立进程对照"
-    echo "  ${BULLET} ${CYAN}profile-siqs-256a <workers>${RESET} — 固定 50 位 256x32 A scale profile"
+    echo "  ${BULLET} ${CYAN}profile-siqs-256a <workers> [--snapshot NAME] | --replay NAME${RESET} — 固定 50 位 256x32 A scale profile"
     echo "  ${BULLET} ${CYAN}compare-siqs-256a${RESET} — 同一新构建的 1/2/4 scale 独立进程对照"
     echo "  ${BULLET} ${CYAN}profile-siqs-256a-proof <workers>${RESET} — 固定 256-A proof-shadow 因子证据"
     echo "  ${BULLET} ${CYAN}compare-siqs-256a-proof${RESET} — 同一新构建的 1/2/4 proof 身份对照"
@@ -9794,15 +9829,28 @@ case "$MODE" in
         ;;
 
     profile-siqs-256a)
-        if [[ ${#MODE_ARGS[@]} -ne 1 ]]; then
-            log_fail "用法: $0 profile-siqs-256a <1|2|4>"
-            exit 1
+        local _scale_workers="" _snapshot_name="" _snapshot_dir="" _replay=0
+        if (( ${#MODE_ARGS[@]} == 2 )) && [[ "${MODE_ARGS[1]}" == "--replay" ]]; then
+            _replay=1
+            _snapshot_name="${MODE_ARGS[2]}"
+        elif (( ${#MODE_ARGS[@]} == 1 )) ||
+             { (( ${#MODE_ARGS[@]} == 3 )) && [[ "${MODE_ARGS[2]}" == "--snapshot" ]]; }; then
+            _scale_workers="${MODE_ARGS[1]}"
+            case "$_scale_workers" in
+                1|2|4) ;;
+                *) usage_error "workers 必须是 1、2 或 4" ;;
+            esac
+            if (( ${#MODE_ARGS[@]} == 3 )); then
+                _snapshot_name="${MODE_ARGS[3]}"
+            fi
+        else
+            usage_error "profile-siqs-256a <1|2|4> [--snapshot NAME] | --replay NAME"
         fi
-        local _scale_workers="${MODE_ARGS[1]}"
-        case "$_scale_workers" in
-            1|2|4) ;;
-            *) log_fail "workers 必须是 1、2 或 4"; exit 1 ;;
-        esac
+        if (( ${#MODE_ARGS[@]} > 1 )); then
+            [[ "$_snapshot_name" =~ '^[a-zA-Z0-9_-]{1,64}$' ]] ||
+                usage_error "snapshot name must contain 1-64 letters, digits, underscores or hyphens"
+            _snapshot_dir="${BUILD_DIR}/siqs-256a-${_snapshot_name}"
+        fi
         if (( BUILD_TYPE_EXPLICIT )) && [[ "$BUILD_TYPE" != "Release" ]]; then
             log_fail "profile-siqs-256a 只接受 Release 构建 (传入: ${BUILD_TYPE})"
             exit 1
@@ -9820,19 +9868,27 @@ case "$MODE" in
             log_fail "profile-siqs-256a 的 timeout 固定为 1800s，不接受 --timeout"
             exit 1
         fi
-        if ! siqs_256a_validator_self_check; then
+        if (( ! _replay )) && ! siqs_256a_validator_self_check; then
             log_fail "SIQS 256-A validator self-check 失败；拒绝启动构建"
             exit 1
         fi
-
-        do_build
-        if [[ ! -x "${BUILD_DIR}/test_siqs_256a_scale_profile" ]]; then
-            log_fail "SIQS 256-A scale profile 二进制不存在: ${BUILD_DIR}/test_siqs_256a_scale_profile"
-            exit 1
+        do_build test_siqs_256a_scale_profile gnfs_test_process_supervisor
+        if (( _replay )); then
+            [[ -d "$_snapshot_dir" && ! -L "$_snapshot_dir" &&
+               -f "${_snapshot_dir}/rows.bin" && ! -L "${_snapshot_dir}/rows.bin" ]] ||
+                usage_error "missing V3 row snapshot: ${_snapshot_name}"
+            local replay_status=0
+            run_with_timeout 60 "${BUILD_DIR}/test_siqs_256a_scale_profile" --replay-rows "${_snapshot_dir}/rows.bin" || replay_status=$?
+            printf '%s\n' "$RUN_OUTPUT"
+            exit "$replay_status"
         fi
         log_header "SIQS 固定 50 位 256x32 A scale profile"
         log_info "Release/NDEBUG；fresh process；workers=${_scale_workers}；timeout=1800s"
-        if run_siqs_256a_profile_process "$_scale_workers"; then
+        if [[ -n "$_snapshot_dir" ]]; then
+            write_siqs_256a_snapshot "$_scale_workers" "$_snapshot_dir" || exit 1
+            printf '%s\n' "$SIQS_256A_PROFILE_OUTPUT"
+            log_success "V3 snapshot: ${_snapshot_dir}/rows.bin"
+        elif run_siqs_256a_profile_process "$_scale_workers"; then
             printf '%s\n' "$SIQS_256A_PROFILE_OUTPUT"
             log_success "严格六行 V3 transcript、全守恒与 solver_ready/RSS scale 证据均有效"
         fi
