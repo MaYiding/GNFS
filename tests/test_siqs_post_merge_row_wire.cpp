@@ -76,6 +76,8 @@ void multiply_mod(Integer& product, const Integer& factor, const Integer& modulu
     for (const uint64_t root : row.large_prime_sqrt_factors) {
         multiply_mod(row.x_modulus, Integer(root), modulus);
     }
+    // Choose the other square root so the wire magnitude grows with the modulus.
+    mpz_sub(row.x_modulus.get_mpz(), modulus.get_mpz(), row.x_modulus.get_mpz());
     return row;
 }
 
@@ -143,6 +145,12 @@ void test_golden_wire() {
     if (decoded.row) {
         CHECK(same_row(*decoded.row, row));
     }
+
+    row.source_ids.push_back({7});
+    const auto duplicate = encode_siqs_post_merge_row(row);
+    CHECK(!duplicate.bytes);
+    CHECK(duplicate.error == SIQSPostMergeRowWireError::invalid_source_ids);
+    CHECK(duplicate.error_offset == 65);
 }
 
 void test_cross_size_arithmetic_and_parity() {
@@ -152,12 +160,16 @@ void test_cross_size_arithmetic_and_parity() {
         {"300000000000000000000000000000000000000044471",
          "400000000000000000000000000000000000000019639"},
     }};
-    for (const auto& factor_pair : factors) {
+    constexpr std::array<std::size_t, 3> expected_x_sizes{21, 29, 37};
+    for (std::size_t i = 0; i < factors.size(); ++i) {
+        const auto& factor_pair = factors[i];
+        const std::size_t x_size = expected_x_sizes[i];
         const Integer modulus = Integer(factor_pair[0]) * Integer(factor_pair[1]);
         const SIQSPostMergeRow row = make_identity_row(modulus);
         const Integer rhs = independent_rhs(row, modulus);
         Integer lhs;
         mpz_mul(lhs.get_mpz(), row.x_modulus.get_mpz(), row.x_modulus.get_mpz());
+        CHECK(lhs > modulus);
         mpz_mod(lhs.get_mpz(), lhs.get_mpz(), modulus.get_mpz());
         CHECK(lhs == rhs);
         CHECK(check_siqs_post_merge_row_identity(
@@ -169,6 +181,14 @@ void test_cross_size_arithmetic_and_parity() {
         if (!encoded.bytes) {
             continue;
         }
+        CHECK(encoded.bytes->size() == 40 + x_size + 8 * (3 + 2 + 2));
+        if (encoded.bytes->size() < 40 + x_size) {
+            continue;
+        }
+        CHECK((*encoded.bytes)[24] == static_cast<std::byte>(x_size));
+        Integer wire_x;
+        mpz_import(wire_x.get_mpz(), x_size, -1, 1, 1, 0, encoded.bytes->data() + 40);
+        CHECK(wire_x == row.x_modulus);
         const auto decoded = decode_siqs_post_merge_row(*encoded.bytes);
         CHECK(decoded);
         if (!decoded.row) {
@@ -237,8 +257,9 @@ void test_rejects_malformed_frames() {
 
     auto bad_sources = *encoded.bytes;
     put_u64(bad_sources, 66, 6);
-    expect_error(decode_siqs_post_merge_row(bad_sources),
-                 SIQSPostMergeRowWireError::invalid_source_ids);
+    const auto unordered = decode_siqs_post_merge_row(bad_sources);
+    expect_error(unordered, SIQSPostMergeRowWireError::invalid_source_ids);
+    CHECK(unordered.error_offset == 66);
 
     auto over_limit = *encoded.bytes;
     put_u64(over_limit, 12,

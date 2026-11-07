@@ -204,7 +204,7 @@ constexpr void write_u64(std::vector<std::byte>& bytes, std::size_t offset,
     return result;
 }
 
-[[nodiscard]] inline std::vector<std::byte> export_integer(const core::Integer& value) {
+[[nodiscard]] inline std::size_t integer_wire_size(const core::Integer& value) {
     const std::size_t bit_count = mpz_sizeinbase(value.get_mpz(), 2);
     if (bit_count > std::numeric_limits<std::size_t>::max() - 7) {
         throw WireSizeOverflow("SIQS row integer size overflows byte conversion");
@@ -213,35 +213,19 @@ constexpr void write_u64(std::vector<std::byte>& bytes, std::size_t offset,
     if (byte_count > SIQS_POST_MERGE_ROW_WIRE_MAX_BYTES - payload_offset) {
         throw WireResourceLimit("SIQS row integer exceeds wire resource limit");
     }
-    std::vector<std::byte> result(byte_count, std::byte{0});
-    if (value.is_zero()) {
-        return result;
-    }
-    // mpz_export with order -1 and one-byte words is explicitly least-significant
-    // byte first and therefore independent of host word endianness.
-    std::vector<unsigned char> raw(byte_count, 0);
-    std::size_t exported = 0;
-    mpz_export(raw.data(), &exported, -1, 1, 1, 0, value.get_mpz());
-    if (exported != byte_count) {
-        throw std::runtime_error("SIQS row integer export size mismatch");
-    }
-    for (std::size_t i = 0; i < byte_count; ++i) {
-        result[i] = static_cast<std::byte>(raw[i]);
-    }
-    return result;
+    return byte_count;
 }
 
-[[nodiscard]] inline Status validate_row_shape(const SIQSPostMergeRow& row) noexcept {
-    if (row.x_modulus.is_negative()) {
-        return failure(SIQSPostMergeRowWireError::invalid_row, 0);
-    }
+[[nodiscard]] inline Status validate_row_shape(const SIQSPostMergeRow& row,
+                                               std::size_t total_size) noexcept {
     if (row.source_ids.empty()) {
         return failure(SIQSPostMergeRowWireError::invalid_source_ids, source_count_offset);
     }
     for (std::size_t i = 1; i < row.source_ids.size(); ++i) {
         if (row.source_ids[i - 1] >= row.source_ids[i]) {
+            // Source IDs occupy the final field in the size-checked frame.
             return failure(SIQSPostMergeRowWireError::invalid_source_ids,
-                           payload_offset + i * source_id_wire_size);
+                           total_size - (row.source_ids.size() - i) * source_id_wire_size);
         }
     }
     uint32_t previous_index = 0;
@@ -367,16 +351,19 @@ constexpr void write_u64(std::vector<std::byte>& bytes, std::size_t offset,
 [[nodiscard]] inline SIQSPostMergeRowWireEncodeResult
 encode_siqs_post_merge_row(const SIQSPostMergeRow& row) noexcept {
     using namespace post_merge_row_wire_detail;
-    const Status shape = validate_row_shape(row);
-    if (!shape) {
-        return {std::nullopt, shape.error, shape.offset};
+    if (row.x_modulus.is_negative()) {
+        return {std::nullopt, SIQSPostMergeRowWireError::invalid_row, 0};
     }
     try {
-        const auto x_bytes = export_integer(row.x_modulus);
+        const std::size_t x_size = integer_wire_size(row.x_modulus);
         std::size_t total_size = 0;
-        const Status size_status = checked_wire_size(row, x_bytes.size(), total_size);
+        const Status size_status = checked_wire_size(row, x_size, total_size);
         if (!size_status) {
             return {std::nullopt, size_status.error, size_status.offset};
+        }
+        const Status shape = validate_row_shape(row, total_size);
+        if (!shape) {
+            return {std::nullopt, shape.error, shape.offset};
         }
         std::vector<std::byte> bytes(total_size, std::byte{0});
         for (std::size_t i = 0; i < 8; ++i) {
@@ -385,16 +372,22 @@ encode_siqs_post_merge_row(const SIQSPostMergeRow& row) noexcept {
         write_u32(bytes, 8, SIQS_POST_MERGE_ROW_WIRE_VERSION);
         write_u64(bytes, declared_size_offset, static_cast<uint64_t>(total_size));
         bytes[flags_offset] = static_cast<std::byte>(row.q_negative ? 1 : 0);
-        write_u32(bytes, x_size_offset, static_cast<uint32_t>(x_bytes.size()));
+        write_u32(bytes, x_size_offset, static_cast<uint32_t>(x_size));
         write_u32(bytes, factor_count_offset, static_cast<uint32_t>(row.factor_powers.size()));
         write_u32(bytes, large_prime_count_offset,
                   static_cast<uint32_t>(row.large_prime_sqrt_factors.size()));
         write_u32(bytes, source_count_offset, static_cast<uint32_t>(row.source_ids.size()));
 
-        std::size_t cursor = payload_offset;
-        for (const std::byte byte : x_bytes) {
-            bytes[cursor++] = byte;
+        // Zero is already one zero byte. Export other magnitudes least-significant byte first.
+        if (!row.x_modulus.is_zero()) {
+            std::size_t exported = 0;
+            mpz_export(bytes.data() + payload_offset, &exported, -1, 1, 1, 0,
+                       row.x_modulus.get_mpz());
+            if (exported != x_size) {
+                return {std::nullopt, SIQSPostMergeRowWireError::invalid_row, x_size_offset};
+            }
         }
+        std::size_t cursor = payload_offset + x_size;
         for (const SIQSFactorPower& power : row.factor_powers) {
             write_u32(bytes, cursor, power.factor_base_index);
             cursor += 4;
@@ -479,11 +472,10 @@ decode_siqs_post_merge_row(std::span<const std::byte> bytes) noexcept {
         row.source_ids.reserve(source_count);
         for (uint32_t i = 0; i < source_count; ++i) {
             const SIQSSourceId source_id{read_u64(bytes, cursor)};
-            cursor += 8;
             if (!row.source_ids.empty() && row.source_ids.back() >= source_id) {
-                return {std::nullopt, SIQSPostMergeRowWireError::invalid_source_ids,
-                        source_count_offset};
+                return {std::nullopt, SIQSPostMergeRowWireError::invalid_source_ids, cursor};
             }
+            cursor += source_id_wire_size;
             row.source_ids.push_back(source_id);
         }
         if (cursor != total_size) {
