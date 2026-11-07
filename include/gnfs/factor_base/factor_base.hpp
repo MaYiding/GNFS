@@ -125,9 +125,7 @@ public:
             throw std::overflow_error(
                 "FactorBase::add_rational: rational-prime count exceeds uint32_t");
         }
-        uint32_t idx = static_cast<uint32_t>(rational_.size());
-        rational_.push_back(RationalPrime{p, log_p});
-        rat_index_[p] = idx;
+        append_indexed_prime(rational_, rat_index_, p, RationalPrime{p, log_p});
     }
 
     /// 添加代数侧素理想
@@ -136,10 +134,8 @@ public:
             throw std::overflow_error(
                 "FactorBase::add_algebraic: algebraic-prime count exceeds uint32_t");
         }
-        uint32_t idx = static_cast<uint32_t>(algebraic_.size());
-        algebraic_.push_back(AlgebraicPrime{p, r, log_p, degree});
-        uint64_t key = (static_cast<uint64_t>(p) << 32) | r;
-        alg_index_[key] = idx;
+        const uint64_t key = (static_cast<uint64_t>(p) << 32) | r;
+        append_indexed_prime(algebraic_, alg_index_, key, AlgebraicPrime{p, r, log_p, degree});
     }
 
     /// 设置参数
@@ -212,6 +208,24 @@ public:
     }
 
 private:
+    template <typename Prime, typename Key>
+    static void append_indexed_prime(std::vector<Prime>& primes,
+                                     std::unordered_map<Key, uint32_t>& index, Key key,
+                                     Prime prime) {
+        // Stage a new key before growing the vector so a failed add also keeps
+        // existing spans valid. Duplicate keys change columns only on success.
+        const auto column = static_cast<uint32_t>(primes.size());
+        const auto [entry, inserted] = index.try_emplace(key, column);
+        try {
+            primes.push_back(prime);
+        } catch (...) {
+            if (inserted)
+                index.erase(entry);
+            throw;
+        }
+        entry->second = column;
+    }
+
     [[nodiscard]] static constexpr size_t max_serialized_count() noexcept {
         return static_cast<size_t>((std::numeric_limits<uint32_t>::max)());
     }
