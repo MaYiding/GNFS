@@ -973,6 +973,17 @@ void test_special_q_root_identity_validation() {
     CHECK(projective->algebraic_large_prime[0].e == 1);
     CHECK(!projective_cofactorizer.verify(2, 7, 7, 0).has_value());
 
+    // Both candidates have rational and algebraic value 7. A congruence
+    // for q=11 alone does not make it a factor of either algebraic norm.
+    CHECK(ordinary_cofactorizer.verify(8, 1).has_value());
+    CHECK(ordinary_cofactorizer.verify(18, 11).has_value());
+    CHECK(Cofactorizer::special_q_root_matches(8, 1, 11, 8));
+    CHECK(Cofactorizer::special_q_root_matches(18, 11, 11, projective_root));
+    const auto rejects = ordinary_cofactorizer.stats().algebraic_rejects;
+    CHECK(!ordinary_cofactorizer.verify(8, 1, 11, 8));
+    CHECK(!ordinary_cofactorizer.verify(18, 11, 11, projective_root));
+    CHECK(ordinary_cofactorizer.stats().algebraic_rejects == rejects + 2);
+
     std::cout << "  Special-Q root identity validation: PASSED" << std::endl;
 }
 

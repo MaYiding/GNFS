@@ -350,6 +350,10 @@ private:
                     ++sq_exp;
                 }
             }
+            if (sq_exp == 0) {
+                stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
+                return std::nullopt;
+            }
         }
 
         auto alg_result = divider_.divide_algebraic_prefix(std::move(alg_norm), a, b,
