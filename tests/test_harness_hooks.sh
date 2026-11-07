@@ -221,7 +221,8 @@ assert_unknown_module_rejected() {
         "${runner_root}/scripts/lib/changed_files.zsh"
 
     set +e
-    zsh "${runner_root}/scripts/test.sh" --no-build --no-color module \
+    GNFS_BUILD_DIR="${runner_root}/build" \
+        zsh "${runner_root}/scripts/test.sh" --no-build --no-color module \
         "${unknown_module}" >"${output}" 2>&1
     runner_status=$?
     set -e
