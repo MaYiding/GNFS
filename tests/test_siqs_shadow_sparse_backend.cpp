@@ -522,16 +522,22 @@ void test_matrix_status_mapping_contract() {
 void test_signed_sparse_dependency_extracts_factors() {
     auto first = make_zero_shadow_row(0);
     auto second = make_zero_shadow_row(1);
+    auto mixed = make_zero_shadow_row(2);
     // 8 and 18 are distinct square roots of -1 modulo 65.
     first.row.x_modulus = Integer(8);
     second.row.x_modulus = Integer(18);
     first.row.q_negative = true;
     second.row.q_negative = true;
-    const std::vector<SIQSShadowRow> rows{first, second};
-    CHECK(!dependency_is_zero(rows, {0}, 1));
-    CHECK(dependency_is_zero(rows, {0, 1}, 1));
+    // 6 squared is -29 modulo 65, with separate odd sign and prime columns.
+    mixed.row.x_modulus = Integer(6);
+    mixed.row.q_negative = true;
+    mixed.row.factor_powers = {{1, 1}};
+    const std::vector<SIQSShadowRow> rows{first, second, mixed};
+    const std::vector<uint32_t> factor_base{0, 29};
+    CHECK(!dependency_is_zero(rows, {0}, factor_base.size()));
+    CHECK(dependency_is_zero(rows, {0, 1}, factor_base.size()));
+    CHECK(!dependency_is_zero(rows, {2}, factor_base.size()));
 
-    const std::vector<uint32_t> factor_base{0};
     const Integer modulus(65);
     SIQSShadowMatrixOptions options;
     options.backend = SIQSShadowMatrixBackend::sparse_only;
