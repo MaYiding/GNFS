@@ -320,6 +320,33 @@ The binaries run serially with a default 120-second timeout per binary. An expli
 
 The runner supports Linux and macOS. On any other host it prints an explicit unsupported message, records the lane as skipped, and exits successfully. On Linux or macOS, CMake requires a Clang or GNU toolchain that can compile and link the ThreadSanitizer runtime; configuration fails instead of silently executing uninstrumented binaries when that contract is not met. `--no-build` likewise refuses a cache unless it records `GNFS_ENABLE_TSAN=ON`.
 
+## SIQS Shadow Matrix Gate
+
+Run the bounded SIQS shadow correctness and benchmark-schema gate with:
+
+```bash
+./scripts/test.sh gate-siqs-shadow
+```
+
+The mode always uses one Release/NDEBUG build for the current tree and rejects
+`--no-build`, non-Release `-t`, and automatic `--retry`. It then runs the
+cross-size constructed corpus, the explicit-prefer legacy-fallback route, a
+50-digit-shaped public solve with workers `1,2,4`, and a crossover-shaped
+kernel comparison with workers `1,4`. The solve case uses 1,601 factor-base
+entries and 1,701 rows. The kernel case uses 4,000 entries and 4,100 rows.
+Each case uses an odd weight of 20, zero warmups, one repetition, and a
+parallel threshold of zero. The configuration record and every result must
+report those parameters. The runner also checks the complete set of requested
+workers and implementations, ordered timing statistics, and a shared result
+digest within each case.
+
+The gate does not promote the shadow route, enable 2LP collection, or assert a
+wall-time budget. It emits one closed
+`GNFS_SIQS_SHADOW_MATRIX_GATE_V1` summary with `promotion=false`; timing values
+remain diagnostic evidence. The mode is intentionally a script-level gate,
+not a CTest entry, because the benchmark executable is Release-only and its
+measurements must come from the same build as the correctness checks.
+
 ## Resource Measurement Lanes
 
 `test_process_memory` is an `instant` cross-platform contract test. It checks
