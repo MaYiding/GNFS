@@ -12,6 +12,7 @@
 #include <exception>
 #include <initializer_list>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -23,13 +24,13 @@ std::atomic<size_t> worker_requests{0};
 std::atomic<size_t> failing_worker_bytes{0};
 std::atomic<bool> allocation_failure_triggered{false};
 std::thread::id caller;
-size_t caller_bytes = 0;
+size_t caller_bytes = 0; // Zero observes all caller allocations.
 size_t worker_bytes = 0;
 
 void* allocate(size_t bytes) {
     if (observing.load(std::memory_order_relaxed)) {
         if (std::this_thread::get_id() == caller) {
-            if (bytes == caller_bytes)
+            if (caller_bytes == 0 || bytes == caller_bytes)
                 caller_requests.fetch_add(1, std::memory_order_relaxed);
         } else {
             if (bytes == worker_bytes)
@@ -110,6 +111,53 @@ int main() {
 
     const Integer n(143u);
     const auto params = select_params(3);
+    // Count all caller allocations before selecting individual buffers below.
+    {
+        ScopedObserver observer;
+        void* (*volatile forced_allocate)(size_t) = &::operator new;
+        ::operator delete(forced_allocate(sizeof(uint32_t)));
+    }
+    GNFS_TEST_CHECK(caller_requests.load() == 1);
+
+    using Stop = MultiplierPortfolioStop;
+    constexpr struct {
+        int elapsed_seconds;
+        size_t budget;
+        size_t limit;
+        Stop expected;
+    } closed[] = {{0, 60, 0, Stop::attempt_limit},
+                  {0, 0, 0, Stop::attempt_limit},
+                  {0, 0, 3, Stop::budget_exhausted},
+                  {60, 1, 3, Stop::budget_exhausted},
+                  {-60, 1, 3, Stop::budget_exhausted}};
+    for (const auto& test : closed) {
+        const FactorAttemptContext context{Clock::now() -
+                                               std::chrono::seconds(test.elapsed_seconds),
+                                           test.budget, false, 3, params};
+        const auto stopped = [&] {
+            ScopedObserver observer;
+            return factor_multiplier_portfolio(n, SIQSShadowProofMode::prefer, context, test.limit);
+        }();
+        GNFS_TEST_CHECK(caller_requests.load() == 0);
+        GNFS_TEST_CHECK(stopped.stop == test.expected && stopped.attempts_started == 0);
+        GNFS_TEST_CHECK(!stopped.result && !stopped.failure &&
+                        stopped.any_observe_record_committed == false);
+    }
+
+    const FactorAttemptContext zero_budget{Clock::now(), 0, false, 3, params};
+    for (const bool invalid_modulus : {true, false}) {
+        bool rejected = false;
+        try {
+            const auto mode =
+                invalid_modulus ? SIQSShadowProofMode::off : static_cast<SIQSShadowProofMode>(255);
+            (void)factor_multiplier_portfolio(invalid_modulus ? Integer(16u) : n, mode, zero_budget,
+                                              0);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        GNFS_TEST_CHECK(rejected);
+    }
+
     // Match the native initial relation reserve and each worker's sieve buffer.
     // The unexpired native control below verifies both observations still fire.
     caller_bytes = (static_cast<size_t>(params.fb_size) + 1 + 50) * 10 * sizeof(SIQSRelation);

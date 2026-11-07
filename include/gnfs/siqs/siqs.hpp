@@ -2554,6 +2554,13 @@ struct MultiplierPortfolioOutcome {
 
 static_assert(std::is_nothrow_move_constructible_v<MultiplierPortfolioOutcome>);
 
+inline bool multiplier_budget_exhausted(const FactorAttemptContext& context,
+                                        std::chrono::steady_clock::time_point observed) noexcept {
+    return context.max_seconds == 0 || observed < context.started ||
+           std::chrono::duration<double>(observed - context.started).count() >=
+               static_cast<double>(context.max_seconds);
+}
+
 /// Control-flow seam; the native entry below binds the real clock and executor.
 /// Callback results must obey the native FactorAttemptOutcome contract.
 /// All candidate allocations precede attempt execution. Once an attempt returns
@@ -2572,10 +2579,7 @@ inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
     }
     const auto eligible = siqs_multiplier_detail::admit_candidates(N, full_ranking, limit);
     for (uint32_t multiplier : eligible) {
-        const auto observed = now();
-        if (context.max_seconds == 0 || observed < context.started ||
-            std::chrono::duration<double>(observed - context.started).count() >=
-                static_cast<double>(context.max_seconds)) {
+        if (multiplier_budget_exhausted(context, now())) {
             outcome.stop = MultiplierPortfolioStop::budget_exhausted;
             return outcome;
         }
@@ -2661,13 +2665,21 @@ factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode
         requested_mode != SIQSShadowProofMode::observe &&
         requested_mode != SIQSShadowProofMode::prefer)
         throw std::invalid_argument("SIQS multiplier portfolio requires a supported shadow mode");
-    const auto ranking = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
-    auto outcome = coordinate_multiplier_attempts(
-        N, ranking, requested_mode, context, requested_limit,
-        []() noexcept { return std::chrono::steady_clock::now(); },
-        [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
-            return factor_once(N, multiplier, mode, shared);
-        });
+    const auto now = []() noexcept { return std::chrono::steady_clock::now(); };
+    auto outcome = [&] {
+        if (requested_limit == 0 || multiplier_budget_exhausted(context, now())) {
+            MultiplierPortfolioOutcome skipped;
+            skipped.stop = requested_limit == 0 ? MultiplierPortfolioStop::attempt_limit
+                                                : MultiplierPortfolioStop::budget_exhausted;
+            return skipped;
+        }
+        const auto ranking = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
+        return coordinate_multiplier_attempts(
+            N, ranking, requested_mode, context, requested_limit, now,
+            [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
+                return factor_once(N, multiplier, mode, shared);
+            });
+    }();
     if (context.verbose) {
         const auto commit_name = [](std::optional<bool> committed) noexcept {
             return !committed.has_value() ? "unknown" : *committed ? "true" : "false";
