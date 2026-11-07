@@ -1658,7 +1658,69 @@ bool test_rational_factor_base_order_preflight() {
     return true;
 }
 
+bool test_algebraic_factor_base_order_preflight() {
+    Config cfg;
+    cfg.verbose = false;
+    cfg.degree = 2;
+    cfg.rational_bound = 97;
+    cfg.algebraic_bound = 97;
+    cfg.large_prime_bound = 10000;
+    Pipeline pipeline(Integer(143), cfg);
+    const auto& params = pipeline.params();
+    const gnfs::core::FactorBaseParams fb_params{params.rational_bound, params.algebraic_bound,
+                                                 params.large_prime_bound};
+    PolynomialContext ctx(Integer(143), {Integer(-1), Integer(0), Integer(1)}, Integer(1));
+    size_t callbacks = 0;
+    pipeline.set_progress_callback([&](const ProgressInfo&) {
+        ++callbacks;
+        throw std::runtime_error("ordered algebraic base passed preflight");
+    });
+    pipeline.set_log_callback([&](const LogEntry&) { ++callbacks; });
+    using Entry = std::pair<uint32_t, uint32_t>;
+    const std::vector<std::vector<Entry>> rejected_entries{
+        {{7, 6}, {3, 1}},
+        {{3, 1}, {3, 2}, {3, 1}},
+    };
+    for (size_t i = 0; i < rejected_entries.size(); ++i) {
+        gnfs::factor_base::FactorBase fb(fb_params);
+        for (const auto& [prime, root] : rejected_entries[i]) {
+            fb.add_algebraic(prime, root, 1);
+        }
+        fb.set_sieve_algebraic_count_explicit(rejected_entries[i].size());
+        bool rejected = false;
+        try {
+            (void)pipeline.sieve_and_collect(ctx, fb);
+        } catch (const std::invalid_argument& error) {
+            const auto expected = i == 0 ? "nondecreasing" : "duplicate algebraic prime/root";
+            rejected = std::string_view(error.what()).find(expected) != std::string_view::npos;
+        }
+        if (!rejected || callbacks != 0) {
+            std::cout << "(invalid algebraic base accepted or emitted a callback) ";
+            return false;
+        }
+    }
+    gnfs::factor_base::FactorBase valid(fb_params);
+    for (const auto& [prime, root] : std::vector<Entry>{{3, 2}, {3, 1}, {67, 66}, {67, 1}}) {
+        valid.add_algebraic(prime, root, 1);
+    }
+    valid.set_sieve_algebraic_count_explicit(4);
+    bool reached_sieve = false;
+    try {
+        (void)pipeline.sieve_and_collect(ctx, valid);
+    } catch (const std::runtime_error& error) {
+        reached_sieve = std::string_view(error.what()) == "ordered algebraic base passed preflight";
+    }
+    if (!reached_sieve || callbacks != 1) {
+        std::cout << "(valid distinct roots did not pass preflight) ";
+        return false;
+    }
+    return true;
+}
+
 bool test_pipeline_context_and_factor_base_contract() {
+    if (!test_algebraic_factor_base_order_preflight()) {
+        return false;
+    }
     if (!test_rational_factor_base_order_preflight()) {
         return false;
     }
