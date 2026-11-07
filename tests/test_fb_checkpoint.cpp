@@ -9,7 +9,9 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -708,6 +710,49 @@ void test_remove_and_nonexistent() {
     std::cout << "  Remove + nonexistent: PASS" << std::endl;
 }
 
+void test_serialized_rational_order() {
+    std::cout << "Testing checkpoint rational-prime order..." << std::endl;
+    const auto path = tmp_ckpt_path("rational_order");
+    CkptCleanup cleanup{path};
+    for (const bool fingerprint : {false, true}) {
+        for (const auto& primes :
+             {std::vector<uint32_t>{2, 3, 5, 7}, std::vector<uint32_t>{2, 7, 3, 5},
+              std::vector<uint32_t>{2, 3, 3, 5}}) {
+            FbCheckpoint checkpoint;
+            checkpoint.rational_bound = 97;
+            checkpoint.ctx_n = Integer(143);
+            checkpoint.ctx_fingerprint_present = fingerprint;
+            for (uint32_t prime : primes) {
+                checkpoint.rational.push_back(RationalPrime{prime, 1});
+            }
+            checkpoint.save(path);
+            const auto original = read_bytes(path, std::filesystem::file_size(path));
+            std::optional<FbCheckpoint> loaded;
+            std::string rejection;
+            try {
+                loaded.emplace(FbCheckpoint::load(path));
+            } catch (const std::runtime_error& error) {
+                rejection = error.what();
+            }
+            GNFS_TEST_CHECK(loaded.has_value() == (primes == std::vector<uint32_t>{2, 3, 5, 7}));
+            if (!loaded) {
+                const char* expected = primes[1] == 7 ? "not strictly increasing" : "duplicate";
+                GNFS_TEST_CHECK(rejection.find(expected) != std::string::npos);
+            }
+            if (loaded) {
+                GNFS_TEST_CHECK(loaded->ctx_fingerprint_present == fingerprint);
+                GNFS_TEST_CHECK(loaded->rational.size() == primes.size());
+                for (size_t i = 0; i < primes.size(); ++i) {
+                    GNFS_TEST_CHECK(loaded->rational[i].p == primes[i]);
+                }
+            }
+            GNFS_TEST_CHECK(std::filesystem::file_size(path) == original.size());
+            GNFS_TEST_CHECK(read_bytes(path, original.size()) == original);
+        }
+    }
+    std::cout << "  Checkpoint rational-prime order: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "===== FbCheckpoint Tests =====" << std::endl;
     test_roundtrip_small_fb();
@@ -723,6 +768,7 @@ int main() {
     test_incomplete_magic_rejected();
     test_version_mismatch_rejected();
     test_malformed_entries_rejected();
+    test_serialized_rational_order();
     test_truncated_payload_rejected_before_allocation();
     test_remove_and_nonexistent();
     std::cout << "\n===== All FbCheckpoint tests PASSED =====" << std::endl;
