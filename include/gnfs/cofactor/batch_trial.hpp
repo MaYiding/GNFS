@@ -24,9 +24,9 @@
 //     returned (this API is a smoothness pre-filter, not a full factorization
 //     replacement). For relations the caller still goes through TrialDivider
 //     for the factor-index/exponent accounting.
-//   - ENV-gated via `batch_trial_size_from_env()`. When K=1 (default) the
-//     wider GNFS pipeline keeps the per-cofactor path; opting in requires
-//     `GNFS_COFACTOR_BATCH_SIZE=K` with K ≥ 2 at runtime.
+//   - The caller selects the batch by passing a span. The optional
+//     batch_trial_size_from_env() helper parses a suggested size for callers.
+//     The GNFS CLI uses its existing per-cofactor trial division.
 //
 // Cross-platform notes:
 //   - Sieve uses std::vector<bool> + simple Eratosthenes (zero-alloc beyond
