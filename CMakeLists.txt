@@ -3122,6 +3122,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsPostMergeRow COMMAND test_siqs_post_merge_row)
     set_tests_properties(SiqsPostMergeRow PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_post_merge_row_wire
+        tests/test_siqs_post_merge_row_wire.cpp
+    )
+    target_link_libraries(test_siqs_post_merge_row_wire PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsPostMergeRowWire COMMAND test_siqs_post_merge_row_wire)
+    set_tests_properties(SiqsPostMergeRowWire PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_assembly
         tests/test_siqs_shadow_assembly.cpp
     )
@@ -3135,6 +3142,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_siqs_shadow_linear_algebra PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SiqsShadowLinearAlgebra COMMAND test_siqs_shadow_linear_algebra)
     set_tests_properties(SiqsShadowLinearAlgebra PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_sparse_backend
+        tests/test_siqs_shadow_sparse_backend.cpp
+    )
+    target_link_libraries(test_siqs_shadow_sparse_backend PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowSparseBackend COMMAND test_siqs_shadow_sparse_backend)
+    set_tests_properties(SiqsShadowSparseBackend PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_siqs_shadow_proof_runner
         tests/test_siqs_shadow_proof_runner.cpp

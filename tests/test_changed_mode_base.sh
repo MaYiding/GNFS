@@ -358,7 +358,9 @@ valid = [
     ['diff', '--deep'], ['module', 'siqs', '--slow'],
     ['bench', '--save'], ['bench', '--compare'],
 ]
-for options in invalid + valid:
+
+
+def check_argument_case(options):
     if marker.exists():
         marker.unlink()
     result = subprocess.run(
@@ -366,12 +368,24 @@ for options in invalid + valid:
         text=True, capture_output=True, cwd=fixture, env=environment, timeout=10,
     )
     rejected = options in invalid
+    calls = marker.read_text().splitlines() if marker.exists() else []
     if (result.returncode != (2 if rejected else 99)
-            or marker.exists() == rejected
+            or calls != ([] if rejected else ['called'])
             or (rejected and '参数错误' not in result.stdout + result.stderr)):
         raise SystemExit(f'Argument validation failed for {options!r}: '
-                         f'exit={result.returncode}, cmake_called={marker.exists()}\n'
+                         f'exit={result.returncode}, cmake_calls={calls!r}\n'
                          f'{result.stdout}{result.stderr}')
+
+
+for options in invalid + valid:
+    check_argument_case(options)
+
+# A Debug request on a cached Release build takes the reconfiguration path.
+# It must propagate the same CMake failure before attempting to build.
+cached_build = Path(environment['GNFS_BUILD_DIR'])
+cached_build.mkdir(exist_ok=True)
+(cached_build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Release\n')
+check_argument_case(['changed'])
 
 module = subprocess.run(
     ['zsh', '-s'], input=recorders + '\n' + definitions
