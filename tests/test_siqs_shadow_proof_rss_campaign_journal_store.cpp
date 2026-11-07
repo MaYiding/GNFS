@@ -5397,6 +5397,86 @@ void test_artifact_root_identity_and_generation_are_revalidated() {
     }
 }
 
+bool rejected_before_artifact_publication(
+    std::string_view scenario, bool succeeded,
+    const SIQSShadowProofRssCampaignJournalStoreDiagnostic& diagnostic, bool taint_exists,
+    bool new_artifact_exists) {
+    if (!succeeded && diagnostic.error == StoreError::snapshot_changed &&
+        diagnostic.object == StoreObject::artifact_root && !taint_exists && !new_artifact_exists &&
+        !diagnostic.last_durable_publication_object.has_value()) {
+        return true;
+    }
+    std::cerr << scenario << " error="
+              << siqs_shadow_proof_rss_campaign_journal_store_error_name(diagnostic.error)
+              << " object="
+              << siqs_shadow_proof_rss_campaign_journal_store_object_name(diagnostic.object)
+              << " publication_status="
+              << (diagnostic.publication_status.has_value()
+                      ? std::to_string(static_cast<unsigned>(*diagnostic.publication_status))
+                      : "none")
+              << " taint_exists=" << taint_exists << " new_artifact_exists=" << new_artifact_exists
+              << '\n';
+    return false;
+}
+
+void test_active_slot_rejects_changed_committed_artifact_before_writing() {
+    constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "synthetic-joined\n";
+    bool all_rejected = true;
+    for (const bool publish_artifacts : {false, true}) {
+        TempStore fixture;
+        write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        // Overwrite one existing byte without changing the artifact directory or file length.
+        const auto original_stdout = artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stdout);
+        std::fstream output(fixture.artifact_leaf(original_stdout.view()),
+                            std::ios::binary | std::ios::in | std::ios::out);
+        output.put('S');
+        output.close();
+        CHECK(output);
+
+        SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+        bool succeeded;
+        if (publish_artifacts) {
+            const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+                *active, stdout_bytes, stderr_bytes, joined_bytes);
+            succeeded = static_cast<bool>(publication);
+            diagnostic = publication.diagnostic;
+        } else {
+            const auto taint = std::move(*active).taint();
+            succeeded = static_cast<bool>(taint);
+            diagnostic = taint.diagnostic();
+        }
+
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(4);
+        CHECK(taint_leaf.has_value());
+        const bool taint_exists = std::filesystem::exists(fixture.store_leaf(taint_leaf->view()));
+        bool new_artifact_exists = false;
+        for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                                SIQSShadowProofRssArtifactKind::probe_stderr,
+                                SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+            const auto leaf = artifact_leaf(2, kind);
+            new_artifact_exists |= std::filesystem::exists(fixture.artifact_leaf(leaf.view()));
+        }
+        if (!rejected_before_artifact_publication(
+                publish_artifacts ? "changed committed artifact before batch"
+                                  : "changed committed artifact before taint",
+                succeeded, diagnostic, taint_exists, new_artifact_exists)) {
+            all_rejected = false;
+        }
+        CHECK(bytes_as_string(fixture.read_artifact_leaf(original_stdout.view())) ==
+              "Synthetic-stdout\n");
+    }
+    CHECK(all_rejected);
+}
+
 void test_active_slot_actions_revalidate_authority_before_publication() {
     constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
     constexpr std::string_view stderr_bytes;
@@ -5441,12 +5521,12 @@ void test_active_slot_actions_revalidate_authority_before_publication() {
         fixture.write_artifact_leaf("unexpected.rssa", "sentinel");
 
         const auto taint = std::move(*active).taint();
-        CHECK(!static_cast<bool>(taint));
-        CHECK(taint.diagnostic().error == StoreError::snapshot_changed);
-        CHECK(taint.diagnostic().object == StoreObject::artifact_root);
         const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
         CHECK(taint_leaf.has_value());
-        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+        const bool taint_exists = std::filesystem::exists(fixture.store_leaf(taint_leaf->view()));
+        CHECK(rejected_before_artifact_publication("unexpected artifact before taint",
+                                                   static_cast<bool>(taint), taint.diagnostic(),
+                                                   taint_exists, false));
     }
     {
         TempStore fixture;
@@ -6589,6 +6669,7 @@ int main(int argc, char** argv) {
         test_begin_crash_recovers_only_through_pending_taint(executable);
         test_artifact_root_is_required_and_private();
         test_artifact_root_identity_and_generation_are_revalidated();
+        test_active_slot_rejects_changed_committed_artifact_before_writing();
         test_active_slot_actions_revalidate_authority_before_publication();
         test_private_artifact_batch_publisher_preserves_closed_commit_boundary(executable);
         test_artifact_batch_validates_mode_and_bounds_before_publication();
