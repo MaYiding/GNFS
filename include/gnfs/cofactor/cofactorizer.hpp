@@ -285,7 +285,8 @@ private:
                       config_.max_factorization_attempts);
 
         // Rational-first 短路: 有理侧不可接受 → 跳过代数试除
-        if (!is_acceptable_cofactor(rat_class)) {
+        if (!is_acceptable_cofactor(rat_class) ||
+            !factor_columns_fit(rat_result, fb_.rational_count())) {
             stats_.rational_rejects.fetch_add(1, std::memory_order_relaxed);
             return std::nullopt;
         }
@@ -339,8 +340,8 @@ private:
             }
         }
 
-        auto alg_result =
-            divider_.divide_algebraic(std::move(alg_norm), a, b, fb_.sieve_algebraic_count());
+        auto alg_result = divider_.divide_algebraic_prefix(std::move(alg_norm), a, b,
+                                                           fb_.sieve_algebraic_count());
 
         // Fast reject: if 2LP disabled and cofactor > LP_bound, skip expensive classify.
         // allow_3lp 时阈值升到 B³.
@@ -372,7 +373,8 @@ private:
                       config_.seeded_ecm_brent_suyama_degree, config_.seeded_brent_pollard_enabled,
                       config_.max_factorization_attempts);
 
-        if (!is_acceptable_cofactor(alg_class)) {
+        if (!is_acceptable_cofactor(alg_class) ||
+            !factor_columns_fit(alg_result, fb_.sieve_algebraic_count())) {
             stats_.algebraic_rejects.fetch_add(1, std::memory_order_relaxed);
             return std::nullopt;
         }
@@ -484,6 +486,25 @@ private:
     uint64_t large_prime_bound_;
     std::vector<Integer> coeffs_;
     CofactorizerStats stats_;
+
+    // The relation stores one column per occurrence. The usual short trial
+    // result fits even if every exponent is the largest possible byte.
+    static bool factor_columns_fit(const TrialDivisionResult& trial, size_t column_count) noexcept {
+        constexpr size_t limit = Relation::MAX_SERIALIZED_FACTORS;
+        if (trial.exponents.size() <= limit / UINT8_MAX) {
+            return true;
+        }
+        size_t expanded = 0;
+        for (size_t i = 0; i < trial.exponents.size(); ++i) {
+            if (trial.factor_indices[i] < column_count) {
+                expanded += trial.exponents[i];
+                if (expanded > limit) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
 
     /// 检查 cofactor 分类是否可接受
     [[nodiscard]] bool is_acceptable_cofactor(const CofactorClassification& cls) const noexcept {
