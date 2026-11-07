@@ -885,6 +885,11 @@ void test_special_q_valuation_chunks() {
     verify(16 * 255, 1, false, true);
     verify(16 * 255, 5, true, false);
     verify(16 * 255 + 1, 1, true, false);
+
+    fb.set_sieve_algebraic_count_explicit(0);
+    verify(15 * 255, 5, true, true);
+    verify(15 * 255 + 1, 1, false, true);
+    verify(15 * 255 + 1, 5, true, false);
 }
 
 // compute_alg_lp_root: 当 p | b 时,b 不可逆 mod p,LP 对应"投影根"理想 (p, 1/α)。
@@ -966,6 +971,7 @@ int main() {
     test_relation_filter();
     test_large_prime_counting();
     test_effective_large_prime_stats();
+    test_special_q_valuation_chunks();
     test_relation_requirements();
     test_separate_relations();
     test_quick_cofactor_check();
@@ -974,7 +980,6 @@ int main() {
     test_factor_base_params_uint64_lpb();
     test_cofactorizer_large_prime_storage();
     test_special_q_root_identity_validation();
-    test_special_q_valuation_chunks();
     test_compute_alg_lp_root_projective();
     test_compute_alg_lp_root_input_guards();
 
