@@ -457,9 +457,8 @@ public:
 
     RelationCollector(const CollectorConfig&, OOCPrivateLeaseOwnershipReceipt&) = delete;
 
-    /// 设置数论上下文(N 和 m),启用 CLAUDE.md 强制的 gcd(a-bm, N)>1 校验。
-    /// 没设置时退回旧行为(只检 gcd(a,b)=1)。引用必须在 collector 生存期内有效。
-    /// 设置后 add()/load()/merge() 都会拒绝 N|rat_value 的退化关系。
+    /// 设置后，add()/load()/merge() 对关系的每一对 (a,b) 额外要求
+    /// gcd(a-b*m, N) = 1。N 和 m 的引用必须在 collector 生存期内有效。
     void set_polynomial_context(const Integer& n, const Integer& m) {
         std::lock_guard<std::mutex> lock(mutex_);
         require_not_handed_off("set_polynomial_context");
@@ -1664,15 +1663,15 @@ private:
         }
     }
 
-    /// 验证关系。mutex 内调用。
-    /// 返回 0=通过,-1=无效(b/gcd),-2=N-divisible(CLAUDE.md 强制拒绝)
-    [[nodiscard]] int validate_with_kind(const Relation& rel) const {
+    // Called under the collector mutex. Return -1 for invalid coordinates
+    // and -2 when the rational value shares a factor with N.
+    [[nodiscard]] int validate_pair(int64_t a, uint64_t b) const {
         // b 必须 > 0
-        if (rel.b == 0)
+        if (b == 0)
             return -1;
 
         // gcd(a, b) 必须 = 1
-        if (std::gcd(util::safe_abs(rel.a), rel.b) != 1) {
+        if (std::gcd(util::safe_abs(a), b) != 1) {
             return -1;
         }
 
@@ -1681,14 +1680,14 @@ private:
         // thread_local: 每秒 100K+ relations 走此 path; 复用 buffer 省 2 alloc/relation
         if (n_for_validation_ && m_for_validation_) {
             thread_local Integer val, g, b_value;
-            val = rel.a; // mpz_set_si direct
+            val = a; // mpz_set_si direct
             // mpz_submul_ui takes unsigned long, which is only 32 bits on
             // Windows LLP64. Preserve the complete uint64_t relation b.
-            if (rel.b <= std::numeric_limits<unsigned long>::max()) {
+            if (b <= std::numeric_limits<unsigned long>::max()) {
                 mpz_submul_ui(val.get_mpz(), m_for_validation_->get_mpz(),
-                              static_cast<unsigned long>(rel.b));
+                              static_cast<unsigned long>(b));
             } else {
-                b_value = rel.b;
+                b_value = b;
                 mpz_submul(val.get_mpz(), m_for_validation_->get_mpz(), b_value.get_mpz());
             }
             mpz_gcd(g.get_mpz(), val.get_mpz(), n_for_validation_->get_mpz());
@@ -1696,6 +1695,18 @@ private:
                 return -2;
         }
 
+        return 0;
+    }
+
+    [[nodiscard]] int validate_with_kind(const Relation& rel) const {
+        if (const int kind = validate_pair(rel.a, rel.b); kind != 0) {
+            return kind;
+        }
+        for (const auto& [a, b] : rel.extra_ab_pairs) {
+            if (const int kind = validate_pair(a, b); kind != 0) {
+                return kind;
+            }
+        }
         return 0;
     }
 
