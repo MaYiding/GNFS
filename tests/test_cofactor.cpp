@@ -420,6 +420,17 @@ void test_trial_division() {
     std::cout << "  Trial division: PASSED" << std::endl;
 }
 
+void test_quick_divide_remainder() {
+    factor_base::FactorBase fb(core::FactorBaseParams{3, 3, 100});
+    fb.add_rational(2, 1);
+    fb.add_rational(3, 1);
+    TrialDivider divider(fb);
+    CHECK(divider.quick_divide(core::Integer(0)).is_zero());
+    CHECK(divider.quick_divide(core::Integer(0), 0).is_zero());
+    CHECK(divider.quick_divide(core::Integer(-84), 1) == core::Integer(21));
+    CHECK(divider.quick_divide(core::Integer(-84)) == core::Integer(7));
+}
+
 // Test relation filter
 void test_relation_filter() {
     std::cout << "Testing relation filter..." << std::endl;
@@ -1173,6 +1184,7 @@ int main() {
     test_cofactor_classification();
     test_zero_algebraic_norm_rejected();
     test_trial_division();
+    test_quick_divide_remainder();
     test_relation_filter();
     test_large_prime_counting();
     test_effective_large_prime_stats();

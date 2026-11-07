@@ -346,8 +346,11 @@ public:
     /// 快速检查是否可能光滑（不完全分解，只检查小素数）
     /// @param value 要检查的值
     /// @param limit 检查的素数数量限制
-    /// @return 剩余的 cofactor
+    /// @return 剩余的 cofactor，输入为零时返回零
     [[nodiscard]] Integer quick_divide(Integer value, size_t limit = 100) const {
+        if (value.is_zero()) {
+            return value;
+        }
         if (value.is_negative()) {
             value.negate();
         }
