@@ -12,7 +12,7 @@
 //   loop and improves cache locality for the small-primes table.
 //
 // Design:
-//   - Lazy-static shared small-primes sieve (segmented sieve to prime_bound).
+//   - Shared small-primes tables, sliced at the requested inclusive prime bound.
 //   - For each prime p ≤ prime_bound: sweep all K cofactors, divide out p
 //     where p | cofactor[i] (full power, exp bounded at 255 for safety).
 //   - After the outer prime loop terminates, cofactor[i] == 1 is recorded
@@ -32,12 +32,13 @@
 //   - Sieve uses std::vector<bool> + simple Eratosthenes (zero-alloc beyond
 //     the bool buffer + the prime list itself).
 //   - The thread-safety contract is "safe to call concurrently from many
-//     threads"; the lazy-static is built once under std::call_once and the
-//     resulting vector is immutable after that. Per-call scratch lives on
-//     the stack.
+//     threads"; each table is published once and stays immutable.
 
 #include "../core/integer.hpp"
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <cassert>
 #include <cctype>
 #include <cerrno>
@@ -45,12 +46,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace gnfs::cofactor {
@@ -87,37 +88,7 @@ inline void validate_batch_trial_prime_bound(size_t prime_bound) {
     }
 }
 
-/// Lazy-allocated small-primes table for a given prime_bound. Built via
-/// Sieve of Eratosthenes on first request per (bound) value. Two-level cache:
-///   - The outermost `mutex` protects the deque of (bound, primes) entries.
-///   - Each entry stores the cached primes for one bound.
-/// For the typical GNFS workload prime_bound varies across one or two values
-/// (rational vs algebraic factor base bounds), so linear scan is fine.
-[[nodiscard]] inline const std::vector<uint64_t>& small_primes_for(size_t prime_bound) {
-    struct Entry {
-        size_t bound;
-        std::vector<uint64_t> primes;
-    };
-    static std::mutex mu;
-    // References are returned after the lock is released. deque keeps existing
-    // entries stable when another thread inserts a new bound.
-    static std::deque<Entry> cache;
-
-    std::lock_guard<std::mutex> lock(mu);
-    validate_batch_trial_prime_bound(prime_bound);
-    for (const auto& e : cache) {
-        if (e.bound == prime_bound)
-            return e.primes;
-    }
-
-    // Eratosthenes sieve to prime_bound (inclusive).
-    Entry entry;
-    entry.bound = prime_bound;
-    if (prime_bound < 2) {
-        cache.push_back(std::move(entry));
-        return cache.back().primes;
-    }
-
+[[nodiscard]] inline std::vector<uint64_t> build_batch_trial_primes(size_t prime_bound) {
     std::vector<bool> is_prime(prime_bound + 1, true);
     is_prime[0] = is_prime[1] = false;
     for (size_t i = 2; i <= prime_bound / i; ++i) {
@@ -131,14 +102,37 @@ inline void validate_batch_trial_prime_bound(size_t prime_bound) {
     size_t approx_pi =
         static_cast<size_t>(static_cast<double>(prime_bound) /
                             std::max(1.0, std::log(static_cast<double>(prime_bound))));
-    entry.primes.reserve(approx_pi + 16);
+    std::vector<uint64_t> primes;
+    primes.reserve(approx_pi + 16);
     for (size_t i = 2; i <= prime_bound; ++i) {
         if (is_prime[i])
-            entry.primes.push_back(static_cast<uint64_t>(i));
+            primes.push_back(static_cast<uint64_t>(i));
     }
 
-    cache.push_back(std::move(entry));
-    return cache.back().primes;
+    return primes;
+}
+
+/// Bounds with the same power-of-two ceiling share one immutable sieve. The
+/// final ceiling is capped at 100M. Published spans remain valid for the
+/// process lifetime, including while other threads initialize larger tables.
+[[nodiscard]] inline std::span<const uint64_t> small_primes_for(size_t prime_bound) {
+    validate_batch_trial_prime_bound(prime_bound);
+    if (prime_bound < 2)
+        return {};
+
+    struct Table {
+        std::once_flag ready;
+        std::vector<uint64_t> primes;
+    };
+    static std::array<Table, std::bit_width(kMaxBatchTrialPrimeBound - 1) + 1> tables;
+    const auto exponent = static_cast<size_t>(std::bit_width(prime_bound - 1));
+    auto& table = tables[exponent];
+    std::call_once(table.ready, [&] {
+        const size_t ceiling = std::min(size_t{1} << exponent, kMaxBatchTrialPrimeBound);
+        table.primes = build_batch_trial_primes(ceiling);
+    });
+    const auto end = std::upper_bound(table.primes.begin(), table.primes.end(), prime_bound);
+    return {table.primes.begin(), end};
 }
 
 /// Divide value by p as many times as possible; the operation is performed
@@ -210,7 +204,7 @@ inline void strip_prime_inplace(Integer& value, uint32_t p) {
     if (all_done)
         return result;
 
-    const auto& primes = detail::small_primes_for(prime_bound);
+    const auto primes = detail::small_primes_for(prime_bound);
 
     // Outer-by-prime, inner-by-cofactor sweep.
     for (uint64_t p : primes) {

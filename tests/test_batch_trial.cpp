@@ -17,6 +17,7 @@
 #include "support/test_check.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -410,19 +411,25 @@ void test_prime_bound_guard() {
 void test_cache_entry_stability() {
     std::cout << "Test 12: cache entry stability..." << std::flush;
 
-    const auto& first = gnfs::cofactor::detail::small_primes_for(100);
-    const auto* first_address = &first;
-    assert(!first.empty() && first.front() == 2 && first.back() == 97);
+    using gnfs::cofactor::detail::small_primes_for;
+    const auto first = small_primes_for(100);
+    const auto extended = small_primes_for(101);
+    GNFS_TEST_CHECK(first.data() == extended.data());
+    GNFS_TEST_CHECK(first.size() == 25 && first.back() == 97);
+    GNFS_TEST_CHECK(extended.size() == 26 && extended.back() == 101);
 
-    // This forces many cache insertions. A vector-backed cache invalidates
-    // `first` during reallocation; the deque-backed cache preserves it.
-    for (size_t bound = 2; bound <= 2048; ++bound) {
-        (void)gnfs::cofactor::detail::small_primes_for(bound);
+    std::vector<uint64_t> expected;
+    for (size_t bound = 0; bound <= 2048; ++bound) {
+        bool prime = bound >= 2;
+        for (size_t i = 2; i * i <= bound && prime; ++i)
+            prime = bound % i != 0;
+        if (prime)
+            expected.push_back(bound);
+        const auto actual = small_primes_for(bound);
+        GNFS_TEST_CHECK(std::ranges::equal(actual, expected));
     }
-    const auto& first_again = gnfs::cofactor::detail::small_primes_for(100);
-    if (first_address != &first_again || first_again.size() != 25 || first_again.back() != 97) {
-        throw std::runtime_error("cached prime entry was invalidated or changed");
-    }
+    GNFS_TEST_CHECK(first.data() == small_primes_for(100).data());
+    GNFS_TEST_CHECK(first.size() == 25 && first.back() == 97);
 
     std::cout << " PASS\n";
 }
@@ -431,36 +438,31 @@ void test_cache_entry_stability() {
 // Test 13: thread-safety — parallel calls produce identical results
 // ───────────────────────────────────────────────────────────────────────────
 void test_thread_safety() {
-    std::cout << "Test 10: thread-safety..." << std::flush;
+    std::cout << "Test 13: thread-safety..." << std::flush;
 
-    const size_t prime_bound = 500;
-    const size_t K = 32;
-    const size_t num_threads = 8;
-
+    // Exercise two previously unused tables, including primes on either side
+    // of the power-of-two boundary and bounds just below each prime.
+    constexpr std::array<size_t, 8> bounds = {8190, 8191, 8192, 8208, 8209, 8218, 8219, 8220};
+    std::vector<Integer> in = {Integer{uint64_t{8191}}, Integer{uint64_t{8209}},
+                               Integer{uint64_t{8219}}};
     std::mt19937_64 rng(0xCAFEBABEULL);
-    std::vector<Integer> in;
-    in.reserve(K);
-    for (size_t i = 0; i < K; ++i) {
+    for (size_t i = 0; i < 32; ++i)
         in.push_back(Integer{(rng() % (1ULL << 30)) + 1});
+
+    std::vector<std::thread> threads;
+    std::array<BatchTrialResult, bounds.size()> results;
+    for (size_t t = 0; t < bounds.size(); ++t) {
+        threads.emplace_back([&, t]() { results[t] = batch_trial_divide(in, bounds[t]); });
     }
+    for (auto& thread : threads)
+        thread.join();
 
-    // Sequential ground truth.
-    BatchTrialResult gold = batch_trial_divide(in, prime_bound);
-
-    // Parallel re-runs.
-    std::vector<std::thread> ths;
-    std::vector<BatchTrialResult> results(num_threads);
-    for (size_t t = 0; t < num_threads; ++t) {
-        ths.emplace_back([&, t]() { results[t] = batch_trial_divide(in, prime_bound); });
-    }
-    for (auto& th : ths)
-        th.join();
-
-    for (size_t t = 0; t < num_threads; ++t) {
-        assert(results[t].size() == gold.size());
-        for (size_t i = 0; i < gold.size(); ++i) {
-            assert(results[t].is_smooth[i] == gold.is_smooth[i]);
-            assert(results[t].remaining[i].compare(gold.remaining[i]) == 0);
+    for (size_t t = 0; t < bounds.size(); ++t) {
+        GNFS_TEST_CHECK(results[t].size() == in.size());
+        for (size_t i = 0; i < in.size(); ++i) {
+            const auto expected = naive_trial_divide(in[i], bounds[t]);
+            GNFS_TEST_CHECK(results[t].is_smooth[i] == expected.is_smooth);
+            GNFS_TEST_CHECK(results[t].remaining[i].compare(expected.remaining) == 0);
         }
     }
 
