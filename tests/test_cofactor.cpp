@@ -10,11 +10,13 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace gnfs;
 using namespace gnfs::cofactor;
@@ -94,6 +96,71 @@ void test_small_composite_classification() {
     CHECK(semiprime.type == CofactorClass::Semiprime);
     CHECK(semiprime.factor1 == 7 && semiprime.factor2 == 11);
     std::cout << "  Small composite classification: PASSED" << std::endl;
+}
+
+void test_full_factor_base_valuations() {
+    using core::Integer;
+    const Integer power = core::pow(Integer(2), 256);
+    // f(1) = power and f(m) = 2 * power * N. Both sides of (1, 1)
+    // have magnitude 2^256, with 2 in the factor base on both sides.
+    const Integer n = power + Integer(5);
+    const Integer m = power + Integer(1);
+    core::PolynomialContext ctx(n, {Integer(-8), power + Integer(7), Integer(1)}, m);
+    CHECK(ctx.verify());
+    CHECK(ctx.rational_value(1, 1) == -power);
+    CHECK(ctx.algebraic_norm(1, 1) == power);
+    CHECK(core::gcd(power, n).is_one());
+    factor_base::FactorBaseBuilder::Options options;
+    options.rational_bound = 2;
+    options.algebraic_bound = 2;
+    options.parallel = false;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, options);
+    const auto rat_index = fb.find_rational(2);
+    const auto alg_index = fb.find_algebraic(2, 1);
+    CHECK(rat_index.has_value() && alg_index.has_value());
+    TrialDivider divider(fb);
+    for (const unsigned exponent : {254u, 255u, 256u, 510u, 511u}) {
+        const Integer magnitude = core::pow(Integer(2), exponent) * Integer(3);
+        const auto check_valuation = [&](const TrialDivisionResult& divided, uint32_t column) {
+            CHECK(divided.cofactor == Integer(3));
+            CHECK(divided.factor_indices.size() == divided.exponents.size());
+            unsigned recovered = 0;
+            for (size_t i = 0; i < divided.factor_indices.size(); ++i) {
+                CHECK(divided.factor_indices[i] == column);
+                CHECK(divided.exponents[i] > 0);
+                recovered += divided.exponents[i];
+            }
+            CHECK(recovered == exponent);
+        };
+        check_valuation(divider.divide_rational(-magnitude), *rat_index);
+        check_valuation(divider.divide_algebraic(magnitude, 1, 1), *alg_index);
+    }
+    CofactorizerConfig config;
+    config.allow_1lp = false;
+    config.allow_2lp = false;
+    config.allow_3lp = false;
+    Cofactorizer cofactorizer(ctx, fb, config);
+    const auto relation = cofactorizer.verify(1, 1);
+    CHECK(relation.has_value());
+    CHECK(relation->rational_factors == std::vector<uint32_t>(256, *rat_index));
+    CHECK(relation->algebraic_factors == std::vector<uint32_t>(256, *alg_index));
+    CHECK(relation->rational_large_prime.empty());
+    CHECK(relation->algebraic_large_prime.empty());
+
+    factor_base::FactorBase mixed(core::FactorBaseParams{3, 3, 100});
+    mixed.add_rational(2, 1);
+    mixed.add_rational(3, 1);
+    mixed.add_algebraic(2, 1, 1);
+    mixed.add_algebraic(3, 1, 1);
+    TrialDivider mixed_divider(mixed);
+    const Integer product = core::pow(Integer(2), 255) * core::pow(Integer(3), 256) * Integer(5);
+    const auto rational = mixed_divider.divide_rational(product);
+    const auto algebraic = mixed_divider.divide_algebraic(product, 1, 1);
+    for (const auto* result : {&rational, &algebraic}) {
+        CHECK(result->cofactor == Integer(5));
+        CHECK((result->factor_indices == std::vector<uint32_t>{0, 1, 1}));
+        CHECK((result->exponents == std::vector<uint8_t>{255, 255, 1}));
+    }
 }
 
 // Test perfect power detection
@@ -868,6 +935,7 @@ int main() {
     test_primality();
     test_small_composite_classification();
     test_small_primality_oracle();
+    test_full_factor_base_valuations();
     test_perfect_power();
     test_pollard_rho();
     test_cofactor_classification();

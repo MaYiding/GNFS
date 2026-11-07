@@ -5,6 +5,7 @@
 #include "../factor_base/factor_base.hpp"
 #include "wheel235.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -36,6 +37,7 @@ inline void trial_integer_from_u128(Integer& out, __uint128_t value) {
 
 /// 试除结果
 struct TrialDivisionResult {
+    // A valuation above UINT8_MAX uses consecutive entries for the same column.
     std::vector<uint32_t> factor_indices; // 因子基中的索引
     std::vector<uint8_t> exponents;       // 对应的指数
     Integer cofactor;                     // 剩余的未分解部分
@@ -135,11 +137,7 @@ public:
         const auto& rationals = fb_.rational();
         for (uint32_t idx = 0; idx < rationals.size(); ++idx) {
             uint32_t p = rationals[idx].p;
-            uint8_t exp = 0;
-            while (divisible_by(value, p) && exp < 255) {
-                divide_exact(value, p);
-                ++exp;
-            }
+            const uint8_t exp = divide_gmp_prime(value, p, idx, result);
             if (exp > 0) {
                 result.factor_indices.push_back(idx);
                 result.exponents.push_back(exp);
@@ -273,10 +271,7 @@ public:
                 }
 #endif
             } else {
-                while (divisible_by(norm, p) && exp < 255) {
-                    divide_exact(norm, p);
-                    ++exp;
-                }
+                exp = divide_gmp_prime(norm, p, idx, result);
                 // Check for upgrade to uint128 or uint64
                 if (norm.fits_uint64()) {
                     use_u64 = true;
@@ -390,6 +385,27 @@ private:
             // get_mpz() returns mpz_t& which decays to mpz_ptr
             mpz_divexact_ui(value.get_mpz(), value.get_mpz(), p);
         }
+    }
+
+    // Emit full exponent chunks here and let the caller append the last chunk.
+    static uint8_t divide_gmp_prime(Integer& value, uint32_t p, uint32_t idx,
+                                    TrialDivisionResult& result) {
+        uint8_t exponent = 0;
+        while (exponent < UINT8_MAX && divisible_by(value, p)) {
+            divide_exact(value, p);
+            ++exponent;
+        }
+        if (exponent == UINT8_MAX && p >= 2 && mpz_divisible_ui_p(value.get_mpz(), p)) {
+            const Integer prime(p);
+            mp_bitcnt_t remaining = mpz_remove(value.get_mpz(), value.get_mpz(), prime.get_mpz());
+            while (remaining > 0) {
+                result.factor_indices.push_back(idx);
+                result.exponents.push_back(exponent);
+                exponent = static_cast<uint8_t>(std::min<mp_bitcnt_t>(remaining, UINT8_MAX));
+                remaining -= exponent;
+            }
+        }
+        return exponent;
     }
 
     /// 纯 uint64 有理试除（从指定 FB 索引开始）
