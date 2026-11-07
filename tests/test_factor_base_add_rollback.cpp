@@ -111,9 +111,52 @@ void check_add(Add add, Entries entries, Lookup lookup) {
     }
 }
 
+void check_index_rebuild(bool stale) {
+    for (std::size_t ordinal = 0;; ++ordinal) {
+        FactorBase base;
+        base.add_rational(11, 1);
+        base.add_rational(3, 1);
+        base.add_rational(3, 2);
+        base.add_algebraic(3, 1, 1);
+        base.add_algebraic(3, 1, 2);
+        if (stale) {
+            // Public add maintains both maps. Change the backing entries of
+            // this non-const fixture to exercise recovery of two stale maps.
+            const_cast<gnfs::core::RationalPrime&>(base.rational()[0]).p = 3;
+            const_cast<gnfs::core::AlgebraicPrime&>(base.algebraic()[1]).p = 7;
+        }
+        allocations_before_failure = ordinal;
+        bool failed = false;
+        try {
+            base.build_index();
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        allocations_before_failure = disarmed;
+        if (failed || !stale) {
+            GNFS_TEST_CHECK(base.find_rational(3) == 2);
+            GNFS_TEST_CHECK(base.find_rational(11) == 0);
+            GNFS_TEST_CHECK(base.find_algebraic(3, 1) == 1);
+            GNFS_TEST_CHECK(!base.find_algebraic(7, 1));
+            if (!stale)
+                GNFS_TEST_CHECK(!failed);
+        } else {
+            GNFS_TEST_CHECK(ordinal > 0);
+            GNFS_TEST_CHECK(base.find_rational(3) == 2);
+            GNFS_TEST_CHECK(!base.find_rational(11));
+            GNFS_TEST_CHECK(base.find_algebraic(3, 1) == 0);
+            GNFS_TEST_CHECK(base.find_algebraic(7, 1) == 1);
+        }
+        if (!failed)
+            break;
+    }
+}
+
 } // namespace
 
 int main() {
+    check_index_rebuild(false);
+    check_index_rebuild(true);
     check_add([](FactorBase& fb, uint32_t p) { fb.add_rational(p, 1); },
               [](const FactorBase& fb) { return fb.rational(); },
               [](const FactorBase& fb, uint32_t p) { return fb.find_rational(p); });

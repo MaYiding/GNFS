@@ -166,21 +166,16 @@ public:
             throw std::overflow_error(
                 "FactorBase::build_index: algebraic-prime count exceeds uint32_t");
         }
-        rat_index_.clear();
-        alg_index_.clear();
-        // Reserve exact sizes to avoid rehashing during build.
-        rat_index_.reserve(rational_.size());
-        alg_index_.reserve(algebraic_.size());
-
-        for (size_t i = 0; i < rational_.size(); ++i) {
-            rat_index_[rational_[i].p] = static_cast<uint32_t>(i);
-        }
-
-        for (size_t i = 0; i < algebraic_.size(); ++i) {
-            const auto& ap = algebraic_[i];
-            uint64_t key = (static_cast<uint64_t>(ap.p) << 32) | ap.r;
-            alg_index_[key] = static_cast<uint32_t>(i);
-        }
+        auto rational = replacement_index(rational_, rat_index_,
+                                          [](const RationalPrime& prime) { return prime.p; });
+        auto algebraic = replacement_index(algebraic_, alg_index_, [](const AlgebraicPrime& prime) {
+            return (static_cast<uint64_t>(prime.p) << 32) | prime.r;
+        });
+        // Publish only after both sides have completed every allocation.
+        if (rational)
+            rat_index_.swap(*rational);
+        if (algebraic)
+            alg_index_.swap(*algebraic);
     }
 
     // ==================== 序列化 ====================
@@ -208,6 +203,32 @@ public:
     }
 
 private:
+    template <typename Entries, typename Index, typename KeyOf>
+    static std::optional<Index> replacement_index(const Entries& entries, const Index& index,
+                                                  KeyOf key_of) {
+        const auto is_current = [&] {
+            for (const auto& [key, column] : index) {
+                if (column >= entries.size() || key_of(entries[column]) != key)
+                    return false;
+            }
+            for (size_t i = 0; i < entries.size(); ++i) {
+                const auto it = index.find(key_of(entries[i]));
+                // For repeated keys the mapped column must be the last one.
+                if (it == index.end() || it->second < i)
+                    return false;
+            }
+            return true;
+        };
+        if (is_current())
+            return std::nullopt;
+
+        Index replacement;
+        replacement.reserve(entries.size());
+        for (size_t i = 0; i < entries.size(); ++i)
+            replacement[key_of(entries[i])] = static_cast<uint32_t>(i);
+        return replacement;
+    }
+
     template <typename Prime, typename Key>
     static void append_indexed_prime(std::vector<Prime>& primes,
                                      std::unordered_map<Key, uint32_t>& index, Key key,
