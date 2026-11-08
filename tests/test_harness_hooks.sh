@@ -759,6 +759,8 @@ def invoke(options, *, missing=(), host='Linux', win32='0', exit_77=(), exit_cod
     build = cache / str(case_id)
     build.mkdir()
     (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Debug\nGNFS_BUILD_TESTS:BOOL=OFF\n')
+    # The CMake stand-in has no test executable owning src/factor_base/builder.cpp.
+    (build / 'gnfs-test-sources.txt').write_text('')
     if win32 is not None:
         (build / 'gnfs-test-platform.txt').write_text('WIN32=' + win32 + '\n')
     if stale_report:
