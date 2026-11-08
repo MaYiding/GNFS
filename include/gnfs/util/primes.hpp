@@ -6,12 +6,19 @@
 
 namespace gnfs::util {
 
+namespace detail {
+
+/// Add two residues below mod without overflowing their sum.
+[[nodiscard]] inline uint64_t add_reduced_mod_u64(uint64_t a, uint64_t b, uint64_t mod) {
+    return (a >= mod - b) ? (a - (mod - b)) : (a + b);
+}
+
+} // namespace detail
+
 [[nodiscard]] inline uint64_t add_mod_u64(uint64_t a, uint64_t b, uint64_t mod) {
     if (mod == 0)
         return 0;
-    a %= mod;
-    b %= mod;
-    return (a >= mod - b) ? (a - (mod - b)) : (a + b);
+    return detail::add_reduced_mod_u64(a % mod, b % mod, mod);
 }
 
 /// Modular multiplication with a native 128-bit fast path where available.
@@ -26,10 +33,10 @@ namespace gnfs::util {
     a %= mod;
     while (b != 0) {
         if (b & 1U)
-            result = add_mod_u64(result, a, mod);
+            result = detail::add_reduced_mod_u64(result, a, mod);
         b >>= 1U;
         if (b != 0)
-            a = add_mod_u64(a, a, mod);
+            a = detail::add_reduced_mod_u64(a, a, mod);
     }
     return result;
 #endif
