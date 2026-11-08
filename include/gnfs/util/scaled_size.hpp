@@ -23,7 +23,7 @@ namespace gnfs::util {
     // Keep historical rounding for ordinary estimates, including 100 * 1.2.
     // On 32-bit targets the strict-excess increment can reach SIZE_MAX before
     // double loses integer precision. Scale exactly at that boundary too.
-    if (count <= consecutive_limit && factor <= consecutive_limit) {
+    if (static_cast<uint64_t>(count) <= consecutive_limit && factor <= consecutive_limit) {
         const double estimate = static_cast<double>(count) * factor;
         if (estimate < consecutive_limit && estimate < static_cast<double>(max_size - 1))
             return static_cast<size_t>(estimate);
