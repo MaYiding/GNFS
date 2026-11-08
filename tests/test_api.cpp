@@ -4537,6 +4537,63 @@ bool test_matrix_build_failure_preserves_reduction() {
     return true;
 }
 
+bool test_mmap_solve_preserves_existing_scratch_entries() {
+    namespace fs = std::filesystem;
+    const auto pid = std::to_string(gnfs::util::process_id());
+    const auto root = gnfs::util::temp_directory_path() / ("gnfs_test_mmap_scratch_" + pid);
+    if (!fs::create_directory(root)) {
+        return false;
+    }
+    struct Cleanup {
+        const fs::path& root;
+        ~Cleanup() {
+            std::error_code ignored;
+            fs::remove_all(root, ignored);
+        }
+    } cleanup{root};
+    ScopedEnvironmentVariable tmpdir("TMPDIR", root.string());
+    ScopedEnvironmentVariable tmp("TMP", root.string());
+    ScopedEnvironmentVariable temp("TEMP", root.string());
+    ScopedEnvironmentVariable mmap("GNFS_LINALG_MMAP", "on");
+    ScopedEnvironmentVariable thin_abort("GNFS_NO_THIN_SOLVE", std::nullopt);
+    const auto prefix = "gnfs_linalg_" + pid + "_n";
+    const auto old_matrix = root / (prefix + "0.csrmat");
+    const auto old_directory = root / (prefix + "0.scratch");
+    const auto old_file = root / (prefix + "1.scratch");
+    write_test_file(old_matrix.string(), "previous matrix");
+    fs::create_directory(old_directory);
+    write_test_file(old_file.string(), "previous file");
+
+    Config cfg;
+    cfg.verbose = false;
+    cfg.rational_bound = 5;
+    cfg.algebraic_bound = 5;
+    cfg.large_prime_bound = 101;
+    Pipeline pipeline(Integer(143), cfg);
+    auto ctx = pipeline.select_polynomial();
+    auto fb = pipeline.build_factor_base(ctx);
+    bool mmap_requested = false;
+    bool fallback = false;
+    pipeline.set_log_callback([&](const LogEntry& entry) {
+        mmap_requested |= entry.message.starts_with("[linalg-mmap] policy=on");
+        fallback |= entry.message.starts_with("[linalg-mmap] fallback");
+    });
+    std::vector<gnfs::core::Relation> relations;
+    relations.emplace_back(1'000, 1);
+    gnfs::relation::RelationReductionStats stats;
+    stats.strategy = gnfs::relation::ReductionStrategy::StandardV0;
+    stats.output_relations = relations.size();
+    RelationReductionResult reduction(779, std::move(relations), std::move(stats));
+    const auto result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
+
+    return result.matrix.num_rows() == 1 && mmap_requested && !fallback &&
+           fs::is_regular_file(old_matrix) &&
+           read_test_file(old_matrix.string()) == "previous matrix" &&
+           fs::is_directory(old_directory) && fs::is_empty(old_directory) &&
+           fs::is_regular_file(old_file) && read_test_file(old_file.string()) == "previous file" &&
+           std::distance(fs::directory_iterator(root), fs::directory_iterator{}) == 3;
+}
+
 bool test_legacy_matrix_result_retains_vector() {
     ScopedEnvironmentVariable streaming("GNFS_SGE_STREAMING", "off");
     ScopedEnvironmentVariable mmap("GNFS_LINALG_MMAP", "off");
@@ -5922,6 +5979,9 @@ int main() {
     std::cout << "========================================\n";
     std::cout << "  GNFS API Test Suite\n";
     std::cout << "========================================\n\n";
+
+    // Exercise the first scratch allocation after PID reuse.
+    TEST(mmap_solve_preserves_existing_scratch_entries);
 
     std::cout << "Config tests:\n";
     TEST(config_auto_detect);
