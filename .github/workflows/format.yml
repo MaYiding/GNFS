@@ -57,11 +57,12 @@ jobs:
           set -euo pipefail
 
           pathspec=( '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' )
+          # A leading ./ makes clang-format treat names beginning with @ as source paths.
           files="${RUNNER_TEMP}/clang-format-files"
           if [[ "${FULL_SCAN}" == "true" || -z "${BASE_SHA}" || "${BASE_SHA}" =~ ^0+$ ]]; then
-            git ls-files -z -- "${pathspec[@]}" > "$files"
+            git ls-files -z --format='./%(path)' -- "${pathspec[@]}" > "$files"
           else
-            git diff --name-only -z --diff-filter=ACMR "${BASE_SHA}" "${GITHUB_SHA}" -- \
+            git diff --name-only -z --line-prefix=./ --diff-filter=ACMR "${BASE_SHA}" "${GITHUB_SHA}" -- \
               "${pathspec[@]}" > "$files"
           fi
 
