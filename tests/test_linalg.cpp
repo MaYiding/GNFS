@@ -615,6 +615,9 @@ void test_odd_class_group_preserves_square_dependency() {
     core::PolynomialContext second(Integer(183), {Integer(20), Integer(0), Integer(1)},
                                    Integer(23));
     check_class_group_square_dependency(second, {-45, 101}, {75, 29}, Integer(1184), {55, 57});
+
+    core::PolynomialContext third(Integer(779), {Integer(50), Integer(0), Integer(1)}, Integer(27));
+    check_class_group_square_dependency(third, {25, 1}, {-5, 1}, Integer(8), {5, 2});
 }
 
 // Regression: sign-column evaluation must preserve uint64_t b on LLP64.
