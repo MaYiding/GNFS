@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../util/safe_math.hpp"
+#include "../util/scaled_size.hpp"
 #include "sieve_limits.hpp"
 #include "types.hpp"
 
@@ -447,8 +448,7 @@ struct GNFSParams {
         const double target_mult = sieve_target_multiplier;
 
         const size_t base_target = raw_relation_target_unscaled(matrix_columns);
-        const size_t scaled_target = util::size_from_nonnegative_double_floor(
-            static_cast<double>(base_target) * target_mult);
+        const size_t scaled_target = util::scaled_size_floor(base_target, target_mult);
         // A positive column budget must never turn into a zero stopping target
         // merely because the experiment multiplier is fractional. Preserve
         // zero for the explicit zero-column input, which remains a useful
@@ -550,10 +550,9 @@ private:
             const double birthday = std::sqrt(2.0 * lp_space * mc);
             // Use max(birthday, mc × 2.0) — birthday handles LP-heavy cases,
             // 2.0× handles cases where most relations are full.
-            double target = std::max(birthday, mc * 2.0);
-            // Cap at mc × 50 to prevent runaway targets for huge LP spaces.
-            target = std::min(target, mc * 50.0);
-            return util::size_from_nonnegative_double_floor(target);
+            return std::clamp(util::size_from_nonnegative_double_floor(birthday),
+                              util::saturating_size_product(matrix_columns, 2),
+                              util::saturating_size_product(matrix_columns, 50));
         }
 
         // No LP: need R/B > 3 to survive singleton filter.

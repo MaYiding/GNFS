@@ -240,6 +240,22 @@ void test_lp_bits_env_override() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_wide_relation_targets() {
+    constexpr size_t max_size = std::numeric_limits<size_t>::max();
+    GNFSParams params;
+    params.sieve_target_multiplier = 0.5;
+    GNFS_TEST_CHECK(params.raw_relation_target(max_size) == max_size / 2);
+
+    params.sieve_target_multiplier = 1.0;
+    params.large_prime_bits = 32;
+    GNFS_TEST_CHECK(params.raw_relation_target(max_size / 2) == max_size - 1);
+    if constexpr (std::numeric_limits<size_t>::digits > 53) {
+        params.large_prime_bound = std::numeric_limits<uint64_t>::max();
+        const size_t columns = static_cast<size_t>((uint64_t{1} << 53) + 1);
+        GNFS_TEST_CHECK(params.raw_relation_target(columns) == 50 * columns);
+    }
+}
+
 void test_target_multiplier_is_frozen_in_snapshot() {
     std::cout << "Testing GNFS_SIEVE_TARGET_MULT snapshot semantics..." << std::endl;
 
@@ -543,6 +559,7 @@ int main() {
     test_sieve_region_matches_runtime_geometry_contract();
     test_large_prime_bound();
     test_lp_bits_env_override();
+    test_wide_relation_targets();
     test_target_multiplier_is_frozen_in_snapshot();
     test_target_multiplier_is_locale_independent();
     test_threshold_values();
