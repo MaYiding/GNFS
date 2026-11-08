@@ -860,6 +860,11 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME FactorBase COMMAND test_factor_base)
     set_tests_properties(FactorBase PROPERTIES LABELS "instant" TIMEOUT 30)
 
+    add_executable(test_factor_base_add_rollback tests/test_factor_base_add_rollback.cpp)
+    target_link_libraries(test_factor_base_add_rollback PRIVATE gnfs_core)
+    add_test(NAME FactorBaseAddRollback COMMAND test_factor_base_add_rollback)
+    set_tests_properties(FactorBaseAddRollback PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_special_q
         tests/test_special_q.cpp
     )
@@ -3143,6 +3148,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsShadowLinearAlgebra COMMAND test_siqs_shadow_linear_algebra)
     set_tests_properties(SiqsShadowLinearAlgebra PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_shadow_sparse_backend
+        tests/test_siqs_shadow_sparse_backend.cpp
+    )
+    target_link_libraries(test_siqs_shadow_sparse_backend PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowSparseBackend COMMAND test_siqs_shadow_sparse_backend)
+    set_tests_properties(SiqsShadowSparseBackend PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_proof_runner
         tests/test_siqs_shadow_proof_runner.cpp
     )
@@ -3458,6 +3470,20 @@ if(GNFS_BUILD_TESTS)
             endif()
         endforeach()
     endif()
+
+    # One build target lets Make share dependencies across all selected tests.
+    set(_gate_catalog_dir "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-catalog")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${_gate_catalog_dir}/smoke.txt" "${_gate_catalog_dir}/windows-unavailable.txt")
+    file(STRINGS "${_gate_catalog_dir}/smoke.txt" _gate_tests)
+    if(WIN32)
+        file(STRINGS "${_gate_catalog_dir}/windows-unavailable.txt" _gate_exclusions)
+        list(REMOVE_ITEM _gate_tests ${_gate_exclusions})
+    endif()
+    add_custom_target(gnfs_local_gate_quick)
+    add_dependencies(gnfs_local_gate_quick gnfs_test_process_supervisor ${_gate_tests})
+    add_custom_target(gnfs_local_gate)
+    add_dependencies(gnfs_local_gate gnfs_local_gate_quick test_regression_gate)
 endif()
 
 # ============================================================

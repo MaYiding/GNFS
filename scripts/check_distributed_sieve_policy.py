@@ -5543,7 +5543,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_BOUNDARY_SHA256 = (
-    "211c9dfc6a794b8646c4d716982e844efbb2b4558a7e12e9a739ca7f2365d826"
+    "c5490133c6f00f329426c7323058027d33030eb1457d7ea521bc9990a9955f49"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -11223,12 +11223,22 @@ def _resolve_cmake_repo_path(root: Path, argument: str) -> str | None:
 
 
 
-def _runner_catalog_array(shell: str, name: str) -> str | None:
-    """Read one literal catalog declaration; reject later resets or appends."""
+def _read_smoke_catalog(root: Path) -> str | None:
+    try:
+        return (root / "scripts/test-catalog/smoke.txt").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _runner_catalog_array(shell: str, name: str, smoke_catalog: str | None = None) -> str | None:
+    """Read the registered catalog and reject later resets or appends."""
     assignments = re.findall(
         rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*(?:\[[^\n]*?\])?\s*\+?=",
         shell,
     )
+    if name == "SMOKE_TESTS":
+        loader = 'SMOKE_TESTS=("${(@f)$(cat "${PROJECT_ROOT}/scripts/test-catalog/smoke.txt")}")'
+        return smoke_catalog if len(assignments) == 1 and loader in shell.splitlines() else None
     matches = re.findall(rf"(?ms)^{re.escape(name)}=\(\s*\n(.*?)^\)\s*$", shell)
     return matches[0] if len(assignments) == len(matches) == 1 else None
 
@@ -11241,7 +11251,7 @@ def _runner_path_to_module_body(shell: str) -> str | None:
     return matches[0] if len(matches) == len(declarations) == 1 else None
 
 
-def _runner_catalog_target_is_unique(shell: str, target: str) -> bool:
+def _runner_catalog_target_is_unique(shell: str, target: str, smoke_catalog: str | None) -> bool:
     """Count registrations in their consumers, not unrelated platform metadata."""
     token = rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])"
     for name in ("ALL_TEST_BINARIES", "MODULE_TESTS", "TEST_TIMEOUT", "TEST_TIER"):
@@ -11262,7 +11272,7 @@ def _runner_catalog_target_is_unique(shell: str, target: str) -> bool:
         or keys.count("sieve") != 1
     ):
         return False
-    smoke = _runner_catalog_array(shell, "SMOKE_TESTS")
+    smoke = _runner_catalog_array(shell, "SMOKE_TESTS", smoke_catalog)
     if smoke is None or re.search(token, smoke):
         return False
     mapping = _runner_path_to_module_body(shell)
@@ -21521,8 +21531,10 @@ class Checks:
                 "worker-cleanup receipt CMake target/name/source counts are not closed",
             )
 
+        smoke_catalog = _read_smoke_catalog(self.root)
+
         def array_body(name: str) -> str | None:
-            return _runner_catalog_array(test_runner_code, name)
+            return _runner_catalog_array(test_runner_code, name, smoke_catalog)
 
         all_tests = array_body("ALL_TEST_BINARIES")
         module_tests = array_body("MODULE_TESTS")
@@ -21577,7 +21589,7 @@ class Checks:
             or len(tier_entries) != 1
             or module_count != 1
             or len(path_mapping) != 1
-            or not _runner_catalog_target_is_unique(test_runner_code, target)
+            or not _runner_catalog_target_is_unique(test_runner_code, target, smoke_catalog)
         ):
             self.fail(
                 WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
@@ -21672,8 +21684,10 @@ class Checks:
 
         shell = _mask_shell_comments(test_runner_text)
 
+        smoke_catalog = _read_smoke_catalog(self.root)
+
         def array_body(name: str) -> str | None:
-            return _runner_catalog_array(shell, name)
+            return _runner_catalog_array(shell, name, smoke_catalog)
 
         arrays = {
             name: array_body(name)
@@ -21727,7 +21741,7 @@ class Checks:
                 )
                 == 1
                 and len(path_mapping) == 1
-                and _runner_catalog_target_is_unique(shell, target)
+                and _runner_catalog_target_is_unique(shell, target, smoke_catalog)
             )
             if not exact:
                 self.fail(
@@ -21914,8 +21928,10 @@ class Checks:
 
         shell = _mask_shell_comments(test_runner_text)
 
+        smoke_catalog = _read_smoke_catalog(self.root)
+
         def array_body(name: str) -> str | None:
-            return _runner_catalog_array(shell, name)
+            return _runner_catalog_array(shell, name, smoke_catalog)
 
         arrays = {
             name: array_body(name)
@@ -21967,7 +21983,7 @@ class Checks:
                 )
                 == 1
                 and len(path_mapping) == 1
-                and _runner_catalog_target_is_unique(shell, target)
+                and _runner_catalog_target_is_unique(shell, target, smoke_catalog)
             )
             if not exact:
                 self.fail(
@@ -34044,12 +34060,13 @@ void escaped_cleanup_conversion_wrapper() {
         "an unregistered sticky-root receipt test",
     )
 
+    catalog_root = Path(__file__).resolve().parents[1]
+    smoke_catalog = _read_smoke_catalog(catalog_root)
     worker_cleanup_receipt_cmake = (
-        Path(__file__).resolve().parents[1] / WORKER_CLEANUP_RECEIPT_CMAKE_FILE
+        catalog_root / WORKER_CLEANUP_RECEIPT_CMAKE_FILE
     ).read_text(encoding="utf-8")
     worker_cleanup_receipt_test_runner = (
-        Path(__file__).resolve().parents[1]
-        / WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE
+        catalog_root / WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE
     ).read_text(encoding="utf-8")
     catalog_shell = _mask_shell_comments(worker_cleanup_receipt_test_runner)
     for target in (
@@ -34059,9 +34076,13 @@ void escaped_cleanup_conversion_wrapper() {
     ):
         expect(
             _runner_catalog_target_is_unique(
-                catalog_shell + f"\nPLATFORM_METADATA=(\n    {target}\n)\n", target
+                catalog_shell + f"\nPLATFORM_METADATA=(\n    {target}\n)\n", target, smoke_catalog
             ),
             "unrelated platform metadata was counted as a test registration",
+        )
+        expect(
+            not _runner_catalog_target_is_unique(catalog_shell, target, f"{smoke_catalog}\n{target}\n"),
+            "a distributed slow test was accepted in the shared smoke catalog",
         )
         for changed_catalog in (
             catalog_shell.replace("ALL_TEST_BINARIES=(", f"ALL_TEST_BINARIES=(\n    {target}", 1),
@@ -34083,10 +34104,10 @@ void escaped_cleanup_conversion_wrapper() {
             catalog_shell.replace("MODULE_TESTS=(", "MODULE_TESTS=(\n    'sieve' 'test_dummy'", 1),
         ):
             expect(
-                not _runner_catalog_target_is_unique(changed_catalog, target),
+                not _runner_catalog_target_is_unique(changed_catalog, target, smoke_catalog),
                 "duplicate, overridden, or misplaced test registration was accepted",
             )
-    exact_worker_cleanup_receipt_catalog_checks = Checks(Path("."))
+    exact_worker_cleanup_receipt_catalog_checks = Checks(catalog_root)
     exact_worker_cleanup_receipt_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
         worker_cleanup_receipt_cmake, worker_cleanup_receipt_test_runner
     )
@@ -34104,7 +34125,7 @@ void escaped_cleanup_conversion_wrapper() {
         mutated_worker_cleanup_receipt_cmake != worker_cleanup_receipt_cmake,
         "self-test mutation anchor is missing: worker-cleanup receipt CMake timeout",
     )
-    mutated_cmake_catalog_checks = Checks(Path("."))
+    mutated_cmake_catalog_checks = Checks(catalog_root)
     mutated_cmake_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
         mutated_worker_cleanup_receipt_cmake, worker_cleanup_receipt_test_runner
     )
@@ -34125,7 +34146,7 @@ void escaped_cleanup_conversion_wrapper() {
         commented_cmake_source != worker_cleanup_receipt_cmake,
         "self-test mutation anchor is missing: commented CMake receipt source",
     )
-    commented_cmake_source_checks = Checks(Path("."))
+    commented_cmake_source_checks = Checks(catalog_root)
     commented_cmake_source_checks.validate_worker_cleanup_receipt_test_catalog(
         commented_cmake_source, worker_cleanup_receipt_test_runner
     )
@@ -34150,7 +34171,7 @@ void escaped_cleanup_conversion_wrapper() {
         != worker_cleanup_receipt_test_runner,
         "self-test mutation anchor is missing: worker-cleanup receipt runner timeout",
     )
-    mutated_runner_catalog_checks = Checks(Path("."))
+    mutated_runner_catalog_checks = Checks(catalog_root)
     mutated_runner_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
         worker_cleanup_receipt_cmake,
         mutated_worker_cleanup_receipt_test_runner,
@@ -34178,7 +34199,7 @@ void escaped_cleanup_conversion_wrapper() {
         commented_mapping_runner = worker_cleanup_receipt_test_runner.replace(
             mapping_line, "        # " + mapping_line.lstrip(), 1
         )
-        commented_mapping_checks = Checks(Path("."))
+        commented_mapping_checks = Checks(catalog_root)
         commented_mapping_checks.validate_worker_cleanup_receipt_test_catalog(
             worker_cleanup_receipt_cmake, commented_mapping_runner
         )
@@ -34191,7 +34212,7 @@ void escaped_cleanup_conversion_wrapper() {
             f"{commented_mapping_checks.errors}",
         )
 
-    commented_catalog_decoys = Checks(Path("."))
+    commented_catalog_decoys = Checks(catalog_root)
     commented_catalog_decoys.validate_worker_cleanup_receipt_test_catalog(
         worker_cleanup_receipt_cmake
         + "\n# add_executable(test_distributed_sieve_worker_cleanup_tail decoy.cpp)\n",
@@ -34215,7 +34236,7 @@ void escaped_cleanup_conversion_wrapper() {
         "  add_compile_definitions(private=public)\n"
         "endif()\n"
     )
-    literal_and_inactive_cmake_catalog_checks = Checks(Path("."))
+    literal_and_inactive_cmake_catalog_checks = Checks(catalog_root)
     literal_and_inactive_cmake_catalog_checks.validate_worker_cleanup_receipt_test_catalog(
         literal_and_inactive_cmake_decoys,
         worker_cleanup_receipt_test_runner,

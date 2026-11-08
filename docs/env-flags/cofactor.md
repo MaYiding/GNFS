@@ -66,26 +66,19 @@ ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
 ## Batch Trial Division (GNFS_COFACTOR_BATCH_SIZE)
 
-**ENV `GNFS_COFACTOR_BATCH_SIZE=N`**（默认 `1`，即关闭批量路径）：
-为 batch trial-division caller 提供每批候选数量。`N < 2` 时保持单候选路径；`N` 在
-`[2, 4096]` 时启用对应批大小；更大的可表示整数钳制为 `4096`。
+批量试除 API `batch_trial_divide(cofactors, prime_bound)` 处理调用方传入的整批余因子，批大小由 `cofactors.size()` 决定。当前 `gnfs` CLI 的余因子试除仍使用单候选路径。
+
+`batch_trial_size_from_env()` 可供调用方读取建议批大小。它解析完整十进制整数，允许首尾空白。未设置、空值、负数、数值小于 2、含多余字符或超出 `unsigned long` 范围时返回 `1`。合法值在 `[2, 4096]` 时原样返回，更大的可表示整数返回 `4096`。
+
+分布式筛法还把此变量作为执行策略 V1 的保守字段，纳入工作身份校验。该字段沿用协议自身的解析规则。例如，`-1` 在执行策略中记录为 `4096`，在上述批大小函数中返回 `1`。
+
+可用项目测试入口验证这些行为。基准程序通过切分输入指定批大小。
 
 ```bash
-unset GNFS_COFACTOR_BATCH_SIZE             # 默认 1，关闭批量路径
-GNFS_COFACTOR_BATCH_SIZE=8 ./gnfs <N>      # 启用 8 个候选一批
-GNFS_COFACTOR_BATCH_SIZE=999999 ./gnfs <N>  # 钳制为 4096
+./scripts/test.sh run test_batch_trial                         # 批量试除和批大小解析
+./scripts/test.sh run test_distributed_sieve_execution_policy  # V1 策略字段
+./scripts/test.sh run test_cofactor_batch_bench                # 固定批大小的本地基准
 ```
-
-解析器要求整个值是十进制整数（允许首尾空白）。空值、非数字、负值、`0`、`1`、
-尾随非空白字符，以及 `strtoul` 溢出均 fail-closed 为 `1`。例如，`2junk` 不会
-意外启用批量路径。该行为避免部署配置中的拼写错误改变内存占用和吞吐策略。
-
-**实现与验证**：
-
-- `include/gnfs/cofactor/batch_trial.hpp` 中的 `batch_trial_size_from_env()` 使用
-  `errno` 检查溢出，并验证解析终点；
-- `tests/test_batch_trial.cpp` 覆盖尾随字符、首尾空白、负值、溢出和上限钳制；
-- 默认值和解析结果不改变未设置 ENV 时的既有行为。
 
 ---
 

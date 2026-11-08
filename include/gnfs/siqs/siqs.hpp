@@ -21,6 +21,7 @@
 #include <gnfs/siqs/shadow_proof_prefer.hpp>
 #include <gnfs/siqs/shadow_two_large_prime_capture.hpp>
 #include <gnfs/siqs/two_large_prime.hpp>
+#include <gnfs/siqs/two_large_prime_parallel_capture.hpp>
 #include <gnfs/util/bit_intrin.hpp>
 #include <gnfs/util/joining_thread.hpp>
 #include <gnfs/util/primes.hpp>
@@ -120,7 +121,7 @@ inline uint32_t mod_mul32(uint32_t a, uint32_t b, uint32_t m) {
     return static_cast<uint32_t>(static_cast<uint64_t>(a) * b % m);
 }
 
-inline uint32_t mod_pow32(uint32_t base, uint32_t exp, uint32_t mod) {
+constexpr uint32_t mod_pow32(uint32_t base, uint32_t exp, uint32_t mod) {
     uint64_t result = 1, b = base % mod;
     while (exp > 0) {
         if (exp & 1)
@@ -324,57 +325,56 @@ inline auto score_candidates(const Integer& N) {
     if (mpz_sgn(N.get_mpz()) <= 0)
         throw std::invalid_argument("SIQS multiplier scoring requires a positive N");
 
-    static const uint32_t candidates[] = {1,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31,
-                                          37, 41, 43, 47, 53, 59, 61, 67, 71, 73};
-    // Small primes for scoring
-    static const uint32_t test_primes[] = {
-        2,   3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,
-        59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131,
-        137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199};
-
-    std::array<ScoredCandidate, sizeof(candidates) / sizeof(candidates[0])> scored{};
-    size_t ordinal = 0;
-
-    for (uint32_t k : candidates) {
-        Integer kN;
-        mpz_mul_ui(kN.get_mpz(), N.get_mpz(), k); // kN = N * k (skip source copy)
-        double log_kN =
-            static_cast<double>(mpz_sizeinbase(kN.get_mpz(), 2)) * 0.6931; // log(2) * bits
-        double score = -0.5 * log_kN;
-
-        // Special handling for p=2
-        uint32_t kN_mod8 = static_cast<uint32_t>(mpz_fdiv_ui(kN.get_mpz(), 8));
-        if (kN_mod8 == 1)
-            score += 2.0 * std::log(2.0); // both roots
-        else if (kN_mod8 == 5)
-            score += std::log(2.0); // one root
-
-        for (size_t i = 1; i < sizeof(test_primes) / sizeof(test_primes[0]); i++) {
-            uint32_t p = test_primes[i];
-            // 当 v_p(kN) = 1(典型情况:k 候选都是 squarefree、gcd(k,N)=1),
-            // x² ≡ kN mod p 只有 x≡0 mod p 单根,且 **不能** Hensel lift 到
-            // mod p²(geometric sum 不适用)。贡献为 log(p)/p,而非
-            // log(p)/(p-1)。msieve 与 Silverman 标准实现采用此公式。
-            //
-            // 边界:若 p² | kN(罕见,N 含平方因子),x² ≡ kN/p² mod p 又是 QR
-            // 时会有额外二次贡献 ≈ 2 log(p)/(p²·(p-1)),数量级可忽略。
-            if (k % p == 0) {
-                score += std::log(static_cast<double>(p)) / p;
-                continue;
-            }
-            uint32_t kN_mod_p = static_cast<uint32_t>(mpz_fdiv_ui(kN.get_mpz(), p));
-            if (kN_mod_p == 0) {
-                // p | N 但 p ∤ k:同上,v_p(kN)=v_p(N) 时根不 lift。
-                score += std::log(static_cast<double>(p)) / p;
-            } else if (mod_pow32(kN_mod_p, (p - 1) / 2, p) == 1) {
-                // p ∤ kN 且 kN is QR mod p — 2 个根,Hensel lift 几何和:
-                // 2 log(p)/(p-1)
-                score += 2.0 * std::log(static_cast<double>(p)) / (p - 1);
-            }
+    static constexpr std::array<uint32_t, 21> candidates{1,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31,
+                                                         37, 41, 43, 47, 53, 59, 61, 67, 71, 73};
+    static constexpr std::array<uint32_t, 45> odd_primes{
+        3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,
+        59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127,
+        131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199};
+    // Euler's criterion encodes (k|p) as 0, 1, or p-1.
+    static constexpr auto candidate_symbols = [] {
+        std::array<std::array<uint32_t, candidates.size()>, odd_primes.size()> symbols{};
+        for (size_t i = 0; i < odd_primes.size(); ++i) {
+            const uint32_t p = odd_primes[i];
+            for (size_t j = 0; j < candidates.size(); ++j)
+                symbols[i][j] = mod_pow32(candidates[j], (p - 1) / 2, p);
         }
+        return symbols;
+    }();
 
-        scored[ordinal] = {k, score, ordinal};
-        ++ordinal;
+    std::array<ScoredCandidate, candidates.size()> scored{};
+    const auto n_mod8 = static_cast<uint32_t>(mpz_fdiv_ui(N.get_mpz(), 8));
+    Integer kN;
+    for (size_t j = 0; j < candidates.size(); ++j) {
+        const uint32_t k = candidates[j];
+        mpz_mul_ui(kN.get_mpz(), N.get_mpz(), k);
+        const double log_kN = static_cast<double>(mpz_sizeinbase(kN.get_mpz(), 2)) * 0.6931;
+        double score = -0.5 * log_kN;
+        const uint32_t kN_mod8 = k * n_mod8 % 8;
+        if (kN_mod8 == 1)
+            score += 2.0 * std::log(2.0);
+        else if (kN_mod8 == 5)
+            score += std::log(2.0);
+        scored[j] = {k, score, j};
+    }
+
+    // For nonzero symbols, kN is a quadratic residue exactly when (k|p) = (N|p).
+    // Visit primes in scoring order so each candidate keeps its floating-point sum.
+    for (size_t i = 0; i < odd_primes.size(); ++i) {
+        const uint32_t p = odd_primes[i];
+        const auto residue = static_cast<uint32_t>(mpz_fdiv_ui(N.get_mpz(), p));
+        const uint32_t n_symbol = mod_pow32(residue, (p - 1) / 2, p);
+        const double log_p = std::log(static_cast<double>(p));
+        // The historical score assigns log(p)/p to p | kN, even when p^2 divides kN.
+        const double single_root = log_p / p;
+        const double two_roots = 2.0 * log_p / (p - 1);
+        for (size_t j = 0; j < candidates.size(); ++j) {
+            const uint32_t k_symbol = candidate_symbols[i][j];
+            if (k_symbol == 0 || n_symbol == 0)
+                scored[j].score += single_root;
+            else if (k_symbol == n_symbol)
+                scored[j].score += two_roots;
+        }
     }
     return scored;
 }
@@ -532,6 +532,21 @@ inline std::optional<std::vector<FBPrime>> build_factor_base_until(const Integer
         if (stop())
             return std::nullopt;
     }
+    return fb;
+}
+
+// Sample the shared clock at entry and publication. During construction, spread
+// clock reads across candidate and trial-divisor probes.
+template <typename Expired>
+inline std::optional<std::vector<FBPrime>>
+build_portfolio_factor_base(const Integer& N, size_t count, Expired&& expired) {
+    static_assert(std::is_nothrow_invocable_r_v<bool, Expired&>);
+    constexpr unsigned clock_poll_interval = 256;
+    unsigned polls = 0;
+    const auto stop = [&]() noexcept { return polls++ % clock_poll_interval == 0 && expired(); };
+    auto fb = build_factor_base_until(N, count, stop);
+    if (fb && expired())
+        return std::nullopt;
     return fb;
 }
 
@@ -2051,11 +2066,37 @@ struct FactorAttemptContext {
     SIQSParams params;
 };
 
+// Ordered time points can span the entire unsigned tick range, even though
+// subtracting their signed durations would overflow.
+inline auto attempt_elapsed(std::chrono::steady_clock::time_point started,
+                            std::chrono::steady_clock::time_point observed) noexcept {
+    using Clock = std::chrono::steady_clock;
+    using Tick = std::make_unsigned_t<Clock::rep>;
+    using Elapsed = std::chrono::duration<Tick, Clock::period>;
+    if (observed < started)
+        return Elapsed::zero();
+    const auto end = static_cast<Tick>(observed.time_since_epoch().count());
+    const auto begin = static_cast<Tick>(started.time_since_epoch().count());
+    return Elapsed{end - begin};
+}
+
+inline bool multiplier_budget_exhausted(const FactorAttemptContext& context,
+                                        std::chrono::steady_clock::time_point observed) noexcept {
+    if (observed < context.started)
+        return true;
+    using Seconds = std::chrono::duration<uintmax_t>;
+    const auto elapsed = attempt_elapsed(context.started, observed);
+    return std::chrono::duration_cast<Seconds>(elapsed).count() >= context.max_seconds;
+}
+
 enum class FactorAttemptTerminal : uint8_t {
     insufficient_factor_base,
     insufficient_relations,
     no_factor,
     factor_found,
+    factor_base_budget_exhausted,
+    sieve_budget_exhausted,
+    shadow_budget_exhausted,
 };
 
 /// Accounting for a completed native attempt, not shadow-return authority.
@@ -2117,23 +2158,25 @@ inline DependencyExtractionOutcome extract_native_dependencies(const Integer& mo
     return outcome;
 }
 
-/// Run one explicit multiplier for facade-validated input. Multiplier
-/// admission belongs to the caller; the default facade retains its historical
-/// single selection. The caller supplies parameters and the shared timer origin.
-/// This entry does not rank candidates, reset the budget, or implement complete
-/// cancellation of factor-base construction or the linear-algebra backends.
-inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
-                                        SIQSShadowProofMode shadow_proof_mode,
-                                        const FactorAttemptContext& context) {
+enum class AttemptKind { single, portfolio };
+
+inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multiplier,
+                                             SIQSShadowProofMode shadow_proof_mode,
+                                             const FactorAttemptContext& context,
+                                             AttemptKind kind) {
     if (multiplier == 0)
         throw std::invalid_argument("SIQS attempt requires a positive multiplier");
     const auto start = context.started;
-    const auto max_seconds = context.max_seconds;
     const auto verbose = context.verbose;
     const auto digits = context.digits;
     const auto& params = context.params;
-    auto elapsed = [&]() {
-        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const auto elapsed = [&]() {
+        return std::chrono::duration<double>(
+                   attempt_elapsed(start, std::chrono::steady_clock::now()))
+            .count();
+    };
+    const auto budget_exhausted = [&]() noexcept {
+        return multiplier_budget_exhausted(context, std::chrono::steady_clock::now());
     };
 
     Integer kN;
@@ -2149,7 +2192,14 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     }
 
     // Build factor base for kN (not N)
-    auto fb = build_factor_base(kN, params.fb_size);
+    auto prepared_fb =
+        kind == AttemptKind::portfolio
+            ? siqs_factor_base_detail::build_portfolio_factor_base(kN, params.fb_size,
+                                                                   budget_exhausted)
+            : siqs_factor_base_detail::build_factor_base_until(kN, params.fb_size, nullptr);
+    if (!prepared_fb)
+        return {std::nullopt, FactorAttemptTerminal::factor_base_budget_exhausted, false};
+    const auto& fb = *prepared_fb;
     size_t fb_size = fb.size();
 
     size_t odd_factor_base_primes = 0;
@@ -2206,7 +2256,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     size_t target_usable = fb_size + 50;
 
     std::vector<SIQSRelation> all_relations;
-    if (elapsed() < static_cast<double>(max_seconds))
+    if (!budget_exhausted())
         all_relations.reserve(target_usable * 10);
     std::mutex relations_mutex;
 
@@ -2246,7 +2296,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     auto sieve_worker = [&](unsigned thread_id) {
         // Admission may expire between the caller's launch check and entry.
         // Leave the empty corpus for the ordinary post-join terminal handling.
-        if (elapsed() >= static_cast<double>(max_seconds))
+        if (budget_exhausted())
             return;
         std::mt19937 local_rng(42 + thread_id * 1000);
         std::vector<SIQSRelation> local_relations;
@@ -2257,7 +2307,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
         size_t local_full = 0, local_1lp = 0, local_2lp = 0;
 
         while (!enough.load(std::memory_order_relaxed) &&
-               elapsed() < static_cast<double>(max_seconds)) {
+               !budget_exhausted()) {
             SIQSPoly poly;
             choose_A(kN, params.sieve_half, params.num_a_factors, fb, local_rng, poly.a_indices,
                      poly.A);
@@ -2312,7 +2362,7 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
 
                 if (enough.load(std::memory_order_relaxed))
                     break;
-                if (elapsed() >= static_cast<double>(max_seconds))
+                if (budget_exhausted())
                     break;
 
                 // Gray code switch to next B
@@ -2354,12 +2404,12 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     // Keep thread owners after every captured object so failed launches drain
     // their workers before any referenced state is destroyed.
     std::vector<util::JoiningThread> threads;
-    if (elapsed() < static_cast<double>(max_seconds)) {
+    if (!budget_exhausted()) {
         worker_failures.resize(num_threads);
         threads.reserve(num_threads);
     }
     try {
-        for (unsigned t = 0; t < num_threads && elapsed() < static_cast<double>(max_seconds); t++) {
+        for (unsigned t = 0; t < num_threads && !budget_exhausted(); t++) {
             threads.emplace_back(guarded_sieve_worker, t);
         }
     } catch (...) {
@@ -2387,10 +2437,12 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
                 partial, num_polys, elapsed());
     }
 
+    if (kind == AttemptKind::portfolio && budget_exhausted())
+        return {std::nullopt, FactorAttemptTerminal::sieve_budget_exhausted, false};
+
     // Both explicit shadow modes read the post-join raw corpus before legacy
-    // merge mutation. Observe always continues. Prefer may return a fully
-    // revalidated candidate only after its V2 pre-route decision is written,
-    // flushed, and stream-error free on the caller's stderr stream.
+    // merge mutation. Prefer may return a revalidated candidate only after its V2
+    // pre-route decision is written, flushed, and stream-error free on stderr.
     bool shadow_proof_observe_record_committed = false;
     const SIQSShadowProofOptions shadow_options{};
     const auto run_shadow_proof = [&]() {
@@ -2431,13 +2483,10 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
             }
 
             const auto decision_wall_end = std::chrono::steady_clock::now();
-            const auto decision_wall_count =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(decision_wall_end - start)
-                    .count();
+            using Nanoseconds = std::chrono::duration<uint64_t, std::nano>;
             const uint64_t decision_wall_ns =
-                decision_wall_count > 0 && std::in_range<uint64_t>(decision_wall_count)
-                    ? static_cast<uint64_t>(decision_wall_count)
-                    : 0;
+                std::chrono::duration_cast<Nanoseconds>(attempt_elapsed(start, decision_wall_end))
+                    .count();
             SIQSShadowProofPreferDecision decision =
                 finalize_siqs_shadow_proof_prefer(std::move(draft), decision_wall_ns);
 
@@ -2451,8 +2500,16 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
                         false};
             }
         } catch (...) {
-            // Explicit prefer never prevents the untouched legacy path.
+            // A prefer failure leaves the legacy route available.
         }
+    }
+
+    // A successful prefer return above has already committed. If shadow work
+    // used the remaining budget, retain its observe status and stop before merge.
+    if (kind == AttemptKind::portfolio && shadow_proof_mode != SIQSShadowProofMode::off &&
+        budget_exhausted()) {
+        return {std::nullopt, FactorAttemptTerminal::shadow_budget_exhausted,
+                shadow_proof_observe_record_committed};
     }
 
     // Merge partials
@@ -2524,6 +2581,13 @@ inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
     return {std::nullopt, FactorAttemptTerminal::no_factor, shadow_proof_observe_record_committed};
 }
 
+/// Historical single attempt. Its zero-budget shadow path uses a complete factor base.
+inline FactorAttemptOutcome factor_once(const Integer& N, uint32_t multiplier,
+                                        SIQSShadowProofMode shadow_proof_mode,
+                                        const FactorAttemptContext& context) {
+    return factor_once_impl(N, multiplier, shadow_proof_mode, context, AttemptKind::single);
+}
+
 inline constexpr size_t MULTIPLIER_ATTEMPT_CAP = 3;
 
 enum class MultiplierPortfolioStop : uint8_t {
@@ -2572,10 +2636,7 @@ inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
     }
     const auto eligible = siqs_multiplier_detail::admit_candidates(N, full_ranking, limit);
     for (uint32_t multiplier : eligible) {
-        const auto observed = now();
-        if (context.max_seconds == 0 || observed < context.started ||
-            std::chrono::duration<double>(observed - context.started).count() >=
-                static_cast<double>(context.max_seconds)) {
+        if (multiplier_budget_exhausted(context, now())) {
             outcome.stop = MultiplierPortfolioStop::budget_exhausted;
             return outcome;
         }
@@ -2595,6 +2656,12 @@ inline MultiplierPortfolioOutcome coordinate_multiplier_attempts(
                 outcome.stop = MultiplierPortfolioStop::factor_found;
                 // Keep every native result field, including the pre-emit wall
                 // sample and this attempt's own observe-commit field, unchanged.
+                return outcome;
+            }
+            if (attempt.terminal == FactorAttemptTerminal::factor_base_budget_exhausted ||
+                attempt.terminal == FactorAttemptTerminal::sieve_budget_exhausted ||
+                attempt.terminal == FactorAttemptTerminal::shadow_budget_exhausted) {
+                outcome.stop = MultiplierPortfolioStop::budget_exhausted;
                 return outcome;
             }
         } catch (...) {
@@ -2620,6 +2687,12 @@ factor_attempt_terminal_name(FactorAttemptTerminal terminal) noexcept {
     switch (terminal) {
     case FactorAttemptTerminal::insufficient_factor_base:
         return "insufficient_factor_base";
+    case FactorAttemptTerminal::factor_base_budget_exhausted:
+        return "factor_base_budget_exhausted";
+    case FactorAttemptTerminal::sieve_budget_exhausted:
+        return "sieve_budget_exhausted";
+    case FactorAttemptTerminal::shadow_budget_exhausted:
+        return "shadow_budget_exhausted";
     case FactorAttemptTerminal::insufficient_relations:
         return "insufficient_relations";
     case FactorAttemptTerminal::no_factor:
@@ -2648,8 +2721,8 @@ multiplier_portfolio_stop_name(MultiplierPortfolioStop stop) noexcept {
 }
 
 /// Explicit internal multi-candidate entry for facade-validated odd N >= 15.
-/// This is an admission budget between native attempts, not a hard deadline:
-/// native long stages do not yet have complete cooperative cancellation.
+/// The shared budget gates native stages and polls during factor-base construction.
+/// Other native stages can still run past the deadline.
 /// Default factor() remains a single historical attempt.
 inline MultiplierPortfolioOutcome
 factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode,
@@ -2661,13 +2734,21 @@ factor_multiplier_portfolio(const Integer& N, SIQSShadowProofMode requested_mode
         requested_mode != SIQSShadowProofMode::observe &&
         requested_mode != SIQSShadowProofMode::prefer)
         throw std::invalid_argument("SIQS multiplier portfolio requires a supported shadow mode");
-    const auto ranking = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
-    auto outcome = coordinate_multiplier_attempts(
-        N, ranking, requested_mode, context, requested_limit,
-        []() noexcept { return std::chrono::steady_clock::now(); },
-        [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
-            return factor_once(N, multiplier, mode, shared);
-        });
+    const auto now = []() noexcept { return std::chrono::steady_clock::now(); };
+    auto outcome = [&] {
+        if (requested_limit == 0 || multiplier_budget_exhausted(context, now())) {
+            MultiplierPortfolioOutcome skipped;
+            skipped.stop = requested_limit == 0 ? MultiplierPortfolioStop::attempt_limit
+                                                : MultiplierPortfolioStop::budget_exhausted;
+            return skipped;
+        }
+        const auto ranking = rank_multiplier_candidates(N, std::numeric_limits<size_t>::max());
+        return coordinate_multiplier_attempts(
+            N, ranking, requested_mode, context, requested_limit, now,
+            [&](uint32_t multiplier, SIQSShadowProofMode mode, const FactorAttemptContext& shared) {
+                return factor_once_impl(N, multiplier, mode, shared, AttemptKind::portfolio);
+            });
+    }();
     if (context.verbose) {
         const auto commit_name = [](std::optional<bool> committed) noexcept {
             return !committed.has_value() ? "unknown" : *committed ? "true" : "false";
