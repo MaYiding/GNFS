@@ -4540,9 +4540,18 @@ bool test_matrix_build_failure_preserves_reduction() {
 bool test_mmap_solve_preserves_existing_scratch_entries() {
     namespace fs = std::filesystem;
     const auto pid = std::to_string(gnfs::util::process_id());
-    const auto root = gnfs::util::temp_directory_path() / ("gnfs_test_mmap_scratch_" + pid);
-    if (!fs::create_directory(root)) {
-        return false;
+    const auto temp_root = gnfs::util::temp_directory_path();
+    const auto stem = "gnfs_test_mmap_scratch_" + pid;
+    fs::path root;
+    for (unsigned candidate = 0;; ++candidate) {
+        root = temp_root / (candidate == 0 ? stem : stem + "_" + std::to_string(candidate));
+        std::error_code error;
+        if (fs::create_directory(root, error)) {
+            break;
+        }
+        if (error && error != std::errc::file_exists) {
+            return false;
+        }
     }
     struct Cleanup {
         const fs::path& root;
@@ -4572,26 +4581,65 @@ bool test_mmap_solve_preserves_existing_scratch_entries() {
     Pipeline pipeline(Integer(143), cfg);
     auto ctx = pipeline.select_polynomial();
     auto fb = pipeline.build_factor_base(ctx);
-    bool mmap_requested = false;
+    fs::path reported_path;
     bool fallback = false;
+    bool interrupt = false;
+    bool occupy_path = false;
     pipeline.set_log_callback([&](const LogEntry& entry) {
-        mmap_requested |= entry.message.starts_with("[linalg-mmap] policy=on");
         fallback |= entry.message.starts_with("[linalg-mmap] fallback");
+        if (entry.message.starts_with("[linalg-mmap] policy=on")) {
+            const auto offset = entry.message.find(" path=");
+            if (offset != std::string::npos) {
+                reported_path = entry.message.substr(offset + 6);
+                if (occupy_path) {
+                    write_test_file(reported_path.string(), "callback file");
+                }
+            }
+            if (interrupt) {
+                throw std::runtime_error("mmap log interrupted");
+            }
+        }
     });
-    std::vector<gnfs::core::Relation> relations;
-    relations.emplace_back(1'000, 1);
-    gnfs::relation::RelationReductionStats stats;
-    stats.strategy = gnfs::relation::ReductionStrategy::StandardV0;
-    stats.output_relations = relations.size();
-    RelationReductionResult reduction(779, std::move(relations), std::move(stats));
-    const auto result = pipeline.solve_matrix(std::move(reduction), fb, ctx);
-
-    return result.matrix.num_rows() == 1 && mmap_requested && !fallback &&
-           fs::is_regular_file(old_matrix) &&
+    const auto solve = [&](uint64_t generation) {
+        std::vector<gnfs::core::Relation> relations;
+        relations.emplace_back(1'000, 1);
+        gnfs::relation::RelationReductionStats stats;
+        stats.strategy = gnfs::relation::ReductionStrategy::StandardV0;
+        stats.output_relations = relations.size();
+        RelationReductionResult reduction(generation, std::move(relations), std::move(stats));
+        return pipeline.solve_matrix(std::move(reduction), fb, ctx);
+    };
+    const auto result = solve(779);
+    if (reported_path != root / (prefix + "2.scratch") / "matrix.csrmat" ||
+        fs::exists(reported_path.parent_path())) {
+        return false;
+    }
+    interrupt = true;
+    try {
+        (void)solve(780);
+        return false;
+    } catch (const std::runtime_error& error) {
+        if (std::string_view(error.what()) != "mmap log interrupted" ||
+            reported_path != root / (prefix + "3.scratch") / "matrix.csrmat" ||
+            fs::exists(reported_path.parent_path())) {
+            return false;
+        }
+    }
+    if (fallback) {
+        return false;
+    }
+    interrupt = false;
+    occupy_path = true;
+    (void)solve(781);
+    if (!fallback || !fs::is_regular_file(reported_path) ||
+        read_test_file(reported_path.string()) != "callback file") {
+        return false;
+    }
+    return result.matrix.num_rows() == 1 && fs::is_regular_file(old_matrix) &&
            read_test_file(old_matrix.string()) == "previous matrix" &&
            fs::is_directory(old_directory) && fs::is_empty(old_directory) &&
            fs::is_regular_file(old_file) && read_test_file(old_file.string()) == "previous file" &&
-           std::distance(fs::directory_iterator(root), fs::directory_iterator{}) == 3;
+           std::distance(fs::directory_iterator(root), fs::directory_iterator{}) == 4;
 }
 
 bool test_legacy_matrix_result_retains_vector() {
