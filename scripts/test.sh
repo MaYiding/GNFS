@@ -7811,6 +7811,37 @@ do_progressive() {
 # 模式: Git 变更检测
 # ============================================================
 
+# The selected build refreshes CMake's source index on all generators. Directly
+# edited test sources can also belong to executables outside the run selection.
+do_changed_build() {
+    local changed_files="$1" module_names="$2"
+    shift 2
+    do_build "$@" || return $?
+    if (( SKIP_BUILD )); then return 0; fi
+
+    local index_file="${BUILD_DIR}/gnfs-test-sources.txt"
+    if [[ ! -r "$index_file" ]]; then
+        log_fail "缺少 CMake 测试源码索引: $index_file"
+        return 1
+    fi
+    local -A changed
+    local file target mod
+    for file in "${(@f)changed_files}"; do changed[$file]=1; done
+    local -a covered=("$@")
+    if [[ "$1" == gnfs_local_gate_quick ]]; then covered+=("${SMOKE_TESTS[@]}"); fi
+    for mod in ${(s: :)module_names}; do
+        covered+=(${=MODULE_TESTS[$mod]})
+    done
+    local -aU extra_targets
+    while IFS=$'\t' read -r target file; do
+        if [[ -n "${changed[$file]:-}" ]] && (( ! ${covered[(Ie)$target]} )); then
+            extra_targets+=("$target")
+        fi
+    done < "$index_file"
+    if (( ${#extra_targets} )); then do_build "${extra_targets[@]}" || return $?; fi
+    return 0
+}
+
 do_changed() {
     local deep=0
     if [[ "${1:-}" == "--deep" ]]; then deep=1; shift; fi
@@ -7915,11 +7946,11 @@ do_changed() {
     if (( ${#modules[@]} == 0 )); then
         if (( needs_50d_contract )); then
             log_info "变更仅命中 50 位探针合同，运行 fast 合同"
-            do_build test_structured_ooc_50d_probe gnfs_test_process_supervisor || return $?
+            do_changed_build "$changed_files" "" test_structured_ooc_50d_probe gnfs_test_process_supervisor || return $?
             do_50d_probe_contracts || true
         else
             log_info "变更文件未匹配到已知模块，运行冒烟测试"
-            do_build gnfs_local_gate_quick || return $?
+            do_changed_build "$changed_files" "" gnfs_local_gate_quick || return $?
             do_smoke
         fi
         return
@@ -7946,7 +7977,7 @@ do_changed() {
     if (( needs_50d_contract )); then targets+=(test_structured_ooc_50d_probe); fi
     if (( needs_siqs_e2e )); then targets+=(test_siqs_e2e); fi
     if (( needs_e2e )); then targets+=(test_gnfs_e2e); fi
-    do_build "${targets[@]}" || return $?
+    do_changed_build "$changed_files" "${modules[*]}" "${targets[@]}" || return $?
 
     do_module "${modules[@]}" || true
 

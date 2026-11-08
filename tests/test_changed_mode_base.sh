@@ -125,7 +125,7 @@ definitions += '\n' + extract(r'^typeset -A MODULE_TESTS MODULE_DEPS\n.*?^done <
 definitions += '\n' + extract(r'^typeset -a MODULE_ORDER\nMODULE_ORDER=\(.*?\)$')
 definitions += '\n' + '\n'.join(
     extract(rf'^{name}\(\) \{{\n.*?^\}}')
-    for name in ['path_to_module', 'do_module', 'do_changed']
+    for name in ['path_to_module', 'do_module', 'do_changed_build', 'do_changed']
 )
 # Use the production failure-count-to-exit conversion as well as its selector.
 exit_status = extract(r'^if \(\( FAILED_TESTS > 0 \)\); then\n.*?^exit 0$')
@@ -137,6 +137,7 @@ SKIPPED_TESTS=0
 TOTAL_TESTS=0
 MODE=module
 SKIP_TEST=""
+SKIP_BUILD=1
 typeset -a REPORT_ENTRIES=()
 log_header() { :; }
 log_section() { :; }
@@ -373,6 +374,64 @@ if cmake := shutil.which('cmake'):
     if failed.returncode == 0 or 'test_missing' not in failed.stderr:
         raise SystemExit('A missing required module test must fail CMake generation')
     print('[PASS] actual module targets share helpers and honor one-level cascades and Windows exclusions')
+
+
+    # Use a real compilation for a directly edited source that is outside
+    # smoke. Its name differs from its target; another source has two owners.
+    source = Path(sys.argv[2]) / 'direct sources'
+    tests_dir = source / 'tests'
+    tests_dir.mkdir(parents=True)
+    main = tests_dir / 'test_gnfs_e2e.cpp'
+    main.write_text('int main() { return 0; }\n')
+    shared = tests_dir / 'shared unit.cpp'
+    shared.write_text('int shared() { return 1; }\n')
+    (tests_dir / 'other.cpp').write_text('int main() { return 0; }\n')
+    indexer = re.search(r'(?ms)^\s*function\(gnfs_write_test_source_index\).*?^\s*endfunction\(\)',
+                        cmake_source).group(0)
+    (source / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.20)\nproject(SourceOwners LANGUAGES CXX)\n'
+        'add_executable(before_tests tests/other.cpp)\n'
+        'add_custom_target(gnfs_local_gate_quick)\n'
+        'add_executable(renamed tests/test_gnfs_e2e.cpp "tests/shared unit.cpp")\n'
+        'if(ENABLE_SECOND)\n  add_executable(second tests/other.cpp "tests/shared unit.cpp")\nendif()\n'
+        'add_executable(manual EXCLUDE_FROM_ALL tests/test_gnfs_e2e.cpp)\n'
+        + indexer + '\ngnfs_write_test_source_index(before_tests)\n')
+    build = source / 'build'
+    subprocess.run([cmake, '-S', str(source), '-B', str(build), '-DENABLE_SECOND=ON'],
+                   check=True, capture_output=True)
+    driver = recorders + '\n' + definitions + r"""
+BUILD_DIR=$1; ROUTE_PATHS=$2; SKIP_BUILD=$3
+do_build() {
+    if (( SKIP_BUILD )); then return 0; fi
+    print -r -- "BUILD:$*"
+    cmake --build "$BUILD_DIR" --target "$@"
+}
+do_changed --deep
+"""
+
+    def direct_build(path, *, skip=False):
+        result = subprocess.run(['zsh', '-s', '--', str(build), path, str(int(skip))],
+                                input=driver, text=True, capture_output=True, cwd=root, timeout=40)
+        output = result.stdout.splitlines()
+        return result.returncode, [line[6:].split() for line in output if line.startswith('BUILD:')], (
+            'SELECTED:smoke' in output), result.stderr
+
+    main.write_text('#error DIRECTLY_CHANGED_TEST_COMPILE_FAILURE\n')
+    status, requested, smoke, errors = direct_build('tests/test_gnfs_e2e.cpp')
+    if status == 0 or requested != [['gnfs_local_gate_quick'], ['renamed']] or smoke or (
+            'DIRECTLY_CHANGED_TEST_COMPILE_FAILURE' not in errors):
+        raise SystemExit(f'Direct compilation failure lost: {status}, {requested}, {smoke}, {errors}')
+    if direct_build('tests/test_gnfs_e2e.cpp', skip=True)[:3] != (0, [], True):
+        raise SystemExit('--no-build must keep the selected smoke run')
+    main.write_text('int main() { return 0; }\n')
+    status, requested, smoke, errors = direct_build('tests/shared unit.cpp')
+    if status or not smoke or requested != [['gnfs_local_gate_quick'], ['renamed', 'second']]:
+        raise SystemExit(f'Multiple owners of one source lost: {requested}, {errors}')
+    subprocess.run([cmake, '-S', str(source), '-B', str(build), '-DENABLE_SECOND=OFF'],
+                   check=True, capture_output=True)
+    if direct_build('tests/shared unit.cpp')[:3] != (0, [['gnfs_local_gate_quick'], ['renamed']], True):
+        raise SystemExit('An unavailable target remained in the configured source index')
+    print('[PASS] changed sources compile every configured default owner before the original smoke run')
 
 
 # Use the real binary-result/retry function with only its bounded process adapter

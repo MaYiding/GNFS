@@ -534,6 +534,7 @@ option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 
 if(GNFS_BUILD_TESTS)
     enable_testing()
+    get_property(_targets_before_tests DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 
     function(add_siqs_rss_campaign_synthetic_child target_name behavior)
         add_executable(${target_name} EXCLUDE_FROM_ALL
@@ -3514,6 +3515,28 @@ if(GNFS_BUILD_TESTS)
         add_dependencies(gnfs_local_module_api gnfs) # CLI companion binary
     endfunction()
     gnfs_add_local_module_targets("${_gate_catalog_dir}/modules.txt" ${_gate_exclusions})
+
+    function(gnfs_write_test_source_index)
+        get_property(_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+        list(REMOVE_ITEM _targets ${ARGN})
+        set(_index "")
+        foreach(_target IN LISTS _targets)
+            get_target_property(_type ${_target} TYPE)
+            get_target_property(_excluded ${_target} EXCLUDE_FROM_ALL)
+            if(NOT _type STREQUAL "EXECUTABLE" OR _excluded)
+                continue()
+            endif()
+            get_target_property(_sources ${_target} SOURCES)
+            foreach(_source IN LISTS _sources)
+                cmake_path(ABSOLUTE_PATH _source NORMALIZE OUTPUT_VARIABLE _absolute)
+                file(RELATIVE_PATH _relative "${PROJECT_SOURCE_DIR}" "${_absolute}")
+                string(APPEND _index "${_target}\t${_relative}\n")
+            endforeach()
+        endforeach()
+        file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/gnfs-test-sources.txt"
+            CONTENT "${_index}" NEWLINE_STYLE UNIX)
+    endfunction()
+    gnfs_write_test_source_index(${_targets_before_tests})
 endif()
 
 # ============================================================

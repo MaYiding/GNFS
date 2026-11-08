@@ -67,8 +67,11 @@ list does not select this E2E test. Ordinary `changed` and `smoke` keep their
 existing selection.
 
 The runner resolves the changed paths before building the selected module tests,
-their CTest companions and any applicable E2E or 50-digit contract. Clean trees
-and unmapped paths use the smoke build target. `--no-build` uses the binaries
+their CTest companions and any applicable E2E or 50-digit contract. It also
+compiles default test executables whose CMake source list contains a directly
+changed file. Running those executables follows the usual module or smoke
+selection. Clean trees and unmapped paths use the smoke build target.
+`--no-build` uses the binaries
 already present in the selected build directory. The runner and CMake share the
 module test lists and one-level dependency map in
 `scripts/test-catalog/modules.txt` (`module|tests|downstream modules`).
