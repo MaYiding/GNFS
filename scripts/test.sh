@@ -7879,14 +7879,17 @@ do_changed() {
         needs_siqs_e2e=1
     fi
 
-    local -a direct_modules=("${(k)affected_modules[@]}")
     # 级联依赖 (--deep 模式)
+    local -a largest_group
     if (( deep )); then
         typeset -A cascade_modules
-        for mod in "${direct_modules[@]}"; do
-            cascade_modules[$mod]=1
+        for mod in "${(k)affected_modules[@]}"; do
             local deps="${MODULE_DEPS[$mod]:-}"
-            for dep in ${(s: :)deps}; do
+            local -a group=("$mod" ${(s: :)deps})
+            if (( ${#group} > ${#largest_group} )); then
+                largest_group=("${group[@]}")
+            fi
+            for dep in "${group[@]}"; do
                 cascade_modules[$dep]=1
             done
         done
@@ -7925,11 +7928,14 @@ do_changed() {
     log_info "受影响模块: ${modules[*]}"
     echo ""
 
+    # Make traverses dependencies separately for each requested target. Build
+    # the largest cascade once, then request only modules outside that group.
     local -a targets
-    local module_target=gnfs_local_module_
-    if (( deep )); then module_target=gnfs_local_deep_; fi
-    for mod in "${direct_modules[@]}"; do
-        targets+=("${module_target}${mod}")
+    if (( ${#largest_group} )); then
+        targets+=("gnfs_local_deep_${largest_group[1]}")
+    fi
+    for mod in "${(@)modules:|largest_group}"; do
+        targets+=("gnfs_local_module_${mod}")
     done
     local needs_e2e=0
     for mod in "${modules[@]}"; do

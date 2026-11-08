@@ -175,12 +175,16 @@ for line in (root / 'scripts/test-catalog/modules.txt').read_text().splitlines()
 
 def build_closure(targets):
     expanded = set()
+    covered_modules = set()
     for target in targets:
         if target.startswith(('gnfs_local_module_', 'gnfs_local_deep_')):
             module = target.split('_', 3)[-1]
             modules = [module]
             if target.startswith('gnfs_local_deep_'):
                 modules.extend(module_catalog[module][1])
+            if covered_modules.intersection(modules):
+                raise SystemExit(f'Make would traverse an overlapping module group: {targets!r}')
+            covered_modules.update(modules)
             for mod in modules:
                 expanded.update(module_catalog[mod][0])
                 expanded.add('gnfs_test_process_supervisor')
@@ -238,6 +242,9 @@ route([header, e2e_source, 'tests/test_siqs.cpp', header], ['--deep'], 1)
 route([header], [], 0)
 route([e2e_source], [], 0)
 indirect = route(['include/gnfs/util/joining_thread.hpp'], ['--deep'], 0, expected_gnfs=1)
+route(['include/gnfs/util/joining_thread.hpp', 'include/gnfs/core/integer.hpp',
+       'include/gnfs/sieve/lattice_sieve.hpp', 'include/gnfs/linalg/matrix.hpp'],
+      ['--deep'], 0, expected_gnfs=1)
 if 'test_siqs' not in indirect:
     raise SystemExit('Utility fixture must reach SIQS through its module dependency')
 for excluded in ['test_kleinjung_large', 'test_ecm_brent_suyama_bench',
