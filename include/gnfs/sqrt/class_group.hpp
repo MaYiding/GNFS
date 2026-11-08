@@ -4,6 +4,7 @@
 #include "../core/polynomial_context.hpp"
 #include "../polynomial/resultant.hpp"
 #include "../util/primes.hpp"
+#include "class_group_smith.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -517,7 +518,7 @@ private:
         // Build relation matrix: each row is a principal ideal factorization
         // We find principal ideals by checking (a + b*alpha) for small a, b
 
-        std::vector<std::vector<int>> relations;
+        std::vector<std::vector<Integer>> relations;
         size_t num_primes = prime_ideals.size();
 
         // Search for principal ideals
@@ -532,7 +533,7 @@ private:
 
                 if (!factorization.empty()) {
                     // Convert to vector indexed by prime_ideals
-                    std::vector<int> row(num_primes, 0);
+                    std::vector<Integer> row(num_primes);
                     for (const auto& [pi, exp] : factorization) {
                         for (size_t i = 0; i < num_primes; ++i) {
                             if (prime_ideals[i] == pi) {
@@ -557,17 +558,19 @@ private:
             return;
         }
 
-        // Compute Smith normal form to find class group structure
-        // Simplified version: use Gaussian elimination mod 2 to find generators
-        auto snf_result = compute_smith_normal_form(relations, num_primes);
+        detail::reduce_class_group_relations(relations);
+        for (size_t k = 0; k < std::min(relations.size(), num_primes); ++k) {
+            const auto factor = relations[k][k].get_mpz();
+            if (mpz_cmp_ui(factor, 1) <= 0)
+                continue;
 
-        class_number_ = snf_result.class_number;
-
-        // Store generators (prime ideals with non-trivial class)
-        for (size_t i = 0; i < snf_result.generator_indices.size(); ++i) {
-            if (snf_result.generator_indices[i] < prime_ideals.size()) {
-                generators_.push_back(prime_ideals[snf_result.generator_indices[i]]);
-            }
+            generators_.push_back(prime_ideals[k]);
+            // Preserve the public uint32_t estimate while reducing over exact integers.
+            const uint32_t limit = std::numeric_limits<uint32_t>::max();
+            if (mpz_cmp_ui(factor, limit / class_number_) > 0)
+                class_number_ = limit;
+            else
+                class_number_ *= static_cast<uint32_t>(mpz_get_ui(factor));
         }
     }
 
@@ -679,155 +682,6 @@ private:
         const auto& gen = generators_[gen_idx];
         auto it = cls.prime_powers.find(gen);
         return (it != cls.prime_powers.end()) ? it->second : 0;
-    }
-
-    /// Compute Smith normal form result
-    struct SNFResult {
-        uint32_t class_number = 1;
-        std::vector<size_t> generator_indices;
-        std::vector<int> invariant_factors;
-    };
-
-    /// Compute Smith Normal Form of the relation matrix
-    /// Returns invariant factors, class number, and generator indices
-    [[nodiscard]] SNFResult compute_smith_normal_form(std::vector<std::vector<int>>& matrix,
-                                                      size_t num_cols) const {
-
-        SNFResult result;
-        result.class_number = 1;
-
-        if (matrix.empty() || num_cols == 0) {
-            return result;
-        }
-
-        size_t num_rows = matrix.size();
-        size_t min_dim = std::min(num_rows, num_cols);
-
-        // Smith Normal Form via row/column operations over Z
-        for (size_t k = 0; k < min_dim; ++k) {
-            // Phase 1: Find smallest nonzero |entry| and move to (k,k)
-            bool found = false;
-            while (true) {
-                // Find minimum nonzero |entry| in submatrix [k:, k:]
-                int min_abs = 0;
-                size_t min_r = k, min_c = k;
-                for (size_t i = k; i < num_rows; ++i) {
-                    for (size_t j = k; j < num_cols; ++j) {
-                        if (matrix[i][j] != 0) {
-                            int abs_val = std::abs(matrix[i][j]);
-                            if (min_abs == 0 || abs_val < min_abs) {
-                                min_abs = abs_val;
-                                min_r = i;
-                                min_c = j;
-                            }
-                        }
-                    }
-                }
-                if (min_abs == 0)
-                    break; // all zero in submatrix
-
-                found = true;
-
-                // Move pivot to (k,k)
-                if (min_r != k)
-                    std::swap(matrix[min_r], matrix[k]);
-                if (min_c != k) {
-                    for (size_t i = 0; i < num_rows; ++i) {
-                        std::swap(matrix[i][min_c], matrix[i][k]);
-                    }
-                }
-
-                // Phase 2: Eliminate row k and column k
-                bool changed = true;
-                while (changed) {
-                    changed = false;
-
-                    // Eliminate column k
-                    for (size_t i = k + 1; i < num_rows; ++i) {
-                        if (matrix[i][k] != 0) {
-                            int q = matrix[i][k] / matrix[k][k];
-                            for (size_t j = k; j < num_cols; ++j) {
-                                matrix[i][j] -= q * matrix[k][j];
-                            }
-                            if (matrix[i][k] != 0) {
-                                // Didn't fully eliminate — swap and retry
-                                std::swap(matrix[i], matrix[k]);
-                                changed = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (changed)
-                        continue;
-
-                    // Eliminate row k
-                    for (size_t j = k + 1; j < num_cols; ++j) {
-                        if (matrix[k][j] != 0) {
-                            int q = matrix[k][j] / matrix[k][k];
-                            for (size_t i = k; i < num_rows; ++i) {
-                                matrix[i][j] -= q * matrix[i][k];
-                            }
-                            if (matrix[k][j] != 0) {
-                                // Swap columns and retry
-                                for (size_t i = 0; i < num_rows; ++i) {
-                                    std::swap(matrix[i][j], matrix[i][k]);
-                                }
-                                changed = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                // Phase 3: Check divisibility — m[k][k] must divide all entries below
-                bool divisible = true;
-                for (size_t i = k + 1; i < num_rows && divisible; ++i) {
-                    for (size_t j = k + 1; j < num_cols && divisible; ++j) {
-                        if (matrix[i][j] % matrix[k][k] != 0) {
-                            // Add row i to row k, then re-eliminate
-                            for (size_t c = k; c < num_cols; ++c) {
-                                matrix[k][c] += matrix[i][c];
-                            }
-                            divisible = false;
-                        }
-                    }
-                }
-                if (divisible)
-                    break; // done with position k
-                // else: loop back — now (k,k) has a smaller value
-            }
-
-            if (!found)
-                break;
-
-            // Make diagonal entry positive
-            if (matrix[k][k] < 0) {
-                for (size_t j = k; j < num_cols; ++j) {
-                    matrix[k][j] = -matrix[k][j];
-                }
-            }
-        }
-
-        // Collect invariant factors (diagonal entries > 1)
-        // and compute class number
-        for (size_t k = 0; k < min_dim; ++k) {
-            int d_k = std::abs(matrix[k][k]);
-            if (d_k > 1) {
-                result.invariant_factors.push_back(d_k);
-                result.generator_indices.push_back(k);
-                // Protect against overflow
-                if (result.class_number <= UINT32_MAX / static_cast<uint32_t>(d_k)) {
-                    result.class_number *= static_cast<uint32_t>(d_k);
-                } else {
-                    result.class_number = UINT32_MAX;
-                }
-            }
-        }
-        // Columns beyond min_dim that had no pivot also contribute
-        // (zero diagonal = infinite cyclic factor, but in class group context
-        // these indicate free generators needing more relations)
-
-        return result;
     }
 
     /// Simple primality test — delegates to util::is_prime_u32 (robust at uint32 boundary).
