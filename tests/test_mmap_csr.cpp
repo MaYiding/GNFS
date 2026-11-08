@@ -81,7 +81,9 @@ public:
         }
     }
 
-    const fs::path& path() const { return path_; }
+    const fs::path& path() const {
+        return path_;
+    }
 
 private:
     fs::path path_;
