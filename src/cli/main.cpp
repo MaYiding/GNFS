@@ -543,13 +543,13 @@ static void run_repl() {
                 if (key == "method")
                     repl_config.method = parse_method(val);
                 else if (key == "degree")
-                    repl_config.degree = Config::parse_uint32(val, key);
+                    repl_config.set_degree(Config::parse_uint32(val, key));
                 else if (key == "rational_bound" || key == "fb_rational")
-                    repl_config.rational_bound = Config::parse_uint32(val, key);
+                    repl_config.set_rational_bound(Config::parse_uint32(val, key));
                 else if (key == "algebraic_bound" || key == "fb_algebraic")
-                    repl_config.algebraic_bound = Config::parse_uint32(val, key);
+                    repl_config.set_algebraic_bound(Config::parse_uint32(val, key));
                 else if (key == "large_prime_bound" || key == "lp_bound")
-                    repl_config.large_prime_bound = Config::parse_uint64(val, key);
+                    repl_config.set_large_prime_bound(Config::parse_uint64(val, key));
                 else {
                     std::cout << TR(S::REPL_UNKNOWN_KEY) << " " << key << "\n";
                     continue;
