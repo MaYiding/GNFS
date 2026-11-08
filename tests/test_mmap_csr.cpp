@@ -16,6 +16,7 @@
 #include <iterator>
 #include <limits>
 #include <random>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -327,6 +328,35 @@ void test_empty_wire_layout_and_rejected_overwrite() {
     TEST_PASS("empty CSR wire layout and writer validation");
 }
 
+void test_widened_offset_stream() {
+    std::vector<uint32_t> offsets(16385);
+    for (size_t i = 0; i < offsets.size(); ++i) {
+        offsets[i] = static_cast<uint32_t>(i);
+    }
+    offsets.back() = std::numeric_limits<uint32_t>::max();
+
+    size_t count = 0;
+    size_t calls = 0;
+    bool valid = true;
+    auto check_block = [&](const uint64_t* values, size_t bytes) {
+        ++calls;
+        const size_t entries = bytes / sizeof(uint64_t);
+        if (bytes == 0 || bytes % sizeof(uint64_t) != 0 || entries > offsets.size() - count) {
+            valid = false;
+            return;
+        }
+        for (size_t i = 0; i < entries; ++i) {
+            if (values[i] != offsets[count++])
+                valid = false;
+        }
+    };
+    gnfs::linalg::detail::write_widened_csr_offsets(std::span<const uint32_t>(offsets),
+                                                    check_block);
+    TEST_ASSERT(valid && count == offsets.size() && calls > 1,
+                "narrow offsets are widened in order across block boundaries");
+    TEST_PASS("bounded V2 offset conversion");
+}
+
 void test_rejects_malformed_files() {
     TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_malformed.csrmat"));
 
@@ -378,6 +408,7 @@ int main() {
     test_single_row();
     test_rejects_malformed_files();
     test_empty_wire_layout_and_rejected_overwrite();
+    test_widened_offset_stream();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";

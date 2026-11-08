@@ -3,6 +3,7 @@
 #include "gnfs/linalg/sparse_matrix.hpp"
 #include "gnfs/util/mmap_file.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -11,9 +12,24 @@
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace gnfs::linalg {
+
+namespace detail {
+
+/// Widen narrow row offsets into the V2 representation with bounded scratch.
+template <typename Offset, typename WriteBytes>
+void write_widened_csr_offsets(std::span<const Offset> offsets, WriteBytes&& write_bytes) {
+    std::array<uint64_t, 512> buffer;
+    while (!offsets.empty()) {
+        const size_t count = std::min(offsets.size(), buffer.size());
+        std::copy_n(offsets.begin(), count, buffer.begin());
+        write_bytes(buffer.data(), count * sizeof(uint64_t));
+        offsets = offsets.subspan(count);
+    }
+}
+
+} // namespace detail
 
 /// Out-of-core CSR matrix backed by memory-mapped files.
 ///
@@ -110,13 +126,7 @@ public:
         if constexpr (sizeof(size_t) == sizeof(uint64_t)) {
             write_bytes(src_offsets.data(), row_bytes);
         } else {
-            // The on-disk format is explicitly uint64_t even on 32-bit hosts.
-            // Convert in bounded chunks instead of assuming size_t has the same width.
-            std::vector<uint64_t> offsets(src_offsets.size());
-            for (size_t i = 0; i < src_offsets.size(); ++i) {
-                offsets[i] = static_cast<uint64_t>(src_offsets[i]);
-            }
-            write_bytes(offsets.data(), row_bytes);
+            detail::write_widened_csr_offsets(src_offsets, write_bytes);
         }
 
         // col_indices: nnz uint32_t values
