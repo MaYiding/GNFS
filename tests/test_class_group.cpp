@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -712,6 +713,9 @@ void test_simple_root_ideal_exponents() {
     ClassGroup legacy(nonmonic, config);
     TEST_ASSERT(legacy.compute_character(3, 7) == legacy.compute_character(3, 1),
                 "retain the nonmonic estimate");
+    TEST_ASSERT(legacy.num_binary_characters() == 0 &&
+                    legacy.compute_binary_characters(3, 7).empty(),
+                "a nonmonic estimated valuation supplies no matrix column");
     TEST_PASS("simple-root valuations in selected class group coordinates");
 }
 
@@ -892,39 +896,62 @@ void test_binary_characters_select_even_smith_factors() {
     torsion.add_nontrivial_factor(I(3).get_mpz());
     TEST_ASSERT(torsion.order == 3 && torsion.binary_rank == 0,
                 "odd factor has no binary character");
-    TEST_ASSERT(torsion.binary_parities({true}).empty(), "omit an odd-order bit");
+    const std::array<PrimeIdeal, 3> ideals{{{2, 0, 1}, {3, 0, 1}, {5, 0, 1}}};
+    const std::span<const PrimeIdeal> generators(ideals);
+    TEST_ASSERT(torsion.even_generators(generators.first(1)).empty(), "omit an odd-order ideal");
     torsion.add_nontrivial_factor(I(6).get_mpz());
     TEST_ASSERT(torsion.order == 18 && torsion.binary_rank == 1, "mixed orders 3 and 6");
-    TEST_ASSERT(torsion.binary_parities({true, false}) == std::vector<bool>{false},
-                "omit first component");
-    TEST_ASSERT(torsion.binary_parities({false, true}) == std::vector<bool>{true},
-                "retain second component");
+    TEST_ASSERT(torsion.even_generators(generators.first(2)).front() == ideals[1],
+                "retain the second representative");
     const auto large_factor = I(6) * pow(I(2), 65);
     torsion.add_nontrivial_factor(large_factor.get_mpz());
     TEST_ASSERT(torsion.order == std::numeric_limits<uint32_t>::max() && torsion.binary_rank == 2,
                 "saturation preserves exact factor parity");
-    const std::vector<bool> expected{false, true};
-    TEST_ASSERT(torsion.binary_parities({true, false, true}) == expected,
+    const auto even = torsion.even_generators(generators);
+    TEST_ASSERT(even.size() == 2 && even[0] == ideals[1] && even[1] == ideals[2],
                 "preserve even component order");
-    // The public width and ordering also apply when relation collection changes the estimate.
     PolynomialContext ctx(I(369806), {I(-504), I(37021), I(1)}, I(10));
     ClassGroupConfig config;
     config.max_primes = 137;
     ClassGroup group(ctx, config);
-    if (group.class_number() != std::numeric_limits<uint32_t>::max())
-        TEST_ASSERT((group.num_binary_characters() > 0) == (group.class_number() % 2 == 0),
-                    "even finite order implies at least one even factor");
-    for (const auto& ideal : group.generators()) {
-        const int64_t a = static_cast<int64_t>(ideal.r) + ideal.p;
-        const auto all = group.compute_character(a, 1);
-        const auto binary = group.compute_binary_characters(a, 1);
-        TEST_ASSERT(binary.size() == group.num_binary_characters() && binary.size() <= all.size(),
-                    "public binary width");
-        for (size_t i = 0; i < binary.size(); ++i)
-            TEST_ASSERT(binary[i] == all[all.size() - binary.size() + i],
-                        "public binary factor order");
-    }
+    const auto bits = group.compute_binary_characters(-7, 1);
+    TEST_ASSERT(bits.size() == group.num_binary_characters() &&
+                    bits.size() <= group.compute_character(-7, 1).size(),
+                "public matrix width fits the selected representatives");
+    if (group.class_number() != std::numeric_limits<uint32_t>::max() &&
+        group.class_number() % 2 == 1)
+        TEST_ASSERT(bits.empty(), "an odd-order presentation supplies no matrix columns");
     TEST_PASS("binary characters select even Smith factors");
+}
+
+void test_matrix_valuations_at_repeated_roots() {
+    // In Q(sqrt(-2)), alpha = 12 + 3 sqrt(-2). Both primes over 3 reduce
+    // to the same root of this order. The product is (27 - 2 alpha)^2.
+    PolynomialContext split(I(2227), {I(162), I(-24), I(1)}, I(59));
+    ClassGroup group(split);
+    TEST_ASSERT(group.compute_binary_characters(27, 1) == group.compute_binary_characters(9, 1),
+                "the two square factors have equal matrix parities");
+    TEST_ASSERT(group.num_binary_characters() == 0, "omit the shared root over 3");
+
+    // This cubic has a double root at 8 modulo 11. Its fallback valuation
+    // supplies an estimated bit but no certified matrix column.
+    PolynomialContext cubic(I(13), {I(-6), I(-6), I(-2), I(1)}, I(1));
+    ClassGroupConfig config;
+    config.max_primes = 6;
+    ClassGroup repeated(cubic, config);
+    TEST_ASSERT(repeated.num_binary_characters() == 0 &&
+                    repeated.compute_binary_characters(8, 1).empty(),
+                "omit a repeated root of a cubic");
+
+    // The cubic x^3+x^2-3x+3 has a simple root at 2 modulo 3.
+    PolynomialContext supported(I(9), {I(3), I(-3), I(1), I(1)}, I(2));
+    config.max_primes = 3;
+    ClassGroup simple(supported, config);
+    TEST_ASSERT(simple.num_binary_characters() == 1 &&
+                    simple.compute_binary_characters(-7, 1) == std::vector<bool>{true} &&
+                    simple.compute_binary_characters(2, 1) == std::vector<bool>{false},
+                "retain the odd and even norm valuations at a simple cubic root");
+    TEST_PASS("certified matrix valuations on simple and repeated roots");
 }
 
 void test_generators_are_valid_prime_ideals() {
@@ -1001,6 +1028,7 @@ int main() {
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
     test_binary_characters_select_even_smith_factors();
+    test_matrix_valuations_at_repeated_roots();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";

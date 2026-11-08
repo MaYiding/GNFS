@@ -194,12 +194,10 @@ struct ClassGroupTorsion {
             order *= static_cast<uint32_t>(mpz_get_ui(factor));
     }
 
-    [[nodiscard]] std::vector<bool> binary_parities(std::vector<bool> parities) const {
+    [[nodiscard]] std::span<const PrimeIdeal>
+    even_generators(std::span<const PrimeIdeal> generators) const {
         // Each Smith invariant divides the next, so the even factors form a suffix.
-        if (parities.size() > binary_rank)
-            parities.erase(parities.begin(),
-                           parities.end() - static_cast<std::ptrdiff_t>(binary_rank));
-        return parities;
+        return generators.last(binary_rank);
     }
 };
 
@@ -247,33 +245,17 @@ public:
     /// Compute the class group character for a given (a, b) pair
     /// Returns a vector of bits, one for each generator
     [[nodiscard]] std::vector<bool> compute_character(int64_t a, uint64_t b) const {
-        std::vector<bool> result(generators_.size(), false);
-
-        if (generators_.empty()) {
-            return result; // Trivial class group
-        }
-
-        const auto powers = detail::class_group_ideal_exponents(ctx_, a, b, generators_,
-                                                                simple_roots_, ramified_primes_);
-        for (size_t i = 0; i < generators_.size(); ++i) {
-            const auto it = powers.find(generators_[i]);
-            result[i] = it != powers.end() && (it->second % 2 != 0);
-        }
-
-        return result;
+        return valuation_parities(a, b, generators_);
     }
 
-    /// Number of even-order cyclic factors represented in the binary matrix.
+    /// Number of certified prime-ideal valuations retained at even Smith diagonal positions.
     [[nodiscard]] size_t num_binary_characters() const {
-        return torsion_.binary_rank;
+        return binary_ideals_.size();
     }
 
-    /// Generator parities for the even-order factors, in Smith diagonal order.
-    /// Uses the same prime-ideal representatives as compute_character().
+    /// Each bit is v_P(a - b*alpha) mod 2, so products that are squares have zero parity.
     [[nodiscard]] std::vector<bool> compute_binary_characters(int64_t a, uint64_t b) const {
-        if (torsion_.binary_rank == 0)
-            return {};
-        return torsion_.binary_parities(compute_character(a, b));
+        return valuation_parities(a, b, binary_ideals_);
     }
 
     /// Get the list of generator prime ideals
@@ -289,6 +271,7 @@ private:
     double minkowski_bound_ = 0.0;
     detail::ClassGroupTorsion torsion_;
     std::vector<PrimeIdeal> generators_;
+    std::vector<PrimeIdeal> binary_ideals_;
     // Simple roots of a monic polynomial in the enumeration order (p, r).
     std::vector<PrimeIdeal> simple_roots_;
     std::vector<uint32_t> ramified_primes_;
@@ -298,6 +281,24 @@ private:
 
     // Relation matrix for class group computation
     std::vector<std::vector<int>> relation_matrix_;
+
+    [[nodiscard]] std::vector<bool>
+    valuation_parities(int64_t a, uint64_t b, const std::vector<PrimeIdeal>& ideals) const {
+        std::vector<bool> result(ideals.size(), false);
+
+        if (ideals.empty()) {
+            return result;
+        }
+
+        const auto powers = detail::class_group_ideal_exponents(ctx_, a, b, ideals, simple_roots_,
+                                                                ramified_primes_);
+        for (size_t i = 0; i < ideals.size(); ++i) {
+            const auto it = powers.find(ideals[i]);
+            result[i] = it != powers.end() && (it->second % 2 != 0);
+        }
+
+        return result;
+    }
 
     /// Main computation routine
     void compute() {
@@ -712,6 +713,14 @@ private:
 
             generators_.push_back(prime_ideals[k]);
             torsion_.add_nontrivial_factor(factor);
+        }
+
+        // Roots of a nonmaximal order can represent multiple field primes.
+        // Use only the roots whose field-prime valuations are known here.
+        for (const auto& ideal : torsion_.even_generators(generators_)) {
+            if (std::binary_search(simple_roots_.begin(), simple_roots_.end(), ideal) ||
+                std::binary_search(ramified_primes_.begin(), ramified_primes_.end(), ideal.p))
+                binary_ideals_.push_back(ideal);
         }
     }
 

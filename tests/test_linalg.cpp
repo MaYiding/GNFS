@@ -13,6 +13,7 @@
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/relation/filter.hpp>
 #include <gnfs/sqrt/number_field.hpp>
 
 #include <atomic>
@@ -606,7 +607,7 @@ void check_class_group_square_dependency(const core::PolynomialContext& ctx,
     }
 }
 
-void test_odd_class_group_preserves_square_dependency() {
+void test_class_group_preserves_square_dependencies() {
     using core::Integer;
     core::PolynomialContext first(Integer(323), {Integer(-10), Integer(11), Integer(1)},
                                   Integer(31));
@@ -618,6 +619,48 @@ void test_odd_class_group_preserves_square_dependency() {
 
     core::PolynomialContext third(Integer(779), {Integer(50), Integer(0), Integer(1)}, Integer(27));
     check_class_group_square_dependency(third, {25, 1}, {-5, 1}, Integer(8), {5, 2});
+
+    // At the index prime 3 the two field primes share the polynomial root 0.
+    // Using v_3(a) gives opposite parities for these factors of (27 - 2*alpha)^2.
+    core::PolynomialContext split(Integer(2227), {Integer(162), Integer(-24), Integer(1)},
+                                  Integer(59));
+    check_class_group_square_dependency(split, {27, 1}, {9, 1}, Integer(40), {27, 2});
+}
+
+void test_certified_class_group_column_on_merged_relations() {
+    using core::Integer;
+    core::PolynomialContext ctx(Integer(57), {Integer(54), Integer(11), Integer(1)}, Integer(4));
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 191;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    std::vector<core::Relation> rows;
+    // The discriminant is -95. The unique prime over 5 has valuations 0, 1, 1
+    // on these elements, whose norms are respectively 26, 80 and 530.
+    for (const auto a : {-4, 2, 17}) {
+        auto rel = cofactorizer.verify(a, 1);
+        GNFS_TEST_CHECK(rel && rel->is_full());
+        rows.push_back(*rel);
+    }
+    rows.push_back(relation::PartialRelationMerger::merge_two(rows[0], rows[1]));
+    rows.push_back(relation::PartialRelationMerger::merge_two(rows[2], rows[3]));
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    config.include_class_group = true;
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(rows, fb, ctx);
+    const auto streaming = builder.build_with_qc_streaming(VectorRelationSource(rows), fb, ctx);
+    for (const auto* result : {&vector, &streaming}) {
+        GNFS_TEST_CHECK(result->mapping.num_class_group_columns == 1);
+        const auto column = static_cast<uint32_t>(result->mapping.class_group_start());
+        GNFS_TEST_CHECK(!result->matrix.row(0).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(1).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(2).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(3).test(column));
+        GNFS_TEST_CHECK(!result->matrix.row(4).test(column));
+    }
 }
 
 // Regression: sign-column evaluation must preserve uint64_t b on LLP64.
@@ -1808,7 +1851,8 @@ int main() {
     test_gaussian_free_columns_unique();
     test_matrix_builder();
     test_matrix_builder_sign_wide_b();
-    test_odd_class_group_preserves_square_dependency();
+    test_class_group_preserves_square_dependencies();
+    test_certified_class_group_column_on_merged_relations();
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();
