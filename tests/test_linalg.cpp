@@ -4,6 +4,7 @@
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/core/relation.hpp>
+#include <gnfs/core/types.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/gauss.hpp>
@@ -567,31 +568,31 @@ void test_matrix_builder() {
     std::cout << "  MatrixBuilder: PASSED" << std::endl;
 }
 
-void test_odd_class_group_preserves_square_dependency() {
-    using core::Integer;
-    // f = x² + 11x − 10 and f(31) = 4·323.
-    core::PolynomialContext ctx(Integer(323), {Integer(-10), Integer(11), Integer(1)}, Integer(31));
+void check_class_group_square_dependency(const core::PolynomialContext& ctx,
+                                         core::ABPair first_pair, core::ABPair second_pair,
+                                         const core::Integer& rational_root,
+                                         core::ABPair algebraic_root) {
     factor_base::FactorBaseBuilder::Options bounds;
     bounds.rational_bound = bounds.algebraic_bound = 191;
     auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
     cofactor::Cofactorizer cofactorizer(ctx, fb);
-    auto first = cofactorizer.verify(-197, 88);
-    auto second = cofactorizer.verify(33, 43);
+    auto first = cofactorizer.verify(first_pair.a, first_pair.b);
+    auto second = cofactorizer.verify(second_pair.a, second_pair.b);
     GNFS_TEST_CHECK(first && first->is_full() && second && second->is_full());
     const std::vector<core::Relation> relations{*first, *second};
 
-    const Integer rational_root(1950);
     GNFS_TEST_CHECK(ctx.rational_value(first->a, first->b) *
                         ctx.rational_value(second->a, second->b) ==
                     rational_root * rational_root);
     gnfs::sqrt::NumberField field(ctx);
-    const auto root = field.from_ab(73, 51);
+    const auto root = field.from_ab(algebraic_root.a, algebraic_root.b);
     const auto product =
         field.multiply(field.from_ab(first->a, first->b), field.from_ab(second->a, second->b));
     GNFS_TEST_CHECK(product.coefficients() == field.multiply(root, root).coefficients());
     const auto evaluated_root = field.evaluate_at_m(root);
-    GNFS_TEST_CHECK(core::gcd(rational_root + evaluated_root, ctx.n()) == Integer(17));
-    GNFS_TEST_CHECK(core::gcd(rational_root - evaluated_root, ctx.n()) == Integer(19));
+    const auto factor = core::gcd(rational_root + evaluated_root, ctx.n());
+    GNFS_TEST_CHECK(factor > core::Integer(1) && factor < ctx.n());
+    GNFS_TEST_CHECK(factor * core::gcd(rational_root - evaluated_root, ctx.n()) == ctx.n());
 
     MatrixBuilderConfig config;
     config.include_class_group = true;
@@ -603,6 +604,17 @@ void test_odd_class_group_preserves_square_dependency() {
     for (const auto* result : {&vector, &streaming}) {
         GNFS_TEST_CHECK(result->matrix.row(0).indices() == result->matrix.row(1).indices());
     }
+}
+
+void test_odd_class_group_preserves_square_dependency() {
+    using core::Integer;
+    core::PolynomialContext first(Integer(323), {Integer(-10), Integer(11), Integer(1)},
+                                  Integer(31));
+    check_class_group_square_dependency(first, {-197, 88}, {33, 43}, Integer(1950), {73, 51});
+
+    core::PolynomialContext second(Integer(183), {Integer(20), Integer(0), Integer(1)},
+                                   Integer(23));
+    check_class_group_square_dependency(second, {-45, 101}, {75, 29}, Integer(1184), {55, 57});
 }
 
 // Regression: sign-column evaluation must preserve uint64_t b on LLP64.
