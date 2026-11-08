@@ -4540,7 +4540,7 @@ bool test_matrix_build_failure_preserves_reduction() {
 bool test_mmap_solve_preserves_existing_scratch_entries() {
     namespace fs = std::filesystem;
     const auto pid = std::to_string(gnfs::util::process_id());
-    const auto temp_root = gnfs::util::temp_directory_path();
+    const auto temp_root = fs::absolute(gnfs::util::temp_directory_path());
     const auto stem = "gnfs_test_mmap_scratch_" + pid;
     fs::path root;
     for (unsigned candidate = 0;; ++candidate) {
