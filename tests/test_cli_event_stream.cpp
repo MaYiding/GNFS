@@ -4,6 +4,7 @@
 
 #ifndef _WIN32
 #include <csignal>
+#include <cstdio>
 #include <sys/resource.h>
 #include <unistd.h>
 #endif
@@ -18,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -624,6 +626,37 @@ void test_output_errors(const std::filesystem::path& executable,
 #endif
 }
 
+#ifndef _WIN32
+void test_stdout_failure(const std::filesystem::path& executable,
+                         const std::filesystem::path& test_executable,
+                         const std::filesystem::path& temporary_root) {
+    const auto path = temporary_root / "limited stdout";
+    for (const auto format : {"--json", "--event-stream"}) {
+        const auto run =
+            run_cli(test_executable, {"--with-limited-stdout", path.string(), executable.string(),
+                                      "--lang", "en", "--quiet", format, "360"});
+        const auto context = std::string(format) + ": " + describe(run);
+        CHECK_CONTEXT(run.error == BoundedChildProcessError::normal_nonzero &&
+                          run.termination.exit_code == 1,
+                      context);
+        CHECK_CONTEXT(run.stdout_bytes.empty(), context);
+        CHECK_CONTEXT(split_lines(run.stderr_bytes) ==
+                          std::vector<std::string>{"Cannot write to standard output."},
+                      context);
+        std::ifstream output(path, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(output)), {});
+        CHECK_CONTEXT(bytes.size() == 1024, context);
+        if (std::string_view(format) == "--event-stream") {
+            const auto lines = split_lines(bytes);
+            CHECK_CONTEXT(!lines.empty() && classify_event(lines.front()) == EventKind::started &&
+                              classify_event(lines.back()) == EventKind::result &&
+                              !JsonSyntax(lines.back()).parse_object_document(),
+                          context);
+        }
+    }
+}
+#endif
+
 void test_input_errors(const std::filesystem::path& executable) {
     const auto invalid = validate_protocol(executable, {"--event-stream", "not-a-number"}, 1,
                                            EventKind::error, false, "invalid input");
@@ -717,13 +750,17 @@ void test_incompatible_options(const std::filesystem::path& executable,
 
 int main(int argc, char* argv[]) {
 #ifndef _WIN32
-    if (argc >= 3 && std::string_view(argv[1]) == "--with-file-limit") {
-        // Only the new CLI process inherits this limit. Its captured output
-        // streams are pipes, so diagnostics can still be read in full.
-        const rlimit limit{4, 4};
+    const bool limit_stdout = argc >= 4 && std::string_view(argv[1]) == "--with-limited-stdout";
+    if (limit_stdout || (argc >= 3 && std::string_view(argv[1]) == "--with-file-limit")) {
+        // The child's stderr remains a pipe so the limit affects only the file.
+        if (limit_stdout && !std::freopen(argv[2], "w", stdout))
+            return 2;
+        const rlim_t bytes = limit_stdout ? 1024 : 4;
+        const rlimit limit{bytes, bytes};
         if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR || ::setrlimit(RLIMIT_FSIZE, &limit) != 0)
             return 2;
-        ::execv(argv[2], argv + 2);
+        char** command = argv + (limit_stdout ? 3 : 2);
+        ::execv(command[0], command);
         return 2;
     }
 #endif
@@ -746,6 +783,9 @@ int main(int argc, char* argv[]) {
         test_verbose_cases(executable, temporary.path());
         test_configured_output(executable, temporary.path());
         test_output_errors(executable, test_executable, temporary.path());
+#ifndef _WIN32
+        test_stdout_failure(executable, test_executable, temporary.path());
+#endif
         test_input_errors(executable);
         test_unsigned_option_values(executable);
         test_event_stream_token_used_as_value(executable);
