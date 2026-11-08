@@ -39,8 +39,10 @@ namespace gnfs::util {
     if (!(value > 0.0)) {
         return 0;
     }
-    const double max_size = static_cast<double>(std::numeric_limits<size_t>::max());
-    return value < max_size ? static_cast<size_t>(value) : std::numeric_limits<size_t>::max();
+    // Form the exclusive upper bound 2^N from its exactly representable half.
+    constexpr double size_limit =
+        2.0 * static_cast<double>(std::numeric_limits<size_t>::max() / 2 + 1);
+    return value < size_limit ? static_cast<size_t>(value) : std::numeric_limits<size_t>::max();
 }
 
 } // namespace gnfs::util
