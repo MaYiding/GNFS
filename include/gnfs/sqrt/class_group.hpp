@@ -441,6 +441,29 @@ private:
         const double root = std::sqrt(exponent % 2 ? 2.0 * fraction : fraction);
         const double weight = (d_factorial / d_power_d) * four_pi_factor;
         minkowski_bound_ = std::scalbln(weight * root, exponent / 2);
+
+        using Limits = std::numeric_limits<double>;
+        if (minkowski_bound_ >= Limits::max() / 2) {
+            // GMP truncates the discriminant's significand. At the top of the
+            // double range that can change finite to infinite or vice versa.
+            // Compare |D| with ceil((midpoint / weight)^2) using integers.
+            // midpoint = (2^(digits+1) - 1) * 2^(max_exponent - digits - 1).
+            int weight_exponent = 0;
+            const double mantissa = std::frexp(weight, &weight_exponent);
+            Integer scaled_weight;
+            mpz_set_d(scaled_weight.get_mpz(), std::ldexp(mantissa, Limits::digits));
+            Integer threshold = core::pow(Integer(2), Limits::digits + 1) - Integer(1);
+            mpz_mul_2exp(threshold.get_mpz(), threshold.get_mpz(),
+                         static_cast<mp_bitcnt_t>(Limits::max_exponent - 1 - weight_exponent));
+            threshold *= threshold;
+            scaled_weight *= scaled_weight;
+            mpz_cdiv_q(threshold.get_mpz(), threshold.get_mpz(), scaled_weight.get_mpz());
+            if (mpz_cmpabs(discriminant_.get_mpz(), threshold.get_mpz()) >= 0) {
+                minkowski_bound_ = Limits::infinity();
+            } else {
+                minkowski_bound_ = std::min(minkowski_bound_, Limits::max());
+            }
+        }
     }
 
     /// Find all prime ideals with norm up to bound

@@ -361,6 +361,16 @@ void test_wide_quadratic_minkowski_bound() {
                         std::abs(bound / expected - 1.0) <= std::numeric_limits<double>::epsilon(),
                     "wide imaginary quadratic bound is (4/pi)*sqrt(k)");
     }
+    // The rounding midpoint between the largest finite double and overflow.
+    const Integer midpoint = pow(I(2), 1024) - pow(I(2), 970);
+    const auto quadratic_bound = [&](const Integer& k) {
+        PolynomialContext ctx(k - I(1), {-k, I(0), I(1)}, I(1));
+        return ClassGroup(ctx, config).minkowski_bound();
+    };
+    TEST_ASSERT(quadratic_bound(midpoint * midpoint - I(1)) == std::numeric_limits<double>::max(),
+                "round below the overflow midpoint to the largest finite value");
+    TEST_ASSERT(std::isinf(quadratic_bound(midpoint * midpoint + I(1))),
+                "round above the overflow midpoint to infinity");
     TEST_PASS("quadratic Minkowski bound across the double exponent range");
 }
 
