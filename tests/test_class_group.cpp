@@ -676,8 +676,8 @@ void test_ramified_quadratic_exponents() {
                 continue;
             const int primitive = (a - 5 * static_cast<int>(b)) % 7 == 0;
             for (int content = 0, scale = 1; content <= 2; ++content, scale *= 7) {
-                TEST_ASSERT(exponent(a * scale, b * static_cast<unsigned>(scale)) ==
-                                2 * content + primitive,
+                TEST_ASSERT(exponent(static_cast<int64_t>(a) * scale,
+                                     b * static_cast<uint64_t>(scale)) == 2 * content + primitive,
                             "ramified valuation of a scaled primitive pair");
             }
         }
