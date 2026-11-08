@@ -20,6 +20,7 @@
 #include <limits>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -398,6 +399,45 @@ void test_widened_offset_stream() {
     TEST_PASS("bounded V2 offset conversion");
 }
 
+void test_mapped_row_columns_are_distinct() {
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_distinct.csrmat"));
+    const std::vector<uint64_t> offsets{0, 0, 2, 2, 5, 5};
+    const auto rejects_duplicate = [&](const std::vector<uint32_t>& indices) {
+        write_raw_csr(tmp.path, 5, 3, 5, offsets, indices);
+        try {
+            MmapCSRMatrix matrix(tmp.path);
+        } catch (const std::invalid_argument&) {
+            return true;
+        }
+        return false;
+    };
+    TEST_ASSERT(rejects_duplicate({0, 2, 0, 1, 1}), "sorted duplicate columns are rejected");
+    TEST_ASSERT(rejects_duplicate({0, 2, 2, 1, 2}), "non-adjacent duplicate columns are rejected");
+
+    write_raw_csr(tmp.path, 5, 3, 5, offsets, {0, 2, 1, 3, 0});
+    bool rejected = false;
+    try {
+        MmapCSRMatrix invalid(tmp.path);
+    } catch (const std::out_of_range&) {
+        rejected = true;
+    }
+    TEST_ASSERT(rejected, "an out-of-range column inside an unordered row is rejected");
+
+    write_raw_csr(tmp.path, 5, 3, 5, offsets, {0, 2, 2, 0, 1});
+    MmapCSRMatrix matrix(tmp.path);
+    const auto* row = matrix.row_begin(3);
+    TEST_ASSERT(matrix.nnz() == 5 && matrix.row_nnz(2) == 0 && matrix.row_nnz(3) == 3 &&
+                    row[0] == 2 && row[1] == 0 && row[2] == 1,
+                "distinct unordered columns retain their input order across empty rows");
+    BlockVector x(3), y(5);
+    x.data[0] = 1;
+    x.data[1] = 2;
+    x.data[2] = 4;
+    spmv_forward(matrix, x, y);
+    TEST_ASSERT(y.data[1] == 5 && y.data[3] == 7, "unordered V2 rows preserve GF(2) products");
+    TEST_PASS("distinct column indices in mapped CSR rows");
+}
+
 void test_rejects_malformed_files() {
     TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_malformed.csrmat"));
 
@@ -449,6 +489,7 @@ int main() {
     test_zero_nnz_nonempty_shape();
     test_single_row();
     test_rejects_malformed_files();
+    test_mapped_row_columns_are_distinct();
     test_empty_wire_layout_and_rejected_overwrite();
     test_widened_offset_stream();
 

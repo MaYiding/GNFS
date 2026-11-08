@@ -9,10 +9,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace gnfs::linalg {
 
@@ -40,7 +42,7 @@ void write_widened_csr_offsets(std::span<const Offset> offsets, WriteBytes&& wri
 ///   [uint64_t num_cols]
 ///   [uint64_t nnz]
 ///   [uint64_t row_offsets[num_rows + 1]]   -- entry offsets within col_indices
-///   [uint32_t col_indices[nnz]]            -- column indices, packed contiguously
+///   [uint32_t col_indices[nnz]]            -- distinct column indices within each row
 ///
 /// The entire file is mmap'd read-only. row_begin/row_end return pointers
 /// directly into the mapped region, matching CSRMatrix's interface.
@@ -168,6 +170,7 @@ public:
         // SpMV intentionally omits per-entry bounds checks, so validate the
         // complete CSR contract once while loading untrusted mmap data.
         uint64_t previous = 0;
+        std::vector<uint32_t> sorted_row;
         for (uint64_t i = 0; i < layout.row_count; ++i) {
             const uint64_t offset = row_offsets_[static_cast<size_t>(i)];
             if (offset > raw_nnz || (i != 0 && offset < previous)) {
@@ -176,15 +179,34 @@ public:
             if (i == 0 && offset != 0) {
                 throw std::runtime_error("MmapCSRMatrix: first row offset must be zero");
             }
+            if (previous != offset) {
+                const uint32_t* first = col_indices_ + previous;
+                const uint32_t* last = col_indices_ + offset;
+                uint32_t largest_column = last[-1];
+                const auto disorder =
+                    std::adjacent_find(first, last, std::greater_equal<uint32_t>{});
+                if (disorder != last) {
+                    bool repeated = disorder[0] == disorder[1];
+                    if (!repeated) {
+                        // Some V2 images store distinct columns in a different order.
+                        sorted_row.assign(first, last);
+                        std::sort(sorted_row.begin(), sorted_row.end());
+                        largest_column = sorted_row.back();
+                        repeated = std::adjacent_find(sorted_row.begin(), sorted_row.end()) !=
+                                   sorted_row.end();
+                    }
+                    if (repeated) {
+                        throw std::invalid_argument("MmapCSRMatrix: duplicate column in row");
+                    }
+                }
+                if (largest_column >= num_cols_) {
+                    throw std::out_of_range("MmapCSRMatrix: column index out of range");
+                }
+            }
             previous = offset;
         }
         if (previous != raw_nnz) {
             throw std::runtime_error("MmapCSRMatrix: final row offset does not match nnz");
-        }
-        for (size_t i = 0; i < nnz_; ++i) {
-            if (col_indices_[i] >= num_cols_) {
-                throw std::out_of_range("MmapCSRMatrix: column index out of range");
-            }
         }
 
         // For SpMV: sequential access pattern (scan rows in order)
