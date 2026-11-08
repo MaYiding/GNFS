@@ -4,6 +4,8 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 
 using namespace gnfs::sqrt;
 using namespace gnfs::core;
@@ -149,6 +151,63 @@ void test_ideal_class_reduce_mod() {
     cls2.reduce_mod(3);
     TEST_ASSERT(cls2.is_principal(), "3 mod 3 = 0 → principal");
     TEST_PASS("IdealClass reduce_mod");
+}
+
+void test_ideal_class_exponent_bounds() {
+    constexpr int high = std::numeric_limits<int>::max();
+    constexpr int low = std::numeric_limits<int>::min();
+    const PrimeIdeal p{2, 0, 1}, q{3, 0, 1};
+    IdealClass cls;
+    cls.add_prime(p, high - 1);
+    cls.add_prime(p, 1);
+    cls.add_prime(q, low + 1);
+    cls.add_prime(q, -1);
+    TEST_ASSERT(cls.prime_powers.at(p) == high && cls.prime_powers.at(q) == low,
+                "exact exponent boundaries");
+
+    const auto snapshot = cls.prime_powers;
+    const auto overflows = [&](const PrimeIdeal& ideal, int increment) {
+        try {
+            cls.add_prime(ideal, increment);
+        } catch (const std::overflow_error&) {
+            return true;
+        }
+        return false;
+    };
+    TEST_ASSERT(overflows(p, 1) && cls.prime_powers == snapshot, "overflow preserves exponents");
+    TEST_ASSERT(overflows(q, -1) && cls.prime_powers == snapshot, "underflow preserves exponents");
+
+    cls.add_prime(p, low);
+    cls.add_prime(q, high);
+    TEST_ASSERT(cls.prime_powers.at(p) == -1 && cls.prime_powers.at(q) == -1,
+                "opposite extreme increments");
+    cls.add_prime(p, 1);
+    cls.add_prime(q, 1);
+    TEST_ASSERT(cls.is_principal(), "opposite increments cancel");
+    TEST_PASS("IdealClass checked exponent addition");
+}
+
+void test_ideal_class_modulus_bounds() {
+    constexpr int order = std::numeric_limits<int>::max();
+    const PrimeIdeal p{2, 0, 1}, q{3, 0, 1}, r{5, 0, 1}, t{7, 0, 1};
+    IdealClass cls;
+    cls.add_prime(p, order - 1);
+    cls.add_prime(q, std::numeric_limits<int>::min());
+    cls.add_prime(r, order);
+    cls.add_prime(t, 0);
+
+    const auto snapshot = cls.prime_powers;
+    for (int noop : {0, -1, std::numeric_limits<int>::min()}) {
+        cls.reduce_mod(noop);
+        TEST_ASSERT(cls.prime_powers == snapshot, "nonpositive order preserves all entries");
+    }
+    cls.reduce_mod(order);
+    TEST_ASSERT(cls.prime_powers.at(p) == order - 1 && cls.prime_powers.at(q) == order - 1,
+                "positive and negative residues modulo INT_MAX");
+    TEST_ASSERT(cls.prime_powers.size() == 2, "remove multiples and explicit zero entries");
+    cls.reduce_mod(1);
+    TEST_ASSERT(cls.prime_powers.empty(), "modulo one removes every exponent");
+    TEST_PASS("IdealClass full-width modular reduction");
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -548,6 +607,8 @@ int main() {
     test_prime_ideal_ordering();
     test_ideal_class_basics();
     test_ideal_class_reduce_mod();
+    test_ideal_class_exponent_bounds();
+    test_ideal_class_modulus_bounds();
 
     // Sturm's theorem — real root counting
     test_sturm_linear();

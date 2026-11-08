@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -50,14 +51,20 @@ struct IdealClass {
     }
 
     void add_prime(const PrimeIdeal& pi, int exp) {
-        prime_powers[pi] += exp;
+        int& current = prime_powers[pi];
+        if ((exp > 0 && current > std::numeric_limits<int>::max() - exp) ||
+            (exp < 0 && current < std::numeric_limits<int>::min() - exp))
+            throw std::overflow_error("IdealClass: prime exponent does not fit in int");
+        current += exp;
     }
 
     void reduce_mod(int order) {
         if (order <= 0)
             return;
         for (auto& [pi, exp] : prime_powers) {
-            exp = ((exp % order) + order) % order;
+            exp %= order;
+            if (exp < 0)
+                exp += order;
         }
         // Remove zeros
         for (auto it = prime_powers.begin(); it != prime_powers.end();) {
