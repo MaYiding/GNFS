@@ -203,8 +203,9 @@ struct Config {
                 continue;
             line = line.substr(start);
             auto end = line.find_last_not_of(" \t\r\n");
-            if (end != std::string::npos)
-                line = line.substr(0, end + 1);
+            if (end == std::string::npos)
+                continue;
+            line.resize(end + 1);
 
             // Skip comments and empty lines
             if (line.empty() || line[0] == '#')
