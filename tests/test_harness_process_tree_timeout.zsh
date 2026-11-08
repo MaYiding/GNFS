@@ -25,8 +25,8 @@ if [[ "${1:-}" == "--wait-status-contract" ]]; then
                 # Stop repeated USR1 before retrying. For 127 also wait until
                 # only zsh's saved status remains; for 23 the child stays live.
                 for (( i = 0; i < 100; ++i )); do
-                    if [[ -e "$cleanup_marker" ]] &&
-                       { [[ -n "$release_cleanup" ]] || ! kill -0 "$1" 2>/dev/null; }; then
+                    if [[ -e "$cleanup_marker" &&
+                          ( -n "$release_cleanup" || -z "${jobstates[(r)*:${1}=*]}" ) ]]; then
                         break
                     fi
                     zselect -t 1 || true
