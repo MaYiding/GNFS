@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <gmp.h>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -433,12 +434,13 @@ private:
         double four_over_pi = 4.0 / kPi;
         double four_pi_factor = std::pow(four_over_pi, static_cast<double>(r2));
 
-        // Get |discriminant| as double — mpz_abs writes into default-init slot
-        Integer abs_disc;
-        mpz_abs(abs_disc.get_mpz(), discriminant_.get_mpz());
-        double disc_sqrt = std::sqrt(abs_disc.to_double());
-
-        minkowski_bound_ = (d_factorial / d_power_d) * four_pi_factor * disc_sqrt;
+        // Keep the discriminant's binary exponent separate until the entire
+        // bound is scaled. Even sqrt(|discriminant|) can exceed double first.
+        long exponent = 0;
+        const double fraction = std::abs(mpz_get_d_2exp(&exponent, discriminant_.get_mpz()));
+        const double root = std::sqrt(exponent % 2 ? 2.0 * fraction : fraction);
+        const double weight = (d_factorial / d_power_d) * four_pi_factor;
+        minkowski_bound_ = std::scalbln(weight * root, exponent / 2);
     }
 
     /// Find all prime ideals with norm up to bound

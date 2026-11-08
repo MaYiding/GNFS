@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -517,6 +518,26 @@ void test_relation_search_with_large_minkowski_bound() {
     TEST_PASS("bounded relation storage with a large Minkowski bound");
 }
 
+void test_wide_quadratic_minkowski_bound() {
+    ClassGroupConfig config;
+    config.max_primes = 0;
+    for (uint32_t exponent : {1024u, 1025u, 2046u, 2047u, 2048u}) {
+        const Integer power = pow(I(2), exponent);
+        const double root =
+            std::scalbn(std::sqrt(exponent % 2 ? 2.0 : 1.0), static_cast<int>(exponent / 2));
+        // Both polynomials vanish at 1 modulo 4. Their bounded constant
+        // offsets are too small to change the rounded square root.
+        PolynomialContext real(I(4), {-(power + I(1)), I(0), I(1)}, I(1));
+        PolynomialContext imaginary(I(4), {power + I(3), I(0), I(1)}, I(1));
+        TEST_ASSERT(ClassGroup(real, config).minkowski_bound() == root,
+                    "wide real quadratic bound is sqrt(k)");
+        TEST_ASSERT(ClassGroup(imaginary, config).minkowski_bound() ==
+                        (4.0 / std::numbers::pi) * root,
+                    "wide imaginary quadratic bound is (4/pi)*sqrt(k)");
+    }
+    TEST_PASS("quadratic Minkowski bound across the double exponent range");
+}
+
 void test_prime_search_domain() {
     // For x^2 - k with positive nonsquare k, the computed bound is sqrt(k).
     // Each k below is 1 modulo 15, so 1 is a root modulo the input N.
@@ -628,6 +649,7 @@ int main() {
     test_trivial_class_group_small_discriminant();
     test_nontrivial_class_group_runs();
     test_relation_search_with_large_minkowski_bound();
+    test_wide_quadratic_minkowski_bound();
     test_prime_search_domain();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
