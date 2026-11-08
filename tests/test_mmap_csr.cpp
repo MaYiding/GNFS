@@ -20,6 +20,7 @@
 #include <limits>
 #include <random>
 #include <span>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -114,9 +115,20 @@ void test_save_load_roundtrip() {
 
 void test_utf8_destination() {
     namespace fs = std::filesystem;
-    const auto directory = gnfs::util::temp_directory_path() /
-                           ("gnfs_test_csr_utf8_" + std::to_string(gnfs::util::process_id()));
-    TEST_ASSERT(fs::create_directory(directory), "reserve a directory for the UTF-8 round trip");
+    const auto parent = gnfs::util::temp_directory_path();
+    const auto stem = "gnfs_test_csr_utf8_" + std::to_string(gnfs::util::process_id());
+    fs::path directory;
+    for (unsigned attempt = 0; attempt < 32; ++attempt) {
+        const auto candidate =
+            parent / (attempt == 0 ? stem : stem + "_" + std::to_string(attempt));
+        std::error_code error;
+        if (fs::create_directory(candidate, error)) {
+            directory = candidate;
+            break;
+        }
+        TEST_ASSERT(!error || error == std::errc::file_exists, error.message());
+    }
+    TEST_ASSERT(!directory.empty(), "reserve a directory for the UTF-8 round trip");
     const auto native = directory / fs::path(u8"\u77e9\u9635_\U0001d7d8.csrmat");
     const auto utf8 = native.u8string();
     const std::string path(utf8.begin(), utf8.end());
