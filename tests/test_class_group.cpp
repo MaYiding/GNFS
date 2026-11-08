@@ -1,6 +1,7 @@
 // Unit tests for ClassGroup — discriminant, Minkowski bound, generators, characters
 // Tests cover degree 3, 4, 5, 6 polynomials with known reference values.
 #include "gnfs/sqrt/class_group.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -554,6 +555,83 @@ void test_prime_search_domain() {
     TEST_PASS("class group prime search domain");
 }
 
+void test_simple_root_ideal_exponents() {
+    PolynomialContext ctx(I(19), {I(6), I(12), I(5), I(-5), I(1)}, I(1));
+    const PrimeIdeal p5{5, 4, 1};
+    const std::vector<PrimeIdeal> simple{p5};
+    const auto exponent = [&](int64_t a, uint64_t b) {
+        const auto powers =
+            gnfs::sqrt::detail::class_group_ideal_exponents(ctx, a, b, simple, simple);
+        return powers.contains(p5) ? powers.at(p5) : 0;
+    };
+    // F(3,7) = 28095, while 3 - 7*4 = -25. F(-8,3) = 12550 and -8 - 3*4 = -20.
+    TEST_ASSERT(exponent(3, 7) == 1, "one factor of 5 in 28095");
+    TEST_ASSERT(exponent(-8, 3) == 2, "two factors of 5 in 12550");
+    TEST_ASSERT(exponent(3, 1) == 0, "different residue at 5");
+    TEST_ASSERT(exponent(0, 0) == 0, "zero norm");
+    TEST_ASSERT(exponent(0, 5) == 1, "retain the estimate when 5 divides b");
+    const auto wide_b = std::numeric_limits<uint64_t>::max() - 2;
+    TEST_ASSERT(exponent(std::numeric_limits<int64_t>::min(), wide_b) == 1,
+                "negative signed endpoint and wide b");
+    TEST_ASSERT(exponent(std::numeric_limits<int64_t>::max(), wide_b) == 2,
+                "positive signed endpoint and wide b");
+
+    // For f(x) = x+1, a=1 and b=p^2-1 give norm p^2. The residue
+    // comparison multiplies (p-1)^2, which exceeds the signed 64-bit range.
+    constexpr uint32_t large_prime = 4294967291U;
+    const PrimeIdeal large_root{large_prime, large_prime - 1, 1};
+    PolynomialContext linear(I(2), {I(1), I(1)}, I(1));
+    const uint64_t square = static_cast<uint64_t>(large_prime) * large_prime;
+    const auto large = gnfs::sqrt::detail::class_group_ideal_exponents(linear, 1, square - 1,
+                                                                       {large_root}, {large_root});
+    TEST_ASSERT(large.at(large_root) == 2, "full-width residue product");
+
+    // Compare equal exponent parities on every selected ideal, independently
+    // of how the character calculation labels its coordinates.
+    ClassGroupConfig config;
+    config.max_primes = 3;
+    ClassGroup group(ctx, config);
+    TEST_ASSERT(group.compute_character(3, 7) == group.compute_character(3, 2),
+                "equal odd valuations");
+    TEST_ASSERT(group.compute_character(-8, 3) == group.compute_character(-2, 1),
+                "equal even valuations");
+    PolynomialContext nonmonic(I(19), {I(-6), I(-12), I(-5), I(5), I(-1)}, I(1));
+    ClassGroup legacy(nonmonic, config);
+    TEST_ASSERT(legacy.compute_character(3, 7) == legacy.compute_character(3, 1),
+                "retain the nonmonic estimate");
+    TEST_PASS("simple-root valuations in selected class group coordinates");
+}
+
+void test_simple_root_relation_collection() {
+    // The four collected rows for (-10,1), (-9,1), (-9,2), (-8,1) have
+    // determinant of magnitude 1 in the order (2,0), (2,1), (3,0), (3,2).
+    PolynomialContext quad(I(949), {I(6), I(1), I(1)}, I(43));
+    ClassGroup group(quad);
+    const auto bits = group.compute_character(-1, 1);
+    TEST_ASSERT(std::none_of(bits.begin(), bits.end(), [](bool bit) { return bit; }),
+                "the collected rows span the four ideal coordinates");
+
+    // Modulo 3, this cubic is x^2 (x+1). Only the root 2 is simple.
+    PolynomialContext cubic(I(9), {I(3), I(-3), I(1), I(1)}, I(2));
+    const PrimeIdeal repeated{3, 0, 1};
+    const PrimeIdeal simple{3, 2, 1};
+    const std::vector<PrimeIdeal> ideals{repeated, simple};
+    const auto powers = [&](int64_t a) {
+        return gnfs::sqrt::detail::class_group_ideal_exponents(cubic, a, 1, ideals, {simple});
+    };
+    TEST_ASSERT(powers(-7).at(simple) == 3, "three factors of 3 in the negative norm -270");
+    TEST_ASSERT(powers(2).at(simple) == 2, "norm 9 when a equals b*r");
+    TEST_ASSERT(powers(9).at(repeated) == 2, "retain the repeated-root estimate");
+    ClassGroupConfig config;
+    config.max_primes = 3;
+    ClassGroup mixed(cubic, config);
+    TEST_ASSERT(mixed.compute_character(-7, 1) == mixed.compute_character(-1, 1),
+                "recognize the simple root beside a repeated root");
+    TEST_ASSERT(mixed.compute_character(2, 1) == mixed.compute_character(4, 1),
+                "recognize the even valuation when a equals b*r");
+    TEST_PASS("simple-root valuations in collected class group relations");
+}
+
 void test_compute_character_trivial_all_false() {
     auto ctx = make_cubic_131();
     ClassGroup cg(ctx);
@@ -629,6 +707,8 @@ int main() {
     test_nontrivial_class_group_runs();
     test_relation_search_with_large_minkowski_bound();
     test_prime_search_domain();
+    test_simple_root_ideal_exponents();
+    test_simple_root_relation_collection();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
 
