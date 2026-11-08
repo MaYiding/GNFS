@@ -1,14 +1,18 @@
 // test_linalg.cpp - Test linear algebra components
 
 #include "support/test_check.hpp"
+#include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/core/relation.hpp>
+#include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/relation_source.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/sqrt/number_field.hpp>
 
 #include <atomic>
 #include <cstddef>
@@ -561,6 +565,44 @@ void test_matrix_builder() {
     GNFS_TEST_CHECK(mapping.alg_fb_start() == 4);
 
     std::cout << "  MatrixBuilder: PASSED" << std::endl;
+}
+
+void test_odd_class_group_preserves_square_dependency() {
+    using core::Integer;
+    // f = x² + 11x − 10 and f(31) = 4·323.
+    core::PolynomialContext ctx(Integer(323), {Integer(-10), Integer(11), Integer(1)}, Integer(31));
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 191;
+    auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    auto first = cofactorizer.verify(-197, 88);
+    auto second = cofactorizer.verify(33, 43);
+    GNFS_TEST_CHECK(first && first->is_full() && second && second->is_full());
+    const std::vector<core::Relation> relations{*first, *second};
+
+    const Integer rational_root(1950);
+    GNFS_TEST_CHECK(ctx.rational_value(first->a, first->b) *
+                        ctx.rational_value(second->a, second->b) ==
+                    rational_root * rational_root);
+    gnfs::sqrt::NumberField field(ctx);
+    const auto root = field.from_ab(73, 51);
+    const auto product =
+        field.multiply(field.from_ab(first->a, first->b), field.from_ab(second->a, second->b));
+    GNFS_TEST_CHECK(product.coefficients() == field.multiply(root, root).coefficients());
+    const auto evaluated_root = field.evaluate_at_m(root);
+    GNFS_TEST_CHECK(core::gcd(rational_root + evaluated_root, ctx.n()) == Integer(17));
+    GNFS_TEST_CHECK(core::gcd(rational_root - evaluated_root, ctx.n()) == Integer(19));
+
+    MatrixBuilderConfig config;
+    config.include_class_group = true;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    auto vector = builder.build_with_qc(relations, fb, ctx);
+    auto streaming = builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+    for (const auto* result : {&vector, &streaming}) {
+        GNFS_TEST_CHECK(result->matrix.row(0).indices() == result->matrix.row(1).indices());
+    }
 }
 
 // Regression: sign-column evaluation must preserve uint64_t b on LLP64.
@@ -1714,6 +1756,7 @@ int main() {
     test_gaussian_free_columns_unique();
     test_matrix_builder();
     test_matrix_builder_sign_wide_b();
+    test_odd_class_group_preserves_square_dependency();
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();

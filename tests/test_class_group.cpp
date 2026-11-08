@@ -609,6 +609,46 @@ void test_compute_character_trivial_all_false() {
     TEST_PASS("character trivial → all false");
 }
 
+void test_binary_characters_select_even_smith_factors() {
+    gnfs::sqrt::detail::ClassGroupTorsion torsion;
+    torsion.add_nontrivial_factor(I(3).get_mpz());
+    TEST_ASSERT(torsion.order == 3 && torsion.binary_rank == 0,
+                "odd factor has no binary character");
+    TEST_ASSERT(torsion.binary_parities({true}).empty(), "omit an odd-order bit");
+    torsion.add_nontrivial_factor(I(6).get_mpz());
+    TEST_ASSERT(torsion.order == 18 && torsion.binary_rank == 1, "mixed orders 3 and 6");
+    TEST_ASSERT(torsion.binary_parities({true, false}) == std::vector<bool>{false},
+                "omit first component");
+    TEST_ASSERT(torsion.binary_parities({false, true}) == std::vector<bool>{true},
+                "retain second component");
+    const auto large_factor = I(6) * pow(I(2), 65);
+    torsion.add_nontrivial_factor(large_factor.get_mpz());
+    TEST_ASSERT(torsion.order == std::numeric_limits<uint32_t>::max() && torsion.binary_rank == 2,
+                "saturation preserves exact factor parity");
+    const std::vector<bool> expected{false, true};
+    TEST_ASSERT(torsion.binary_parities({true, false, true}) == expected,
+                "preserve even component order");
+    // The public width and ordering also apply when relation collection changes the estimate.
+    PolynomialContext ctx(I(369806), {I(-504), I(37021), I(1)}, I(10));
+    ClassGroupConfig config;
+    config.max_primes = 137;
+    ClassGroup group(ctx, config);
+    if (group.class_number() != std::numeric_limits<uint32_t>::max())
+        TEST_ASSERT((group.num_binary_characters() > 0) == (group.class_number() % 2 == 0),
+                    "even finite order implies at least one even factor");
+    for (const auto& ideal : group.generators()) {
+        const int64_t a = static_cast<int64_t>(ideal.r) + ideal.p;
+        const auto all = group.compute_character(a, 1);
+        const auto binary = group.compute_binary_characters(a, 1);
+        TEST_ASSERT(binary.size() == group.num_binary_characters() && binary.size() <= all.size(),
+                    "public binary width");
+        for (size_t i = 0; i < binary.size(); ++i)
+            TEST_ASSERT(binary[i] == all[all.size() - binary.size() + i],
+                        "public binary factor order");
+    }
+    TEST_PASS("binary characters select even Smith factors");
+}
+
 void test_generators_are_valid_prime_ideals() {
     auto ctx = make_cubic_19();
     ClassGroup cg(ctx);
@@ -674,6 +714,7 @@ int main() {
     test_prime_search_domain();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
+    test_binary_characters_select_even_smith_factors();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
