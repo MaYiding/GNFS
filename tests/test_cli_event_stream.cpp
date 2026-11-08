@@ -9,6 +9,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -600,6 +601,24 @@ void test_configured_output(const std::filesystem::path& executable,
     }
 }
 
+#ifndef _WIN32
+constexpr std::size_t limited_stdout_bytes = 1024;
+
+bool redirect_to_limited_stdout(const char* path) {
+    // Leave room for the coverage runtime to write its ordinary profile files.
+    // Seeking near the end of a sparse file leaves only the stdout prefix writable.
+    rlimit limit{};
+    if (::getrlimit(RLIMIT_FSIZE, &limit) != 0)
+        return false;
+    limit.rlim_cur = std::min<rlim_t>(limit.rlim_cur, 64ULL * 1024 * 1024);
+    if (limit.rlim_cur < limited_stdout_bytes || !std::freopen(path, "wb", stdout))
+        return false;
+    const auto offset = static_cast<off_t>(limit.rlim_cur - limited_stdout_bytes);
+    return ::lseek(STDOUT_FILENO, offset, SEEK_SET) == offset &&
+           std::signal(SIGXFSZ, SIG_IGN) != SIG_ERR && ::setrlimit(RLIMIT_FSIZE, &limit) == 0;
+}
+#endif
+
 void test_output_errors(const std::filesystem::path& executable,
                         [[maybe_unused]] const std::filesystem::path& test_executable,
                         const std::filesystem::path& temporary_root) {
@@ -618,11 +637,16 @@ void test_output_errors(const std::filesystem::path& executable,
     const auto missing = (temporary_root / "missing" / "result.txt").string();
     check_error(run_cli(executable, {"--lang", "en", "--output", missing, "360"}),
                 "Cannot open output file: " + missing);
-#ifndef _WIN32
+#ifdef __APPLE__
+    // Darwin opens /dev/fd/1 as a duplicate of the positioned stdout descriptor.
     const auto output = (temporary_root / "limited result.txt").string();
-    check_error(run_cli(test_executable, {"--with-file-limit", executable.string(), "--lang", "en",
-                                          "--output", output, "360"}),
-                "Cannot write output file: " + output);
+    check_error(
+        run_cli(test_executable, {"--with-limited-stdout", output, executable.string(), "--lang",
+                                  "en", "--json", "--output", "/dev/fd/1", "360"}),
+        "Cannot write output file: /dev/fd/1");
+#elif !defined(_WIN32)
+    check_error(run_cli(executable, {"--lang", "en", "--output", "/dev/full", "360"}),
+                "Cannot write output file: /dev/full");
 #endif
 }
 
@@ -644,8 +668,10 @@ void test_stdout_failure(const std::filesystem::path& executable,
                           std::vector<std::string>{"Cannot write to standard output."},
                       context);
         std::ifstream output(path, std::ios::binary);
+        output.seekg(-static_cast<std::streamoff>(limited_stdout_bytes), std::ios::end);
         const std::string bytes((std::istreambuf_iterator<char>(output)), {});
-        CHECK_CONTEXT(bytes.size() == 1024, context);
+        // A leading zero would mean the read included the sparse hole.
+        CHECK_CONTEXT(bytes.size() == limited_stdout_bytes && bytes.front() == '{', context);
         if (std::string_view(format) == "--event-stream") {
             const auto lines = split_lines(bytes);
             CHECK_CONTEXT(!lines.empty() && classify_event(lines.front()) == EventKind::started &&
@@ -750,17 +776,10 @@ void test_incompatible_options(const std::filesystem::path& executable,
 
 int main(int argc, char* argv[]) {
 #ifndef _WIN32
-    const bool limit_stdout = argc >= 4 && std::string_view(argv[1]) == "--with-limited-stdout";
-    if (limit_stdout || (argc >= 3 && std::string_view(argv[1]) == "--with-file-limit")) {
-        // The child's stderr remains a pipe so the limit affects only the file.
-        if (limit_stdout && !std::freopen(argv[2], "w", stdout))
+    if (argc >= 4 && std::string_view(argv[1]) == "--with-limited-stdout") {
+        if (!redirect_to_limited_stdout(argv[2]))
             return 2;
-        const rlim_t bytes = limit_stdout ? 1024 : 4;
-        const rlimit limit{bytes, bytes};
-        if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR || ::setrlimit(RLIMIT_FSIZE, &limit) != 0)
-            return 2;
-        char** command = argv + (limit_stdout ? 3 : 2);
-        ::execv(command[0], command);
+        ::execv(argv[3], argv + 3);
         return 2;
     }
 #endif
