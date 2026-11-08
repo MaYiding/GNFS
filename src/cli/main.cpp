@@ -452,16 +452,11 @@ static void run_repl() {
         if (!std::getline(std::cin, line))
             break;
 
-        // Trim
-        auto start = line.find_first_not_of(" \t");
+        constexpr std::string_view whitespace = " \t\r\n";
+        const auto start = line.find_first_not_of(whitespace);
         if (start == std::string::npos)
             continue;
-        line = line.substr(start);
-        auto end = line.find_last_not_of(" \t\r\n");
-        if (end != std::string::npos)
-            line = line.substr(0, end + 1);
-        if (line.empty())
-            continue;
+        line = line.substr(start, line.find_last_not_of(whitespace) - start + 1);
 
         if (line == "quit" || line == "exit" || line == "q")
             break;
