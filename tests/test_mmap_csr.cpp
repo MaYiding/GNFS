@@ -20,7 +20,6 @@
 #include <limits>
 #include <random>
 #include <span>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -118,28 +117,24 @@ void test_utf8_destination() {
     const auto directory = gnfs::util::temp_directory_path() /
                            ("gnfs_test_csr_utf8_" + std::to_string(gnfs::util::process_id()));
     TEST_ASSERT(fs::create_directory(directory), "reserve a directory for the UTF-8 round trip");
-    struct Cleanup {
-        const fs::path& directory;
-        ~Cleanup() {
-            std::error_code ignored;
-            fs::remove_all(directory, ignored);
-        }
-    } cleanup{directory};
-
     const auto native = directory / fs::path(u8"\u77e9\u9635_\U0001d7d8.csrmat");
     const auto utf8 = native.u8string();
     const std::string path(utf8.begin(), utf8.end());
     SparseMatrix sparse(1, 4);
     sparse.row(0).set(3);
+    bool exact_destination = false;
+    bool matches = false;
     try {
         const auto mapped = gnfs::linalg::save_sparse_as_mmap(sparse, path);
-        TEST_ASSERT(fs::is_regular_file(native), "the expected native filename exists");
-        TEST_ASSERT(mapped.num_rows() == 1 && mapped.num_cols() == 4 && mapped.row_nnz(0) == 1 &&
-                        mapped.row_begin(0)[0] == 3,
-                    "the UTF-8 destination contains the saved matrix");
+        exact_destination = fs::is_regular_file(native);
+        matches = mapped.num_rows() == 1 && mapped.num_cols() == 4 && mapped.row_nnz(0) == 1 &&
+                  mapped.row_begin(0)[0] == 3;
     } catch (const std::exception& error) {
-        TEST_ASSERT(false, error.what());
+        std::cerr << "UTF-8 matrix round trip: " << error.what() << '\n';
     }
+    fs::remove_all(directory);
+    TEST_ASSERT(exact_destination, "the expected native filename exists");
+    TEST_ASSERT(matches, "the UTF-8 destination contains the saved matrix");
     TEST_PASS("save and map the same UTF-8 destination");
 }
 
