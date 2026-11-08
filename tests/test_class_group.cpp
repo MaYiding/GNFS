@@ -11,22 +11,26 @@ using namespace gnfs::core;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n"; \
-        tests_failed++; \
-        return; \
-    } \
-} while(0)
+#define TEST_ASSERT(cond, msg)                                                                     \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n";                        \
+            tests_failed++;                                                                        \
+            return;                                                                                \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_PASS(name) do { \
-    std::cout << "  PASS: " << name << "\n"; \
-    tests_passed++; \
-} while(0)
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::cout << "  PASS: " << name << "\n";                                                   \
+        tests_passed++;                                                                            \
+    } while (0)
 
 // ─── helpers ───────────────────────────────────────────────
 
-static Integer I(long long v) { return Integer(static_cast<int64_t>(v)); }
+static Integer I(long long v) {
+    return Integer(static_cast<int64_t>(v));
+}
 
 // ─── Degree 3 contexts ─────────────────────────────────────
 
@@ -467,7 +471,7 @@ void test_disc_sign_r2_parity() {
         bool disc_positive = tc.expected_disc > 0;
         bool r2_even = (r2 % 2 == 0);
         TEST_ASSERT(disc_positive == r2_even,
-            std::string(tc.name) + ": disc sign ↔ r2 parity mismatch");
+                    std::string(tc.name) + ": disc sign ↔ r2 parity mismatch");
     }
     TEST_PASS("disc sign ↔ r2 parity consistency");
 }
