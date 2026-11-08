@@ -5543,7 +5543,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_BOUNDARY_SHA256 = (
-    "c5490133c6f00f329426c7323058027d33030eb1457d7ea521bc9990a9955f49"
+    "8da46a3a91ab6510b6d053a3b23c9f8e3e79ad9df5a0e23433228aeb39e0c08f"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -5559,6 +5559,7 @@ WORKER_CLEANUP_RECEIPT_REPO_BUILD_FILES = frozenset(
     {
         WORKER_CLEANUP_RECEIPT_CMAKE_FILE,
         WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE,
+        "tests/test_cli_repl_config.cmake",
         "tests/test_process_supervisor.cmake",
     }
 )
@@ -33333,6 +33334,7 @@ AdoptBorrowedLockedOpenFileDescription* adoption = nullptr;
             ),
             ".hidden/receipt.custom": "#define private public\n",
             "cmake/extra.cmake": "# injected build surface\n",
+            "tests/test_cli_repl_config.cmake": "# interactive CLI test fixture\n",
             "tests/test_process_supervisor.cmake": "# supervisor test fixture\n",
             "src/entry.cpp": '#include "payload.tokens"\n',
             "src/payload.tokens": "inline int custom_extension_payload = 1;\n",
