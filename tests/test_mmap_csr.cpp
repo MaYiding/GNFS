@@ -5,11 +5,14 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <exception>
+#include <filesystem>
 #include <fstream>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/detail/spmv_kernels.hpp>
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 #include <gnfs/util/thread_pool.hpp>
 #include <iostream>
@@ -17,6 +20,7 @@
 #include <limits>
 #include <random>
 #include <span>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -107,6 +111,36 @@ void test_save_load_roundtrip() {
     }
 
     TEST_PASS("save/load round-trip (100×80)");
+}
+
+void test_utf8_destination() {
+    namespace fs = std::filesystem;
+    const auto directory = gnfs::util::temp_directory_path() /
+                           ("gnfs_test_csr_utf8_" + std::to_string(gnfs::util::process_id()));
+    TEST_ASSERT(fs::create_directory(directory), "reserve a directory for the UTF-8 round trip");
+    struct Cleanup {
+        const fs::path& directory;
+        ~Cleanup() {
+            std::error_code ignored;
+            fs::remove_all(directory, ignored);
+        }
+    } cleanup{directory};
+
+    const auto native = directory / fs::path(u8"\u77e9\u9635_\U0001d7d8.csrmat");
+    const auto utf8 = native.u8string();
+    const std::string path(utf8.begin(), utf8.end());
+    SparseMatrix sparse(1, 4);
+    sparse.row(0).set(3);
+    try {
+        const auto mapped = gnfs::linalg::save_sparse_as_mmap(sparse, path);
+        TEST_ASSERT(fs::is_regular_file(native), "the expected native filename exists");
+        TEST_ASSERT(mapped.num_rows() == 1 && mapped.num_cols() == 4 && mapped.row_nnz(0) == 1 &&
+                        mapped.row_begin(0)[0] == 3,
+                    "the UTF-8 destination contains the saved matrix");
+    } catch (const std::exception& error) {
+        TEST_ASSERT(false, error.what());
+    }
+    TEST_PASS("save and map the same UTF-8 destination");
 }
 
 void test_spmv_identical() {
@@ -401,6 +435,7 @@ int main() {
     std::cout << "═══════════════════════════════════════════\n\n";
 
     test_save_load_roundtrip();
+    test_utf8_destination();
     test_spmv_identical();
     test_large_matrix();
     test_empty_matrix();
