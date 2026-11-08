@@ -3,7 +3,12 @@
 #include "gnfs/sqrt/class_group.hpp"
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace gnfs::sqrt;
 using namespace gnfs::core;
@@ -512,6 +517,43 @@ void test_relation_search_with_large_minkowski_bound() {
     TEST_PASS("bounded relation storage with a large Minkowski bound");
 }
 
+void test_prime_search_domain() {
+    // For x^2 - k with positive nonsquare k, the computed bound is sqrt(k).
+    // Each k below is 1 modulo 15, so 1 is a root modulo the input N.
+    const auto make_context = [](const Integer& k) {
+        return PolynomialContext(I(15), {-k, I(0), I(1)}, I(1));
+    };
+    const Integer largest_prime_bound(std::numeric_limits<uint32_t>::max());
+    auto supported = make_context(largest_prime_bound * largest_prime_bound - I(14));
+    ClassGroupConfig config;
+    config.max_primes = 1;
+    ClassGroup group(supported, config);
+    TEST_ASSERT(std::ceil(group.minkowski_bound()) == std::numeric_limits<uint32_t>::max(),
+                "inclusive uint32_t prime search upper bound");
+
+    // These bounds exercise the first unsupported prime bound, an unrepresentable
+    // signed relation search radius, and a discriminant beyond the double range.
+    for (uint32_t exponent : {64u, 124u, 1024u}) {
+        auto ctx = make_context(pow(I(2), exponent) + I(15));
+        config.max_primes = 0;
+        ClassGroup disabled(ctx, config);
+        TEST_ASSERT(disabled.minkowski_bound() > std::numeric_limits<uint32_t>::max(),
+                    "disabled search preserves the computed bound");
+        TEST_ASSERT(disabled.class_number() == 1 && disabled.num_generators() == 0,
+                    "disabled search preserves the empty result");
+
+        config.max_primes = 1;
+        bool rejected = false;
+        try {
+            ClassGroup enabled(ctx, config);
+        } catch (const std::overflow_error&) {
+            rejected = true;
+        }
+        TEST_ASSERT(rejected, "enabled search rejects unsupported bounds");
+    }
+    TEST_PASS("class group prime search domain");
+}
+
 void test_compute_character_trivial_all_false() {
     auto ctx = make_cubic_131();
     ClassGroup cg(ctx);
@@ -586,6 +628,7 @@ int main() {
     test_trivial_class_group_small_discriminant();
     test_nontrivial_class_group_runs();
     test_relation_search_with_large_minkowski_bound();
+    test_prime_search_domain();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
 

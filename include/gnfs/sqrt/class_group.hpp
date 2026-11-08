@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -73,7 +75,8 @@ struct IdealClass {
 /// Configuration for class group computation
 struct ClassGroupConfig {
     bool verbose = false;
-    size_t max_primes = 1000;   // Max primes to check for class group
+    // Stop after collecting this many ideals, finishing the current prime. Zero skips the search.
+    size_t max_primes = 1000;
     size_t max_generators = 50; // Max generators to use
 };
 
@@ -82,6 +85,7 @@ class ClassGroup {
 public:
     using Config = ClassGroupConfig;
 
+    /// Throws std::overflow_error if prime search is enabled and its bound does not fit uint32_t.
     explicit ClassGroup(const PolynomialContext& ctx, const Config& config = Config{})
         : ctx_(ctx), config_(config) {
         compute();
@@ -156,6 +160,14 @@ private:
         compute_discriminant();
         compute_minkowski_bound();
 
+        if (config_.max_primes == 0)
+            return;
+
+        const double prime_bound = std::ceil(minkowski_bound_);
+        if (!std::isfinite(prime_bound) || prime_bound > std::numeric_limits<uint32_t>::max())
+            throw std::overflow_error(
+                "ClassGroup: Minkowski bound exceeds the prime search domain");
+
         if (minkowski_bound_ < 2) {
             // Class number is 1
             class_number_ = 1;
@@ -163,8 +175,7 @@ private:
         }
 
         // Find prime ideals up to Minkowski bound
-        auto prime_ideals =
-            find_prime_ideals_up_to(static_cast<uint32_t>(std::ceil(minkowski_bound_)));
+        auto prime_ideals = find_prime_ideals_up_to(static_cast<uint32_t>(prime_bound));
 
         if (prime_ideals.empty()) {
             class_number_ = 1;
@@ -434,7 +445,9 @@ private:
     [[nodiscard]] std::vector<PrimeIdeal> find_prime_ideals_up_to(uint32_t bound) const {
         std::vector<PrimeIdeal> result;
 
-        for (uint32_t p = 2; p <= bound && result.size() < config_.max_primes; ++p) {
+        for (uint64_t candidate = 2; candidate <= bound && result.size() < config_.max_primes;
+             ++candidate) {
+            const auto p = static_cast<uint32_t>(candidate);
             if (!is_prime(p))
                 continue;
 
