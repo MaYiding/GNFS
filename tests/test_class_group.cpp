@@ -603,7 +603,7 @@ void test_simple_root_ideal_exponents() {
     const auto rational = group.compute_character(5, 0);
     for (auto [a, b] : {std::pair{3, 7u}, std::pair{-8, 3u}}) {
         const auto base = group.compute_character(a, b);
-        const auto scaled = group.compute_character(5 * a, 5 * b);
+        const auto scaled = group.compute_character(int64_t{5} * a, uint64_t{5} * b);
         for (size_t j = 0; j < rational.size(); ++j) {
             TEST_ASSERT(scaled[j] == (base[j] != rational[j]), "scaling a selected character");
         }
