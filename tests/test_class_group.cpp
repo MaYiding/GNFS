@@ -494,6 +494,20 @@ void test_nontrivial_class_group_runs() {
     TEST_PASS("non-trivial class group runs");
 }
 
+void test_relation_search_with_large_minkowski_bound() {
+    // x^2 + 2^60 + 1 has a root at 1 modulo 2.
+    // The scan width exceeds 32768 even when we only keep one prime ideal.
+    const Integer constant = I((1LL << 60) + 1);
+    std::vector<Integer> coeffs = {constant, I(0), I(1)};
+    PolynomialContext ctx(constant + I(1), std::move(coeffs), I(1));
+    ClassGroupConfig config;
+    config.max_primes = 1;
+    ClassGroup cg(ctx, config);
+    TEST_ASSERT(cg.discriminant() == I(-4) * constant, "large quadratic discriminant");
+    TEST_ASSERT(cg.minkowski_bound() > (1LL << 30), "large bounded relation search");
+    TEST_PASS("bounded relation storage with a large Minkowski bound");
+}
+
 void test_compute_character_trivial_all_false() {
     auto ctx = make_cubic_131();
     ClassGroup cg(ctx);
@@ -567,6 +581,7 @@ int main() {
     // Legacy regressions
     test_trivial_class_group_small_discriminant();
     test_nontrivial_class_group_runs();
+    test_relation_search_with_large_minkowski_bound();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
 
