@@ -19,6 +19,7 @@
 //   - Empty source (n=0) edge case
 //   - Cross-platform deterministic LP column layout
 
+#include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
 #include <gnfs/linalg/relation_source.hpp>
@@ -241,6 +242,29 @@ void test_vector_source_equivalence_small() {
     CHECK(matrices_equal(vec_result.matrix, stream_result.matrix));
     CHECK(vec_result.row_to_relation == stream_result.row_to_relation);
     std::cout << "  PASS" << std::endl;
+}
+
+void test_odd_quadratic_class_group_layout() {
+    // Discriminant -283 has three reduced forms: (1,1,71) and (7,+/-5,11).
+    // Its group has odd order, so it contributes no GF(2) columns.
+    PolynomialContext ctx(Integer(1127), {Integer(1261), Integer(-69), Integer(1)}, Integer(2));
+    FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 13;
+    auto fb = FactorBaseBuilder::build(ctx, bounds);
+    gnfs::cofactor::Cofactorizer verifier(ctx, fb);
+    const auto full = verifier.verify(-1, 1); // Rational value -3, algebraic norm 11^3.
+    CHECK(full && full->is_full());
+    const std::vector<Relation> relations{*full};
+
+    auto config = minimal_mb_config();
+    const auto baseline = MatrixBuilder(config).build_with_qc(relations, fb, ctx);
+    config.include_class_group = true;
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(relations, fb, ctx);
+    const auto streaming =
+        builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+    CHECK(build_results_equal(baseline, vector));
+    CHECK(build_results_equal(baseline, streaming));
 }
 
 void test_vector_source_equivalence_batch_sizes() {
@@ -657,6 +681,7 @@ int main() {
     test_relation_source_concept_conformance();
     test_empty_source();
     test_vector_source_equivalence_small();
+    test_odd_quadratic_class_group_layout();
     test_vector_source_equivalence_batch_sizes();
     test_relation_selection_source_payload_equivalence();
     test_relation_selection_dependency_provenance();
