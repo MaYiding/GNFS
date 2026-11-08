@@ -39,6 +39,74 @@ struct PrimeIdeal {
     }
 };
 
+namespace detail {
+
+/// Compute exponents for the selected degree-one ideals in (a - b*alpha).
+/// monic_simple_roots contains the simple roots of a monic f in (p, r) order.
+[[nodiscard]] inline std::map<PrimeIdeal, int>
+class_group_ideal_exponents(const PolynomialContext& ctx, int64_t a, uint64_t b,
+                            const std::vector<PrimeIdeal>& prime_ideals,
+                            const std::vector<PrimeIdeal>& monic_simple_roots) {
+
+    std::map<PrimeIdeal, int> result;
+
+    Integer norm = ctx.algebraic_norm(a, b);
+    if (norm.is_zero())
+        return result;
+
+    Integer divisor;
+    for (const auto& pi : prime_ideals) {
+        if (pi.degree != 1)
+            continue;
+        const auto p = pi.p;
+        const auto b_mod_p = b % p;
+        const auto remainder = a % static_cast<int64_t>(p);
+        const auto a_mod_p = static_cast<uint64_t>(remainder < 0 ? remainder + p : remainder);
+        if (a_mod_p != b_mod_p * pi.r % p)
+            continue;
+
+        // With p not dividing b, only this root can divide a - b*alpha.
+        // A simple root gives a degree-one p-adic factor; all other
+        // factors are units at a/b, so the exponent is v_p(b^d f(a/b)).
+        if (b_mod_p != 0 &&
+            std::binary_search(monic_simple_roots.begin(), monic_simple_roots.end(), pi)) {
+            mpz_set_ui(divisor.get_mpz(), p);
+            const auto exp = mpz_remove(norm.get_mpz(), norm.get_mpz(), divisor.get_mpz());
+            if (exp > static_cast<mp_bitcnt_t>(std::numeric_limits<int>::max()))
+                throw std::overflow_error("ClassGroup: prime ideal exponent exceeds int");
+            if (exp != 0)
+                result[pi] = static_cast<int>(exp);
+            continue;
+        }
+
+        // Preserve the existing estimate on the remaining ideals.
+        Integer val(a);
+        val -= Integer(b) * Integer(pi.r);
+        int exp = 0;
+        if (val.is_zero()) {
+            exp = 1;
+            uint64_t b_tmp = b;
+            while (b_tmp != 0 && b_tmp % pi.p == 0) {
+                ++exp;
+                b_tmp /= pi.p;
+            }
+        } else {
+            while (mpz_divisible_ui_p(val.get_mpz(), pi.p)) {
+                ++exp;
+                mpz_divexact_ui(val.get_mpz(), val.get_mpz(), pi.p);
+            }
+        }
+
+        if (exp > 0) {
+            result[pi] = exp;
+        }
+    }
+
+    return result;
+}
+
+} // namespace detail
+
 /// Represents an ideal class as a product of prime ideals with exponents
 /// stored modulo the class group order
 struct IdealClass {
@@ -121,16 +189,11 @@ public:
             return result; // Trivial class group
         }
 
-        // Factor the ideal (a + b*alpha) and determine its class
-        auto ideal_class = factor_principal_ideal(a, b);
-
-        // Express the class in terms of generators
+        const auto powers =
+            detail::class_group_ideal_exponents(ctx_, a, b, generators_, simple_roots_);
         for (size_t i = 0; i < generators_.size(); ++i) {
-            // Check if this ideal has odd exponent for generator i
-            // This is a simplification - proper implementation would use
-            // the class group structure
-            int exp = get_generator_exponent(ideal_class, i);
-            result[i] = (exp % 2 == 1);
+            const auto it = powers.find(generators_[i]);
+            result[i] = it != powers.end() && (it->second % 2 != 0);
         }
 
         return result;
@@ -149,6 +212,8 @@ private:
     double minkowski_bound_ = 0.0;
     uint32_t class_number_ = 1;
     std::vector<PrimeIdeal> generators_;
+    // Simple roots of a monic polynomial in the enumeration order (p, r).
+    std::vector<PrimeIdeal> simple_roots_;
 
     // Map from prime ideal to its order in the class group
     std::map<PrimeIdeal, int> ideal_orders_;
@@ -443,7 +508,7 @@ private:
     }
 
     /// Find all prime ideals with norm up to bound
-    [[nodiscard]] std::vector<PrimeIdeal> find_prime_ideals_up_to(uint32_t bound) const {
+    [[nodiscard]] std::vector<PrimeIdeal> find_prime_ideals_up_to(uint32_t bound) {
         std::vector<PrimeIdeal> result;
 
         for (uint64_t candidate = 2; candidate <= bound && result.size() < config_.max_primes;
@@ -452,34 +517,15 @@ private:
             if (!is_prime(p))
                 continue;
 
-            // Factor f mod p
-            auto roots = find_roots_mod_p(p);
-
-            if (roots.empty()) {
-                // f is irreducible mod p - inert prime
-                // For class group, we typically skip inert primes
-                // (they have degree n and norm p^n)
-                continue;
-            }
-
-            // Each root gives a degree-1 prime ideal
-            for (uint32_t r : roots) {
-                PrimeIdeal pi;
-                pi.p = p;
-                pi.r = r;
-                pi.degree = 1;
-                result.push_back(pi);
-            }
+            append_prime_ideals(p, result);
         }
 
         return result;
     }
 
-    /// Find roots of f mod p
-    [[nodiscard]] std::vector<uint32_t> find_roots_mod_p(uint32_t p) const {
-        std::vector<uint32_t> roots;
+    /// Append the degree-one ideals (p, alpha - r) for roots r of f mod p.
+    void append_prime_ideals(uint32_t p, std::vector<PrimeIdeal>& ideals) {
         uint32_t d = ctx_.degree();
-        roots.reserve(d); // bounded by polynomial degree
 
         // 预计算 c[i] mod p 一次 (从 ctx_.coeff() clone 在 (i,x) 内层是冷启动 BUG):
         // p × (d+1) clones/mods 节省 → 典型 p=1000/d=5 时省 6000 clones per prime
@@ -505,18 +551,26 @@ private:
                 x_power = (x_power * x) % p64;
             }
 
-            if (val == 0) {
-                roots.push_back(x);
+            if (val != 0)
+                continue;
+
+            const PrimeIdeal ideal{p, x, 1};
+            ideals.push_back(ideal);
+            if (ctx_.leading_coeff().is_one()) {
+                uint64_t derivative = 0;
+                for (uint32_t i = d; i > 0; --i) {
+                    derivative = (derivative * x + (i * c_mod_p[i]) % p64) % p64;
+                }
+                if (derivative != 0)
+                    simple_roots_.push_back(ideal);
             }
         }
-
-        return roots;
     }
 
     /// Compute class group from prime ideals
     void compute_class_group(const std::vector<PrimeIdeal>& prime_ideals) {
         // Build relation matrix: each row is a principal ideal factorization
-        // We find principal ideals by checking (a + b*alpha) for small a, b
+        // We find principal ideals by checking (a - b*alpha) for small a, b
 
         std::vector<std::vector<Integer>> relations;
         size_t num_primes = prime_ideals.size();
@@ -528,8 +582,9 @@ private:
 
         for (int a = -search_bound; a <= search_bound; ++a) {
             for (int b = 1; b <= search_bound; ++b) {
-                // Factor the ideal (a + b*alpha)
-                auto factorization = factor_ideal(a, static_cast<uint64_t>(b), prime_ideals);
+                // Factor the ideal (a - b*alpha)
+                auto factorization = detail::class_group_ideal_exponents(
+                    ctx_, a, static_cast<uint64_t>(b), prime_ideals, simple_roots_);
 
                 if (!factorization.empty()) {
                     // Convert to vector indexed by prime_ideals
@@ -572,116 +627,6 @@ private:
             else
                 class_number_ *= static_cast<uint32_t>(mpz_get_ui(factor));
         }
-    }
-
-    /// Factor the ideal (a + b*alpha) in terms of prime ideals
-    [[nodiscard]] std::map<PrimeIdeal, int>
-    factor_ideal(int64_t a, uint64_t b, const std::vector<PrimeIdeal>& prime_ideals) const {
-
-        std::map<PrimeIdeal, int> result;
-
-        // Compute the norm N(a + b*alpha) = b^d * f(-a/b)
-        // Factor this norm to find which primes divide the ideal
-        Integer norm = ctx_.algebraic_norm(a, b);
-        if (norm.is_negative()) {
-            norm.negate();
-        }
-
-        if (norm.is_zero()) {
-            return result; // Degenerate case
-        }
-
-        // Factor the norm
-        for (const auto& pi : prime_ideals) {
-            if (pi.degree != 1)
-                continue;
-
-            // Check if this prime ideal divides (a - b*alpha)
-            // P = (p, alpha - r) divides (a - b*alpha) iff a - b*r ≡ 0 (mod p)
-            Integer val(a);
-            val -= Integer(b) * Integer(pi.r);
-
-            int exp = 0;
-            if (val.is_zero()) {
-                // a = b*r exactly: (a - bα) = -b(α - r)
-                // v_P = v_p(b) + 1 for unramified degree-1 prime ideal
-                exp = 1;
-                uint64_t b_tmp = b;
-                while (b_tmp != 0 && b_tmp % pi.p == 0) {
-                    ++exp;
-                    b_tmp /= pi.p;
-                }
-            } else {
-                while (mpz_divisible_ui_p(val.get_mpz(), pi.p)) {
-                    ++exp;
-                    mpz_divexact_ui(val.get_mpz(), val.get_mpz(), pi.p);
-                }
-            }
-
-            if (exp > 0) {
-                result[pi] = exp;
-            }
-        }
-
-        return result;
-    }
-
-    /// Factor principal ideal for character computation
-    [[nodiscard]] IdealClass factor_principal_ideal(int64_t a, uint64_t b) const {
-        IdealClass result;
-
-        // Compute norm
-        Integer norm = ctx_.algebraic_norm(a, b);
-        if (norm.is_negative()) {
-            norm.negate();
-        }
-
-        if (norm.is_zero()) {
-            return result;
-        }
-
-        // Factor using generators
-        for (const auto& gen : generators_) {
-            if (gen.degree != 1)
-                continue;
-
-            // Check divisibility: P = (p, α - r) divides (a - bα) iff a - b*r ≡ 0 (mod p)
-            Integer val(a);
-            val -= Integer(b) * Integer(gen.r);
-
-            int exp = 0;
-            if (val.is_zero()) {
-                // a = b*r exactly: (a - bα) = -b(α - r)
-                // v_P = v_p(b) + 1 for unramified degree-1 prime ideal
-                exp = 1;
-                uint64_t b_tmp = b;
-                while (b_tmp != 0 && b_tmp % gen.p == 0) {
-                    ++exp;
-                    b_tmp /= gen.p;
-                }
-            } else {
-                while (mpz_divisible_ui_p(val.get_mpz(), gen.p)) {
-                    ++exp;
-                    mpz_divexact_ui(val.get_mpz(), val.get_mpz(), gen.p);
-                }
-            }
-
-            if (exp > 0) {
-                result.add_prime(gen, exp);
-            }
-        }
-
-        return result;
-    }
-
-    /// Get exponent of generator i in ideal class
-    [[nodiscard]] int get_generator_exponent(const IdealClass& cls, size_t gen_idx) const {
-        if (gen_idx >= generators_.size())
-            return 0;
-
-        const auto& gen = generators_[gen_idx];
-        auto it = cls.prime_powers.find(gen);
-        return (it != cls.prime_powers.end()) ? it->second : 0;
     }
 
     /// Simple primality test — delegates to util::is_prime_u32 (robust at uint32 boundary).
