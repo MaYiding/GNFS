@@ -84,12 +84,36 @@ print -r -- staged >"${repo}/staged.txt"
 git -C "$repo" add staged.txt
 print -r -- unstaged >>"${repo}/feature.txt"
 print -r -- untracked >"${repo}/untracked.txt"
-paths=$(collect_changed_files "$repo" "$base_sha" | sed '/^$/d' | sort -u)
+typeset -a changed_paths
+while IFS= read -r -d '' path_name; do changed_paths+=("$path_name"); done < <(collect_changed_files "$repo" "$base_sha")
 for expected in feature.txt staged.txt untracked.txt; do
-    print -r -- "$paths" | grep -Fx -- "$expected" >/dev/null ||
-        fail "changed paths missing ${expected}"
+    (( ${changed_paths[(Ie)$expected]} )) || fail "changed paths missing ${expected}"
 done
 pass "committed, staged, unstaged, and untracked paths"
+
+# Keep both raw names through Git's rename detection and C-style quoting.
+old_name='old-用例 [1].cpp'
+new_name='new-改名 [2].cpp'
+case "$OSTYPE" in
+    cygwin*|msys*|mingw*|win32*) ;;
+    *) new_name=$'new-改名\t\n[2].cpp' ;;
+esac
+git -C "$repo" config core.quotePath true
+print -r -- source > "${repo}/${old_name}"
+git -C "$repo" add -- "$old_name"
+git -C "$repo" commit --quiet -m 'tracked UTF-8 fixture'
+rename_base=$(git -C "$repo" rev-parse HEAD)
+git -C "$repo" mv -- "$old_name" "$new_name"
+for tree_state in staged committed; do
+    if [[ "$tree_state" == committed ]]; then git -C "$repo" commit --quiet -m rename; fi
+    changed_paths=()
+    while IFS= read -r -d '' path_name; do
+        changed_paths+=("$path_name")
+    done < <(collect_changed_files "$repo" "$rename_base")
+    (( ${changed_paths[(Ie)$old_name]} && ${changed_paths[(Ie)$new_name]} )) ||
+        fail "$tree_state rename lost raw source or destination"
+done
+pass "staged and committed renames retain both raw paths"
 
 map_output=$(zsh "${PROJECT_ROOT}/scripts/test.sh" module-map-check)
 print -r -- "$map_output" | grep -F "测试模块映射合同通过" >/dev/null ||
@@ -147,7 +171,13 @@ log_fail() { :; }
 log_success() { :; }
 log_skip() { :; }
 resolve_changed_base() { print fixture; }
-collect_changed_files() { print -r -- "$ROUTE_PATHS"; }
+collect_changed_files() {
+    local -a paths=("${(@f)ROUTE_PATHS}")
+    local item
+    for item in "${paths[@]}"; do
+        if [[ -n "$item" ]]; then printf '%s\0' "$item"; fi
+    done
+}
 run_ctest_contract_group() { print -r -- "CONTRACT:$1"; }
 do_build() { print -r -- "BUILD:$*"; }
 do_50d_probe_contracts() { print 'SELECTED:50d_contract'; }
@@ -404,7 +434,8 @@ BUILD_DIR=$1; ROUTE_PATHS=$2; SKIP_BUILD=$3
 do_build() {
     if (( SKIP_BUILD )); then return 0; fi
     print -r -- "BUILD:$*"
-    cmake --build "$BUILD_DIR" --target "$@"
+    if (( $# )); then cmake --build "$BUILD_DIR" --target "$@"
+    else cmake --build "$BUILD_DIR"; fi
 }
 do_changed --deep
 """

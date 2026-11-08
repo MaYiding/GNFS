@@ -7814,9 +7814,10 @@ do_progressive() {
 # The selected build refreshes CMake's source index on all generators. Directly
 # edited test sources can also belong to executables outside the run selection.
 do_changed_build() {
-    local changed_files="$1" module_names="$2"
+    local module_names="$1" target_names="$2"
+    local -a targets=(${(s: :)target_names})
     shift 2
-    do_build "$@" || return $?
+    do_build "${targets[@]}" || return $?
     if (( SKIP_BUILD )); then return 0; fi
 
     local index_file="${BUILD_DIR}/gnfs-test-sources.txt"
@@ -7826,9 +7827,9 @@ do_changed_build() {
     fi
     local -A changed
     local file target mod
-    for file in "${(@f)changed_files}"; do changed[$file]=1; done
-    local -a covered=("$@")
-    if [[ "$1" == gnfs_local_gate_quick ]]; then covered+=("${SMOKE_TESTS[@]}"); fi
+    for file in "$@"; do changed[$file]=1; done
+    local -a covered=("${targets[@]}")
+    if [[ "${targets[1]}" == gnfs_local_gate_quick ]]; then covered+=("${SMOKE_TESTS[@]}"); fi
     for mod in ${(s: :)module_names}; do
         covered+=(${=MODULE_TESTS[$mod]})
     done
@@ -7860,20 +7861,13 @@ do_changed() {
         log_warn "无法解析变更基线；仅检查当前工作树、暂存区和未跟踪文件"
     fi
 
-    local changed_files=""
-    changed_files=$(collect_changed_files "$PROJECT_ROOT" "$changed_base" 2>/dev/null || true)
-
-    # sed keeps a successful exit status for an empty stream. grep -v '^$'
-    # returns 1 when the worktree is clean and would terminate this function
-    # under set -e before the documented smoke fallback can run.
-    changed_files=$(echo "$changed_files" | sed '/^$/d' | sort -u)
-    local needs_50d_contract=0
-    if echo "$changed_files" |
-        grep -Eq '^(CMakeLists\.txt|scripts/test\.sh|tests/test_structured_ooc_50d_probe\.cpp)$'; then
-        needs_50d_contract=1
-    fi
-
-    if [[ -z "$changed_files" ]]; then
+    local -A changed_paths
+    local file
+    while IFS= read -r -d '' file; do
+        changed_paths[$file]=1
+    done < <(collect_changed_files "$PROJECT_ROOT" "$changed_base" 2>/dev/null)
+    local -a changed_files=("${(@ok)changed_paths}")
+    if (( ! ${#changed_files} )); then
         log_info "没有检测到代码变更"
         log_info "回退到冒烟测试..."
         do_build gnfs_local_gate_quick || return $?
@@ -7881,11 +7875,10 @@ do_changed() {
         return
     fi
 
-    local file_count
-    file_count=$(echo "$changed_files" | wc -l | tr -d ' ')
+    local file_count=${#changed_files}
     log_info "检测到 ${file_count} 个变更文件:"
-    echo "$changed_files" | head -20 | while read -r f; do
-        echo "  ${DIM}${BULLET} ${f}${RESET}"
+    for file in "${changed_files[@]:0:20}"; do
+        print -r -- "  ${DIM}${BULLET} ${(V)file}${RESET}"
     done
     if (( file_count > 20 )); then
         echo "  ${DIM}... 还有 $((file_count - 20)) 个文件${RESET}"
@@ -7893,15 +7886,18 @@ do_changed() {
     echo ""
 
     # 映射到模块
+    local needs_50d_contract=0
     typeset -A affected_modules
     local mod
-    while IFS= read -r file; do
-        [[ -z "$file" ]] && continue
+    for file in "${changed_files[@]}"; do
+        case "$file" in
+            CMakeLists.txt|scripts/test.sh|tests/test_structured_ooc_50d_probe.cpp) needs_50d_contract=1 ;;
+        esac
         mod=$(path_to_module "$file")
         if [[ -n "$mod" ]]; then
             affected_modules[$mod]=1
         fi
-    done <<< "$changed_files"
+    done
 
     # The native SIQS E2E has a separate long budget. Select it for direct
     # SIQS changes in deep mode, not for every utility dependency cascade.
@@ -7946,11 +7942,11 @@ do_changed() {
     if (( ${#modules[@]} == 0 )); then
         if (( needs_50d_contract )); then
             log_info "变更仅命中 50 位探针合同，运行 fast 合同"
-            do_changed_build "$changed_files" "" test_structured_ooc_50d_probe gnfs_test_process_supervisor || return $?
+            do_changed_build "" "test_structured_ooc_50d_probe gnfs_test_process_supervisor" "${changed_files[@]}" || return $?
             do_50d_probe_contracts || true
         else
             log_info "变更文件未匹配到已知模块，运行冒烟测试"
-            do_changed_build "$changed_files" "" gnfs_local_gate_quick || return $?
+            do_changed_build "" gnfs_local_gate_quick "${changed_files[@]}" || return $?
             do_smoke
         fi
         return
@@ -7977,7 +7973,7 @@ do_changed() {
     if (( needs_50d_contract )); then targets+=(test_structured_ooc_50d_probe); fi
     if (( needs_siqs_e2e )); then targets+=(test_siqs_e2e); fi
     if (( needs_e2e )); then targets+=(test_gnfs_e2e); fi
-    do_changed_build "$changed_files" "${modules[*]}" "${targets[@]}" || return $?
+    do_changed_build "${modules[*]}" "${targets[*]}" "${changed_files[@]}" || return $?
 
     do_module "${modules[@]}" || true
 
@@ -7995,7 +7991,7 @@ do_changed() {
         run_single_test test_gnfs_e2e || true
     fi
 
-    if echo "$changed_files" | grep -q "CMakeLists.txt"; then
+    if (( ${changed_files[(I)*CMakeLists.txt*]} )); then
         log_warn "CMakeLists.txt 变更，建议运行 'full' 模式做完整验证"
     fi
 }
