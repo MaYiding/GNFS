@@ -498,7 +498,8 @@ static void run_repl() {
         }
         if (line == "config") {
             std::cout << repl_config.to_string();
-            if (!repl_config.degree && !repl_config.rational_bound)
+            if (!repl_config.method && !repl_config.degree && !repl_config.rational_bound &&
+                !repl_config.algebraic_bound && !repl_config.large_prime_bound)
                 std::cout << TR(S::REPL_CONFIG_ALL_AUTO) << "\n";
             continue;
         }

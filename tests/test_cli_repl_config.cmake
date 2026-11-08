@@ -2,6 +2,19 @@
 string(RANDOM LENGTH 20 suffix)
 set(input "${CMAKE_CURRENT_BINARY_DIR}/repl-config-${suffix}.txt")
 file(WRITE "${input}" [=[
+config
+set fb_algebraic 47
+config
+reset
+set lp_bound 1009
+config
+reset
+method trial
+config
+method auto
+config
+reset
+config
 quiet
 set degree 4
 set rational_bound 31
@@ -36,7 +49,8 @@ foreach(key IN ITEMS degree rational_bound algebraic_bound large_prime_bound)
     endif()
 endforeach()
 foreach(setting IN ITEMS "degree = 4" "rational_bound = 31" "algebraic_bound = 43"
-                         "large_prime_bound = 65539")
+                         "large_prime_bound = 65539" "algebraic_bound = 47"
+                         "large_prime_bound = 1009" "method = trial" "method = auto")
     string(FIND "${output}" "\n${setting}\n" index)
     if(index EQUAL -1)
         message(FATAL_ERROR "Lost configured ${setting}: ${output}")
@@ -44,4 +58,14 @@ foreach(setting IN ITEMS "degree = 4" "rational_bound = 31" "algebraic_bound = 4
 endforeach()
 if(NOT output MATCHES "\"success\"[ \t]*:[ \t]*true")
     message(FATAL_ERROR "Factorization after a rejected setting failed: ${output}")
+endif()
+
+# Only the initial and reset configurations have no factorization overrides.
+string(REGEX MATCHALL "no overrides" summaries "${output}")
+string(REGEX MATCHALL "# GNFS Configuration\nverbose = true\n#[^\n]*no overrides"
+       default_summaries "${output}")
+list(LENGTH summaries summary_count)
+list(LENGTH default_summaries default_count)
+if(NOT summary_count EQUAL 2 OR NOT default_count EQUAL 2)
+    message(FATAL_ERROR "Incorrect auto-detection summary in interactive config: ${output}")
 endif()
