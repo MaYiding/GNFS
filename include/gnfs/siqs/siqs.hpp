@@ -2306,8 +2306,7 @@ inline FactorAttemptOutcome factor_once_impl(const Integer& N, uint32_t multipli
         std::vector<uint8_t> exp_buf(params.fb_size + 100, 0); // reuse across candidates
         size_t local_full = 0, local_1lp = 0, local_2lp = 0;
 
-        while (!enough.load(std::memory_order_relaxed) &&
-               !budget_exhausted()) {
+        while (!enough.load(std::memory_order_relaxed) && !budget_exhausted()) {
             SIQSPoly poly;
             choose_A(kN, params.sieve_half, params.num_a_factors, fb, local_rng, poly.a_indices,
                      poly.A);
