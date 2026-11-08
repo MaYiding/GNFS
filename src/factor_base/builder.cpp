@@ -355,6 +355,9 @@ FactorBase FactorBase::load(std::istream& is) {
         if (!algebraic_keys.insert(key).second) {
             throw std::runtime_error("FactorBase::load: duplicate algebraic-prime key");
         }
+        if (!fb.algebraic_.empty() && ap.p < fb.algebraic_.back().p) {
+            throw std::runtime_error("FactorBase::load: algebraic primes are not nondecreasing");
+        }
         fb.algebraic_.push_back(ap);
     }
 
@@ -432,7 +435,8 @@ FactorBase FactorBaseBuilder::build(const PolynomialContext& ctx, const Options&
                                     opts.parallel);
     }
 
-    fb.build_index();
+    // add_rational and add_algebraic have already indexed every entry.
+    fb.reserve_index_buckets();
     return fb;
 }
 

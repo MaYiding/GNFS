@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -407,6 +408,8 @@ public:
                                        r2.algebraic_large_prime.begin(),
                                        r2.algebraic_large_prime.end());
 
+        pack_oversized_prime_powers(m.rational_large_prime);
+        pack_oversized_prime_powers(m.algebraic_large_prime);
         return m;
     }
 
@@ -756,6 +759,40 @@ public:
         else
             rhs /= 2;
         return util::saturating_size_product(lhs, rhs);
+    }
+
+private:
+    // Keep ordinary merged payloads byte-for-byte. Above the wire limit,
+    // fill partial chunks of the same ideal while retaining zero entries.
+    static void pack_oversized_prime_powers(Relation::LargePrimeList& powers) {
+        constexpr size_t limit = Relation::MAX_SERIALIZED_LARGE_PRIMES;
+        constexpr unsigned max_exponent = std::numeric_limits<uint8_t>::max();
+        if (powers.size() <= limit)
+            return;
+
+        Relation::LargePrimeList packed;
+        packed.reserve(limit);
+        for (auto power : powers) {
+            if (power.e != 0) {
+                auto slot = std::find_if(packed.begin(), packed.end(), [&](const auto& prior) {
+                    return prior.p == power.p && prior.r == power.r && prior.e != 0 &&
+                           prior.e < max_exponent;
+                });
+                if (slot != packed.end()) {
+                    const unsigned total = static_cast<unsigned>(slot->e) + power.e;
+                    slot->e = static_cast<uint8_t>(std::min(total, max_exponent));
+                    if (total <= max_exponent)
+                        continue;
+                    power.e = static_cast<uint8_t>(total - max_exponent);
+                }
+            }
+            // The full valuation still belongs to in-memory matrix/sqrt users
+            // when even a packed representation cannot fit the wire format.
+            if (packed.size() == limit)
+                return;
+            packed.push_back(power);
+        }
+        powers.swap(packed);
     }
 };
 

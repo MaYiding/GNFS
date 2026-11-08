@@ -900,16 +900,23 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     pidURL: URL,
     timeout: Duration = .seconds(5)
   ) async -> Bool {
-    guard await waitUntilFileExists(pidURL, timeout: timeout),
-      let pidText = try? String(contentsOf: pidURL, encoding: .utf8)
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-      let pid = Int32(pidText)
-    else {
-      return false
-    }
-
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
+
+    // A shell redirection creates the PID file before its contents are fully
+    // visible. Wait for a complete, valid PID instead of treating existence
+    // alone as publication; otherwise the caller can begin consuming stdout
+    // while the producer is still running and make the buffer test flaky.
+    var pid: Int32?
+    while clock.now < deadline {
+      if let candidate = readProcessID(at: pidURL), candidate > 1 {
+        pid = candidate
+        break
+      }
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    guard let pid else { return false }
+
     while clock.now < deadline {
       if processHasStopped(pid) { return true }
       try? await Task.sleep(for: .milliseconds(10))

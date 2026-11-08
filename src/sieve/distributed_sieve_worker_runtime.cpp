@@ -52,7 +52,8 @@ rehydrate_factor_base(const FactorBaseWorkIdentityV1& identity) {
                                   static_cast<std::uint32_t>(entry.r), entry.log_p,
                                   static_cast<std::uint8_t>(entry.degree));
     }
-    factor_base.set_sieve_algebraic_count(static_cast<std::size_t>(identity.sieve_algebraic_count));
+    factor_base.set_sieve_algebraic_count_explicit(
+        static_cast<std::size_t>(identity.sieve_algebraic_count));
     factor_base.build_index();
     return factor_base;
 }
