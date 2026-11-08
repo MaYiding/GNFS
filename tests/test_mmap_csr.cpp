@@ -4,7 +4,6 @@
 // as the in-memory CSRMatrix.
 
 #include <cstdint>
-#include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -15,20 +14,25 @@
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 #include <gnfs/util/thread_pool.hpp>
+#include <gnfs/util/utf8_path.hpp>
 #include <iostream>
 #include <iterator>
 #include <limits>
 #include <random>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 using gnfs::linalg::BlockVector;
 using gnfs::linalg::CSRMatrix;
 using gnfs::linalg::MmapCSRMatrix;
 using gnfs::linalg::SparseMatrix;
+using gnfs::util::path_to_utf8;
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -48,13 +52,57 @@ static int tests_failed = 0;
         tests_passed++;                                                                            \
     } while (0)
 
-struct TempFile {
-    std::string path;
-    TempFile(const std::string& p) : path(p) {}
-    ~TempFile() {
-        std::remove(path.c_str());
+class MatrixTestDirectory {
+public:
+    explicit MatrixTestDirectory(const fs::path& parent) {
+        const auto stem = "gnfs_test_csr_" + std::to_string(gnfs::util::process_id());
+        for (unsigned attempt = 0; attempt < 32; ++attempt) {
+            auto candidate = parent / (attempt == 0 ? stem : stem + "_" + std::to_string(attempt));
+            std::error_code error;
+            if (fs::create_directory(candidate, error)) {
+                path_ = std::move(candidate);
+                return;
+            }
+            if (error && error != std::errc::file_exists)
+                throw fs::filesystem_error("reserve matrix test directory", candidate, error);
+        }
+        throw std::runtime_error("all matrix test directory names are occupied");
     }
+
+    MatrixTestDirectory(const MatrixTestDirectory&) = delete;
+    MatrixTestDirectory& operator=(const MatrixTestDirectory&) = delete;
+
+    ~MatrixTestDirectory() {
+        std::error_code error;
+        fs::remove_all(path_, error);
+        if (error) {
+            std::cerr << "Removing matrix test directory failed: " << error.message() << '\n';
+            ++tests_failed;
+        }
+    }
+
+    const fs::path& path() const { return path_; }
+
+private:
+    fs::path path_;
 };
+
+void test_directory_cleanup(const fs::path& parent) {
+    const MatrixTestDirectory occupied(parent);
+    const auto sentinel = occupied.path() / "sentinel";
+    std::ofstream(sentinel, std::ios::binary).put('x');
+    const auto released = [&] {
+        const MatrixTestDirectory scratch(parent);
+        if (!std::ofstream(scratch.path() / "partial.csrmat", std::ios::binary).put('y'))
+            throw std::runtime_error("could not create the partial matrix fixture");
+        return scratch.path();
+    }();
+
+    TEST_ASSERT(!fs::exists(released), "returning from the fixture removes its partial matrix");
+    TEST_ASSERT(std::ifstream(sentinel, std::ios::binary).get() == 'x',
+                "an occupied directory and its sentinel survive");
+    TEST_PASS("private matrix fixture reservation and cleanup");
+}
 
 /// Build a random sparse matrix
 static SparseMatrix make_random_matrix(size_t rows, size_t cols, uint32_t seed,
@@ -86,14 +134,14 @@ static void spmv_forward(const CSR& M, const BlockVector& x, BlockVector& y) {
 // Tests
 // ============================================================================
 
-void test_save_load_roundtrip() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr.csrmat"));
+void test_save_load_roundtrip(const fs::path& directory) {
+    const auto path = path_to_utf8(directory / "gnfs_test_csr.csrmat");
 
     SparseMatrix sparse = make_random_matrix(100, 80, 12345);
     CSRMatrix csr(sparse);
 
-    MmapCSRMatrix::save(csr, tmp.path);
-    MmapCSRMatrix mmap(tmp.path);
+    MmapCSRMatrix::save(csr, path);
+    MmapCSRMatrix mmap(path);
 
     TEST_ASSERT(mmap.num_rows() == csr.num_rows(), "rows match");
     TEST_ASSERT(mmap.num_cols() == csr.num_cols(), "cols match");
@@ -114,22 +162,7 @@ void test_save_load_roundtrip() {
     TEST_PASS("save/load round-trip (100×80)");
 }
 
-void test_utf8_destination() {
-    namespace fs = std::filesystem;
-    const auto parent = gnfs::util::temp_directory_path();
-    const auto stem = "gnfs_test_csr_utf8_" + std::to_string(gnfs::util::process_id());
-    fs::path directory;
-    for (unsigned attempt = 0; attempt < 32; ++attempt) {
-        const auto candidate =
-            parent / (attempt == 0 ? stem : stem + "_" + std::to_string(attempt));
-        std::error_code error;
-        if (fs::create_directory(candidate, error)) {
-            directory = candidate;
-            break;
-        }
-        TEST_ASSERT(!error || error == std::errc::file_exists, error.message());
-    }
-    TEST_ASSERT(!directory.empty(), "reserve a directory for the UTF-8 round trip");
+void test_utf8_destination(const fs::path& directory) {
     const auto native = directory / fs::path(u8"\u77e9\u9635_\U0001d7d8.csrmat");
     const auto utf8 = native.u8string();
     const std::string path(utf8.begin(), utf8.end());
@@ -145,20 +178,19 @@ void test_utf8_destination() {
     } catch (const std::exception& error) {
         std::cerr << "UTF-8 matrix round trip: " << error.what() << '\n';
     }
-    fs::remove_all(directory);
     TEST_ASSERT(exact_destination, "the expected native filename exists");
     TEST_ASSERT(matches, "the UTF-8 destination contains the saved matrix");
     TEST_PASS("save and map the same UTF-8 destination");
 }
 
-void test_spmv_identical() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_spmv.csrmat"));
+void test_spmv_identical(const fs::path& directory) {
+    const auto path = path_to_utf8(directory / "gnfs_test_csr_spmv.csrmat");
 
     SparseMatrix sparse = make_random_matrix(500, 300, 54321, 10);
     CSRMatrix csr(sparse);
 
-    MmapCSRMatrix::save(csr, tmp.path);
-    MmapCSRMatrix mmap(tmp.path);
+    MmapCSRMatrix::save(csr, path);
+    MmapCSRMatrix mmap(path);
 
     // Random input vector
     BlockVector x(300);
@@ -179,14 +211,14 @@ void test_spmv_identical() {
     TEST_PASS("SpMV CSR vs mmap-CSR identical (500×300)");
 }
 
-void test_large_matrix() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_large.csrmat"));
+void test_large_matrix(const fs::path& directory) {
+    const auto path = path_to_utf8(directory / "gnfs_test_csr_large.csrmat");
 
     SparseMatrix sparse = make_random_matrix(10000, 8000, 42, 15);
     CSRMatrix csr(sparse);
 
-    MmapCSRMatrix::save(csr, tmp.path);
-    MmapCSRMatrix mmap(tmp.path);
+    MmapCSRMatrix::save(csr, path);
+    MmapCSRMatrix mmap(path);
 
     TEST_ASSERT(mmap.num_rows() == 10000, "10K rows");
     TEST_ASSERT(mmap.num_cols() == 8000, "8K cols");
@@ -225,14 +257,14 @@ void test_large_matrix() {
     TEST_PASS("large matrix save/load/SpMV (10000×8000)");
 }
 
-void test_empty_matrix() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_empty.csrmat"));
+void test_empty_matrix(const fs::path& directory) {
+    const auto path = path_to_utf8(directory / "gnfs_test_csr_empty.csrmat");
 
     SparseMatrix sparse(0, 0);
     CSRMatrix csr(sparse);
 
-    MmapCSRMatrix::save(csr, tmp.path);
-    MmapCSRMatrix mmap(tmp.path);
+    MmapCSRMatrix::save(csr, path);
+    MmapCSRMatrix mmap(path);
 
     TEST_ASSERT(mmap.num_rows() == 0, "0 rows");
     TEST_ASSERT(mmap.num_cols() == 0, "0 cols");
@@ -241,12 +273,12 @@ void test_empty_matrix() {
     TEST_PASS("empty matrix save/load");
 }
 
-void test_zero_nnz_nonempty_shape() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_zero_nnz_rows.csrmat"));
+void test_zero_nnz_nonempty_shape(const fs::path& directory) {
+    const auto path = path_to_utf8(directory / "gnfs_test_csr_zero_nnz_rows.csrmat");
 
     CSRMatrix csr(3, 5, {0, 0, 0, 0}, {});
-    MmapCSRMatrix::save(csr, tmp.path);
-    MmapCSRMatrix mmap(tmp.path);
+    MmapCSRMatrix::save(csr, path);
+    MmapCSRMatrix mmap(path);
 
     TEST_ASSERT(mmap.num_rows() == 3, "3 rows with zero nnz");
     TEST_ASSERT(mmap.num_cols() == 5, "5 columns with zero nnz");
@@ -279,16 +311,16 @@ void test_zero_nnz_nonempty_shape() {
     TEST_PASS("non-empty zero-NNZ mmap shape and SpMV");
 }
 
-void test_single_row() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_1row.csrmat"));
+void test_single_row(const fs::path& directory) {
+    const auto path = path_to_utf8(directory / "gnfs_test_csr_1row.csrmat");
 
     SparseMatrix sparse(1, 10);
     sparse.row(0).set(3);
     sparse.row(0).set(7);
     CSRMatrix csr(sparse);
 
-    MmapCSRMatrix::save(csr, tmp.path);
-    MmapCSRMatrix mmap(tmp.path);
+    MmapCSRMatrix::save(csr, path);
+    MmapCSRMatrix mmap(path);
 
     TEST_ASSERT(mmap.num_rows() == 1, "1 row");
     TEST_ASSERT(mmap.row_nnz(0) == 2, "2 nnz");
@@ -301,7 +333,7 @@ void test_single_row() {
     TEST_PASS("single row matrix [3, 7]");
 }
 
-static void write_raw_csr(const std::string& path, uint64_t rows, uint64_t cols, uint64_t nnz,
+static void write_raw_csr(const fs::path& path, uint64_t rows, uint64_t cols, uint64_t nnz,
                           const std::vector<uint64_t>& offsets,
                           const std::vector<uint32_t>& indices) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -314,21 +346,22 @@ static void write_raw_csr(const std::string& path, uint64_t rows, uint64_t cols,
     out.flush();
 }
 
-void test_empty_wire_layout_and_rejected_overwrite() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_writer.csrmat"));
+void test_empty_wire_layout_and_rejected_overwrite(const fs::path& directory) {
+    const auto native = directory / "gnfs_test_csr_writer.csrmat";
+    const auto path = path_to_utf8(native);
     const auto read_bytes = [&] {
-        std::ifstream input(tmp.path, std::ios::binary);
+        std::ifstream input(native, std::ios::binary);
         return std::vector<char>(std::istreambuf_iterator<char>(input), {});
     };
 
     // Default and explicitly packed empty matrices use the same V2 zero offset.
-    MmapCSRMatrix::save(CSRMatrix(SparseMatrix(0, 0)), tmp.path);
+    MmapCSRMatrix::save(CSRMatrix(SparseMatrix(0, 0)), path);
     const auto expected = read_bytes();
-    MmapCSRMatrix::save(CSRMatrix{}, tmp.path);
+    MmapCSRMatrix::save(CSRMatrix{}, path);
     TEST_ASSERT(expected.size() == 5 * sizeof(uint64_t) && read_bytes() == expected,
                 "both empty matrices write the canonical 40-byte V2 image");
     {
-        MmapCSRMatrix loaded(tmp.path);
+        MmapCSRMatrix loaded(path);
         TEST_ASSERT(loaded.num_rows() == 0 && loaded.num_cols() == 0 && loaded.nnz() == 0,
                     "the default empty matrix can be mapped");
     }
@@ -337,14 +370,14 @@ void test_empty_wire_layout_and_rejected_overwrite() {
     sparse.row(0).set(1);
     CSRMatrix source(sparse);
     const CSRMatrix owner(std::move(source));
-    MmapCSRMatrix::save(owner, tmp.path);
+    MmapCSRMatrix::save(owner, path);
     const auto previous = read_bytes();
     // A moved-from vector's state is unspecified. Exercise its missing table
     // when the scalar dimensions still describe a nonempty matrix.
     if (source.num_rows() != 0 && source.row_offsets().size() != source.num_rows() + 1) {
         bool rejected = false;
         try {
-            MmapCSRMatrix::save(source, tmp.path);
+            MmapCSRMatrix::save(source, path);
         } catch (const std::runtime_error&) {
             rejected = true;
         }
@@ -352,15 +385,15 @@ void test_empty_wire_layout_and_rejected_overwrite() {
                     "rejecting inconsistent dimensions preserves the previous matrix");
     }
     constexpr uint32_t max_columns = std::numeric_limits<uint32_t>::max();
-    MmapCSRMatrix::save(CSRMatrix(SparseMatrix(0, max_columns)), tmp.path);
+    MmapCSRMatrix::save(CSRMatrix(SparseMatrix(0, max_columns)), path);
     {
-        MmapCSRMatrix loaded(tmp.path);
+        MmapCSRMatrix loaded(path);
         TEST_ASSERT(loaded.num_cols() == max_columns, "the maximum V2 column count is mappable");
     }
-    write_raw_csr(tmp.path, 0, uint64_t{max_columns} + 1, 0, {0}, {});
+    write_raw_csr(native, 0, uint64_t{max_columns} + 1, 0, {0}, {});
     bool rejected = false;
     try {
-        MmapCSRMatrix invalid(tmp.path);
+        MmapCSRMatrix invalid(path);
     } catch (const std::overflow_error&) {
         rejected = sizeof(size_t) == sizeof(uint32_t);
     } catch (const std::invalid_argument&) {
@@ -399,13 +432,14 @@ void test_widened_offset_stream() {
     TEST_PASS("bounded V2 offset conversion");
 }
 
-void test_mapped_row_columns_are_distinct() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_distinct.csrmat"));
+void test_mapped_row_columns_are_distinct(const fs::path& directory) {
+    const auto native = directory / "gnfs_test_csr_distinct.csrmat";
+    const auto path = path_to_utf8(native);
     const std::vector<uint64_t> offsets{0, 0, 2, 2, 5, 5};
     const auto rejects_duplicate = [&](const std::vector<uint32_t>& indices) {
-        write_raw_csr(tmp.path, 5, 3, 5, offsets, indices);
+        write_raw_csr(native, 5, 3, 5, offsets, indices);
         try {
-            MmapCSRMatrix matrix(tmp.path);
+            MmapCSRMatrix matrix(path);
         } catch (const std::invalid_argument&) {
             return true;
         }
@@ -414,17 +448,17 @@ void test_mapped_row_columns_are_distinct() {
     TEST_ASSERT(rejects_duplicate({0, 2, 0, 1, 1}), "sorted duplicate columns are rejected");
     TEST_ASSERT(rejects_duplicate({0, 2, 2, 1, 2}), "non-adjacent duplicate columns are rejected");
 
-    write_raw_csr(tmp.path, 5, 3, 5, offsets, {0, 2, 1, 3, 0});
+    write_raw_csr(native, 5, 3, 5, offsets, {0, 2, 1, 3, 0});
     bool rejected = false;
     try {
-        MmapCSRMatrix invalid(tmp.path);
+        MmapCSRMatrix invalid(path);
     } catch (const std::out_of_range&) {
         rejected = true;
     }
     TEST_ASSERT(rejected, "an out-of-range column inside an unordered row is rejected");
 
-    write_raw_csr(tmp.path, 5, 3, 5, offsets, {0, 2, 2, 0, 1});
-    MmapCSRMatrix matrix(tmp.path);
+    write_raw_csr(native, 5, 3, 5, offsets, {0, 2, 2, 0, 1});
+    MmapCSRMatrix matrix(path);
     const auto* row = matrix.row_begin(3);
     TEST_ASSERT(matrix.nnz() == 5 && matrix.row_nnz(2) == 0 && matrix.row_nnz(3) == 3 &&
                     row[0] == 2 && row[1] == 0 && row[2] == 1,
@@ -438,25 +472,26 @@ void test_mapped_row_columns_are_distinct() {
     TEST_PASS("distinct column indices in mapped CSR rows");
 }
 
-void test_rejects_malformed_files() {
-    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_malformed.csrmat"));
+void test_rejects_malformed_files(const fs::path& directory) {
+    const auto native = directory / "gnfs_test_csr_malformed.csrmat";
+    const auto path = path_to_utf8(native);
 
     // The old parser wrapped `num_rows + 1` and accepted this 32-byte file,
     // leaving row pointers that referenced outside the mapping.
-    write_raw_csr(tmp.path, std::numeric_limits<uint64_t>::max(), 0, 0, {}, {});
+    write_raw_csr(native, std::numeric_limits<uint64_t>::max(), 0, 0, {}, {});
     bool overflow_thrown = false;
     try {
-        MmapCSRMatrix malformed(tmp.path);
+        MmapCSRMatrix malformed(path);
     } catch (const std::overflow_error&) {
         overflow_thrown = true;
     }
     TEST_ASSERT(overflow_thrown, "header arithmetic overflow is rejected");
 
     // Row offsets must be monotone, bounded by nnz, and terminate at nnz.
-    write_raw_csr(tmp.path, 1, 4, 1, {0, 2}, {0});
+    write_raw_csr(native, 1, 4, 1, {0, 2}, {0});
     bool offsets_thrown = false;
     try {
-        MmapCSRMatrix malformed(tmp.path);
+        MmapCSRMatrix malformed(path);
     } catch (const std::runtime_error&) {
         offsets_thrown = true;
     }
@@ -464,10 +499,10 @@ void test_rejects_malformed_files() {
 
     // SpMV omits per-entry bounds checks, so reject invalid column indices at
     // load time rather than allowing a later dense-vector OOB access.
-    write_raw_csr(tmp.path, 1, 4, 1, {0, 1}, {4});
+    write_raw_csr(native, 1, 4, 1, {0, 1}, {4});
     bool column_thrown = false;
     try {
-        MmapCSRMatrix malformed(tmp.path);
+        MmapCSRMatrix malformed(path);
     } catch (const std::out_of_range&) {
         column_thrown = true;
     }
@@ -481,17 +516,25 @@ int main() {
     std::cout << "  Mmap CSR Matrix Unit Tests\n";
     std::cout << "═══════════════════════════════════════════\n\n";
 
-    test_save_load_roundtrip();
-    test_utf8_destination();
-    test_spmv_identical();
-    test_large_matrix();
-    test_empty_matrix();
-    test_zero_nnz_nonempty_shape();
-    test_single_row();
-    test_rejects_malformed_files();
-    test_mapped_row_columns_are_distinct();
-    test_empty_wire_layout_and_rejected_overwrite();
-    test_widened_offset_stream();
+    try {
+        const MatrixTestDirectory scratch(gnfs::util::temp_directory_path());
+        const auto& directory = scratch.path();
+        test_directory_cleanup(directory);
+        test_save_load_roundtrip(directory);
+        test_utf8_destination(directory);
+        test_spmv_identical(directory);
+        test_large_matrix(directory);
+        test_empty_matrix(directory);
+        test_zero_nnz_nonempty_shape(directory);
+        test_single_row(directory);
+        test_rejects_malformed_files(directory);
+        test_mapped_row_columns_are_distinct(directory);
+        test_empty_wire_layout_and_rejected_overwrite(directory);
+        test_widened_offset_stream();
+    } catch (const std::exception& error) {
+        std::cerr << "Mapped CSR test failed: " << error.what() << '\n';
+        ++tests_failed;
+    }
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
