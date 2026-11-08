@@ -437,7 +437,11 @@ static LogCallback make_log_callback(LogLevel min_level) {
 // Interactive REPL
 // ============================================================
 
-static void run_repl() {
+static bool flush_stdout() {
+    return std::cout.flush() && std::fflush(stdout) == 0 && std::ferror(stdout) == 0;
+}
+
+static bool run_repl() {
     print_banner();
     std::cout << TR(S::REPL_WELCOME) << "\n\n";
 
@@ -447,7 +451,9 @@ static void run_repl() {
     std::string line;
     std::string output_fmt = "text"; // sticky: persists across REPL iterations
     while (true) {
-        std::cout << C(BOLD) << TR(S::REPL_PROMPT) << C(RESET) << std::flush;
+        std::cout << C(BOLD) << TR(S::REPL_PROMPT) << C(RESET);
+        if (!flush_stdout())
+            return false;
 
         if (!std::getline(std::cin, line))
             break;
@@ -616,15 +622,12 @@ static void run_repl() {
     }
 
     std::cout << "\n" << TR(S::REPL_GOODBYE) << "\n";
+    return flush_stdout();
 }
 
 // ============================================================
 // Main
 // ============================================================
-
-static bool flush_stdout() {
-    return std::cout.flush() && std::fflush(stdout) == 0 && std::ferror(stdout) == 0;
-}
 
 static bool write_event_line(const std::string& event) {
     std::cout << event << '\n';
@@ -783,24 +786,17 @@ int main(int argc, char* argv[]) {
 
     if (show_version) {
         std::cout << "GNFS v" << gnfs::api::version() << "\n";
-        return 0;
+        return flush_stdout() ? 0 : stdout_write_error();
     }
-    if (show_help) {
+    if (show_help || argc == 1) {
         print_banner();
         print_help();
-        return 0;
+        return flush_stdout() ? 0 : stdout_write_error();
     }
-    if (interactive) {
-        run_repl();
-        return 0;
-    }
+    if (interactive)
+        return run_repl() ? 0 : stdout_write_error();
 
     if (number_str.empty()) {
-        if (argc == 1) {
-            print_banner();
-            print_help();
-            return 0;
-        }
         return cli_error(event_stream_enabled, "missing_number", TR(S::ERR_NO_NUMBER));
     }
 
