@@ -80,6 +80,7 @@ void test_pow_mod_u64() {
 
     // Edge: exp == 0 with non-trivial base
     GNFS_TEST_CHECK(pow_mod_u64(5, 0, 13) == 1);
+    GNFS_TEST_CHECK(pow_mod_u64(5, 0, 1) == 0);
 
     // A zero modulus has no residue; return the documented sentinel instead
     // of evaluating base %= 0.
