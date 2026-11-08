@@ -423,47 +423,65 @@ private:
         }
         uint32_t r2 = (d - r1) / 2;
 
-        // Minkowski bound: M = (d!/d^d) * (4/π)^r2 * sqrt(|Δ|)
-        double d_factorial = 1.0;
-        for (uint32_t i = 2; i <= d; ++i) {
-            d_factorial *= i;
-        }
-
-        double d_power_d = std::pow(static_cast<double>(d), static_cast<double>(d));
-        constexpr double kPi = 3.141592653589793238462643383279502884;
-        double four_over_pi = 4.0 / kPi;
-        double four_pi_factor = std::pow(four_over_pi, static_cast<double>(r2));
-
-        // Keep the discriminant's binary exponent separate until the entire
-        // bound is scaled. Even sqrt(|discriminant|) can exceed double first.
-        long exponent = 0;
-        const double fraction = std::abs(mpz_get_d_2exp(&exponent, discriminant_.get_mpz()));
-        const double root = std::sqrt(exponent % 2 ? 2.0 * fraction : fraction);
-        const double weight = (d_factorial / d_power_d) * four_pi_factor;
-        minkowski_bound_ = std::scalbln(weight * root, exponent / 2);
-
-        using Limits = std::numeric_limits<double>;
-        if (minkowski_bound_ >= Limits::max() / 2) {
-            // GMP truncates the discriminant's significand. At the top of the
-            // double range that can change finite to infinite or vice versa.
-            // Compare |D| with ceil((midpoint / weight)^2) using integers.
-            // midpoint = (2^(digits+1) - 1) * 2^(max_exponent - digits - 1).
-            int weight_exponent = 0;
-            const double mantissa = std::frexp(weight, &weight_exponent);
-            Integer scaled_weight;
-            mpz_set_d(scaled_weight.get_mpz(), std::ldexp(mantissa, Limits::digits));
-            Integer threshold = core::pow(Integer(2), Limits::digits + 1) - Integer(1);
-            mpz_mul_2exp(threshold.get_mpz(), threshold.get_mpz(),
-                         static_cast<mp_bitcnt_t>(Limits::max_exponent - 1 - weight_exponent));
-            threshold *= threshold;
-            scaled_weight *= scaled_weight;
-            mpz_cdiv_q(threshold.get_mpz(), threshold.get_mpz(), scaled_weight.get_mpz());
-            if (mpz_cmpabs(discriminant_.get_mpz(), threshold.get_mpz()) >= 0) {
-                minkowski_bound_ = Limits::infinity();
-            } else {
-                minkowski_bound_ = std::min(minkowski_bound_, Limits::max());
+        // M = (d!/d^d) * (4/pi)^r2 * sqrt(|D|).
+        constexpr double four_over_pi = 4.0 / 3.141592653589793238462643383279502884;
+        const double d_power_d = std::pow(static_cast<double>(d), static_cast<double>(d));
+        double mantissa = 1.0;
+        int64_t exponent = 0;
+        if (std::isfinite(d_power_d)) {
+            double factorial = 1.0;
+            for (uint32_t i = 2; i <= d; ++i)
+                factorial *= i;
+            const double weight =
+                (factorial / d_power_d) * std::pow(four_over_pi, static_cast<double>(r2));
+            int shift = 0;
+            mantissa = std::frexp(weight, &shift);
+            exponent = shift;
+        } else {
+            // Each factor is at most one: the first r2 indices satisfy i/d <= 1/2.
+            // Normalize after each step so even a subnormal total weight retains its scale.
+            for (uint32_t i = 1; i <= d; ++i) {
+                double factor = static_cast<double>(i) / d;
+                if (i <= r2)
+                    factor *= four_over_pi;
+                int shift = 0;
+                mantissa = std::frexp(mantissa * factor, &shift);
+                exponent += shift;
             }
         }
+        minkowski_bound_ = scaled_discriminant_root(mantissa, exponent);
+    }
+
+    /// Multiply sqrt(|D|) by mantissa * 2^exponent, with 1/2 <= mantissa < 1.
+    [[nodiscard]] double scaled_discriminant_root(double mantissa, int64_t exponent) const {
+        using Limits = std::numeric_limits<double>;
+        long disc_exponent = 0;
+        const double fraction = std::abs(mpz_get_d_2exp(&disc_exponent, discriminant_.get_mpz()));
+        const double root = std::sqrt(disc_exponent % 2 ? 2.0 * fraction : fraction);
+        const int64_t shift = exponent + disc_exponent / 2;
+        // For nonzero D the unscaled product lies between sqrt(1/2)/2 and sqrt(2).
+        if (shift > Limits::max_exponent + 2)
+            return Limits::infinity();
+        if (shift < Limits::min_exponent - Limits::digits - 2)
+            return 0.0;
+        const double bound = std::ldexp(mantissa * root, static_cast<int>(shift));
+        if (bound < Limits::max() / 2)
+            return bound;
+
+        // GMP truncates the discriminant's significand. In the top binade compare
+        // |D| with ceil((midpoint / weight)^2) to decide finite versus infinite.
+        // midpoint = (2^(digits+1) - 1) * 2^(max_exponent - digits - 1).
+        Integer scaled_weight;
+        mpz_set_d(scaled_weight.get_mpz(), std::ldexp(mantissa, Limits::digits));
+        Integer threshold = core::pow(Integer(2), Limits::digits + 1) - Integer(1);
+        mpz_mul_2exp(threshold.get_mpz(), threshold.get_mpz(),
+                     static_cast<mp_bitcnt_t>(Limits::max_exponent - 1 - exponent));
+        threshold *= threshold;
+        scaled_weight *= scaled_weight;
+        mpz_cdiv_q(threshold.get_mpz(), threshold.get_mpz(), scaled_weight.get_mpz());
+        if (mpz_cmpabs(discriminant_.get_mpz(), threshold.get_mpz()) >= 0)
+            return Limits::infinity();
+        return std::min(bound, Limits::max());
     }
 
     /// Find all prime ideals with norm up to bound

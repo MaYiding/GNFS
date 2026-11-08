@@ -374,6 +374,29 @@ void test_wide_quadratic_minkowski_bound() {
     TEST_PASS("quadratic Minkowski bound across the double exponent range");
 }
 
+void test_high_degree_minkowski_bound() {
+    // x^144 - 2 is Eisenstein at 2, has signature (2,71), and
+    // |D| = 144^144 * 2^143. The complete bound fits in a double.
+    std::vector<Integer> coefficients(145);
+    coefficients.front() = I(-2);
+    coefficients.back() = I(1);
+    PolynomialContext ctx(I(2047), std::move(coefficients), I(2));
+    ClassGroupConfig config;
+    config.max_primes = 0;
+    const ClassGroup group(ctx, config);
+    TEST_ASSERT(std::abs(std::log2(group.minkowski_bound()) - 409.64183448) < 1e-7,
+                "high-degree bound retains the factorial and signature weights");
+    config.max_primes = 1;
+    bool rejected = false;
+    try {
+        ClassGroup enabled(ctx, config);
+    } catch (const std::overflow_error&) {
+        rejected = true;
+    }
+    TEST_ASSERT(rejected, "high-degree bound exceeds the prime search domain");
+    TEST_PASS("high-degree Minkowski bound and prime search domain");
+}
+
 void test_minkowski_bound_degree3() {
     // x^3 + x + 1: disc=-31, (r1,r2)=(1,1)
     // MB = (3!/3^3) * (4/π)^1 * sqrt(31) = (6/27) * 1.2732 * 5.568 = 0.2222 * 7.093 = 1.576
@@ -642,6 +665,7 @@ int main() {
 
     // Minkowski bound (correct signature)
     test_wide_quadratic_minkowski_bound();
+    test_high_degree_minkowski_bound();
     test_minkowski_bound_degree3();
     test_minkowski_bound_degree4_0_2();
     test_minkowski_bound_degree4_4_0();
