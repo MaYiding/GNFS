@@ -5,12 +5,12 @@
 #include "../polynomial/resultant.hpp"
 #include "../util/primes.hpp"
 
-#include <vector>
-#include <map>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <map>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace gnfs::sqrt {
 
@@ -30,7 +30,8 @@ struct PrimeIdeal {
     }
 
     bool operator<(const PrimeIdeal& other) const {
-        if (p != other.p) return p < other.p;
+        if (p != other.p)
+            return p < other.p;
         return r < other.r;
     }
 };
@@ -42,7 +43,8 @@ struct IdealClass {
 
     bool is_principal() const {
         for (const auto& [pi, exp] : prime_powers) {
-            if (exp != 0) return false;
+            if (exp != 0)
+                return false;
         }
         return true;
     }
@@ -52,12 +54,13 @@ struct IdealClass {
     }
 
     void reduce_mod(int order) {
-        if (order <= 0) return;
+        if (order <= 0)
+            return;
         for (auto& [pi, exp] : prime_powers) {
             exp = ((exp % order) + order) % order;
         }
         // Remove zeros
-        for (auto it = prime_powers.begin(); it != prime_powers.end(); ) {
+        for (auto it = prime_powers.begin(); it != prime_powers.end();) {
             if (it->second == 0) {
                 it = prime_powers.erase(it);
             } else {
@@ -85,16 +88,24 @@ public:
     }
 
     /// Get the class number
-    [[nodiscard]] uint32_t class_number() const { return class_number_; }
+    [[nodiscard]] uint32_t class_number() const {
+        return class_number_;
+    }
 
     /// Get the discriminant
-    [[nodiscard]] const Integer& discriminant() const { return discriminant_; }
+    [[nodiscard]] const Integer& discriminant() const {
+        return discriminant_;
+    }
 
     /// Get the Minkowski bound
-    [[nodiscard]] double minkowski_bound() const { return minkowski_bound_; }
+    [[nodiscard]] double minkowski_bound() const {
+        return minkowski_bound_;
+    }
 
     /// Get the number of class group generators (for character columns)
-    [[nodiscard]] size_t num_generators() const { return generators_.size(); }
+    [[nodiscard]] size_t num_generators() const {
+        return generators_.size();
+    }
 
     /// Compute the class group character for a given (a, b) pair
     /// Returns a vector of bits, one for each generator
@@ -102,7 +113,7 @@ public:
         std::vector<bool> result(generators_.size(), false);
 
         if (class_number_ == 1 || generators_.empty()) {
-            return result;  // Trivial class group
+            return result; // Trivial class group
         }
 
         // Factor the ideal (a + b*alpha) and determine its class
@@ -152,8 +163,8 @@ private:
         }
 
         // Find prime ideals up to Minkowski bound
-        auto prime_ideals = find_prime_ideals_up_to(
-            static_cast<uint32_t>(std::ceil(minkowski_bound_)));
+        auto prime_ideals =
+            find_prime_ideals_up_to(static_cast<uint32_t>(std::ceil(minkowski_bound_)));
 
         if (prime_ideals.empty()) {
             class_number_ = 1;
@@ -185,14 +196,20 @@ public:
     /// Count the number of distinct real roots of f(x) using Sturm's theorem.
     /// Works for any degree polynomial with Integer coefficients.
     /// Uses pseudo-remainder over Z with sign correction + content reduction.
-    [[nodiscard]] static uint32_t count_real_roots(const std::vector<Integer>& coeffs, uint32_t degree) {
-        if (degree == 0) return 0;
-        if (degree == 1) return 1;
+    [[nodiscard]] static uint32_t count_real_roots(const std::vector<Integer>& coeffs,
+                                                   uint32_t degree) {
+        if (degree == 0)
+            return 0;
+        if (degree == 1)
+            return 1;
 
         // Guard: polynomial must not be identically zero
         bool all_zero = true;
         for (uint32_t i = 0; i <= degree && i < coeffs.size(); ++i) {
-            if (!coeffs[i].is_zero()) { all_zero = false; break; }
+            if (!coeffs[i].is_zero()) {
+                all_zero = false;
+                break;
+            }
         }
         if (all_zero) {
             throw std::logic_error("count_real_roots: zero polynomial");
@@ -200,32 +217,36 @@ public:
 
         // --- internal polynomial type ---
         struct IntPoly {
-            std::vector<Integer> c;  // c[i] = coefficient of x^i
+            std::vector<Integer> c; // c[i] = coefficient of x^i
             IntPoly() = default;
             // c(n) default-inits Integer to 0 — no explicit zero loop needed.
             explicit IntPoly(size_t n) : c(n) {}
             [[nodiscard]] int deg() const {
                 for (int i = static_cast<int>(c.size()) - 1; i >= 0; --i)
-                    if (!c[static_cast<size_t>(i)].is_zero()) return i;
+                    if (!c[static_cast<size_t>(i)].is_zero())
+                        return i;
                 return -1;
             }
             [[nodiscard]] int leading_sign() const {
                 int d = deg();
-                if (d < 0) return 0;
-                if (c[static_cast<size_t>(d)].is_negative()) return -1;
+                if (d < 0)
+                    return 0;
+                if (c[static_cast<size_t>(d)].is_negative())
+                    return -1;
                 return 1;
             }
         };
 
         // --- build f_0 = f ---
         IntPoly f0(static_cast<size_t>(degree) + 1);
-        for (uint32_t i = 0; i <= degree; ++i) f0.c[i] = coeffs[i];  // mpz_set into resized slot
+        for (uint32_t i = 0; i <= degree; ++i)
+            f0.c[i] = coeffs[i]; // mpz_set into resized slot
 
         // --- build f_1 = f' ---
         IntPoly f1(degree);
         for (uint32_t i = 1; i <= degree; ++i) {
-            f1.c[i - 1] = coeffs[i];  // mpz_set into default-init slot
-            f1.c[i - 1] *= static_cast<int64_t>(i);  // mpz_mul_si direct
+            f1.c[i - 1] = coeffs[i];                // mpz_set into default-init slot
+            f1.c[i - 1] *= static_cast<int64_t>(i); // mpz_mul_si direct
         }
 
         // --- helper: compute pseudo-remainder prem(A, B) over Z ---
@@ -233,14 +254,18 @@ public:
         //   lc(B)^actual_iters * A = Q * B + prem
         // Note: actual_iters <= deg(A)-deg(B)+1; can be less when degree
         // drops by >1 in a single step.
-        struct PremResult { IntPoly R; int iters; };
+        struct PremResult {
+            IntPoly R;
+            int iters;
+        };
         auto pseudo_remainder = [](const IntPoly& A, const IntPoly& B) -> PremResult {
             int db = B.deg();
             assert(db >= 0);
 
             IntPoly R(A.c.size());
             // v22: R.c[i] = A.c[i] (mpz_set 不 clone)
-            for (size_t i = 0; i < A.c.size(); ++i) R.c[i] = A.c[i];
+            for (size_t i = 0; i < A.c.size(); ++i)
+                R.c[i] = A.c[i];
 
             const Integer& lc_b = B.c[static_cast<size_t>(db)];
 
@@ -250,7 +275,8 @@ public:
             Integer lc_r;
             for (int iter = 0; iter < max_iters; ++iter) {
                 int dr = R.deg();
-                if (dr < db) break;
+                if (dr < db)
+                    break;
 
                 lc_r = R.c[static_cast<size_t>(dr)];
                 int shift = dr - db;
@@ -261,8 +287,8 @@ public:
                 }
                 // mpz_submul: R[i+shift] -= lc_r * B[i] (fused FMS, skip term temp)
                 for (int i = 0; i <= db; ++i) {
-                    mpz_submul(R.c[static_cast<size_t>(i + shift)].get_mpz(),
-                               lc_r.get_mpz(), B.c[static_cast<size_t>(i)].get_mpz());
+                    mpz_submul(R.c[static_cast<size_t>(i + shift)].get_mpz(), lc_r.get_mpz(),
+                               B.c[static_cast<size_t>(i)].get_mpz());
                 }
                 ++iters;
             }
@@ -272,12 +298,13 @@ public:
         // --- helper: divide out abs(content) to prevent coefficient blowup ---
         auto reduce_content = [](IntPoly& P) {
             // v22: ax 复用 (mpz_set)
-            Integer content;  // default ctor = 0
+            Integer content; // default ctor = 0
             Integer ax;
             for (const auto& x : P.c) {
                 if (!x.is_zero()) {
                     ax = x;
-                    if (ax.is_negative()) ax.negate();
+                    if (ax.is_negative())
+                        ax.negate();
                     if (content.is_zero()) {
                         content = ax;
                     } else {
@@ -296,7 +323,7 @@ public:
         // f_0 = f, f_1 = f'
         // f_{k+1} = -prem(f_{k-1}, f_k), with sign correction for pseudo-remainder scaling
         std::vector<IntPoly> chain;
-        chain.reserve(static_cast<size_t>(f0.deg() + 2));  // chain length ≤ degree + 1
+        chain.reserve(static_cast<size_t>(f0.deg() + 2)); // chain length ≤ degree + 1
         chain.push_back(std::move(f0));
         chain.push_back(std::move(f1));
 
@@ -305,12 +332,14 @@ public:
             const IntPoly& prev1 = chain[chain.size() - 1];
 
             int d1 = prev1.deg();
-            if (d1 < 0) break;
+            if (d1 < 0)
+                break;
 
             auto [R, actual_iters] = pseudo_remainder(prev2, prev1);
 
             // Negate to get Sturm chain element: f_{k+1} = -rem(f_{k-1}, f_k)
-            for (auto& x : R.c) x.negate();
+            for (auto& x : R.c)
+                x.negate();
 
             // Sign correction for pseudo-remainder scaling factor lc(B)^s:
             // prem(A,B) = lc(B)^s · rem(A,B) where s = actual_iters.
@@ -319,13 +348,15 @@ public:
             // lc(B)^s < 0 iff lc(B) < 0 AND s is odd.
             int lc_sign = prev1.leading_sign();
             if (lc_sign < 0 && actual_iters % 2 == 1) {
-                for (auto& x : R.c) x.negate();
+                for (auto& x : R.c)
+                    x.negate();
             }
 
             // Reduce content to keep coefficients manageable
             reduce_content(R);
 
-            if (R.deg() < 0) break;
+            if (R.deg() < 0)
+                break;
 
             chain.push_back(std::move(R));
         }
@@ -337,12 +368,15 @@ public:
 
             for (const auto& p : chain) {
                 int d = p.deg();
-                if (d < 0) continue;
+                if (d < 0)
+                    continue;
 
                 int sign = p.leading_sign();
-                if (at_neg_inf && d % 2 == 1) sign = -sign;
+                if (at_neg_inf && d % 2 == 1)
+                    sign = -sign;
 
-                if (sign == 0) continue;
+                if (sign == 0)
+                    continue;
 
                 if (prev_sign != 0 && prev_sign != sign) {
                     ++changes;
@@ -368,13 +402,12 @@ private:
         // Determine signature (r1, r2) using Sturm's theorem
         std::vector<Integer> f(d + 1);
         for (uint32_t i = 0; i <= d; ++i) {
-            f[i] = ctx_.coeff(i);  // mpz_set into default-init slot
+            f[i] = ctx_.coeff(i); // mpz_set into default-init slot
         }
         uint32_t r1 = count_real_roots(f, d);
         if (r1 > d || (d - r1) % 2 != 0) {
-            throw std::logic_error(
-                "compute_minkowski_bound: invalid signature r1=" +
-                std::to_string(r1) + " for degree " + std::to_string(d));
+            throw std::logic_error("compute_minkowski_bound: invalid signature r1=" +
+                                   std::to_string(r1) + " for degree " + std::to_string(d));
         }
         uint32_t r2 = (d - r1) / 2;
 
@@ -402,7 +435,8 @@ private:
         std::vector<PrimeIdeal> result;
 
         for (uint32_t p = 2; p <= bound && result.size() < config_.max_primes; ++p) {
-            if (!is_prime(p)) continue;
+            if (!is_prime(p))
+                continue;
 
             // Factor f mod p
             auto roots = find_roots_mod_p(p);
@@ -431,7 +465,7 @@ private:
     [[nodiscard]] std::vector<uint32_t> find_roots_mod_p(uint32_t p) const {
         std::vector<uint32_t> roots;
         uint32_t d = ctx_.degree();
-        roots.reserve(d);  // bounded by polynomial degree
+        roots.reserve(d); // bounded by polynomial degree
 
         // 预计算 c[i] mod p 一次 (从 ctx_.coeff() clone 在 (i,x) 内层是冷启动 BUG):
         // p × (d+1) clones/mods 节省 → 典型 p=1000/d=5 时省 6000 clones per prime
@@ -441,9 +475,10 @@ private:
         const Integer p_int(p64);
         Integer c_buf;
         for (uint32_t i = 0; i <= d; ++i) {
-            c_buf = ctx_.coeff(i);  // mpz_set into reused buffer
+            c_buf = ctx_.coeff(i); // mpz_set into reused buffer
             c_buf %= p_int;
-            if (c_buf.is_negative()) c_buf += p_int;
+            if (c_buf.is_negative())
+                c_buf += p_int;
             c_mod_p[i] = c_buf.to_uint64();
         }
 
@@ -474,9 +509,8 @@ private:
 
         // Search for principal ideals
         int search_bound = std::max(10, static_cast<int>(std::sqrt(minkowski_bound_)));
-        // Reserve: search loop iterates (2·sb+1) × sb pairs, with low hit rate.
-        // Conservative reserve: ~10% pairs yield principal ideal.
-        relations.reserve(static_cast<size_t>((2 * search_bound + 1) * search_bound / 10));
+        const size_t max_relations = num_primes + 21;
+        relations.reserve(max_relations);
 
         for (int a = -search_bound; a <= search_bound; ++a) {
             for (int b = 1; b <= search_bound; ++b) {
@@ -498,9 +532,11 @@ private:
                 }
 
                 // Limit number of relations for efficiency
-                if (relations.size() > num_primes + 20) break;
+                if (relations.size() >= max_relations)
+                    break;
             }
-            if (relations.size() > num_primes + 20) break;
+            if (relations.size() >= max_relations)
+                break;
         }
 
         if (relations.empty()) {
@@ -523,9 +559,8 @@ private:
     }
 
     /// Factor the ideal (a + b*alpha) in terms of prime ideals
-    [[nodiscard]] std::map<PrimeIdeal, int> factor_ideal(
-            int64_t a, uint64_t b,
-            const std::vector<PrimeIdeal>& prime_ideals) const {
+    [[nodiscard]] std::map<PrimeIdeal, int>
+    factor_ideal(int64_t a, uint64_t b, const std::vector<PrimeIdeal>& prime_ideals) const {
 
         std::map<PrimeIdeal, int> result;
 
@@ -537,12 +572,13 @@ private:
         }
 
         if (norm.is_zero()) {
-            return result;  // Degenerate case
+            return result; // Degenerate case
         }
 
         // Factor the norm
         for (const auto& pi : prime_ideals) {
-            if (pi.degree != 1) continue;
+            if (pi.degree != 1)
+                continue;
 
             // Check if this prime ideal divides (a - b*alpha)
             // P = (p, alpha - r) divides (a - b*alpha) iff a - b*r ≡ 0 (mod p)
@@ -590,7 +626,8 @@ private:
 
         // Factor using generators
         for (const auto& gen : generators_) {
-            if (gen.degree != 1) continue;
+            if (gen.degree != 1)
+                continue;
 
             // Check divisibility: P = (p, α - r) divides (a - bα) iff a - b*r ≡ 0 (mod p)
             Integer val(a);
@@ -623,7 +660,8 @@ private:
 
     /// Get exponent of generator i in ideal class
     [[nodiscard]] int get_generator_exponent(const IdealClass& cls, size_t gen_idx) const {
-        if (gen_idx >= generators_.size()) return 0;
+        if (gen_idx >= generators_.size())
+            return 0;
 
         const auto& gen = generators_[gen_idx];
         auto it = cls.prime_powers.find(gen);
@@ -639,9 +677,8 @@ private:
 
     /// Compute Smith Normal Form of the relation matrix
     /// Returns invariant factors, class number, and generator indices
-    [[nodiscard]] SNFResult compute_smith_normal_form(
-            std::vector<std::vector<int>>& matrix,
-            size_t num_cols) const {
+    [[nodiscard]] SNFResult compute_smith_normal_form(std::vector<std::vector<int>>& matrix,
+                                                      size_t num_cols) const {
 
         SNFResult result;
         result.class_number = 1;
@@ -673,12 +710,14 @@ private:
                         }
                     }
                 }
-                if (min_abs == 0) break; // all zero in submatrix
+                if (min_abs == 0)
+                    break; // all zero in submatrix
 
                 found = true;
 
                 // Move pivot to (k,k)
-                if (min_r != k) std::swap(matrix[min_r], matrix[k]);
+                if (min_r != k)
+                    std::swap(matrix[min_r], matrix[k]);
                 if (min_c != k) {
                     for (size_t i = 0; i < num_rows; ++i) {
                         std::swap(matrix[i][min_c], matrix[i][k]);
@@ -705,7 +744,8 @@ private:
                             }
                         }
                     }
-                    if (changed) continue;
+                    if (changed)
+                        continue;
 
                     // Eliminate row k
                     for (size_t j = k + 1; j < num_cols; ++j) {
@@ -739,11 +779,13 @@ private:
                         }
                     }
                 }
-                if (divisible) break; // done with position k
+                if (divisible)
+                    break; // done with position k
                 // else: loop back — now (k,k) has a smaller value
             }
 
-            if (!found) break;
+            if (!found)
+                break;
 
             // Make diagonal entry positive
             if (matrix[k][k] < 0) {

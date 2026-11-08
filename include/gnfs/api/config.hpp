@@ -7,8 +7,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
+#include <cstdio>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -172,14 +173,29 @@ struct Config {
     ///   verbose = true
     static Config from_file(const std::string& path) {
         Config cfg;
-        std::ifstream ifs(path);
-        if (!ifs.is_open()) {
+        const auto close_file = [](std::FILE* file) { std::fclose(file); };
+        std::unique_ptr<std::FILE, decltype(close_file)> input(std::fopen(path.c_str(), "r"),
+                                                               close_file);
+        if (!input) {
             throw std::runtime_error("Cannot open config file: " + path);
         }
 
         std::string line;
+        const auto read_line = [&] {
+            line.clear();
+            for (int byte; (byte = std::fgetc(input.get())) != EOF;) {
+                if (byte == '\n')
+                    return true;
+                line.push_back(static_cast<char>(byte));
+            }
+            // A partial line at clean EOF is valid. A read error must reject
+            // the entire config, including any settings already parsed.
+            if (std::ferror(input.get()))
+                throw std::runtime_error("Cannot read config file: " + path);
+            return !line.empty();
+        };
         int lineno = 0;
-        while (std::getline(ifs, line)) {
+        while (read_line()) {
             ++lineno;
             // Strip leading/trailing whitespace
             auto start = line.find_first_not_of(" \t");

@@ -11,22 +11,26 @@ using namespace gnfs::core;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n"; \
-        tests_failed++; \
-        return; \
-    } \
-} while(0)
+#define TEST_ASSERT(cond, msg)                                                                     \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n";                        \
+            tests_failed++;                                                                        \
+            return;                                                                                \
+        }                                                                                          \
+    } while (0)
 
-#define TEST_PASS(name) do { \
-    std::cout << "  PASS: " << name << "\n"; \
-    tests_passed++; \
-} while(0)
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::cout << "  PASS: " << name << "\n";                                                   \
+        tests_passed++;                                                                            \
+    } while (0)
 
 // ─── helpers ───────────────────────────────────────────────
 
-static Integer I(long long v) { return Integer(static_cast<int64_t>(v)); }
+static Integer I(long long v) {
+    return Integer(static_cast<int64_t>(v));
+}
 
 // ─── Degree 3 contexts ─────────────────────────────────────
 
@@ -467,7 +471,7 @@ void test_disc_sign_r2_parity() {
         bool disc_positive = tc.expected_disc > 0;
         bool r2_even = (r2 % 2 == 0);
         TEST_ASSERT(disc_positive == r2_even,
-            std::string(tc.name) + ": disc sign ↔ r2 parity mismatch");
+                    std::string(tc.name) + ": disc sign ↔ r2 parity mismatch");
     }
     TEST_PASS("disc sign ↔ r2 parity consistency");
 }
@@ -492,6 +496,20 @@ void test_nontrivial_class_group_runs() {
     TEST_ASSERT(cg.class_number() >= 1, "class number >= 1");
     TEST_ASSERT(cg.minkowski_bound() > 2.0, "MB > 2");
     TEST_PASS("non-trivial class group runs");
+}
+
+void test_relation_search_with_large_minkowski_bound() {
+    // x^2 + 2^60 + 1 has a root at 1 modulo 2.
+    // The scan width exceeds 32768 even when we only keep one prime ideal.
+    const Integer constant = I((1LL << 60) + 1);
+    std::vector<Integer> coeffs = {constant, I(0), I(1)};
+    PolynomialContext ctx(constant + I(1), std::move(coeffs), I(1));
+    ClassGroupConfig config;
+    config.max_primes = 1;
+    ClassGroup cg(ctx, config);
+    TEST_ASSERT(cg.discriminant() == I(-4) * constant, "large quadratic discriminant");
+    TEST_ASSERT(cg.minkowski_bound() > (1LL << 30), "large bounded relation search");
+    TEST_PASS("bounded relation storage with a large Minkowski bound");
 }
 
 void test_compute_character_trivial_all_false() {
@@ -567,6 +585,7 @@ int main() {
     // Legacy regressions
     test_trivial_class_group_small_discriminant();
     test_nontrivial_class_group_runs();
+    test_relation_search_with_large_minkowski_bound();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
 
