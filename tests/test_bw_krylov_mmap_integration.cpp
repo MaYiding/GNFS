@@ -89,7 +89,8 @@ SparseMatrix build_large_matrix(std::size_t rows, std::size_t columns, std::size
     return matrix;
 }
 
-SolveResult run_solver(const SparseMatrix& matrix, std::size_t max_dependencies, StorageMode mode,
+SolveResult run_solver(const std::filesystem::path& scratch, const SparseMatrix& matrix,
+                       std::size_t max_dependencies, StorageMode mode,
                        const char* algorithm_name = nullptr) {
     const bool use_mmap = mode != StorageMode::memory;
     const bool use_compression = mode == StorageMode::mmap_zip;
@@ -99,7 +100,23 @@ SolveResult run_solver(const SparseMatrix& matrix, std::size_t max_dependencies,
     ScopedEnvironmentVariable streams("GNFS_BW_KRYLOV_STREAMS", "1");
     ScopedEnvironmentVariable algorithm("GNFS_BW_ALGORITHM", algorithm_name);
 
+    // Open the CRT capture file before changing the temporary directory for the solver.
     ScopedStderrCapture capture;
+#ifdef _WIN32
+    // The Windows temporary-directory API reads the wide process environment.
+    const wchar_t* previous = ::_wgetenv(L"TMP");
+    struct RestoreTmp {
+        std::wstring previous;
+        ~RestoreTmp() {
+            (void)::_wputenv_s(L"TMP", previous.c_str());
+        }
+    } restore{previous ? previous : L""};
+    GNFS_TEST_CHECK(::_wputenv_s(L"TMP", scratch.c_str()) == 0);
+#else
+    ScopedEnvironmentVariable temp("TMPDIR", scratch.c_str());
+#endif
+    GNFS_TEST_CHECK(std::filesystem::equivalent(gnfs::util::temp_directory_path(), scratch));
+
     BlockWiedemann solver;
     auto dependencies = solver.find_dependencies(matrix, max_dependencies);
     std::cerr.flush();
@@ -181,10 +198,10 @@ struct UnicodeScratchDirectory {
     }
 };
 
-void check_other_mmap_route(const SparseMatrix& matrix, const char* algorithm,
-                            std::string_view marker) {
-    const auto memory = run_solver(matrix, 1, StorageMode::memory, algorithm);
-    const auto mmap = run_solver(matrix, 1, StorageMode::mmap, algorithm);
+void check_other_mmap_route(const std::filesystem::path& scratch, const SparseMatrix& matrix,
+                            const char* algorithm, std::string_view marker) {
+    const auto memory = run_solver(scratch, matrix, 1, StorageMode::memory, algorithm);
+    const auto mmap = run_solver(scratch, matrix, 1, StorageMode::mmap, algorithm);
     GNFS_TEST_CHECK(mmap.stderr_output.find(marker) != std::string::npos);
     GNFS_TEST_CHECK(mmap.stderr_output.find(", mmap)") != std::string::npos);
     require_dependencies(matrix, mmap, 1);
@@ -193,12 +210,12 @@ void check_other_mmap_route(const SparseMatrix& matrix, const char* algorithm,
               << matrix.num_rows() << " x " << matrix.num_cols() << ")\n";
 }
 
-void test_storage_modes_are_bit_for_bit_identical() {
+void test_storage_modes_are_bit_for_bit_identical(const std::filesystem::path& scratch) {
     std::cout << "Testing memory, mmap, and mmap+zip bit-for-bit invariant...\n";
     SparseMatrix matrix = build_large_matrix(kBaseRows, kColumns, kInjectedDependencies, 22222);
-    const auto memory = run_solver(matrix, 5, StorageMode::memory);
-    const auto mmap = run_solver(matrix, 5, StorageMode::mmap);
-    const auto mmap_zip = run_solver(matrix, 5, StorageMode::mmap_zip);
+    const auto memory = run_solver(scratch, matrix, 5, StorageMode::memory);
+    const auto mmap = run_solver(scratch, matrix, 5, StorageMode::mmap);
+    const auto mmap_zip = run_solver(scratch, matrix, 5, StorageMode::mmap_zip);
 
     print_trace("memory", memory.stderr_output);
     print_trace("mmap", mmap.stderr_output);
@@ -221,24 +238,11 @@ int main() {
         std::cout << "===== BW Krylov mmap Integration Tests =====\n";
 
         const UnicodeScratchDirectory scratch;
-#ifdef _WIN32
-        // The Windows temporary-directory API reads the wide process environment.
-        const wchar_t* previous = ::_wgetenv(L"TMP");
-        struct RestoreTmp {
-            std::wstring previous;
-            ~RestoreTmp() {
-                (void)::_wputenv_s(L"TMP", previous.c_str());
-            }
-        } restore{previous ? previous : L""};
-        GNFS_TEST_CHECK(::_wputenv_s(L"TMP", scratch.path.c_str()) == 0);
-#else
-        ScopedEnvironmentVariable temp("TMPDIR", scratch.path.c_str());
-#endif
-        GNFS_TEST_CHECK(
-            std::filesystem::equivalent(gnfs::util::temp_directory_path(), scratch.path));
-        test_storage_modes_are_bit_for_bit_identical();
-        check_other_mmap_route(build_large_matrix(16, 16, 4984, 22222), "scalar", "[BW-scalar]");
-        check_other_mmap_route(build_large_matrix(64, 5000, 64, 22222), nullptr, "[BW-thin]");
+        test_storage_modes_are_bit_for_bit_identical(scratch.path);
+        check_other_mmap_route(scratch.path, build_large_matrix(16, 16, 4984, 22222), "scalar",
+                               "[BW-scalar]");
+        check_other_mmap_route(scratch.path, build_large_matrix(64, 5000, 64, 22222), nullptr,
+                               "[BW-thin]");
         GNFS_TEST_CHECK(std::filesystem::is_empty(scratch.path));
 
         std::cout << "===== All BW Krylov mmap integration tests PASSED =====\n";
