@@ -1,14 +1,18 @@
 // test_linalg.cpp - Test linear algebra components
 
 #include "support/test_check.hpp"
+#include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/core/relation.hpp>
+#include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/relation_source.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/sqrt/number_field.hpp>
 
 #include <atomic>
 #include <cstddef>
@@ -590,6 +594,41 @@ void test_matrix_builder_sign_wide_b() {
     GNFS_TEST_CHECK(result.matrix.row(1).test(static_cast<uint32_t>(result.mapping.sign_column)));
 
     std::cout << "  Wide b sign column: PASSED" << std::endl;
+}
+
+void test_ramified_index_square_dependency() {
+    using core::Integer;
+    core::PolynomialContext ctx(Integer(299), {Integer(-27), Integer(0), Integer(1)}, Integer(25));
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 31;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    const auto first = cofactorizer.verify(0, 1);
+    const auto second = cofactorizer.verify(36, 13);
+    GNFS_TEST_CHECK(first && first->is_full() && second && second->is_full());
+    const std::vector<core::Relation> relations{*first, *second};
+
+    // (-alpha)(36-13*alpha) = (18-alpha)^2, and (-25)(-289) = 85^2.
+    gnfs::sqrt::NumberField field(ctx);
+    const auto root = field.from_ab(18, 1);
+    const auto product = field.multiply(field.from_ab(0, 1), field.from_ab(36, 13));
+    GNFS_TEST_CHECK(product.coefficients() == field.multiply(root, root).coefficients());
+    const Integer rational_root(85);
+    GNFS_TEST_CHECK(ctx.rational_value(0, 1) * ctx.rational_value(36, 13) ==
+                    rational_root * rational_root);
+    GNFS_TEST_CHECK(core::gcd(rational_root + field.evaluate_at_m(root), ctx.n()) == Integer(13));
+    GNFS_TEST_CHECK(core::gcd(rational_root - field.evaluate_at_m(root), ctx.n()) == Integer(23));
+
+    MatrixBuilderConfig config;
+    config.include_class_group = true;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(relations, fb, ctx);
+    const auto streaming =
+        builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+    GNFS_TEST_CHECK(vector.matrix.row(0).indices() == vector.matrix.row(1).indices());
+    GNFS_TEST_CHECK(streaming.matrix.row(0).indices() == streaming.matrix.row(1).indices());
 }
 
 // Test dependency finding
@@ -1717,6 +1756,7 @@ int main() {
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();
+    test_ramified_index_square_dependency();
     test_find_dependencies();
     test_thin_matrix_dependencies();
     test_verify_dependency();
