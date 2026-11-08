@@ -416,6 +416,10 @@ if cmake := shutil.which('cmake'):
     shared = tests_dir / 'shared unit.cpp'
     shared.write_text('int shared() { return 1; }\n')
     (tests_dir / 'other.cpp').write_text('int main() { return 0; }\n')
+    helper = tests_dir / 'reachable.cpp'
+    helper.write_text('int main() { return 0; }\n')
+    (tests_dir / 'bridge.cpp').write_text('int bridge() { return 0; }\n')
+    (tests_dir / 'manual.cpp').write_text('#error MANUAL_PROBE_MUST_STAY_EXCLUDED\n')
     indexer = re.search(r'(?ms)^\s*function\(gnfs_write_test_source_index\).*?^\s*endfunction\(\)',
                         cmake_source).group(0)
     (source / 'CMakeLists.txt').write_text(
@@ -424,7 +428,11 @@ if cmake := shutil.which('cmake'):
         'add_custom_target(gnfs_local_gate_quick)\n'
         'add_executable(renamed tests/test_gnfs_e2e.cpp "tests/shared unit.cpp")\n'
         'if(ENABLE_SECOND)\n  add_executable(second tests/other.cpp "tests/shared unit.cpp")\nendif()\n'
-        'add_executable(manual EXCLUDE_FROM_ALL tests/test_gnfs_e2e.cpp)\n'
+        'add_executable(helper EXCLUDE_FROM_ALL tests/reachable.cpp)\n'
+        'add_library(bridge STATIC EXCLUDE_FROM_ALL tests/bridge.cpp)\n'
+        'add_dependencies(bridge helper)\n'
+        'target_link_libraries(renamed PRIVATE bridge)\n'
+        'add_executable(manual EXCLUDE_FROM_ALL tests/manual.cpp)\n'
         + indexer + '\ngnfs_write_test_source_index(before_tests)\n')
     build = source / 'build'
     subprocess.run([cmake, '-S', str(source), '-B', str(build), '-DENABLE_SECOND=ON'],
@@ -462,6 +470,17 @@ do_changed --deep
                    check=True, capture_output=True)
     if direct_build('tests/shared unit.cpp')[:3] != (0, [['gnfs_local_gate_quick'], ['renamed']], True):
         raise SystemExit('An unavailable target remained in the configured source index')
+    # Both excluded executables use the generator's default build. The linked
+    # bridge brings in helper, while even an invalid manual probe stays unused.
+    helper.write_text('#error DEFAULT_REACHED_EXCLUDED_HELPER\n')
+    status, requested, smoke, errors = direct_build('tests/reachable.cpp')
+    if status == 0 or requested != [['gnfs_local_gate_quick'], []] or smoke or (
+            'DEFAULT_REACHED_EXCLUDED_HELPER' not in errors):
+        raise SystemExit(f'Default dependency compilation failure lost: {requested}, {errors}')
+    helper.write_text('int main() { return 0; }\n')
+    status, requested, smoke, errors = direct_build('tests/manual.cpp')
+    if status or not smoke or requested != [['gnfs_local_gate_quick'], []]:
+        raise SystemExit(f'Manual probe must remain outside the default build: {requested}, {errors}')
     print('[PASS] changed sources compile every configured default owner before the original smoke run')
 
 

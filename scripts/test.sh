@@ -7834,12 +7834,22 @@ do_changed_build() {
         covered+=(${=MODULE_TESTS[$mod]})
     done
     local -aU extra_targets
+    local use_default=0
     while IFS=$'\t' read -r target file; do
-        if [[ -n "${changed[$file]:-}" ]] && (( ! ${covered[(Ie)$target]} )); then
-            extra_targets+=("$target")
+        [[ -n "${changed[$file]:-}" ]] || continue
+        if [[ "$target" == @default ]]; then
+            # The generator knows whether an excluded executable is pulled in
+            # by a default target. A standalone manual executable stays excluded.
+            use_default=1
+            break
         fi
+        if (( ! ${covered[(Ie)$target]} )); then extra_targets+=("$target"); fi
     done < "$index_file"
-    if (( ${#extra_targets} )); then do_build "${extra_targets[@]}" || return $?; fi
+    if (( use_default )); then
+        do_build || return $?
+    elif (( ${#extra_targets} )); then
+        do_build "${extra_targets[@]}" || return $?
+    fi
     return 0
 }
 

@@ -69,8 +69,11 @@ existing selection.
 The runner resolves the changed paths before building the selected module tests,
 their CTest companions and any applicable E2E or 50-digit contract. It also
 compiles default test executables whose CMake source list contains a directly
-changed file. Both names of a renamed file participate in selection. Test
-execution follows the usual module or smoke selection. Clean trees and unmapped paths use the smoke build target.
+changed file. Both names of a renamed file participate in selection. When a
+directly changed source belongs to an executable marked `EXCLUDE_FROM_ALL`,
+the runner requests the native default build so the generator decides whether
+another target requires it. Test execution follows the usual module or smoke
+selection. Clean trees and unmapped paths use the smoke build target.
 `--no-build` uses the binaries
 already present in the selected build directory. The runner and CMake share the
 module test lists and one-level dependency map in
