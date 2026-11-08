@@ -517,6 +517,48 @@ void test_relation_search_with_large_minkowski_bound() {
     TEST_PASS("bounded relation storage with a large Minkowski bound");
 }
 
+void test_smith_diagonal_with_large_intermediates() {
+    // The invariant factors, independently evaluated over Z, are eleven 1s and 799304.
+    // The original int reduction overflowed while multiplying 973575 by -2750.
+    constexpr int rows[][12] = {
+        {2, 0, 0, 1, 1, 1, 3, 1, 2, 0, 3, 1}, {3, 0, 1, 1, 1, 1, 0, 2, 0, 1, 1, 3},
+        {1, 1, 3, 0, 0, 2, 2, 1, 0, 1, 0, 1}, {2, 1, 3, 0, 1, 2, 0, 1, 2, 2, 3, 1},
+        {0, 0, 2, 0, 1, 1, 1, 0, 0, 1, 0, 1}, {1, 3, 0, 1, 2, 3, 1, 3, 1, 3, 0, 0},
+        {1, 1, 3, 0, 0, 3, 1, 0, 3, 0, 0, 0}, {3, 0, 3, 1, 2, 2, 0, 3, 3, 3, 0, 1},
+        {3, 3, 3, 0, 2, 0, 3, 2, 1, 0, 1, 0}, {3, 1, 2, 1, 3, 2, 3, 0, 0, 0, 2, 0},
+        {0, 2, 0, 3, 3, 2, 0, 2, 0, 1, 1, 1}, {2, 1, 0, 1, 2, 0, 3, 0, 0, 1, 0, 3}};
+    std::vector<std::vector<Integer>> matrix;
+    for (const auto& row : rows) {
+        auto& values = matrix.emplace_back();
+        for (int v : row)
+            values.emplace_back(v);
+    }
+    gnfs::sqrt::detail::reduce_class_group_relations(matrix);
+    for (size_t i = 0; i < matrix.size(); ++i) {
+        for (size_t j = 0; j < matrix[i].size(); ++j) {
+            const int diagonal = i + 1 == matrix.size() ? 799304 : 1;
+            TEST_ASSERT(matrix[i][j] == I(i == j ? diagonal : 0), "exact Smith diagonal");
+        }
+    }
+
+    // An upper unitriangular block, with its first basis vector added to the last
+    // row. The determinant is one, but eliminating that row generates powers of two.
+    constexpr size_t n = 68;
+    matrix.assign(n, std::vector<Integer>(n));
+    for (size_t i = 0; i < n; ++i) {
+        matrix[i][i] = 1;
+        if (i + 2 < n)
+            matrix[i][i + 1] = 2;
+    }
+    matrix.back().front() = 1;
+    gnfs::sqrt::detail::reduce_class_group_relations(matrix);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j)
+            TEST_ASSERT(matrix[i][j] == I(i == j ? 1 : 0), "unimodular matrix reduces to identity");
+    }
+    TEST_PASS("Smith diagonal with intermediates wider than machine integers");
+}
+
 void test_prime_search_domain() {
     // For x^2 - k with positive nonsquare k, the computed bound is sqrt(k).
     // Each k below is 1 modulo 15, so 1 is a root modulo the input N.
@@ -628,6 +670,7 @@ int main() {
     test_trivial_class_group_small_discriminant();
     test_nontrivial_class_group_runs();
     test_relation_search_with_large_minkowski_bound();
+    test_smith_diagonal_with_large_intermediates();
     test_prime_search_domain();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
