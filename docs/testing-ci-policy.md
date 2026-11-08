@@ -67,6 +67,13 @@ when a changed path maps directly to the `siqs` module, including
 list does not select this E2E test. Ordinary `changed` and `smoke` keep their
 existing selection.
 
+The runner resolves the changed paths before building the selected module tests,
+their CTest companions and any applicable E2E or 50-digit contract. Clean trees
+and unmapped paths use the smoke build target. `--no-build` uses the binaries
+already present in the selected build directory. The runner and CMake share the
+module test lists and one-level dependency map in
+`scripts/test-catalog/modules.txt` (`module|tests|downstream modules`).
+
 The `changed` mode and its `diff` alias accept only one optional `--deep` mode
 argument. Unsupported or repeated arguments fail before CMake configuration.
 `--slow` belongs to `module`; passing it to `changed` is an error.

@@ -496,21 +496,11 @@ typeset -a WINDOWS_UNAVAILABLE_TESTS
 WINDOWS_UNAVAILABLE_TESTS=("${(@f)$(cat "${PROJECT_ROOT}/scripts/test-catalog/windows-unavailable.txt")}")
 
 # 模块 → 测试二进制映射 (仅 instant+fast 的测试)
-typeset -A MODULE_TESTS
-MODULE_TESTS=(
-    core           "test_integer test_params test_regressions test_edge_cases test_core_types"
-    util           "test_small_vector test_sha256 test_thread_pool test_joining_thread test_ordered_parallel_map test_fixed_slot_executor test_logger test_primes test_timer test_process_memory test_bounded_child_process test_durable_immutable_file test_durable_immutable_record test_mmap_file test_native_random_access_file test_safe_math test_bit_intrin test_memory_pool test_integer_scratch_pool test_mpz_powm_parallel test_mpz_invert_parallel test_mpz_mod_parallel test_mpz_gcd_parallel test_mpz_mul_parallel test_work_stealing"
-    polynomial     "test_murphy test_root_property_cache test_int_polynomial test_half_gcd test_poly_karatsuba test_horner_batch_simd test_divrem_subquadratic test_poly_ntt test_poly_square test_poly_add_mod_simd test_poly_horner_mod_simd test_regressions test_polynomial_context test_base_m test_polynomial_optimizer test_resultant test_rotation_incremental test_bai_brent_poly test_poly_checkpoint"
-    factor_base    "test_factor_base test_factor_base_add_rollback test_fb_checkpoint test_fb_roots_parallel"
-    sieve          "test_special_q test_sieve_basic test_sieve_checkpoint test_distributed_sieve test_distributed_sieve_worker_entry test_distributed_sieve_worker_writer_authority test_distributed_sieve_worker_execution test_distributed_sieve_worker_process test_distributed_sieve_wave_store_windows test_distributed_sieve_work_identity_codec test_distributed_sieve_work_package_codec test_distributed_sieve_worker_cleanup_codec test_distributed_sieve_merge_writer_codec test_distributed_sieve_merge_writer test_distributed_sieve_merge_writer_authority test_distributed_sieve_wave_merge_commit test_distributed_sieve_worker_cleanup_tail test_distributed_sieve_worker_cleanup_authorization_publisher test_distributed_sieve_worker_cleanup_orchestrator test_distributed_sieve_wave_result test_distributed_sieve_worker_work_package_file test_distributed_sieve_execution_policy test_distributed_sieve_seed_v2 test_distributed_sieve_resume test_bucket_sieve test_sieve_ecore_qos test_local_sieve_thread_budget test_lll_lattice test_adaptive_lattice test_edge_cases test_sieve_tiny_simd test_bucket_prefetch test_sieve_region_tile test_sieve_norm_tile test_lattice_basis_parallel test_sieve_apply_tile_parallel test_lattice_coords_simd test_threshold_scan_simd test_saturated_sub_simd"
-    cofactor       "test_cofactor test_cofactor_attempt_context test_cofactor_seed_provider test_candidate_chunk_plan test_candidate_batch test_squfof test_squfof_budget_corpus test_squfof_success_challenge_corpus test_squfof_success_challenge_oracle test_squfof_budget_oracle test_squfof_strategy_oracle test_brent_pollard_rho test_brent_pollard_rho_parallel test_survival_predictor test_batch_ecm test_ecm_curve_plan test_3lp_cofactor test_trial_wheel test_batch_trial test_ecm_curve_pool test_sigma_seed_pool test_ecm_stage2_parallel test_ecm_stage1_parallel test_batch_inversion test_trial_div_simd test_cofactor_stage_timing test_ecm_prime_cache test_cofactor_result_cache test_integration test_ecm_brent_suyama"
-    relation       "test_relation_corpus_sha256 test_relation_collector test_relation_corpus test_relation_sink test_ooc_store_integrity test_ooc_durable_handoff test_ooc_cleanup_transaction test_filter test_lp_key_contract test_relation_identity test_relation_reduction_engine test_structured_filter test_structured_filter_policy test_structured_tree_basis test_structured_tree_basis_property test_structured_budgeted_driver test_structured_conflict_batch test_structured_parallel_prepare test_structured_batch_commit test_structured_parallel_driver test_structured_parallel_failures test_structured_incidence_builder test_structured_materialization test_filter_radix_sort test_lp_bloom test_lp_key_hash test_merger_parallel test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
-    linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_krylov_sequence_mmap test_bw_krylov_mmap_integration test_schirokauer_deg4 test_schirokauer_fastpoly test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_checkpoint_stream_failure test_bl_resume_integration test_linalg_progress"
-    integration    "test_integration"
-    sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
-    api            "test_api test_i18n test_method_selection test_event_stream test_cli_event_stream test_relation_reduction_engine"
-    siqs           "test_siqs test_siqs_budget_admission test_siqs_multiplier_coordinator test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_post_merge_row_wire test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_sparse_backend test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_proof_observe_record_codec test_siqs_runtime_facts test_siqs_shadow_proof_rss_probe_execution_identity test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_terminal_gate_record test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_artifact_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_campaign_entry test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_rss_holdout_probe_record_codec test_siqs_shadow_proof_rss_holdout_stream_join test_siqs_shadow_proof_prefer test_siqs_shadow_prefer_route test_siqs_shadow_cross_size"
-)
+typeset -A MODULE_TESTS MODULE_DEPS
+while IFS='|' read -r catalog_module catalog_tests catalog_deps; do
+    MODULE_TESTS[$catalog_module]="$catalog_tests"
+    MODULE_DEPS[$catalog_module]="$catalog_deps"
+done < "${PROJECT_ROOT}/scripts/test-catalog/modules.txt"
 
 # 模块 → 慢速测试映射 (slow+heavy, 可选运行)
 typeset -A MODULE_SLOW_TESTS
@@ -1080,22 +1070,6 @@ TEST_TIER=(
     test_mpz_gcd_parallel    "instant"
     test_mpz_mul_parallel    "instant"
     test_work_stealing       "instant"
-)
-
-# 模块依赖图 (改了 A 模块 → 需要额外测试的下游模块)
-typeset -A MODULE_DEPS
-MODULE_DEPS=(
-    core           "polynomial factor_base sieve cofactor relation linalg sqrt"
-    util           "core polynomial factor_base sieve cofactor relation linalg sqrt siqs"
-    polynomial     "factor_base sieve"
-    factor_base    "sieve cofactor relation linalg"
-    sieve          "relation api"
-    cofactor       "relation"
-    relation       "linalg api"
-    linalg         "sqrt"
-    integration    ""
-    sqrt           ""
-    siqs           ""
 )
 
 # 模块描述
@@ -7871,6 +7845,7 @@ do_changed() {
     if [[ -z "$changed_files" ]]; then
         log_info "没有检测到代码变更"
         log_info "回退到冒烟测试..."
+        do_build gnfs_local_gate_quick || return $?
         do_smoke
         return
     fi
@@ -7904,10 +7879,11 @@ do_changed() {
         needs_siqs_e2e=1
     fi
 
+    local -a direct_modules=("${(k)affected_modules[@]}")
     # 级联依赖 (--deep 模式)
     if (( deep )); then
         typeset -A cascade_modules
-        for mod in "${(k)affected_modules[@]}"; do
+        for mod in "${direct_modules[@]}"; do
             cascade_modules[$mod]=1
             local deps="${MODULE_DEPS[$mod]:-}"
             for dep in ${(s: :)deps}; do
@@ -7936,9 +7912,11 @@ do_changed() {
     if (( ${#modules[@]} == 0 )); then
         if (( needs_50d_contract )); then
             log_info "变更仅命中 50 位探针合同，运行 fast 合同"
+            do_build test_structured_ooc_50d_probe gnfs_test_process_supervisor || return $?
             do_50d_probe_contracts || true
         else
             log_info "变更文件未匹配到已知模块，运行冒烟测试"
+            do_build gnfs_local_gate_quick || return $?
             do_smoke
         fi
         return
@@ -7946,6 +7924,23 @@ do_changed() {
 
     log_info "受影响模块: ${modules[*]}"
     echo ""
+
+    local -a targets
+    local module_target=gnfs_local_module_
+    if (( deep )); then module_target=gnfs_local_deep_; fi
+    for mod in "${direct_modules[@]}"; do
+        targets+=("${module_target}${mod}")
+    done
+    local needs_e2e=0
+    for mod in "${modules[@]}"; do
+        case "$mod" in
+            core|linalg|sqrt|sieve|cofactor|relation) needs_e2e=1 ;;
+        esac
+    done
+    if (( needs_50d_contract )); then targets+=(test_structured_ooc_50d_probe); fi
+    if (( needs_siqs_e2e )); then targets+=(test_siqs_e2e); fi
+    if (( needs_e2e )); then targets+=(test_gnfs_e2e); fi
+    do_build "${targets[@]}" || return $?
 
     do_module "${modules[@]}" || true
 
@@ -7957,14 +7952,6 @@ do_changed() {
         log_section "SIQS 深层 E2E 回归"
         run_single_test test_siqs_e2e || true
     fi
-
-    # 核心模块变更 → 额外 E2E
-    local needs_e2e=0
-    for mod in "${modules[@]}"; do
-        case "$mod" in
-            core|linalg|sqrt|sieve|cofactor|relation) needs_e2e=1 ;;
-        esac
-    done
 
     if (( needs_e2e )); then
         log_section "核心模块变更 ${ARROW} E2E 回归"
@@ -8216,7 +8203,7 @@ do_watch() {
         unit)    do_ctest ;;
         module)  do_module "${watch_args[@]}" || true ;;
         e2e)     do_e2e ;;
-        changed) do_changed ;;
+        changed) SKIP_BUILD=1 do_changed ;;
         *)       do_smoke ;;
     esac
     show_summary
@@ -8248,7 +8235,7 @@ do_watch() {
             unit)    do_ctest ;;
             module)  do_module "${watch_args[@]}" || true ;;
             e2e)     do_e2e ;;
-            changed) do_changed ;;
+            changed) SKIP_BUILD=1 do_changed ;;
             *)       do_smoke ;;
         esac
         show_summary
@@ -8715,7 +8702,6 @@ case "$MODE" in
             { (( ${#MODE_ARGS[@]} == 1 )) && [[ "${MODE_ARGS[1]}" != "--deep" ]]; }; then
             usage_error "用法: $0 ${MODE} [--deep] (--slow 仅用于 module)"
         fi
-        do_build
         do_changed "${MODE_ARGS[@]}"
         show_summary
         ;;

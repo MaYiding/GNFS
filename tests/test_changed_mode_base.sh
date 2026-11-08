@@ -102,6 +102,7 @@ python3 - "$PROJECT_ROOT" "$TEST_TMPDIR" <<'PY'
 from pathlib import Path
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -118,9 +119,9 @@ def extract(pattern):
 
 definitions = '\n'.join(
     extract(rf'^typeset -A {name}\n.*?^\)')
-    for name in ['MODULE_TESTS', 'MODULE_SLOW_TESTS', 'MODULE_CTEST_CONTRACTS',
-                 'MODULE_DESC', 'MODULE_DEPS']
+    for name in ['MODULE_SLOW_TESTS', 'MODULE_CTEST_CONTRACTS', 'MODULE_DESC']
 )
+definitions += '\n' + extract(r'^typeset -A MODULE_TESTS MODULE_DEPS\n.*?^done < [^\n]+')
 definitions += '\n' + extract(r'^typeset -a MODULE_ORDER\nMODULE_ORDER=\(.*?\)$')
 definitions += '\n' + '\n'.join(
     extract(rf'^{name}\(\) \{{\n.*?^\}}')
@@ -146,7 +147,8 @@ log_success() { :; }
 log_skip() { :; }
 resolve_changed_base() { print fixture; }
 collect_changed_files() { print -r -- "$ROUTE_PATHS"; }
-run_ctest_contract_group() { :; }
+run_ctest_contract_group() { print -r -- "CONTRACT:$1"; }
+do_build() { print -r -- "BUILD:$*"; }
 do_50d_probe_contracts() { print 'SELECTED:50d_contract'; }
 do_smoke() { print 'SELECTED:smoke'; }
 run_single_test() {
@@ -163,6 +165,30 @@ run_single_test() {
     return 0
 }
 '''
+
+
+module_catalog = {}
+for line in (root / 'scripts/test-catalog/modules.txt').read_text().splitlines():
+    module, tests, downstream = line.split('|')
+    module_catalog[module] = (set(tests.split()), downstream.split())
+
+
+def build_closure(targets):
+    expanded = set()
+    for target in targets:
+        if target.startswith(('gnfs_local_module_', 'gnfs_local_deep_')):
+            module = target.split('_', 3)[-1]
+            modules = [module]
+            if target.startswith('gnfs_local_deep_'):
+                modules.extend(module_catalog[module][1])
+            for mod in modules:
+                expanded.update(module_catalog[mod][0])
+                expanded.add('gnfs_test_process_supervisor')
+                if mod == 'api':
+                    expanded.add('gnfs')
+        else:
+            expanded.add(target)
+    return expanded
 
 
 def route(paths, options, expected_siqs, *, expected_gnfs=0, fail_test='', skip_test='', mode='changed'):
@@ -184,6 +210,20 @@ def route(paths, options, expected_siqs, *, expected_gnfs=0, fail_test='', skip_
         raise SystemExit(f'Routing failed for {paths!r} {options!r}: '
                          f'exit={result.returncode}, selected={selected!r}\n'
                          f'{result.stderr}')
+    builds = [line.removeprefix('BUILD:').split() for line in result.stdout.splitlines()
+              if line.startswith('BUILD:')]
+    if selected == ['smoke']:
+        expected_targets = {'gnfs_local_gate_quick'}
+    else:
+        expected_targets = set(selected) | {'gnfs_test_process_supervisor'}
+        if '50d_contract' in expected_targets:
+            expected_targets.remove('50d_contract')
+            expected_targets.add('test_structured_ooc_50d_probe')
+        if 'test_cli_event_stream' in selected:
+            expected_targets.add('gnfs')
+    if len(builds) != 1 or len(builds[0]) != len(set(builds[0])) or build_closure(builds[0]) != expected_targets:
+        raise SystemExit(f'Build targets differ from execution for {paths!r} {options!r}: '
+                         f'{builds!r} versus {expected_targets!r}')
     return selected
 
 
@@ -191,6 +231,8 @@ header = 'include/gnfs/siqs/siqs.hpp'
 e2e_source = 'tests/test_siqs_e2e.cpp'
 route([header], ['--deep'], 1)
 route([e2e_source], ['--deep'], 1)
+route(['CMakeLists.txt'], [], 0)
+route(['tests/test_structured_ooc_50d_probe.cpp'], [], 0, expected_gnfs=1)
 route(['src/siqs/shadow_proof_rss_campaign_journal_store_posix.cpp'], ['--deep'], 1)
 route([header, e2e_source, 'tests/test_siqs.cpp', header], ['--deep'], 1)
 route([header], [], 0)
@@ -277,6 +319,54 @@ for mode, failure, skip, modules, expected in [
     if skip and not {'SUMMARY:left:1', 'SUMMARY:right:1'}.issubset(result.stdout.splitlines()):
         raise SystemExit(f'Shared skip disappeared from a module summary: {result.stdout}')
 print('[PASS] changed module union, shared outcomes, and explicit repetitions')
+
+# Exercise the CMake closure itself, including the target-platform exclusions,
+# using small stamp-producing targets without compiling any language.
+if cmake := shutil.which('cmake'):
+    source = Path(sys.argv[2]) / 'module groups'
+    source.mkdir()
+    catalog = source / 'modules.txt'
+    catalog.write_text('core|test_integer test_shared test_optional|api\n'
+                       'api|test_cli test_shared|other\nother|test_other|\n')
+    cmake_source = (root / 'CMakeLists.txt').read_text()
+    definition = re.search(r'(?ms)^\s*function\(gnfs_add_local_module_targets\b.*?^\s*endfunction\(\)',
+                           cmake_source)
+    if definition is None:
+        raise SystemExit('CMake module target definition missing')
+    (source / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.20)\nproject(ModuleTargets NONE)\n'
+        'set(WIN32 "${SIMULATE_WINDOWS}")\n'
+        'set(outputs gnfs_test_process_supervisor gnfs test_integer test_shared test_cli test_other)\n'
+        'if(NOT WIN32)\n  list(APPEND outputs test_optional)\nendif()\n'
+        'foreach(name IN LISTS outputs)\n'
+        '  add_custom_target(${name} COMMAND "${CMAKE_COMMAND}" -E touch '
+        '"${CMAKE_BINARY_DIR}/${name}.stamp")\nendforeach()\n'
+        + definition.group(0) + '\n'
+        + 'gnfs_add_local_module_targets("${CMAKE_CURRENT_SOURCE_DIR}/modules.txt" test_optional)\n')
+    for windows in ('OFF', 'ON'):
+        build = source / windows
+        subprocess.run([cmake, '-S', str(source), '-B', str(build),
+                        '-DSIMULATE_WINDOWS=' + windows], check=True, capture_output=True)
+        for target in ('gnfs_local_module_core', 'gnfs_local_deep_core'):
+            subprocess.run([cmake, '--build', str(build), '--target', target],
+                           check=True, capture_output=True)
+            stamps = list(build.glob('*.stamp'))
+            expected = {'gnfs_test_process_supervisor', 'test_integer', 'test_shared'}
+            if windows == 'OFF':
+                expected.add('test_optional')
+            if target == 'gnfs_local_deep_core':
+                expected.update({'gnfs', 'test_cli'})
+            if {p.stem for p in stamps} != expected:
+                raise SystemExit(f'Incorrect CMake closure for {target}, Windows={windows}: {stamps!r}')
+            for stamp in stamps:
+                stamp.unlink()
+    catalog.write_text(catalog.read_text().replace('test_integer', 'test_missing'))
+    failed = subprocess.run([cmake, '-S', str(source), '-B', str(source / 'missing'),
+                             '-DSIMULATE_WINDOWS=ON'], text=True, capture_output=True)
+    if failed.returncode == 0 or 'test_missing' not in failed.stderr:
+        raise SystemExit('A missing required module test must fail CMake generation')
+    print('[PASS] actual module targets share helpers and honor one-level cascades and Windows exclusions')
+
 
 # Use the real binary-result/retry function with only its bounded process adapter
 # replaced. Reusing a module result must not replace the explicit retry policy or

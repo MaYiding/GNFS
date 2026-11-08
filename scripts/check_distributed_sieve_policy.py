@@ -5543,7 +5543,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_BOUNDARY_SHA256 = (
-    "c5490133c6f00f329426c7323058027d33030eb1457d7ea521bc9990a9955f49"
+    "5e16f41224f737597ad563920abb9d23f721a0961232bb439084397c109ce52f"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -11230,12 +11230,39 @@ def _read_smoke_catalog(root: Path) -> str | None:
         return None
 
 
-def _runner_catalog_array(shell: str, name: str, smoke_catalog: str | None = None) -> str | None:
+def _read_module_catalog(root: Path) -> str | None:
+    """Recover the ordered module keys and test lists consumed by the runner."""
+    try:
+        rows = (root / "scripts/test-catalog/modules.txt").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    result = []
+    for row in rows:
+        fields = row.split("|")
+        if len(fields) != 3 or not re.fullmatch(r"[a-z_]+", fields[0]) or not re.fullmatch(
+            r"test_[a-zA-Z0-9_]+(?: test_[a-zA-Z0-9_]+)*", fields[1]
+        ):
+            return None
+        result.append(f'{fields[0]} "{fields[1]}"')
+    return "\n".join(result)
+
+
+def _runner_catalog_array(
+    shell: str, name: str, smoke_catalog: str | None = None, module_catalog: str | None = None
+) -> str | None:
     """Read the registered catalog and reject later resets or appends."""
     assignments = re.findall(
         rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*(?:\[[^\n]*?\])?\s*\+?=",
         shell,
     )
+    if name == "MODULE_TESTS":
+        loader = (
+            "while IFS='|' read -r catalog_module catalog_tests catalog_deps; do\n"
+            '    MODULE_TESTS[$catalog_module]="$catalog_tests"\n'
+            '    MODULE_DEPS[$catalog_module]="$catalog_deps"\n'
+            'done < "${PROJECT_ROOT}/scripts/test-catalog/modules.txt"'
+        )
+        return module_catalog if len(assignments) == 1 and f"\n{loader}\n" in shell else None
     if name == "SMOKE_TESTS":
         loader = 'SMOKE_TESTS=("${(@f)$(cat "${PROJECT_ROOT}/scripts/test-catalog/smoke.txt")}")'
         return smoke_catalog if len(assignments) == 1 and loader in shell.splitlines() else None
@@ -11251,14 +11278,16 @@ def _runner_path_to_module_body(shell: str) -> str | None:
     return matches[0] if len(matches) == len(declarations) == 1 else None
 
 
-def _runner_catalog_target_is_unique(shell: str, target: str, smoke_catalog: str | None) -> bool:
+def _runner_catalog_target_is_unique(
+    shell: str, target: str, smoke_catalog: str | None, module_catalog: str | None
+) -> bool:
     """Count registrations in their consumers, not unrelated platform metadata."""
     token = rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])"
     for name in ("ALL_TEST_BINARIES", "MODULE_TESTS", "TEST_TIMEOUT", "TEST_TIER"):
-        body = _runner_catalog_array(shell, name)
+        body = _runner_catalog_array(shell, name, module_catalog=module_catalog)
         if body is None or len(re.findall(token, body)) != 1:
             return False
-    modules = _runner_catalog_array(shell, "MODULE_TESTS")
+    modules = _runner_catalog_array(shell, "MODULE_TESTS", module_catalog=module_catalog)
     assert modules is not None
     try:
         words = shlex.split(modules)
@@ -21532,9 +21561,10 @@ class Checks:
             )
 
         smoke_catalog = _read_smoke_catalog(self.root)
+        module_catalog = _read_module_catalog(self.root)
 
         def array_body(name: str) -> str | None:
-            return _runner_catalog_array(test_runner_code, name, smoke_catalog)
+            return _runner_catalog_array(test_runner_code, name, smoke_catalog, module_catalog)
 
         all_tests = array_body("ALL_TEST_BINARIES")
         module_tests = array_body("MODULE_TESTS")
@@ -21589,7 +21619,7 @@ class Checks:
             or len(tier_entries) != 1
             or module_count != 1
             or len(path_mapping) != 1
-            or not _runner_catalog_target_is_unique(test_runner_code, target, smoke_catalog)
+            or not _runner_catalog_target_is_unique(test_runner_code, target, smoke_catalog, module_catalog)
         ):
             self.fail(
                 WORKER_CLEANUP_RECEIPT_TEST_RUNNER_FILE,
@@ -21685,9 +21715,10 @@ class Checks:
         shell = _mask_shell_comments(test_runner_text)
 
         smoke_catalog = _read_smoke_catalog(self.root)
+        module_catalog = _read_module_catalog(self.root)
 
         def array_body(name: str) -> str | None:
-            return _runner_catalog_array(shell, name, smoke_catalog)
+            return _runner_catalog_array(shell, name, smoke_catalog, module_catalog)
 
         arrays = {
             name: array_body(name)
@@ -21741,7 +21772,7 @@ class Checks:
                 )
                 == 1
                 and len(path_mapping) == 1
-                and _runner_catalog_target_is_unique(shell, target, smoke_catalog)
+                and _runner_catalog_target_is_unique(shell, target, smoke_catalog, module_catalog)
             )
             if not exact:
                 self.fail(
@@ -21929,9 +21960,10 @@ class Checks:
         shell = _mask_shell_comments(test_runner_text)
 
         smoke_catalog = _read_smoke_catalog(self.root)
+        module_catalog = _read_module_catalog(self.root)
 
         def array_body(name: str) -> str | None:
-            return _runner_catalog_array(shell, name, smoke_catalog)
+            return _runner_catalog_array(shell, name, smoke_catalog, module_catalog)
 
         arrays = {
             name: array_body(name)
@@ -21983,7 +22015,7 @@ class Checks:
                 )
                 == 1
                 and len(path_mapping) == 1
-                and _runner_catalog_target_is_unique(shell, target, smoke_catalog)
+                and _runner_catalog_target_is_unique(shell, target, smoke_catalog, module_catalog)
             )
             if not exact:
                 self.fail(
@@ -34062,6 +34094,9 @@ void escaped_cleanup_conversion_wrapper() {
 
     catalog_root = Path(__file__).resolve().parents[1]
     smoke_catalog = _read_smoke_catalog(catalog_root)
+    module_catalog = _read_module_catalog(catalog_root)
+    if module_catalog is None:
+        raise AssertionError("module test catalog is missing or malformed")
     worker_cleanup_receipt_cmake = (
         catalog_root / WORKER_CLEANUP_RECEIPT_CMAKE_FILE
     ).read_text(encoding="utf-8")
@@ -34076,21 +34111,35 @@ void escaped_cleanup_conversion_wrapper() {
     ):
         expect(
             _runner_catalog_target_is_unique(
-                catalog_shell + f"\nPLATFORM_METADATA=(\n    {target}\n)\n", target, smoke_catalog
+                catalog_shell + f"\nPLATFORM_METADATA=(\n    {target}\n)\n",
+                target, smoke_catalog, module_catalog,
             ),
             "unrelated platform metadata was counted as a test registration",
         )
         expect(
-            not _runner_catalog_target_is_unique(catalog_shell, target, f"{smoke_catalog}\n{target}\n"),
+            not _runner_catalog_target_is_unique(
+                catalog_shell, target, f"{smoke_catalog}\n{target}\n", module_catalog
+            ),
             "a distributed slow test was accepted in the shared smoke catalog",
         )
+        for changed_modules in (
+            module_catalog + f'\nextra "{target}"',
+            module_catalog + '\nsieve ""',
+            module_catalog + '\n"sieve" "test_dummy"',
+            module_catalog + "\n'sieve' 'test_dummy'",
+        ):
+            expect(
+                not _runner_catalog_target_is_unique(catalog_shell, target, smoke_catalog, changed_modules),
+                "duplicate or misplaced module registration was accepted",
+            )
         for changed_catalog in (
             catalog_shell.replace("ALL_TEST_BINARIES=(", f"ALL_TEST_BINARIES=(\n    {target}", 1),
             catalog_shell.replace("SMOKE_TESTS=(", f"SMOKE_TESTS=(\n    {target}", 1),
             catalog_shell.replace("TEST_TIMEOUT=(", f"TEST_TIMEOUT=(\n    {target} 1", 1),
             catalog_shell.replace("TEST_TIER=(", f'TEST_TIER=(\n    {target} "fast"', 1),
-            catalog_shell.replace("MODULE_TESTS=(", f'MODULE_TESTS=(\n    extra "{target}"', 1),
-            catalog_shell.replace("MODULE_TESTS=(", 'MODULE_TESTS=(\n    sieve ""', 1),
+            catalog_shell + "\nMODULE_TESTS=(\n)\n",
+            catalog_shell.replace('read -r catalog_module catalog_tests catalog_deps',
+                                  'read -r catalog_module catalog_deps catalog_tests', 1),
             catalog_shell + "\nALL_TEST_BINARIES=(\n)\n",
             catalog_shell + f"\nALL_TEST_BINARIES+=({target})\n",
             catalog_shell + "\ntypeset -a ALL_TEST_BINARIES=()\n",
@@ -34100,11 +34149,9 @@ void escaped_cleanup_conversion_wrapper() {
             catalog_shell + f"\n:; ALL_TEST_BINARIES+=({target})\n",
             catalog_shell + f"\nbuiltin typeset -a ALL_TEST_BINARIES=({target})\n",
             catalog_shell + '\n:; function path_to_module { echo "core"; }\n',
-            catalog_shell.replace("MODULE_TESTS=(", 'MODULE_TESTS=(\n    "sieve" "test_dummy"', 1),
-            catalog_shell.replace("MODULE_TESTS=(", "MODULE_TESTS=(\n    'sieve' 'test_dummy'", 1),
         ):
             expect(
-                not _runner_catalog_target_is_unique(changed_catalog, target, smoke_catalog),
+                not _runner_catalog_target_is_unique(changed_catalog, target, smoke_catalog, module_catalog),
                 "duplicate, overridden, or misplaced test registration was accepted",
             )
     exact_worker_cleanup_receipt_catalog_checks = Checks(catalog_root)
