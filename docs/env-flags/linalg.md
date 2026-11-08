@@ -106,8 +106,9 @@ There is no option to resume an unbound legacy state.
 ## BW Krylov sequence mmap (GNFS_BW_KRYLOV_MMAP)
 
 **ENV `GNFS_BW_KRYLOV_MMAP=1`** (2026-05-18 实施):
-BW Phase 1 Krylov sequence 写到系统临时目录中的 `gnfs_bw_krylov_*.kry` mmap-backed file
-而非 in-memory vector. Phase 2 BM 入口 copy mmap → vector 再 close.
+BW Phase 1 在系统临时目录下独占创建 `gnfs_bw_krylov_*.kry.scratch` 子目录，
+将 Krylov 序列映射到其中的 `sequence.kry`。Phase 2 BM 入口把序列复制到内存，
+随后关闭映射并删除本次调用的文件和子目录。重名时会尝试下一个 nonce，保留已有内容。
 
 ```bash
 GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
@@ -151,7 +152,7 @@ platform and uses the same native-path conversion for its file probes.
 首次同步成功后才发布 completion marker；reader 在分配前验证完整 header、
 index extent 和每个 payload 边界。内部 I/O 使用 POSIX positioned I/O 或
 Win32 overlapped positioned I/O，路径保持 `std::filesystem::path`。正常完成或
-C++ 异常展开会关闭 handle 并清理 `.kryz` scratch；进程终止可能遗留
+C++ 异常展开会关闭 handle 并清理本次独占目录中的 `sequence.kryz`；进程终止可能遗留
 INCOMPLETE scratch，reader 会拒绝加载。
 
 **bit-for-bit contract**: 压缩只改变 Krylov 序列的存储介质，不改变 solver
@@ -199,8 +200,7 @@ unset GNFS_BW_KRYLOV_STREAMS          # 默认 K=1, 原行为
 - 次要: wall-time. Phase 2 (BM) inherently 单线程, 占 BW 总时间 ~70%. 多 stream
   不加速 single solve. K=2 ≈ K=1; K=4 ~10% 慢 (pool overhead). 实测 5550×5000:
   K=1=613ms, K=2=629ms, K=4=688ms (single-seed succeeds case).
-- Mmap 路径文件名含 stream_tag (`gnfs_bw_krylov_<pid>_s<N>_<seed>.kry`) 避免
-  并发 stream 之间路径冲突.
+- Mmap 临时目录名包含 PID、stream tag、seed 和进程内递增的 nonce；每个并发 stream 单独预留目录。
 
 **集成点** (commits `0857b7d` → `c5416ce`, 2026-05-21):
 - `src/linalg/block_wiedemann.cpp` — `bw_num_streams()` ENV parser +

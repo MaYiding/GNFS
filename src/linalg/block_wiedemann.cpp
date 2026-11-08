@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -20,6 +21,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -29,6 +31,9 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace gnfs::linalg {
 
@@ -44,39 +49,67 @@ namespace gnfs::linalg {
 // medium matrices where pool-barrier overhead dominates per-SpMV inner work.
 namespace {
 
-class ScratchFileCleanup final {
+std::atomic<uint64_t> g_krylov_scratch_nonce{0};
+
+// A process id can be reused after a previous solver exits without cleaning up.
+// Reserve a directory before opening the payload with truncation semantics.
+class KrylovScratch final {
 public:
-    explicit ScratchFileCleanup(std::filesystem::path path) : path_(std::move(path)) {}
-
-    ScratchFileCleanup(const ScratchFileCleanup&) = delete;
-    ScratchFileCleanup& operator=(const ScratchFileCleanup&) = delete;
-
-    ~ScratchFileCleanup() {
-        if (!armed_) {
-            return;
+    KrylovScratch(uint64_t seed, const std::string& stream, bool compressed) {
+        const auto parent = std::filesystem::absolute(gnfs::util::temp_directory_path());
+        const std::string prefix = "gnfs_bw_krylov_" + std::to_string(gnfs::util::process_id()) +
+                                   "_" + stream + "_" + std::to_string(seed) + "_n";
+        const char* suffix = compressed ? ".kryz.scratch" : ".kry.scratch";
+        for (unsigned attempt = 0; attempt < 32; ++attempt) {
+            const auto nonce = g_krylov_scratch_nonce.fetch_add(1, std::memory_order_relaxed);
+            auto directory = parent / (prefix + std::to_string(nonce) + suffix);
+            auto payload = directory / (compressed ? "sequence.kryz" : "sequence.kry");
+            std::error_code error;
+#ifdef _WIN32
+            const bool created = std::filesystem::create_directory(directory, error);
+#else
+            const bool created = ::mkdir(directory.c_str(), 0700) == 0;
+            if (!created) {
+                error = {errno, std::generic_category()};
+            }
+#endif
+            if (created) {
+                directory_ = std::move(directory);
+                path_ = std::move(payload);
+                return;
+            }
+            if (error && error != std::errc::file_exists) {
+                throw std::filesystem::filesystem_error("reserve Krylov scratch", directory, error);
+            }
         }
-        std::error_code ignored;
-        (void)std::filesystem::remove(path_, ignored);
+        throw std::runtime_error("could not reserve a Krylov scratch directory");
     }
 
-    void disarm() noexcept {
-        armed_ = false;
+    KrylovScratch(const KrylovScratch&) = delete;
+    KrylovScratch& operator=(const KrylovScratch&) = delete;
+
+    ~KrylovScratch() {
+        if (!directory_.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(path_, ignored);
+            std::filesystem::remove(directory_, ignored);
+        }
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept {
+        return path_;
+    }
+
+    void remove() {
+        std::filesystem::remove(path_);
+        std::filesystem::remove(directory_);
+        directory_.clear();
     }
 
 private:
+    std::filesystem::path directory_;
     std::filesystem::path path_;
-    bool armed_ = true;
 };
-
-// Scratch paths include the process id and seed for diagnostics, but those
-// fields are not unique when two callers solve the same matrix concurrently.
-// Keep a process-local nonce in the filename so each mmap/compressed owner has
-// an independent inode while the mathematical seed stream remains unchanged.
-std::atomic<uint64_t> g_krylov_scratch_nonce{0};
-
-[[nodiscard]] inline uint64_t next_krylov_scratch_nonce() noexcept {
-    return g_krylov_scratch_nonce.fetch_add(1, std::memory_order_relaxed);
-}
 
 constexpr uint32_t kMaxBwStreams = 16;
 
@@ -629,20 +662,12 @@ BlockWiedemann::block_wiedemann_scalar_solve(const SparseMatrix& matrix, size_t 
               << (use_mmap ? ", mmap" : "") << ")..." << std::flush;
 
     std::vector<std::vector<uint8_t>> sequences;
-    std::filesystem::path seq_mmap_path;
-    std::unique_ptr<ScratchFileCleanup> seq_mmap_cleanup;
+    std::optional<KrylovScratch> scratch;
     std::unique_ptr<KrylovSequenceMmap> seq_mmap;
     if (use_mmap) {
-        char path_buf[128];
-        const uint64_t scratch_nonce = next_krylov_scratch_nonce();
-        std::snprintf(path_buf, sizeof(path_buf), "gnfs_bw_krylov_scalar_%d_%llu_n%llu.kry",
-                      gnfs::util::process_id(), static_cast<unsigned long long>(seed),
-                      static_cast<unsigned long long>(scratch_nonce));
-        seq_mmap_path = gnfs::util::temp_directory_path() / path_buf;
-        seq_mmap_cleanup = std::make_unique<ScratchFileCleanup>(seq_mmap_path);
+        scratch.emplace(seed, "scalar", false);
         seq_mmap = std::make_unique<KrylovSequenceMmap>(
-            detail::krylov_cached_path_string(seq_mmap_path), /*L=*/64,
-            /*entry_size=*/seq_len);
+            detail::krylov_cached_path_string(scratch->path()), /*L=*/64, /*entry_size=*/seq_len);
     } else {
         sequences.assign(64, std::vector<uint8_t>(seq_len, 0));
     }
@@ -688,14 +713,8 @@ BlockWiedemann::block_wiedemann_scalar_solve(const SparseMatrix& matrix, size_t 
         for (uint64_t j = 0; j < 64; ++j) {
             std::memcpy(sequences[j].data(), seq_mmap->raw_at(j), seq_len);
         }
-        seq_mmap->remove_file();
         seq_mmap.reset();
-        std::error_code cleanup_error;
-        const bool remains = std::filesystem::exists(seq_mmap_path, cleanup_error);
-        if (cleanup_error || remains) {
-            throw std::runtime_error("Block Wiedemann scalar: mmap scratch cleanup failed");
-        }
-        seq_mmap_cleanup->disarm();
+        scratch->remove();
     }
 
     // ── Phase 2: Scalar BM for each of 64 sequences ──
@@ -956,33 +975,18 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
               << (use_mmap ? (use_compress ? ", mmap+zip" : ", mmap") : "") << ")..." << std::flush;
 
     std::vector<DenseGF2_64x64> A_seq;
-    std::filesystem::path mmap_path;
-    std::unique_ptr<ScratchFileCleanup> mmap_cleanup;
+    std::optional<KrylovScratch> scratch;
     std::unique_ptr<KrylovSequenceMmap> A_mmap;
-    std::filesystem::path kryz_path;
-    std::unique_ptr<ScratchFileCleanup> kryz_cleanup;
     std::unique_ptr<KrylovSequenceCompressed> A_kryz;
-    if (use_compress) {
-        char path_buf[160];
-        const uint64_t scratch_nonce = next_krylov_scratch_nonce();
-        std::snprintf(path_buf, sizeof(path_buf), "gnfs_bw_krylov_%d_s%u_%llu_n%llu.kryz",
-                      gnfs::util::process_id(), static_cast<unsigned>(stream_tag),
-                      static_cast<unsigned long long>(seed),
-                      static_cast<unsigned long long>(scratch_nonce));
-        kryz_path = gnfs::util::temp_directory_path() / std::filesystem::path(path_buf);
-        kryz_cleanup = std::make_unique<ScratchFileCleanup>(kryz_path);
-        A_kryz = std::make_unique<KrylovSequenceCompressed>(kryz_path, L, sizeof(DenseGF2_64x64));
-    } else if (use_mmap) {
-        char path_buf[160];
-        const uint64_t scratch_nonce = next_krylov_scratch_nonce();
-        std::snprintf(path_buf, sizeof(path_buf), "gnfs_bw_krylov_%d_s%u_%llu_n%llu.kry",
-                      gnfs::util::process_id(), static_cast<unsigned>(stream_tag),
-                      static_cast<unsigned long long>(seed),
-                      static_cast<unsigned long long>(scratch_nonce));
-        mmap_path = gnfs::util::temp_directory_path() / path_buf;
-        mmap_cleanup = std::make_unique<ScratchFileCleanup>(mmap_path);
-        A_mmap = std::make_unique<KrylovSequenceMmap>(detail::krylov_cached_path_string(mmap_path),
-                                                      L, sizeof(DenseGF2_64x64));
+    if (use_mmap) {
+        scratch.emplace(seed, "s" + std::to_string(stream_tag), use_compress);
+        if (use_compress) {
+            A_kryz = std::make_unique<KrylovSequenceCompressed>(scratch->path(), L,
+                                                                sizeof(DenseGF2_64x64));
+        } else {
+            A_mmap = std::make_unique<KrylovSequenceMmap>(
+                detail::krylov_cached_path_string(scratch->path()), L, sizeof(DenseGF2_64x64));
+        }
     } else {
         A_seq.resize(L);
     }
@@ -1022,18 +1026,13 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
                      static_cast<double>(comp) / (1024.0 * 1024.0), ratio);
         // Reopen for read in Phase 2 BM copy step
         A_kryz.reset();
-        auto reader = KrylovSequenceCompressed::open_readonly(kryz_path);
+        auto reader = KrylovSequenceCompressed::open_readonly(scratch->path());
         A_seq.resize(L);
         for (size_t k = 0; k < L; ++k) {
             A_seq[k] = reader.read_entry<DenseGF2_64x64>(k);
         }
-        reader.remove_file();
-        std::error_code cleanup_error;
-        const bool remains = std::filesystem::exists(kryz_path, cleanup_error);
-        if (cleanup_error || remains) {
-            throw std::runtime_error("Block Wiedemann: compressed Krylov scratch cleanup failed");
-        }
-        kryz_cleanup->disarm();
+        reader.close();
+        scratch->remove();
         std::cerr << "[bw_krylov_compress] copied_entries=" << L << " cleanup=removed" << std::endl;
     } else if (use_mmap) {
         A_mmap->msync();
@@ -1043,14 +1042,8 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
         for (size_t k = 0; k < L; ++k) {
             A_seq[k] = *A_mmap->at<DenseGF2_64x64>(k);
         }
-        A_mmap->remove_file();
         A_mmap.reset();
-        std::error_code cleanup_error;
-        const bool remains = std::filesystem::exists(mmap_path, cleanup_error);
-        if (cleanup_error || remains) {
-            throw std::runtime_error("Block Wiedemann: mmap scratch cleanup failed");
-        }
-        mmap_cleanup->disarm();
+        scratch->remove();
     }
 
     // ── Phase 2: Matrix Berlekamp-Massey ──
@@ -1269,33 +1262,18 @@ thin_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t poo
               << (use_mmap ? (use_compress ? ", mmap+zip" : ", mmap") : "") << ")..." << std::flush;
 
     std::vector<DenseGF2_64x64> A_seq;
-    std::filesystem::path mmap_path;
-    std::unique_ptr<ScratchFileCleanup> mmap_cleanup;
+    std::optional<KrylovScratch> scratch;
     std::unique_ptr<KrylovSequenceMmap> A_mmap;
-    std::filesystem::path kryz_path;
-    std::unique_ptr<ScratchFileCleanup> kryz_cleanup;
     std::unique_ptr<KrylovSequenceCompressed> A_kryz;
-    if (use_compress) {
-        char path_buf[160];
-        const uint64_t scratch_nonce = next_krylov_scratch_nonce();
-        std::snprintf(path_buf, sizeof(path_buf), "gnfs_bw_krylov_%d_s%u_%llu_n%llu.kryz",
-                      gnfs::util::process_id(), static_cast<unsigned>(stream_tag),
-                      static_cast<unsigned long long>(seed),
-                      static_cast<unsigned long long>(scratch_nonce));
-        kryz_path = gnfs::util::temp_directory_path() / std::filesystem::path(path_buf);
-        kryz_cleanup = std::make_unique<ScratchFileCleanup>(kryz_path);
-        A_kryz = std::make_unique<KrylovSequenceCompressed>(kryz_path, L, sizeof(DenseGF2_64x64));
-    } else if (use_mmap) {
-        char path_buf[160];
-        const uint64_t scratch_nonce = next_krylov_scratch_nonce();
-        std::snprintf(path_buf, sizeof(path_buf), "gnfs_bw_krylov_%d_s%u_%llu_n%llu.kry",
-                      gnfs::util::process_id(), static_cast<unsigned>(stream_tag),
-                      static_cast<unsigned long long>(seed),
-                      static_cast<unsigned long long>(scratch_nonce));
-        mmap_path = gnfs::util::temp_directory_path() / path_buf;
-        mmap_cleanup = std::make_unique<ScratchFileCleanup>(mmap_path);
-        A_mmap = std::make_unique<KrylovSequenceMmap>(detail::krylov_cached_path_string(mmap_path),
-                                                      L, sizeof(DenseGF2_64x64));
+    if (use_mmap) {
+        scratch.emplace(seed, "s" + std::to_string(stream_tag), use_compress);
+        if (use_compress) {
+            A_kryz = std::make_unique<KrylovSequenceCompressed>(scratch->path(), L,
+                                                                sizeof(DenseGF2_64x64));
+        } else {
+            A_mmap = std::make_unique<KrylovSequenceMmap>(
+                detail::krylov_cached_path_string(scratch->path()), L, sizeof(DenseGF2_64x64));
+        }
     } else {
         A_seq.resize(L);
     }
@@ -1334,19 +1312,13 @@ thin_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t poo
                      static_cast<double>(orig) / (1024.0 * 1024.0),
                      static_cast<double>(comp) / (1024.0 * 1024.0), ratio);
         A_kryz.reset();
-        auto reader = KrylovSequenceCompressed::open_readonly(kryz_path);
+        auto reader = KrylovSequenceCompressed::open_readonly(scratch->path());
         A_seq.resize(L);
         for (size_t k = 0; k < L; ++k) {
             A_seq[k] = reader.read_entry<DenseGF2_64x64>(k);
         }
-        reader.remove_file();
-        std::error_code cleanup_error;
-        const bool remains = std::filesystem::exists(kryz_path, cleanup_error);
-        if (cleanup_error || remains) {
-            throw std::runtime_error(
-                "Block Wiedemann thin: compressed Krylov scratch cleanup failed");
-        }
-        kryz_cleanup->disarm();
+        reader.close();
+        scratch->remove();
         std::cerr << "[bw_krylov_compress] copied_entries=" << L << " cleanup=removed" << std::endl;
     } else if (use_mmap) {
         A_mmap->msync();
@@ -1354,14 +1326,8 @@ thin_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t poo
         for (size_t k = 0; k < L; ++k) {
             A_seq[k] = *A_mmap->at<DenseGF2_64x64>(k);
         }
-        A_mmap->remove_file();
         A_mmap.reset();
-        std::error_code cleanup_error;
-        const bool remains = std::filesystem::exists(mmap_path, cleanup_error);
-        if (cleanup_error || remains) {
-            throw std::runtime_error("Block Wiedemann thin: mmap scratch cleanup failed");
-        }
-        mmap_cleanup->disarm();
+        scratch->remove();
     }
 
     // ── Phase 2: Matrix Berlekamp-Massey ──
