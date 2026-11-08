@@ -26,7 +26,7 @@ using core::PolynomialContext;
 struct PrimeIdeal {
     uint32_t p;      // The rational prime
     uint32_t r;      // The root of f mod p (for degree 1 factors)
-    uint32_t degree; // Degree of the prime ideal (1 for split, 3 for inert)
+    uint32_t degree; // Residue degree of the prime ideal
 
     bool operator==(const PrimeIdeal& other) const {
         return p == other.p && r == other.r;
@@ -582,7 +582,6 @@ private:
                 continue;
 
             const PrimeIdeal ideal{p, x, 1};
-            ideals.push_back(ideal);
             if (ctx_.leading_coeff().is_one()) {
                 uint64_t derivative = 0;
                 for (uint32_t i = d; i > 0; --i) {
@@ -590,14 +589,21 @@ private:
                 }
                 if (derivative != 0) {
                     simple_roots_.push_back(ideal);
-                } else if (d == 2 && p != 2) {
-                    // The repeated root implies p divides the discriminant.
-                    // If p^2 does not, p is ramified in the quadratic field.
-                    const Integer square(p64 * p64);
-                    if (!mpz_divisible_p(discriminant_.get_mpz(), square.get_mpz()))
+                } else if (d == 2 && p != 2 && !discriminant_.is_zero()) {
+                    Integer unit;
+                    const auto valuation =
+                        mpz_remove(unit.get_mpz(), discriminant_.get_mpz(), p_int.get_mpz());
+                    if (valuation == 1) {
                         ramified_primes_.push_back(p);
+                    } else if (valuation % 2 == 0 &&
+                               mpz_legendre(unit.get_mpz(), p_int.get_mpz()) < 0) {
+                        // The field is Q(sqrt(discriminant)). Removing an even
+                        // p-power leaves a nonsquare unit, so p has residue degree two.
+                        continue;
+                    }
                 }
             }
+            ideals.push_back(ideal);
         }
     }
 
