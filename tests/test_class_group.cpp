@@ -611,7 +611,12 @@ void test_simple_root_ideal_exponents() {
     TEST_ASSERT(exponent(-8, 3) == 2, "two factors of 5 in 12550");
     TEST_ASSERT(exponent(3, 1) == 0, "different residue at 5");
     TEST_ASSERT(exponent(0, 0) == 0, "zero norm");
-    TEST_ASSERT(exponent(0, 5) == 1, "retain the estimate when 5 divides b");
+    TEST_ASSERT(exponent(15, 35) == 2, "5 contributes one to the valuation of (3,7)");
+    TEST_ASSERT(exponent(-40, 15) == 3, "5 contributes one to the valuation of (-8,3)");
+    TEST_ASSERT(exponent(5, 25) == 1, "only the common factor when the reduced b is divisible");
+    TEST_ASSERT(exponent(0, std::numeric_limits<uint64_t>::max()) == 1,
+                "only the common factor when reduced a is zero");
+    TEST_ASSERT(exponent(-25, 0) == 2, "valuation of a nonzero rational integer");
     const auto wide_b = std::numeric_limits<uint64_t>::max() - 2;
     TEST_ASSERT(exponent(std::numeric_limits<int64_t>::min(), wide_b) == 1,
                 "negative signed endpoint and wide b");
@@ -637,6 +642,14 @@ void test_simple_root_ideal_exponents() {
                 "equal odd valuations");
     TEST_ASSERT(group.compute_character(-8, 3) == group.compute_character(-2, 1),
                 "equal even valuations");
+    const auto rational = group.compute_character(5, 0);
+    for (auto [a, b] : {std::pair{3, 7u}, std::pair{-8, 3u}}) {
+        const auto base = group.compute_character(a, b);
+        const auto scaled = group.compute_character(5 * a, 5 * b);
+        for (size_t j = 0; j < rational.size(); ++j) {
+            TEST_ASSERT(scaled[j] == (base[j] != rational[j]), "scaling a selected character");
+        }
+    }
     PolynomialContext nonmonic(I(19), {I(-6), I(-12), I(-5), I(5), I(-1)}, I(1));
     ClassGroup legacy(nonmonic, config);
     TEST_ASSERT(legacy.compute_character(3, 7) == legacy.compute_character(3, 1),
@@ -648,6 +661,17 @@ void test_simple_root_relation_collection() {
     // The four collected rows for (-10,1), (-9,1), (-9,2), (-8,1) have
     // determinant of magnitude 1 in the order (2,0), (2,1), (3,0), (3,2).
     PolynomialContext quad(I(949), {I(6), I(1), I(1)}, I(43));
+    const std::vector<PrimeIdeal> above_two{{2, 0, 1}, {2, 1, 1}};
+    const auto collected = gnfs::sqrt::detail::class_group_ideal_exponents(
+        quad, -10, 6, {above_two[1], above_two[0]}, above_two);
+    TEST_ASSERT(collected.at(above_two[0]) == 1 && collected.at(above_two[1]) == 7,
+                "both simple roots retain the common factor in a collected row");
+
+    PolynomialContext even(I(4), {I(2), I(1), I(1)}, I(1));
+    const auto endpoints = gnfs::sqrt::detail::class_group_ideal_exponents(
+        even, std::numeric_limits<int64_t>::min(), uint64_t{1} << 63, above_two, above_two);
+    TEST_ASSERT(endpoints.at(above_two[0]) == 63 && endpoints.at(above_two[1]) == 64,
+                "remove 63 common factors without negating the signed endpoint");
     ClassGroup group(quad);
     const auto bits = group.compute_character(-1, 1);
     TEST_ASSERT(std::none_of(bits.begin(), bits.end(), [](bool bit) { return bit; }),

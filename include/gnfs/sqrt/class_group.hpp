@@ -53,31 +53,45 @@ class_group_ideal_exponents(const PolynomialContext& ctx, int64_t a, uint64_t b,
     std::map<PrimeIdeal, int> result;
 
     Integer norm = ctx.algebraic_norm(a, b);
-    if (norm.is_zero())
+    if (norm.is_zero() || (a == 0 && b == 0))
         return result;
 
+    const auto matches_root = [](int64_t x, uint64_t y, const PrimeIdeal& pi) {
+        const auto rem = x % static_cast<int64_t>(pi.p);
+        const auto x_mod_p = static_cast<uint64_t>(rem < 0 ? rem + pi.p : rem);
+        return x_mod_p == (y % pi.p) * pi.r % pi.p;
+    };
     Integer divisor;
     for (const auto& pi : prime_ideals) {
-        if (pi.degree != 1)
-            continue;
-        const auto p = pi.p;
-        const auto b_mod_p = b % p;
-        const auto remainder = a % static_cast<int64_t>(p);
-        const auto a_mod_p = static_cast<uint64_t>(remainder < 0 ? remainder + p : remainder);
-        if (a_mod_p != b_mod_p * pi.r % p)
+        if (pi.degree != 1 || !matches_root(a, b, pi))
             continue;
 
-        // With p not dividing b, only this root can divide a - b*alpha.
-        // A simple root gives a degree-one p-adic factor; all other
-        // factors are units at a/b, so the exponent is v_p(b^d f(a/b)).
-        if (b_mod_p != 0 &&
-            std::binary_search(monic_simple_roots.begin(), monic_simple_roots.end(), pi)) {
-            mpz_set_ui(divisor.get_mpz(), p);
-            const auto exp = mpz_remove(norm.get_mpz(), norm.get_mpz(), divisor.get_mpz());
-            if (exp > static_cast<mp_bitcnt_t>(std::numeric_limits<int>::max()))
-                throw std::overflow_error("ClassGroup: prime ideal exponent exceeds int");
+        const auto p = pi.p;
+        if (std::binary_search(monic_simple_roots.begin(), monic_simple_roots.end(), pi)) {
+            // Write a - b*alpha = p^t (x - y*alpha) with x,y primitive at p.
+            // The rational factor contributes t at every simple root above p.
+            int64_t x = a;
+            uint64_t y = b;
+            int common = 0;
+            while (y % p == 0 && x % static_cast<int64_t>(p) == 0) {
+                x /= static_cast<int64_t>(p);
+                y /= p;
+                ++common;
+            }
+            int exp = common;
+            if (common == 0 || matches_root(x, y, pi)) {
+                // Only this root divides the primitive part. Remove the p-power
+                // once; the original norm includes degree*t from the common factor.
+                mpz_set_ui(divisor.get_mpz(), p);
+                const auto total = mpz_remove(norm.get_mpz(), norm.get_mpz(), divisor.get_mpz());
+                const auto adjustment =
+                    static_cast<uint64_t>(ctx.degree() - 1) * static_cast<uint64_t>(common);
+                if (total < adjustment || total - adjustment > std::numeric_limits<int>::max())
+                    throw std::overflow_error("ClassGroup: prime ideal exponent exceeds int");
+                exp = static_cast<int>(total - adjustment);
+            }
             if (exp != 0)
-                result[pi] = static_cast<int>(exp);
+                result[pi] = exp;
             continue;
         }
 
