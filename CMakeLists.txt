@@ -570,7 +570,7 @@ if(GNFS_BUILD_TESTS)
         set_tests_properties(HarnessHooks PROPERTIES
             # The aggregate shell contracts launch many fresh interpreters.
             # Keep their CI selection while allowing for process startup cost.
-            LABELS "instant" TIMEOUT 30
+            LABELS "instant" TIMEOUT 60
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 

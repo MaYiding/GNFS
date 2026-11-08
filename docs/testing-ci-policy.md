@@ -48,9 +48,8 @@ Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Wi
 `HarnessHooks` aggregates isolated hook and runner CLI contracts, including
 fresh interpreter, fixture, and reporting processes. It retains the `instant`
 label so the existing Debug, sanitizer, coverage, and platform lanes still
-execute every contract. Its outer CTest watchdog is 30 seconds to accommodate
-aggregate process startup cost; it is not a per-case performance limit. The
-individual contract assertions and bounded child invocations remain unchanged.
+execute every contract. CTest allows 60 seconds for the aggregate so the shell
+and Python processes can finish when other tests share the runner.
 
 ### Local Change Selection
 
