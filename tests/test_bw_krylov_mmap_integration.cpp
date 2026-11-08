@@ -7,6 +7,8 @@
 
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/util/process.hpp>
+#include <gnfs/util/temp_path.hpp>
 
 #include "support/scoped_environment_stderr.hpp"
 #include "support/test_check.hpp"
@@ -14,11 +16,15 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -31,7 +37,6 @@ namespace {
 constexpr std::size_t kBaseRows = 5400;
 constexpr std::size_t kColumns = 5000;
 constexpr std::size_t kInjectedDependencies = 150;
-constexpr std::size_t kTotalRows = kBaseRows + kInjectedDependencies;
 
 using Dependencies = std::vector<std::vector<bool>>;
 
@@ -84,14 +89,15 @@ SparseMatrix build_large_matrix(std::size_t rows, std::size_t columns, std::size
     return matrix;
 }
 
-SolveResult run_solver(const SparseMatrix& matrix, std::size_t max_dependencies, StorageMode mode) {
+SolveResult run_solver(const SparseMatrix& matrix, std::size_t max_dependencies, StorageMode mode,
+                       const char* algorithm_name = nullptr) {
     const bool use_mmap = mode != StorageMode::memory;
     const bool use_compression = mode == StorageMode::mmap_zip;
     ScopedEnvironmentVariable mmap("GNFS_BW_KRYLOV_MMAP", use_mmap ? "1" : nullptr);
     ScopedEnvironmentVariable compression("GNFS_BW_KRYLOV_COMPRESS",
                                           use_compression ? "1" : nullptr);
     ScopedEnvironmentVariable streams("GNFS_BW_KRYLOV_STREAMS", "1");
-    ScopedEnvironmentVariable algorithm("GNFS_BW_ALGORITHM", nullptr);
+    ScopedEnvironmentVariable algorithm("GNFS_BW_ALGORITHM", algorithm_name);
 
     ScopedStderrCapture capture;
     BlockWiedemann solver;
@@ -138,11 +144,53 @@ void require_dependencies(const SparseMatrix& matrix, const SolveResult& result,
                           std::size_t expected_count) {
     GNFS_TEST_CHECK(result.dependencies.size() == expected_count);
     for (const auto& dependency : result.dependencies) {
-        GNFS_TEST_CHECK(dependency.size() == kTotalRows);
+        GNFS_TEST_CHECK(dependency.size() == matrix.num_rows());
         GNFS_TEST_CHECK(
             std::any_of(dependency.begin(), dependency.end(), [](bool value) { return value; }));
         GNFS_TEST_CHECK(verify_dependency(matrix, dependency));
     }
+}
+
+struct UnicodeScratchDirectory {
+    std::filesystem::path path;
+
+    UnicodeScratchDirectory() {
+        const auto parent = gnfs::util::temp_directory_path();
+        const auto prefix = parent / std::filesystem::path(u8"gnfs_bw_\u77e9\u9635_\U0001d7d8");
+        for (unsigned attempt = 0; attempt < 32; ++attempt) {
+            path = prefix;
+            path += "_" + std::to_string(gnfs::util::process_id()) + "_" + std::to_string(attempt);
+            std::error_code error;
+            if (std::filesystem::create_directory(path, error)) {
+                return;
+            }
+            if (error && error != std::errc::file_exists) {
+                throw std::filesystem::filesystem_error("reserve Krylov scratch directory", path,
+                                                        error);
+            }
+        }
+        throw std::runtime_error("could not reserve a Krylov scratch directory");
+    }
+
+    UnicodeScratchDirectory(const UnicodeScratchDirectory&) = delete;
+    UnicodeScratchDirectory& operator=(const UnicodeScratchDirectory&) = delete;
+
+    ~UnicodeScratchDirectory() {
+        std::error_code ignored;
+        std::filesystem::remove_all(path, ignored);
+    }
+};
+
+void check_other_mmap_route(const SparseMatrix& matrix, const char* algorithm,
+                            std::string_view marker) {
+    const auto memory = run_solver(matrix, 1, StorageMode::memory, algorithm);
+    const auto mmap = run_solver(matrix, 1, StorageMode::mmap, algorithm);
+    GNFS_TEST_CHECK(mmap.stderr_output.find(marker) != std::string::npos);
+    GNFS_TEST_CHECK(mmap.stderr_output.find(", mmap)") != std::string::npos);
+    require_dependencies(matrix, mmap, 1);
+    GNFS_TEST_CHECK(memory.dependencies == mmap.dependencies);
+    std::cout << "  " << marker << " Unicode mmap: verified the same dependency as memory ("
+              << matrix.num_rows() << " x " << matrix.num_cols() << ")\n";
 }
 
 void test_storage_modes_are_bit_for_bit_identical() {
@@ -172,7 +220,26 @@ int main() {
     try {
         std::cout << "===== BW Krylov mmap Integration Tests =====\n";
 
+        const UnicodeScratchDirectory scratch;
+#ifdef _WIN32
+        // The Windows temporary-directory API reads the wide process environment.
+        const wchar_t* previous = ::_wgetenv(L"TMP");
+        struct RestoreTmp {
+            std::wstring previous;
+            ~RestoreTmp() {
+                (void)::_wputenv_s(L"TMP", previous.c_str());
+            }
+        } restore{previous ? previous : L""};
+        GNFS_TEST_CHECK(::_wputenv_s(L"TMP", scratch.path.c_str()) == 0);
+#else
+        ScopedEnvironmentVariable temp("TMPDIR", scratch.path.c_str());
+#endif
+        GNFS_TEST_CHECK(
+            std::filesystem::equivalent(gnfs::util::temp_directory_path(), scratch.path));
         test_storage_modes_are_bit_for_bit_identical();
+        check_other_mmap_route(build_large_matrix(16, 16, 4984, 22222), "scalar", "[BW-scalar]");
+        check_other_mmap_route(build_large_matrix(64, 5000, 64, 22222), nullptr, "[BW-thin]");
+        GNFS_TEST_CHECK(std::filesystem::is_empty(scratch.path));
 
         std::cout << "===== All BW Krylov mmap integration tests PASSED =====\n";
         return 0;
