@@ -312,7 +312,7 @@ public:
 
         // 添加类群特征列
         if (class_group) {
-            result.mapping.num_class_group_columns = class_group->num_generators();
+            result.mapping.num_class_group_columns = class_group->num_binary_characters();
         }
 
         // 添加 Schirokauer map 列
@@ -331,7 +331,7 @@ public:
         result.row_to_relation.resize(relations.size());
 
         // 主循环并行化:每行 i 独立写入 SparseMatrix::row(i) — vector<SparseRow>
-        // 元素互不冲突;build_row_with_qc / class_group->compute_character /
+        // 元素互不冲突;build_row_with_qc / class_group->compute_binary_characters /
         // schirokauer->compute_flat 全部 const,无内部状态修改。
         // SchirokauerMap::compute_flat 1M+ relations 是热点。
         gnfs::util::ThreadPool pool(0);
@@ -340,12 +340,12 @@ public:
 
             // ClassGroup characters: χ is a homomorphism, so for merged relation
             // χ(∏ x_i) = Σ χ(x_i) mod 2  →  XOR individual character bits
-            if (class_group && class_group->num_generators() > 0) {
+            if (class_group && class_group->num_binary_characters() > 0) {
                 const auto& rel = relations[i];
-                auto cg_chars = class_group->compute_character(rel.a, rel.b);
+                auto cg_chars = class_group->compute_binary_characters(rel.a, rel.b);
 
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                    auto extra_chars = class_group->compute_character(ea, eb);
+                    auto extra_chars = class_group->compute_binary_characters(ea, eb);
                     for (size_t j = 0; j < cg_chars.size(); ++j) {
                         cg_chars[j] = cg_chars[j] ^ extra_chars[j];
                     }
@@ -499,7 +499,7 @@ public:
         setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_prime_roots);
 
         if (class_group) {
-            result.mapping.num_class_group_columns = class_group->num_generators();
+            result.mapping.num_class_group_columns = class_group->num_binary_characters();
         }
         if (schirokauer) {
             result.mapping.num_schirokauer_columns = schirokauer->num_columns();
@@ -526,10 +526,10 @@ public:
             Relation rel = source.read(i);
             build_row_with_qc(result.matrix.row(i), rel, fb, ctx, result.mapping);
 
-            if (class_group && class_group->num_generators() > 0) {
-                auto cg_chars = class_group->compute_character(rel.a, rel.b);
+            if (class_group && class_group->num_binary_characters() > 0) {
+                auto cg_chars = class_group->compute_binary_characters(rel.a, rel.b);
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                    auto extra_chars = class_group->compute_character(ea, eb);
+                    auto extra_chars = class_group->compute_binary_characters(ea, eb);
                     for (std::size_t j = 0; j < cg_chars.size(); ++j) {
                         cg_chars[j] = cg_chars[j] ^ extra_chars[j];
                     }

@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <gmp.h>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -141,6 +143,35 @@ struct IdealClass {
     }
 };
 
+namespace detail {
+
+/// Finite factors of a Smith presentation, supplied in diagonal order.
+struct ClassGroupTorsion {
+    uint32_t order = 1;
+    size_t binary_rank = 0;
+
+    void add_nontrivial_factor(mpz_srcptr factor) {
+        if (mpz_even_p(factor))
+            ++binary_rank;
+        // The public order estimate saturates; each individual factor remains exact.
+        const uint32_t limit = std::numeric_limits<uint32_t>::max();
+        if (mpz_cmp_ui(factor, limit / order) > 0)
+            order = limit;
+        else
+            order *= static_cast<uint32_t>(mpz_get_ui(factor));
+    }
+
+    [[nodiscard]] std::vector<bool> binary_parities(std::vector<bool> parities) const {
+        // Each Smith invariant divides the next, so the even factors form a suffix.
+        if (parities.size() > binary_rank)
+            parities.erase(parities.begin(),
+                           parities.end() - static_cast<std::ptrdiff_t>(binary_rank));
+        return parities;
+    }
+};
+
+} // namespace detail
+
 /// Configuration for class group computation
 struct ClassGroupConfig {
     bool verbose = false;
@@ -162,7 +193,7 @@ public:
 
     /// Get the class number
     [[nodiscard]] uint32_t class_number() const {
-        return class_number_;
+        return torsion_.order;
     }
 
     /// Get the discriminant
@@ -175,7 +206,7 @@ public:
         return minkowski_bound_;
     }
 
-    /// Get the number of class group generators (for character columns)
+    /// Get the number of nontrivial cyclic factors in the computed presentation.
     [[nodiscard]] size_t num_generators() const {
         return generators_.size();
     }
@@ -185,7 +216,7 @@ public:
     [[nodiscard]] std::vector<bool> compute_character(int64_t a, uint64_t b) const {
         std::vector<bool> result(generators_.size(), false);
 
-        if (class_number_ == 1 || generators_.empty()) {
+        if (generators_.empty()) {
             return result; // Trivial class group
         }
 
@@ -199,6 +230,19 @@ public:
         return result;
     }
 
+    /// Number of even-order cyclic factors represented in the binary matrix.
+    [[nodiscard]] size_t num_binary_characters() const {
+        return torsion_.binary_rank;
+    }
+
+    /// Generator parities for the even-order factors, in Smith diagonal order.
+    /// Uses the same prime-ideal representatives as compute_character().
+    [[nodiscard]] std::vector<bool> compute_binary_characters(int64_t a, uint64_t b) const {
+        if (torsion_.binary_rank == 0)
+            return {};
+        return torsion_.binary_parities(compute_character(a, b));
+    }
+
     /// Get the list of generator prime ideals
     [[nodiscard]] const std::vector<PrimeIdeal>& generators() const {
         return generators_;
@@ -210,7 +254,7 @@ private:
 
     Integer discriminant_;
     double minkowski_bound_ = 0.0;
-    uint32_t class_number_ = 1;
+    detail::ClassGroupTorsion torsion_;
     std::vector<PrimeIdeal> generators_;
     // Simple roots of a monic polynomial in the enumeration order (p, r).
     std::vector<PrimeIdeal> simple_roots_;
@@ -236,7 +280,6 @@ private:
 
         if (minkowski_bound_ < 2) {
             // Class number is 1
-            class_number_ = 1;
             return;
         }
 
@@ -244,7 +287,6 @@ private:
         auto prime_ideals = find_prime_ideals_up_to(static_cast<uint32_t>(prime_bound));
 
         if (prime_ideals.empty()) {
-            class_number_ = 1;
             return;
         }
 
@@ -609,7 +651,6 @@ private:
         }
 
         if (relations.empty()) {
-            class_number_ = 1;
             return;
         }
 
@@ -620,12 +661,7 @@ private:
                 continue;
 
             generators_.push_back(prime_ideals[k]);
-            // Preserve the public uint32_t estimate while reducing over exact integers.
-            const uint32_t limit = std::numeric_limits<uint32_t>::max();
-            if (mpz_cmp_ui(factor, limit / class_number_) > 0)
-                class_number_ = limit;
-            else
-                class_number_ *= static_cast<uint32_t>(mpz_get_ui(factor));
+            torsion_.add_nontrivial_factor(factor);
         }
     }
 
