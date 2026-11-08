@@ -825,6 +825,38 @@ void test_ramified_quadratic_class_group() {
     TEST_PASS("quadratic ramified valuations in public relations and characters");
 }
 
+void test_ramified_quadratic_index_primes() {
+    const PrimeIdeal root{3, 0, 1};
+    const std::array<uint32_t, 1> ramified{3};
+    for (auto [radicand, valuation] : {std::pair{27, 3}, std::pair{243, 5}}) {
+        // In Q(sqrt(3)), pi=sqrt(3) generates the prime above 3 and alpha=pi^valuation.
+        // The valuations of a and b*alpha have opposite parity whenever both are nonzero.
+        PolynomialContext ctx(I(10000 - radicand), {I(-radicand), I(0), I(1)}, I(100));
+        const auto exponent = [&](int64_t a, uint64_t b) {
+            const auto powers =
+                gnfs::sqrt::detail::class_group_ideal_exponents(ctx, a, b, {root}, {}, ramified);
+            return powers.contains(root) ? powers.at(root) : 0;
+        };
+        TEST_ASSERT(exponent(3, 1) == 2, "the rational prime has valuation two");
+        TEST_ASSERT(exponent(0, 1) == valuation, "valuation of alpha at the order index");
+        TEST_ASSERT(exponent(-9, 1) == std::min(4, valuation), "distinct valuations cannot cancel");
+        TEST_ASSERT(exponent(27, 0) == 6, "valuation of a rational power");
+        TEST_ASSERT(exponent(0, std::numeric_limits<uint64_t>::max()) == valuation + 2,
+                    "the full-width denominator has one factor of three");
+        TEST_ASSERT(exponent(std::numeric_limits<int64_t>::min(), 1) == 0,
+                    "the signed endpoint is a unit at three");
+    }
+    // The discriminant is -7*5^5. Multiplication by 5 adds two at the
+    // unique field prime above 5, so the rational prime has trivial parity.
+    PolynomialContext fifth(I(5489), {I(5481), I(7), I(1)}, I(1));
+    ClassGroupConfig config;
+    config.max_primes = 3;
+    ClassGroup group(fifth, config);
+    TEST_ASSERT(group.compute_character(5, 0) == group.compute_character(1, 0),
+                "recognize the ramified field prime at discriminant valuation five");
+    TEST_PASS("ramified valuations at quadratic order indices");
+}
+
 void test_inert_quadratic_index_primes() {
     // Both defining polynomials generate Q(sqrt(-2)), whose field discriminant
     // is -8 and whose Minkowski bound is below 2. The repeated root at 5
@@ -964,6 +996,7 @@ int main() {
     test_simple_root_relation_collection();
     test_ramified_quadratic_exponents();
     test_ramified_quadratic_class_group();
+    test_ramified_quadratic_index_primes();
     test_inert_quadratic_index_primes();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();

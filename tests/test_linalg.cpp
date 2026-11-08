@@ -649,6 +649,43 @@ void test_matrix_builder_sign_wide_b() {
     std::cout << "  Wide b sign column: PASSED" << std::endl;
 }
 
+void test_ramified_index_square_dependency() {
+    using core::Integer;
+    core::PolynomialContext ctx(Integer(299), {Integer(-27), Integer(0), Integer(1)}, Integer(25));
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 31;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    const core::ABPair left{0, 1}, right{36, 13};
+    const auto first = cofactorizer.verify(left.a, left.b);
+    const auto second = cofactorizer.verify(right.a, right.b);
+    GNFS_TEST_CHECK(first && first->is_full() && second && second->is_full());
+    const std::vector<core::Relation> relations{*first, *second};
+
+    // (-alpha)(36-13*alpha) = (18-alpha)^2, and (-25)(-289) = 85^2.
+    gnfs::sqrt::NumberField field(ctx);
+    const auto root = field.from_ab(18, 1);
+    const auto product =
+        field.multiply(field.from_ab(left.a, left.b), field.from_ab(right.a, right.b));
+    GNFS_TEST_CHECK(product.coefficients() == field.multiply(root, root).coefficients());
+    const Integer rational_root(85);
+    GNFS_TEST_CHECK(ctx.rational_value(left.a, left.b) * ctx.rational_value(right.a, right.b) ==
+                    rational_root * rational_root);
+    GNFS_TEST_CHECK(core::gcd(rational_root + field.evaluate_at_m(root), ctx.n()) == Integer(13));
+    GNFS_TEST_CHECK(core::gcd(rational_root - field.evaluate_at_m(root), ctx.n()) == Integer(23));
+
+    MatrixBuilderConfig config;
+    config.include_class_group = true;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(relations, fb, ctx);
+    const auto streaming =
+        builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+    GNFS_TEST_CHECK(vector.matrix.row(0).indices() == vector.matrix.row(1).indices());
+    GNFS_TEST_CHECK(streaming.matrix.row(0).indices() == streaming.matrix.row(1).indices());
+}
+
 // Test dependency finding
 void test_find_dependencies() {
     std::cout << "Testing find_dependencies..." << std::endl;
@@ -1775,6 +1812,7 @@ int main() {
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();
+    test_ramified_index_square_dependency();
     test_find_dependencies();
     test_thin_matrix_dependencies();
     test_verify_dependency();

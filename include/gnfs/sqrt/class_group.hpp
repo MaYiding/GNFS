@@ -45,8 +45,8 @@ struct PrimeIdeal {
 namespace detail {
 
 /// Compute exponents for the selected degree-one ideals in (a - b*alpha).
-/// Both lookup tables are sorted. ramified_primes contains only odd primes
-/// dividing the discriminant of a monic quadratic exactly once.
+/// Both lookup tables are sorted. ramified_primes contains odd primes with
+/// odd valuation in the discriminant of a monic quadratic.
 [[nodiscard]] inline std::map<PrimeIdeal, int>
 class_group_ideal_exponents(const PolynomialContext& ctx, int64_t a, uint64_t b,
                             const std::vector<PrimeIdeal>& prime_ideals,
@@ -599,7 +599,9 @@ private:
         return result;
     }
 
-    /// Append the degree-one ideals (p, alpha - r) for roots r of f mod p.
+    /// Append degree-one candidates indexed by roots of f modulo p.
+    /// At a ramified quadratic index prime, the root labels the field prime by
+    /// contraction. The ideal (p, alpha - r) can extend to its square.
     void append_prime_ideals(uint32_t p, std::vector<PrimeIdeal>& ideals) {
         uint32_t d = ctx_.degree();
 
@@ -642,10 +644,10 @@ private:
                     Integer unit;
                     const auto valuation =
                         mpz_remove(unit.get_mpz(), discriminant_.get_mpz(), p_int.get_mpz());
-                    if (valuation == 1) {
+                    if (valuation % 2 != 0) {
+                        // An odd valuation puts p in the square-free part of the discriminant.
                         ramified_primes_.push_back(p);
-                    } else if (valuation % 2 == 0 &&
-                               mpz_legendre(unit.get_mpz(), p_int.get_mpz()) < 0) {
+                    } else if (mpz_legendre(unit.get_mpz(), p_int.get_mpz()) < 0) {
                         // The field is Q(sqrt(discriminant)). Removing an even
                         // p-power leaves a nonsquare unit, so p has residue degree two.
                         continue;
