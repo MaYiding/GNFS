@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -41,11 +42,13 @@ struct PrimeIdeal {
 namespace detail {
 
 /// Compute exponents for the selected degree-one ideals in (a - b*alpha).
-/// monic_simple_roots contains the simple roots of a monic f in (p, r) order.
+/// Both lookup tables are sorted. ramified_primes contains only odd primes
+/// dividing the discriminant of a monic quadratic exactly once.
 [[nodiscard]] inline std::map<PrimeIdeal, int>
 class_group_ideal_exponents(const PolynomialContext& ctx, int64_t a, uint64_t b,
                             const std::vector<PrimeIdeal>& prime_ideals,
-                            const std::vector<PrimeIdeal>& monic_simple_roots) {
+                            const std::vector<PrimeIdeal>& monic_simple_roots,
+                            std::span<const uint32_t> ramified_primes = {}) {
 
     std::map<PrimeIdeal, int> result;
 
@@ -59,6 +62,13 @@ class_group_ideal_exponents(const PolynomialContext& ctx, int64_t a, uint64_t b,
         return x_mod_p == (y % pi.p) * pi.r % pi.p;
     };
     Integer divisor;
+    const auto norm_exponent = [&](uint32_t p, uint64_t adjustment) {
+        mpz_set_ui(divisor.get_mpz(), p);
+        const auto total = mpz_remove(norm.get_mpz(), norm.get_mpz(), divisor.get_mpz());
+        if (total < adjustment || total - adjustment > std::numeric_limits<int>::max())
+            throw std::overflow_error("ClassGroup: prime ideal exponent exceeds int");
+        return static_cast<int>(total - adjustment);
+    };
     for (const auto& pi : prime_ideals) {
         if (pi.degree != 1 || !matches_root(a, b, pi))
             continue;
@@ -79,16 +89,19 @@ class_group_ideal_exponents(const PolynomialContext& ctx, int64_t a, uint64_t b,
             if (common == 0 || matches_root(x, y, pi)) {
                 // Only this root divides the primitive part. Remove the p-power
                 // once; the original norm includes degree*t from the common factor.
-                mpz_set_ui(divisor.get_mpz(), p);
-                const auto total = mpz_remove(norm.get_mpz(), norm.get_mpz(), divisor.get_mpz());
                 const auto adjustment =
                     static_cast<uint64_t>(ctx.degree() - 1) * static_cast<uint64_t>(common);
-                if (total < adjustment || total - adjustment > std::numeric_limits<int>::max())
-                    throw std::overflow_error("ClassGroup: prime ideal exponent exceeds int");
-                exp = static_cast<int>(total - adjustment);
+                exp = norm_exponent(p, adjustment);
             }
             if (exp != 0)
                 result[pi] = exp;
+            continue;
+        }
+
+        if (std::binary_search(ramified_primes.begin(), ramified_primes.end(), p)) {
+            // The unique prime above p has residue degree one, so its exponent
+            // equals the full norm valuation, including twice the rational content.
+            result[pi] = norm_exponent(p, 0);
             continue;
         }
 
@@ -202,8 +215,8 @@ public:
             return result; // Trivial class group
         }
 
-        const auto powers =
-            detail::class_group_ideal_exponents(ctx_, a, b, generators_, simple_roots_);
+        const auto powers = detail::class_group_ideal_exponents(ctx_, a, b, generators_,
+                                                                simple_roots_, ramified_primes_);
         for (size_t i = 0; i < generators_.size(); ++i) {
             const auto it = powers.find(generators_[i]);
             result[i] = it != powers.end() && (it->second % 2 != 0);
@@ -227,6 +240,7 @@ private:
     std::vector<PrimeIdeal> generators_;
     // Simple roots of a monic polynomial in the enumeration order (p, r).
     std::vector<PrimeIdeal> simple_roots_;
+    std::vector<uint32_t> ramified_primes_;
 
     // Map from prime ideal to its order in the class group
     std::map<PrimeIdeal, int> ideal_orders_;
@@ -574,8 +588,15 @@ private:
                 for (uint32_t i = d; i > 0; --i) {
                     derivative = (derivative * x + (i * c_mod_p[i]) % p64) % p64;
                 }
-                if (derivative != 0)
+                if (derivative != 0) {
                     simple_roots_.push_back(ideal);
+                } else if (d == 2 && p != 2) {
+                    // The repeated root implies p divides the discriminant.
+                    // If p^2 does not, p is ramified in the quadratic field.
+                    const Integer square(p64 * p64);
+                    if (!mpz_divisible_p(discriminant_.get_mpz(), square.get_mpz()))
+                        ramified_primes_.push_back(p);
+                }
             }
         }
     }
@@ -597,7 +618,8 @@ private:
             for (int b = 1; b <= search_bound; ++b) {
                 // Factor the ideal (a - b*alpha)
                 auto factorization = detail::class_group_ideal_exponents(
-                    ctx_, a, static_cast<uint64_t>(b), prime_ideals, simple_roots_);
+                    ctx_, a, static_cast<uint64_t>(b), prime_ideals, simple_roots_,
+                    ramified_primes_);
 
                 if (!factorization.empty()) {
                     // Convert to vector indexed by prime_ideals

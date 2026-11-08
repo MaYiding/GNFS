@@ -2,6 +2,7 @@
 // Tests cover degree 3, 4, 5, 6 polynomials with known reference values.
 #include "gnfs/sqrt/class_group.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -656,6 +657,75 @@ void test_simple_root_relation_collection() {
     TEST_PASS("simple-root valuations in collected class group relations");
 }
 
+void test_ramified_quadratic_exponents() {
+    // For f=x^2+11x-10, the discriminant is 7*23 and the repeated root at 7 is 5.
+    PolynomialContext ctx(I(16), {I(-10), I(11), I(1)}, I(2));
+    const PrimeIdeal ideal{7, 5, 1};
+    const std::array<uint32_t, 1> ramified{7};
+    const auto exponent = [&](int64_t a, uint64_t b) {
+        const auto powers =
+            gnfs::sqrt::detail::class_group_ideal_exponents(ctx, a, b, {ideal}, {}, ramified);
+        return powers.contains(ideal) ? powers.at(ideal) : 0;
+    };
+
+    // 4F(A,B) = (2A+11B)^2 - 161B^2. For primitive (A,B) at 7 the
+    // valuation is one at the repeated root and zero elsewhere.
+    for (int a = -12; a <= 12; ++a) {
+        for (unsigned b = 0; b <= 12; ++b) {
+            if (a % 7 == 0 && b % 7 == 0)
+                continue;
+            const int primitive = (a - 5 * static_cast<int>(b)) % 7 == 0;
+            for (int content = 0, scale = 1; content <= 2; ++content, scale *= 7) {
+                TEST_ASSERT(exponent(a * scale, b * static_cast<unsigned>(scale)) ==
+                                2 * content + primitive,
+                            "ramified valuation of a scaled primitive pair");
+            }
+        }
+    }
+    TEST_ASSERT(exponent(0, 0) == 0, "zero norm has no coordinates");
+
+    // For x^2+p at its unique root 0, F(0,p^2)=p^5, with p^2 above INT64_MAX.
+    constexpr uint32_t p = 4294967291U;
+    const uint64_t square = static_cast<uint64_t>(p) * p;
+    const PrimeIdeal root{p, 0, 1};
+    const std::array<uint32_t, 1> large_ramified{p};
+    PolynomialContext large(Integer(uint64_t{p} + 1), {Integer(p), I(0), I(1)}, I(1));
+    const auto wide = gnfs::sqrt::detail::class_group_ideal_exponents(large, 0, square, {root}, {},
+                                                                      large_ramified);
+    TEST_ASSERT(wide.at(root) == 5, "ramified valuation with full-width denominator");
+    TEST_PASS("quadratic ramified valuations of primitive and scaled elements");
+}
+
+void test_ramified_quadratic_class_group() {
+    // At (2,0), (2,1), (3,0), the collected rows for (-10,2), (-10,6),
+    // (-9,1) are (1,3,0), (1,2,0), (0,4,1). Their determinant is -1.
+    PolynomialContext ctx(I(4), {I(-6), I(3), I(1)}, I(2));
+    ClassGroup collected(ctx);
+    TEST_ASSERT(collected.class_number() == 1, "the three collected coordinates span Z^3");
+
+    // The discriminant of x^2+33x+225 is 27*7. At the ramified prime
+    // multiplying by 7 adds two to the valuation, preserving every parity.
+    PolynomialContext character_ctx(I(259), {I(225), I(33), I(1)}, I(1));
+    ClassGroup characters(character_ctx);
+    TEST_ASSERT(characters.compute_character(7, 0) == characters.compute_character(1, 0),
+                "the ramified rational prime has even character exponents");
+    TEST_ASSERT(characters.compute_character(7, 7) == characters.compute_character(1, 1),
+                "common scaling preserves the character at a ramified root");
+
+    // At 7 the discriminant of x^2+23x-27 is 13*7^2, so its repeated
+    // root does not certify ramification. Keep the existing estimate there.
+    PolynomialContext uncertified(I(23), {I(-27), I(23), I(1)}, I(2));
+    ClassGroupConfig config;
+    config.max_primes = 3;
+    ClassGroup legacy(uncertified, config);
+    const auto bits = legacy.compute_character(7, 0);
+    for (size_t i = 0; i < bits.size(); ++i) {
+        TEST_ASSERT(bits[i] == (legacy.generators()[i].p == 7),
+                    "retain the estimate when the discriminant contains p^2");
+    }
+    TEST_PASS("quadratic ramified valuations in public relations and characters");
+}
+
 void test_compute_character_trivial_all_false() {
     auto ctx = make_cubic_131();
     ClassGroup cg(ctx);
@@ -733,6 +803,8 @@ int main() {
     test_prime_search_domain();
     test_simple_root_ideal_exponents();
     test_simple_root_relation_collection();
+    test_ramified_quadratic_exponents();
+    test_ramified_quadratic_class_group();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
 
