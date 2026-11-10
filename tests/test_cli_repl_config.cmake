@@ -1,3 +1,19 @@
+function(run_repl_session input timeout result)
+    execute_process(
+        COMMAND "${CLI}" --interactive --lang en
+        INPUT_FILE "${input}"
+        OUTPUT_VARIABLE output
+        ERROR_VARIABLE diagnostic
+        RESULT_VARIABLE status
+        TIMEOUT ${timeout})
+    file(REMOVE "${input}")
+    if(NOT status STREQUAL "0")
+        message(FATAL_ERROR "Interactive session exited with ${status}: ${diagnostic}")
+    endif()
+    string(REPLACE "\r\n" "\n" output "${output}")
+    set(${result} "${output}" PARENT_SCOPE)
+endfunction()
+
 # Feed a complete interactive session to the built CLI, including aliases.
 string(RANDOM LENGTH 20 suffix)
 set(input "${CMAKE_CURRENT_BINARY_DIR}/repl-config-${suffix}.txt")
@@ -29,19 +45,7 @@ json
 360
 quit
 ]=])
-execute_process(
-    COMMAND "${CLI}" --interactive --lang en
-    INPUT_FILE "${input}"
-    OUTPUT_VARIABLE output
-    ERROR_VARIABLE diagnostic
-    RESULT_VARIABLE status
-    TIMEOUT 12)
-file(REMOVE "${input}")
-
-if(NOT status STREQUAL "0")
-    message(FATAL_ERROR "Interactive session exited with ${status}: ${diagnostic}")
-endif()
-string(REPLACE "\r\n" "\n" output "${output}")
+run_repl_session("${input}" 12 output)
 foreach(key IN ITEMS degree rational_bound algebraic_bound large_prime_bound)
     string(FIND "${output}" "Invalid value: Config: ${key} must be positive" index)
     if(index EQUAL -1)
@@ -68,4 +72,20 @@ list(LENGTH summaries summary_count)
 list(LENGTH default_summaries default_count)
 if(NOT summary_count EQUAL 2 OR NOT default_count EQUAL 2)
     message(FATAL_ERROR "Incorrect auto-detection summary in interactive config: ${output}")
+endif()
+
+# A redirected CRLF session starts with an empty line and a whitespace-only line.
+file(CONFIGURE OUTPUT "${input}" CONTENT "\n \t\nnot-a-number\nquiet\njson\n360\nquit\n"
+     NEWLINE_STYLE CRLF)
+file(READ "${input}" prefix LIMIT 6 HEX)
+run_repl_session("${input}" 6 output)
+
+if(NOT prefix STREQUAL "0d0a20090d0a")
+    message(FATAL_ERROR "Unexpected CRLF fixture bytes: ${prefix}")
+endif()
+string(REGEX MATCHALL "Error:" errors "${output}")
+list(LENGTH errors error_count)
+if(NOT error_count EQUAL 1 OR
+   NOT output MATCHES "Error: not-a-number" OR NOT output MATCHES "\"success\"[ \t]*:[ \t]*true")
+    message(FATAL_ERROR "CRLF session should reject only the nonempty invalid input: ${output}")
 endif()

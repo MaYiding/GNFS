@@ -452,16 +452,11 @@ static void run_repl() {
         if (!std::getline(std::cin, line))
             break;
 
-        // Trim
-        auto start = line.find_first_not_of(" \t");
+        constexpr std::string_view whitespace = " \t\r\n";
+        const auto start = line.find_first_not_of(whitespace);
         if (start == std::string::npos)
             continue;
-        line = line.substr(start);
-        auto end = line.find_last_not_of(" \t\r\n");
-        if (end != std::string::npos)
-            line = line.substr(0, end + 1);
-        if (line.empty())
-            continue;
+        line = line.substr(start, line.find_last_not_of(whitespace) - start + 1);
 
         if (line == "quit" || line == "exit" || line == "q")
             break;
@@ -623,9 +618,24 @@ static void run_repl() {
 // Main
 // ============================================================
 
+static bool flush_stdout() {
+    return std::cout.flush() && std::fflush(stdout) == 0 && std::ferror(stdout) == 0;
+}
+
+static bool write_event_line(const std::string& event) {
+    std::cout << event << '\n';
+    return flush_stdout();
+}
+
+static int stdout_write_error() {
+    std::cerr << TR(S::ERR_WRITE_STDOUT) << '\n';
+    return 1;
+}
+
 static int cli_error(bool event_stream_enabled, std::string_view code, const std::string& message) {
     if (event_stream_enabled) {
-        std::cout << event_stream::error_event(code, message) << '\n' << std::flush;
+        if (!write_event_line(event_stream::error_event(code, message)))
+            return stdout_write_error();
     } else {
         std::cerr << message << '\n';
     }
@@ -843,11 +853,10 @@ int main(int argc, char* argv[]) {
         Pipeline::select_method(n.bit_length(), n_digits, final_config.method);
 
     if (event_stream_enabled) {
-        std::cout << event_stream::started_event(normalized_number, n.bit_length(), n_digits,
-                                                 selected_method, selection_reason,
-                                                 complete_factorization)
-                  << '\n'
-                  << std::flush;
+        if (!write_event_line(event_stream::started_event(
+                normalized_number, n.bit_length(), n_digits, selected_method, selection_reason,
+                complete_factorization)))
+            return stdout_write_error();
     }
     if (!quiet) {
         print_banner();
@@ -863,7 +872,7 @@ int main(int argc, char* argv[]) {
     auto event_mutex = std::make_shared<std::mutex>();
     auto emit_event = [event_mutex](const std::string& event) {
         std::lock_guard<std::mutex> lock(*event_mutex);
-        std::cout << event << '\n' << std::flush;
+        return write_event_line(event);
     };
     ProgressCallback progress_callback;
     LogCallback log_callback;
@@ -895,7 +904,8 @@ int main(int argc, char* argv[]) {
         }
 
         if (event_stream_enabled) {
-            emit_event(event_stream::result_event(result));
+            if (!emit_event(event_stream::result_event(result)))
+                return stdout_write_error();
             return result.success ? 0 : 1;
         }
 
@@ -925,10 +935,17 @@ int main(int argc, char* argv[]) {
                                  std::string(TR(S::ERR_OPEN_FILE)) + " " + output_file);
             }
             ofs << output;
+            ofs.close();
+            if (!ofs) {
+                return cli_error(false, "write_output_failed",
+                                 std::string(TR(S::ERR_WRITE_FILE)) + " " + output_file);
+            }
             if (!quiet)
                 std::cerr << TR(S::REPL_WRITTEN_TO) << " " << output_file << "\n";
         } else if (!output.empty()) {
             std::cout << output;
+            if (!flush_stdout())
+                return stdout_write_error();
         }
 
         return result.success ? 0 : 1;
