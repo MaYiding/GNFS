@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <thread>
@@ -394,6 +395,81 @@ void test_compute_alpha_parallel_equals_sequential() {
     std::cout << "  PASSED (all values within " << tol << " tolerance)" << std::endl;
 }
 
+void test_alpha_sign_invariance() {
+    std::cout << "Testing alpha invariance under polynomial negation..." << std::endl;
+
+    MurphyParams params;
+    params.alpha_bound = 31;
+    const char* const leading_coefficients[] = {"2",
+                                                "3",
+                                                "6",
+                                                "18446744073709551616",
+                                                "18446744073709551617",
+                                                "340282366920938463463374607431768211456"};
+    for (const char* leading : leading_coefficients) {
+        const IntPolynomial f(std::vector<Integer>{Integer(1), Integer(1), Integer(leading)});
+        auto negative = f.clone();
+        negative *= -1;
+
+        // Separate caches ensure a previous evaluation cannot hide a missed
+        // contribution when the two polynomials coincide modulo a prime.
+        MurphyEvaluator positive_evaluator(params);
+        MurphyEvaluator negative_evaluator(params);
+        const double alpha = positive_evaluator.compute_alpha(f);
+        const double negative_alpha = negative_evaluator.compute_alpha(negative);
+        GNFS_TEST_CHECK(std::isfinite(alpha));
+        GNFS_TEST_CHECK(std::isfinite(negative_alpha));
+        GNFS_TEST_CHECK(std::abs(alpha - negative_alpha) < 1e-12);
+
+        const double alpha_small = positive_evaluator.compute_alpha(f, 7);
+        const double negative_alpha_small = negative_evaluator.compute_alpha(negative, 7);
+        GNFS_TEST_CHECK(std::abs(alpha_small - negative_alpha_small) < 1e-12);
+        GNFS_TEST_CHECK(std::abs(positive_evaluator.compute_alpha(f, 31) - alpha) < 1e-12);
+        GNFS_TEST_CHECK(std::abs(negative_evaluator.compute_alpha(negative, 31) - negative_alpha) <
+                        1e-12);
+    }
+
+    std::cout << "  PASSED" << std::endl;
+}
+
+void test_alpha_projective_root_coefficient_domains() {
+    std::cout << "Testing projective roots for signed and wide leading coefficients..."
+              << std::endl;
+
+    MurphyParams params;
+    params.alpha_bound = 2;
+    struct Case {
+        const char* leading;
+        bool divisible_by_two;
+    };
+    const Case cases[] = {{"2", true},
+                          {"3", false},
+                          {"18446744073709551616", true},
+                          {"18446744073709551617", false},
+                          {"340282366920938463463374607431768211456", true},
+                          {"340282366920938463463374607431768211457", false}};
+    for (const auto& example : cases) {
+        const IntPolynomial positive(
+            std::vector<Integer>{Integer(1), Integer(1), Integer(example.leading)});
+        // Modulo two, even leading coefficients give x+1: its simple affine
+        // root and projective root cancel the baseline contribution. Odd
+        // coefficients give x^2+x+1, with neither affine nor projective roots.
+        const double expected = example.divisible_by_two ? 0.0 : -std::log(2.0);
+        for (int sign : {1, -1}) {
+            auto f = positive.clone();
+            f *= sign;
+            MurphyEvaluator evaluator(params);
+            const double alpha = evaluator.compute_alpha(f);
+            GNFS_TEST_CHECK(std::isfinite(alpha));
+            GNFS_TEST_CHECK(std::abs(alpha - expected) < 1e-12);
+            GNFS_TEST_CHECK(std::abs(evaluator.compute_alpha(f, 2) - expected) < 1e-12);
+            GNFS_TEST_CHECK(evaluator.compute_alpha(f, 1) == 0.0);
+        }
+    }
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 void test_alpha_thread_env_boundaries() {
     std::cout << "Testing Murphy alpha thread ENV boundaries..." << std::endl;
 
@@ -431,6 +507,8 @@ int main() {
     test_quick_compare();
     test_concurrent_evaluation();
     test_compute_alpha_parallel_equals_sequential();
+    test_alpha_sign_invariance();
+    test_alpha_projective_root_coefficient_domains();
     test_alpha_thread_env_boundaries();
 
     std::cout << std::endl << "All Murphy evaluator tests passed!" << std::endl;
