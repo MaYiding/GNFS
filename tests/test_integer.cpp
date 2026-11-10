@@ -259,6 +259,9 @@ void test_arithmetic_domain_errors() {
     for (int exponent : {-3, 0, 3}) {
         expect_domain_error([&] { (void)powmod(Integer(2), Integer(exponent), Integer(0)); });
     }
+    for (int value : {0, 1, -1, 2, -2}) {
+        expect_domain_error([&] { (void)mod_inverse(Integer(value), Integer(0)); });
+    }
     for (int modulus : {4, -4}) {
         for (int base : {0, 2, -2}) {
             expect_domain_error(
@@ -269,6 +272,44 @@ void test_arithmetic_domain_errors() {
     expect_domain_error([] { (void)sqrt(Integer("-18446744073709551616")); });
 
     std::cout << "  Arithmetic domain errors: PASS" << std::endl;
+}
+
+void test_modular_inverse_values() {
+    std::cout << "Testing modular inverse values..." << std::endl;
+
+    // Enumerate the canonical residue independently of GMP's inverse routine.
+    for (int modulus = 2; modulus <= 17; ++modulus) {
+        for (int value = -20; value <= 20; ++value) {
+            int expected = 0;
+            for (int candidate = 1; candidate < modulus; ++candidate) {
+                if (((value * candidate) % modulus + modulus) % modulus == 1) {
+                    expected = candidate;
+                    break;
+                }
+            }
+            for (int sign : {-1, 1}) {
+                const Integer a(value);
+                const Integer m(sign * modulus);
+                GNFS_TEST_CHECK(mod_inverse(a, m) == Integer(expected));
+                GNFS_TEST_CHECK(a == Integer(value));
+                GNFS_TEST_CHECK(m == Integer(sign * modulus));
+            }
+        }
+    }
+    for (int modulus : {-1, 1}) {
+        for (int value : {-2, -1, 0, 1, 2})
+            GNFS_TEST_CHECK(mod_inverse(Integer(value), Integer(modulus)).is_zero());
+    }
+
+    // Two is invertible modulo every odd modulus, independently of primality.
+    const Integer modulus = pow(Integer(2), 256) - Integer(189);
+    const Integer expected = (modulus + Integer(1)) / Integer(2);
+    for (const Integer& m : {modulus, -modulus}) {
+        GNFS_TEST_CHECK(mod_inverse(Integer(2), m) == expected);
+        GNFS_TEST_CHECK(mod_inverse(Integer(-2), m) == modulus - expected);
+        GNFS_TEST_CHECK(mod_inverse(modulus, m).is_zero());
+    }
+    std::cout << "  Modular inverse values: PASS" << std::endl;
 }
 
 void test_sqrt_values() {
@@ -784,6 +825,7 @@ int main() {
     test_powmod();
     test_powmod_negative_exponents();
     test_arithmetic_domain_errors();
+    test_modular_inverse_values();
     test_sqrt_values();
     test_primality();
     test_stream_output();

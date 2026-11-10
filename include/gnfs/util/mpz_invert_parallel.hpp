@@ -100,6 +100,7 @@
 #include <gmp.h>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -134,20 +135,22 @@ inline MpzInvertBatchThreadsCache& mpz_invert_batch_threads_cache() noexcept {
 inline int parse_mpz_invert_batch_threads_env() noexcept {
     const char* env = std::getenv("GNFS_MPZ_INVERT_BATCH_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
     int parsed = std::atoi(env);
     if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+        return 1; // invalid / non-positive -> sequential
     }
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
-    if (parsed > cap) parsed = cap;
+    if (parsed > cap)
+        parsed = cap;
     return parsed;
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_MPZ_INVERT_BATCH_THREADS` env into a cached thread count.
 ///
@@ -158,12 +161,12 @@ inline int parse_mpz_invert_batch_threads_env() noexcept {
 [[nodiscard]] inline int mpz_invert_batch_threads() noexcept {
     auto& cache = detail::mpz_invert_batch_threads_cache();
     int cached = cache.value.load(std::memory_order_acquire);
-    if (cached != 0) return cached;
+    if (cached != 0)
+        return cached;
 
     const int parsed = detail::parse_mpz_invert_batch_threads_env();
     int expected = 0;
-    if (cache.value.compare_exchange_strong(expected, parsed,
-                                            std::memory_order_acq_rel,
+    if (cache.value.compare_exchange_strong(expected, parsed, std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
         return parsed;
     }
@@ -178,10 +181,13 @@ inline int parse_mpz_invert_batch_threads_env() noexcept {
 /// degrade to a single-task sequential run anyway.
 [[nodiscard]] inline int resolve_mpz_invert_batch_threads(std::size_t batch_size) noexcept {
     int threads = mpz_invert_batch_threads();
-    if (batch_size == 0) return 0;
-    if (threads <= 1) return 1;
+    if (batch_size == 0)
+        return 0;
+    if (threads <= 1)
+        return 1;
     auto b = static_cast<std::size_t>(threads);
-    if (b > batch_size) b = batch_size;
+    if (b > batch_size)
+        b = batch_size;
     return static_cast<int>(b);
 }
 
@@ -209,8 +215,8 @@ inline void mpz_invert_batch_threads_reset_env_cache_for_testing() noexcept {
 ///   - threads == 1 (default): sequential for-loop, no ThreadPool created
 ///   - threads >= 2:           ThreadPool dispatch via `submit()` +
 ///                             `future.get()`
-///   - empty bases vector:     no-op (no pool created, no writes); returns
-///                             empty success vector
+///   - empty bases vector:     no-op for any modulus (no pool created,
+///                             no writes); returns empty success vector
 ///   - single base:            always sequential (no ThreadPool overhead
 ///                             even when threads >= 2)
 ///
@@ -228,10 +234,11 @@ inline void mpz_invert_batch_threads_reset_env_cache_for_testing() noexcept {
 /// `test_mpz_invert_parallel.cpp::test_n1_vs_n4_parity` and
 /// `test_n1_vs_n_hw_parity` strictly enforce per-index equality.
 ///
-/// Preconditions:
-///   - `modulus > 0` (caller responsibility; `mpz_invert` requires a
-///     positive modulus, mirroring the existing `gnfs::core::modinv`
-///     contract).
+/// Domain handling:
+///   - A nonempty batch with zero modulus throws `std::domain_error`
+///     before resizing or writing `results`.
+///   - Nonzero moduli of either sign are supported; successful inverses
+///     are canonical residues modulo `|modulus|`.
 ///
 /// Exception propagation: GMP itself does not throw on inversion failure --
 /// it reports the failure via its int return value, which is captured into
@@ -245,6 +252,9 @@ inline std::vector<bool> parallel_mpz_invert(const std::vector<gnfs::core::Integ
     const std::size_t n = bases.size();
     if (n == 0) {
         return {};
+    }
+    if (modulus.is_zero()) {
+        throw std::domain_error("parallel_mpz_invert requires a nonzero modulus");
     }
 
     // Defensive resize: keep the dispatcher robust when caller passed an
@@ -265,9 +275,7 @@ inline std::vector<bool> parallel_mpz_invert(const std::vector<gnfs::core::Integ
     // task is never worth a pool spin-up.
     if (threads <= 1 || n == 1) {
         for (std::size_t i = 0; i < n; ++i) {
-            int rc = mpz_invert(results[i].get_mpz(),
-                                bases[i].get_mpz(),
-                                modulus.get_mpz());
+            int rc = mpz_invert(results[i].get_mpz(), bases[i].get_mpz(), modulus.get_mpz());
             // mpz_invert returns 0 when gcd(base, modulus) > 1 (no inverse).
             // On success it returns non-zero; we surface that as success[i].
             success[i] = (rc != 0);
@@ -279,9 +287,7 @@ inline std::vector<bool> parallel_mpz_invert(const std::vector<gnfs::core::Integ
     // workers than bases wastes resources and adds futex pressure for no
     // throughput gain.
     const std::size_t pool_size =
-        (static_cast<std::size_t>(threads) < n)
-            ? static_cast<std::size_t>(threads)
-            : n;
+        (static_cast<std::size_t>(threads) < n) ? static_cast<std::size_t>(threads) : n;
     gnfs::util::ThreadPool pool(static_cast<uint32_t>(pool_size));
 
     // success[i] is `std::vector<bool>` which packs bits and cannot have
@@ -301,9 +307,7 @@ inline std::vector<bool> parallel_mpz_invert(const std::vector<gnfs::core::Integ
         // race-free even though `results` itself is shared. `modulus` is
         // read-only and may be referenced from every worker.
         futures.push_back(pool.submit([&bases, &modulus, &results, &success_byte, i]() {
-            int rc = mpz_invert(results[i].get_mpz(),
-                                bases[i].get_mpz(),
-                                modulus.get_mpz());
+            int rc = mpz_invert(results[i].get_mpz(), bases[i].get_mpz(), modulus.get_mpz());
             success_byte[i] = (rc != 0) ? 1 : 0;
         }));
     }
@@ -338,4 +342,4 @@ inline std::vector<bool> parallel_mpz_invert(const std::vector<gnfs::core::Integ
     return success;
 }
 
-}  // namespace gnfs::util
+} // namespace gnfs::util

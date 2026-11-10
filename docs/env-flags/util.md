@@ -172,6 +172,13 @@ GNFS_MPZ_INVERT_BATCH_THREADS=8 ./gnfs <N>    # 8 workers
 unset GNFS_MPZ_INVERT_BATCH_THREADS           # same as N=1
 ```
 
+**输入域：** 空 `bases` 返回空成功标记，保留 `results`，不创建线程池；
+即使模数为零，空批次也保持此行为。非空批次遇到零模数时抛出
+`std::domain_error`，校验发生在输出扩容、写入和线程派发之前。
+非零模数按其绝对值求逆，因此负模数有效；模数 `1` 或 `-1` 的结果为零。
+标量入口 `gnfs::core::mod_inverse` 同样拒绝零模数；对于非零模数，
+仍以零值表示逆元不存在，或表示单位模数下的零余数。
+
 **与 W11 T3 powm dispatcher 的关键差异 — Failure semantics**:
 `mpz_invert(out, base, modulus)` 在 `gcd(base, modulus) != 1` 时返回 0
 (no inverse exists in (Z/modulusZ)^*). 这不是 "永远不发生" 的前置条件 —
@@ -243,11 +250,9 @@ sequential vs parallel agreement).
   modulus, results) -> std::vector<bool>` dispatcher +
   `resolve_mpz_invert_batch_threads(batch_size)` helper +
   `mpz_invert_batch_threads_reset_env_cache_for_testing()` test hook
-- `tests/test_mpz_invert_parallel.cpp` — 14 个测试 (5 env parsing 含 "12abc"
-  partial parse / empty / single base N=1 / single base N=4 no-stall / N=1
-  vs scalar mpz_invert reference / N=1 vs N=4 parity 200-bit prime modulus /
-  N=1 vs N=hw parity / composite modulus failure case 4-success/6-fail seq
-  vs par agreement / cache reset hook / perf info)
+- `tests/test_mpz_invert_parallel.cpp` 使用 `GNFS_TEST_CHECK`，在 Release 中
+  验证环境解析、空批、零模数拒绝与输出保留、负模数和单位模数、
+  顺序与并行求逆一致性，以及合数模数下的成功标记和既有失败槽位契约。
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   util 模块
 
