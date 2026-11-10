@@ -19,6 +19,7 @@
 // sequential path could appear at position 2 in the batched path. The
 // canonical comparison flattens that distinction.
 
+#include "support/test_check.hpp"
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sge_batch_pivots.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
@@ -89,12 +90,13 @@ Canonical canonicalize(const SGEResult& r) {
 
 bool canonical_eq(const Canonical& a, const Canonical& b, std::string* diff = nullptr) {
     auto fail = [&](const std::string& m) {
-        if (diff) *diff = m;
+        if (diff)
+            *diff = m;
         return false;
     };
     if (a.num_rows != b.num_rows) {
-        return fail("num_rows differs: " + std::to_string(a.num_rows) +
-                    " vs " + std::to_string(b.num_rows));
+        return fail("num_rows differs: " + std::to_string(a.num_rows) + " vs " +
+                    std::to_string(b.num_rows));
     }
     if (a.num_cols != b.num_cols) {
         return fail("num_cols differs");
@@ -113,11 +115,9 @@ bool canonical_eq(const Canonical& a, const Canonical& b, std::string* diff = nu
 
 // Build a deterministic synthetic matrix with mixed weight columns.
 // rows=R, cols=C. Each row gets `density` random column indices in [0,C).
-SparseMatrix build_random_matrix(size_t R, size_t C, size_t density,
-                                 uint64_t seed) {
+SparseMatrix build_random_matrix(size_t R, size_t C, size_t density, uint64_t seed) {
     std::mt19937_64 rng(seed);
-    std::uniform_int_distribution<uint32_t> col_dist(
-        0, static_cast<uint32_t>(C - 1));
+    std::uniform_int_distribution<uint32_t> col_dist(0, static_cast<uint32_t>(C - 1));
 
     SparseMatrix m(R, C);
     for (size_t r = 0; r < R; ++r) {
@@ -129,7 +129,8 @@ SparseMatrix build_random_matrix(size_t R, size_t C, size_t density,
         }
         std::sort(picked.begin(), picked.end());
         picked.erase(std::unique(picked.begin(), picked.end()), picked.end());
-        for (auto c : picked) m.set(r, c);
+        for (auto c : picked)
+            m.set(r, c);
     }
     return m;
 }
@@ -143,7 +144,7 @@ SGEResult run_with_batch(const SparseMatrix& m, int batch) {
     return SGE::preprocess(m, cfg);
 }
 
-}  // namespace
+} // namespace
 
 // 1) Baseline shape: N=1 on a hand-designed small matrix has known
 // elimination behaviour (matches the existing test_sge_weight2 sample).
@@ -151,11 +152,17 @@ void test_baseline_n1_shape() {
     std::cout << "Testing SGE batch_pivots: N=1 baseline shape..." << std::endl;
 
     SparseMatrix m(5, 6);
-    m.set(0, 0); m.set(0, 1); m.set(0, 5);
-    m.set(1, 0); m.set(1, 2);
-    m.set(2, 1); m.set(2, 3);
-    m.set(3, 2); m.set(3, 4);
-    m.set(4, 3); m.set(4, 5);
+    m.set(0, 0);
+    m.set(0, 1);
+    m.set(0, 5);
+    m.set(1, 0);
+    m.set(1, 2);
+    m.set(2, 1);
+    m.set(2, 3);
+    m.set(3, 2);
+    m.set(3, 4);
+    m.set(4, 3);
+    m.set(4, 5);
 
     auto r = run_with_batch(m, 1);
     assert(r.original_rows == 5);
@@ -168,10 +175,8 @@ void test_baseline_n1_shape() {
     assert(r.reduced_matrix.num_rows() <= 5);
     assert(r.reduced_matrix.num_cols() <= 6);
     assert(r.passes >= 1);
-    std::cout << "  Reduced shape (N=1): "
-              << r.reduced_matrix.num_rows() << "x"
-              << r.reduced_matrix.num_cols()
-              << " (w1=" << r.weight1_eliminated
+    std::cout << "  Reduced shape (N=1): " << r.reduced_matrix.num_rows() << "x"
+              << r.reduced_matrix.num_cols() << " (w1=" << r.weight1_eliminated
               << ", w2=" << r.weight2_merged << ")\n";
     std::cout << "  PASSED" << std::endl;
 }
@@ -179,21 +184,33 @@ void test_baseline_n1_shape() {
 // 2) Parity: N=8 produces the same canonical form as N=1 on a hand-designed
 // matrix. This verifies the algorithmic equivalence on a deterministic input.
 void test_parity_n8_handcrafted() {
-    std::cout << "Testing SGE batch_pivots: N=8 parity on hand-crafted matrix..."
-              << std::endl;
+    std::cout << "Testing SGE batch_pivots: N=8 parity on hand-crafted matrix..." << std::endl;
 
     // Mixed-density 10×8 matrix with both w1 and w2 columns.
     SparseMatrix m(10, 8);
-    m.set(0, 0); m.set(0, 2);
-    m.set(1, 0); m.set(1, 3); m.set(1, 7);
-    m.set(2, 1); m.set(2, 3);
-    m.set(3, 2); m.set(3, 4);
-    m.set(4, 4); m.set(4, 5);
-    m.set(5, 5); m.set(5, 6);
-    m.set(6, 6); m.set(6, 7);
-    m.set(7, 1); m.set(7, 2); m.set(7, 5);
-    m.set(8, 0); m.set(8, 4); m.set(8, 6);
-    m.set(9, 3); m.set(9, 7);
+    m.set(0, 0);
+    m.set(0, 2);
+    m.set(1, 0);
+    m.set(1, 3);
+    m.set(1, 7);
+    m.set(2, 1);
+    m.set(2, 3);
+    m.set(3, 2);
+    m.set(3, 4);
+    m.set(4, 4);
+    m.set(4, 5);
+    m.set(5, 5);
+    m.set(5, 6);
+    m.set(6, 6);
+    m.set(6, 7);
+    m.set(7, 1);
+    m.set(7, 2);
+    m.set(7, 5);
+    m.set(8, 0);
+    m.set(8, 4);
+    m.set(8, 6);
+    m.set(9, 3);
+    m.set(9, 7);
 
     auto seq = run_with_batch(m, 1);
     auto bat = run_with_batch(m, 8);
@@ -211,22 +228,16 @@ void test_parity_n8_handcrafted() {
         assert(false && "N=8 must produce canonical form equal to N=1");
     }
 
-    std::cout << "  N=1: " << seq.reduced_matrix.num_rows() << "x"
-              << seq.reduced_matrix.num_cols() << " (w1="
-              << seq.weight1_eliminated << ", w2=" << seq.weight2_merged
-              << ")\n";
-    std::cout << "  N=8: " << bat.reduced_matrix.num_rows() << "x"
-              << bat.reduced_matrix.num_cols() << " (w1="
-              << bat.weight1_eliminated << ", w2=" << bat.weight2_merged
-              << ")\n";
+    std::cout << "  N=1: " << seq.reduced_matrix.num_rows() << "x" << seq.reduced_matrix.num_cols()
+              << " (w1=" << seq.weight1_eliminated << ", w2=" << seq.weight2_merged << ")\n";
+    std::cout << "  N=8: " << bat.reduced_matrix.num_rows() << "x" << bat.reduced_matrix.num_cols()
+              << " (w1=" << bat.weight1_eliminated << ", w2=" << bat.weight2_merged << ")\n";
     std::cout << "  PASSED" << std::endl;
 }
 
 // 3) Parity: N=32 on a larger random matrix produces the same canonical form.
 void test_parity_n32_random_large() {
-    std::cout
-        << "Testing SGE batch_pivots: N=32 parity on random 200x150 matrix..."
-        << std::endl;
+    std::cout << "Testing SGE batch_pivots: N=32 parity on random 200x150 matrix..." << std::endl;
 
     // Use a seed that produces a mix of weight-1 / weight-2 / heavier
     // columns so both Phase 1 and Phase 2 fire repeatedly.
@@ -245,13 +256,11 @@ void test_parity_n32_random_large() {
         assert(false && "N=32 must produce canonical form equal to N=1");
     }
 
-    std::cout << "  N=1: " << seq.reduced_matrix.num_rows() << "x"
-              << seq.reduced_matrix.num_cols() << " (passes=" << seq.passes
-              << ", w1=" << seq.weight1_eliminated
+    std::cout << "  N=1: " << seq.reduced_matrix.num_rows() << "x" << seq.reduced_matrix.num_cols()
+              << " (passes=" << seq.passes << ", w1=" << seq.weight1_eliminated
               << ", w2=" << seq.weight2_merged << ")\n";
-    std::cout << "  N=32: " << bat.reduced_matrix.num_rows() << "x"
-              << bat.reduced_matrix.num_cols() << " (passes=" << bat.passes
-              << ", w1=" << bat.weight1_eliminated
+    std::cout << "  N=32: " << bat.reduced_matrix.num_rows() << "x" << bat.reduced_matrix.num_cols()
+              << " (passes=" << bat.passes << ", w1=" << bat.weight1_eliminated
               << ", w2=" << bat.weight2_merged << ")\n";
     std::cout << "  PASSED" << std::endl;
 }
@@ -259,8 +268,7 @@ void test_parity_n32_random_large() {
 // 4) ENV parsing: "0" / "1" / "16" / unset / "garbage" / "999" cases.
 // Verifies the cached env reader clamps and falls back correctly.
 void test_env_parsing() {
-    std::cout << "Testing SGE batch_pivots: ENV parsing edge cases..."
-              << std::endl;
+    std::cout << "Testing SGE batch_pivots: ENV parsing edge cases..." << std::endl;
 
     // "0" → clamped to default sequential (kSGEBatchPivotsDefault=1)
     set_env_and_reload("0");
@@ -324,16 +332,19 @@ void test_empty_matrix() {
     // Rows-only and cols-only edge cases.
     SparseMatrix rows_only(5, 0);
     auto r_ro = run_with_batch(rows_only, 8);
-    assert(r_ro.reduced_matrix.num_rows() == 0);
-    assert(r_ro.reduced_matrix.num_cols() == 0);
+    GNFS_TEST_CHECK(r_ro.reduced_matrix.num_rows() == 5);
+    GNFS_TEST_CHECK(r_ro.reduced_matrix.num_cols() == 0);
+    GNFS_TEST_CHECK(r_ro.row_composition.size() == 5);
+    for (size_t row = 0; row < 5; ++row) {
+        GNFS_TEST_CHECK(r_ro.row_composition[row] == std::vector<size_t>{row});
+    }
 
     SparseMatrix cols_only(0, 5);
     auto r_co = run_with_batch(cols_only, 8);
     assert(r_co.reduced_matrix.num_rows() == 0);
     assert(r_co.reduced_matrix.num_cols() == 0);
 
-    std::cout << "  Empty matrix paths return clean empty results."
-              << std::endl;
+    std::cout << "  Empty matrix paths preserve unconstrained rows." << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -345,9 +356,7 @@ void test_empty_matrix() {
 // of the same pass. Verifies no infinite loop on "no-batch-progress" and
 // that the batched path falls back to single-pivot effective behaviour.
 void test_single_pivot_chain() {
-    std::cout
-        << "Testing SGE batch_pivots: single-pivot chain (no batch progress)..."
-        << std::endl;
+    std::cout << "Testing SGE batch_pivots: single-pivot chain (no batch progress)..." << std::endl;
 
     // 5-row triangular chain:
     //   Row 0: {0}
@@ -362,9 +371,12 @@ void test_single_pivot_chain() {
     // sequential vs batched ordering most aggressively.
     SparseMatrix m(5, 4);
     m.set(0, 0);
-    m.set(1, 0); m.set(1, 1);
-    m.set(2, 1); m.set(2, 2);
-    m.set(3, 2); m.set(3, 3);
+    m.set(1, 0);
+    m.set(1, 1);
+    m.set(2, 1);
+    m.set(2, 2);
+    m.set(3, 2);
+    m.set(3, 3);
     m.set(4, 3);
 
     auto r1 = run_with_batch(m, 1);
@@ -376,33 +388,26 @@ void test_single_pivot_chain() {
     std::string diff;
     if (!canonical_eq(cs, cb, &diff)) {
         std::cerr << "  FAIL: " << diff << "\n";
-        std::cerr << "    N=1 shape: " << cs.num_rows << "x" << cs.num_cols
-                  << "\n";
-        std::cerr << "    N=8 shape: " << cb.num_rows << "x" << cb.num_cols
-                  << "\n";
-        assert(false &&
-               "Single-pivot chain must produce identical canonical form");
+        std::cerr << "    N=1 shape: " << cs.num_rows << "x" << cs.num_cols << "\n";
+        std::cerr << "    N=8 shape: " << cb.num_rows << "x" << cb.num_cols << "\n";
+        assert(false && "Single-pivot chain must produce identical canonical form");
     }
 
     // Both paths terminate without exceeding max_passes.
     assert(r1.passes < 100);
     assert(r8.passes < 100);
 
-    std::cout << "  N=1 passes=" << r1.passes
-              << ", N=8 passes=" << r8.passes << "\n";
+    std::cout << "  N=1 passes=" << r1.passes << ", N=8 passes=" << r8.passes << "\n";
     std::cout << "  PASSED" << std::endl;
 }
 
 // 7) Parity across many random seeds — extra confidence the equivalence
 // invariant holds across diverse matrix shapes and densities.
 void test_parity_random_sweep() {
-    std::cout << "Testing SGE batch_pivots: random-seed sweep parity..."
-              << std::endl;
+    std::cout << "Testing SGE batch_pivots: random-seed sweep parity..." << std::endl;
 
-    for (uint64_t seed : {0x1234ULL, 0x5678ULL, 0xCAFEULL, 0xBEEFULL,
-                          0xDEADULL}) {
-        SparseMatrix m = build_random_matrix(/*R=*/80, /*C=*/60, /*density=*/4,
-                                             seed);
+    for (uint64_t seed : {0x1234ULL, 0x5678ULL, 0xCAFEULL, 0xBEEFULL, 0xDEADULL}) {
+        SparseMatrix m = build_random_matrix(/*R=*/80, /*C=*/60, /*density=*/4, seed);
         for (int N : {2, 4, 16, 64}) {
             auto seq = run_with_batch(m, 1);
             auto bat = run_with_batch(m, N);
@@ -410,14 +415,13 @@ void test_parity_random_sweep() {
             auto cb = canonicalize(bat);
             std::string diff;
             if (!canonical_eq(cs, cb, &diff)) {
-                std::cerr << "  FAIL: seed=0x" << std::hex << seed
-                          << std::dec << " N=" << N << " — " << diff << "\n";
+                std::cerr << "  FAIL: seed=0x" << std::hex << seed << std::dec << " N=" << N
+                          << " — " << diff << "\n";
                 assert(false && "random-sweep parity failed");
             }
         }
     }
-    std::cout << "  All random seeds × N values produced equal canonical form."
-              << std::endl;
+    std::cout << "  All random seeds × N values produced equal canonical form." << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -425,24 +429,25 @@ void test_parity_random_sweep() {
 // and bypass the ENV cache. Important so parity tests do not have to mutate
 // process-wide ENV state.
 void test_config_overrides_env() {
-    std::cout
-        << "Testing SGE batch_pivots: SGEConfig.batch_pivots overrides ENV..."
-        << std::endl;
+    std::cout << "Testing SGE batch_pivots: SGEConfig.batch_pivots overrides ENV..." << std::endl;
 
     set_env_and_reload("8");
 
     SGEConfig cfg;
-    cfg.batch_pivots = 1;  // explicit N=1 even though ENV says 8
+    cfg.batch_pivots = 1; // explicit N=1 even though ENV says 8
 
     SparseMatrix m(4, 3);
-    m.set(0, 0); m.set(0, 1);
-    m.set(1, 1); m.set(1, 2);
-    m.set(2, 0); m.set(2, 2);
+    m.set(0, 0);
+    m.set(0, 1);
+    m.set(1, 1);
+    m.set(1, 2);
+    m.set(2, 0);
+    m.set(2, 2);
     m.set(3, 0);
 
     auto r_cfg1 = SGE::preprocess(m, cfg);
 
-    cfg.batch_pivots = 0;  // delegate to ENV (which is 8)
+    cfg.batch_pivots = 0; // delegate to ENV (which is 8)
     auto r_env8 = SGE::preprocess(m, cfg);
 
     // Both must equal the explicit N=1 baseline (since N=8 is parity-equal).
@@ -451,14 +456,11 @@ void test_config_overrides_env() {
     auto ccfg = canonicalize(r_cfg1);
 
     std::string diff;
-    assert(canonical_eq(cs1, ccfg, &diff) &&
-           "explicit cfg.batch_pivots=1 must match N=1 baseline");
-    assert(canonical_eq(cs1, cse, &diff) &&
-           "cfg.batch_pivots=0 + ENV=8 must match N=1 baseline");
+    assert(canonical_eq(cs1, ccfg, &diff) && "explicit cfg.batch_pivots=1 must match N=1 baseline");
+    assert(canonical_eq(cs1, cse, &diff) && "cfg.batch_pivots=0 + ENV=8 must match N=1 baseline");
 
     set_env_and_reload(nullptr);
-    std::cout << "  config override and ENV delegation both produce parity."
-              << std::endl;
+    std::cout << "  config override and ENV delegation both produce parity." << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
