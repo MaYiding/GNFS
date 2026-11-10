@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gnfs/util/owned_native_file.hpp"
+#include "gnfs/util/utf8_path.hpp"
 
 #include <cassert>
 #include <cerrno>
@@ -148,7 +149,7 @@ private:
     };
 
     [[nodiscard]] static OwnedNativeFile open_read_only(const std::string& path) {
-        const std::filesystem::path filesystem_path = native_path_from_utf8(path);
+        const std::filesystem::path filesystem_path = path_from_utf8(path);
         HANDLE file = ::CreateFileW(filesystem_path.c_str(), GENERIC_READ,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                     OPEN_EXISTING,
@@ -159,18 +160,6 @@ private:
                                      "': " + last_error_message(error));
         }
         return OwnedNativeFile::adopt_ownership(file);
-    }
-
-    /// Construct a native path from the public UTF-8 string representation.
-    /// The char8_t overload is required on Windows because the narrow path
-    /// constructor is locale/code-page dependent.
-    [[nodiscard]] static std::filesystem::path native_path_from_utf8(const std::string& path) {
-        std::u8string utf8;
-        utf8.reserve(path.size());
-        for (const char byte : path) {
-            utf8.push_back(static_cast<char8_t>(static_cast<unsigned char>(byte)));
-        }
-        return std::filesystem::path(utf8);
     }
 
     MmapFile(OwnedNativeFile&& file, const std::string& source) {
