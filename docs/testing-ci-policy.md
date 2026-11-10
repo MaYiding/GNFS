@@ -79,6 +79,16 @@ already present in the selected build directory. The runner and CMake share the
 module test lists and one-level dependency map in
 `scripts/test-catalog/modules.txt` (`module|tests|downstream modules`).
 
+`module` builds the selected CMake module groups and the process supervisor.
+Only `--slow` adds the module's slow binaries. CMake handles each group's
+platform exclusions and CTest companions. The runner refreshes configuration
+before filtering any additional Windows-unavailable binaries; only generated
+`WIN32=1` metadata permits their exclusion. Repeated module requests retain
+their test execution and report entries while build targets are deduplicated.
+`watch module` and `watch changed` build the current selection directly, without
+a preceding default build. Configuration or build failures stop that iteration
+before tests execute.
+
 The `changed` mode and its `diff` alias accept only one optional `--deep` mode
 argument. Unsupported or repeated arguments fail before CMake configuration.
 `--slow` belongs to `module`; passing it to `changed` is an error.

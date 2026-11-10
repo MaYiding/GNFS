@@ -1364,10 +1364,21 @@ do_build() {
         return 0
     fi
 
+    # Internal selection mode refreshes generated platform metadata before
+    # excluding targets. Explicit `run` requests retain their strict behavior.
+    local available_tests=0
+    if [[ "${1:-}" == "--available-tests" ]]; then
+        available_tests=1
+        shift
+    fi
+
     log_header "编译 ${BUILD_TYPE} -j${PARALLEL_JOBS}"
 
     # CMake 配置
-    if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
+    if (( available_tests )); then
+        log_info "刷新 CMake 配置和目标平台..."
+        cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -5 || return $?
+    elif [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
         log_info "首次配置 CMake..."
         cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -S "$PROJECT_ROOT" 2>&1 | tail -5 || return $?
     else
@@ -1406,9 +1417,23 @@ do_build() {
             echo "$check_output"
         fi
     fi
-    if (( $# > 0 )); then
-        build_command+=(--target "$@")
-        log_info "构建目标: $*"
+    local -a build_targets=("$@")
+    if (( available_tests )); then
+        local platform_file="${BUILD_DIR}/gnfs-test-platform.txt"
+        if [[ -r "$platform_file" && "$(<"$platform_file")" == "WIN32=1" ]]; then
+            build_targets=()
+            local target
+            for target in "$@"; do
+                (( ${WINDOWS_UNAVAILABLE_TESTS[(Ie)$target]} > 0 )) && continue
+                build_targets+=("$target")
+            done
+        fi
+        # Never turn an empty selection into CMake's default full build.
+        (( ${#build_targets[@]} > 0 )) || return 0
+    fi
+    if (( ${#build_targets[@]} > 0 )); then
+        build_command+=(--target "${build_targets[@]}")
+        log_info "构建目标: ${build_targets[*]}"
     fi
     local build_output exit_code=0
     if (( VERBOSE )); then
@@ -1455,6 +1480,13 @@ do_build() {
     else
         log_success "编译成功 ($(format_duration $elapsed))"
     fi
+}
+
+do_build_selected_tests() {
+    # Every test uses the supervisor. CMake owns all further dependencies,
+    # including helper children, so the runner only lists executable roots.
+    local -a targets=("$@" gnfs_test_process_supervisor)
+    do_build --available-tests "${(@u)targets}"
 }
 
 # Process-tree timeout wrappers are sourced from
@@ -7545,6 +7577,38 @@ run_ctest_contract_group() {
 # 模式: 模块测试
 # ============================================================
 
+module_build_targets() {
+    local include_slow=0 arg mod
+    local -a modules=()
+    for arg in "$@"; do
+        case "$arg" in
+            --slow) include_slow=1 ;;
+            *) modules+=("$arg") ;;
+        esac
+    done
+    if [[ "${modules[1]:-}" == "all" ]]; then
+        modules=("${MODULE_ORDER[@]}")
+    fi
+    for mod in "${modules[@]}"; do
+        local tests="${MODULE_TESTS[$mod]:-}"
+        # do_module records invalid selections in the test report.
+        [[ -n "$tests" ]] || continue
+        print -r -- "gnfs_local_module_${mod}"
+        if (( include_slow )); then
+            local slow_tests="${MODULE_SLOW_TESTS[$mod]:-}"
+            [[ -z "$slow_tests" ]] || print -rl -- ${(s: :)slow_tests}
+        fi
+    done
+    return 0
+}
+
+do_module_build() {
+    local selection
+    selection=$(module_build_targets "$@") || return 1
+    local -a targets=(${(f)selection})
+    do_build_selected_tests "${targets[@]}"
+}
+
 do_module() {
     local include_slow=0
     local modules=()
@@ -8222,6 +8286,31 @@ for r in data['results']:
 # 模式: 监视
 # ============================================================
 
+do_watch_iteration() {
+    local watch_mode="$1"
+    shift
+    SKIP_BUILD=0
+    case "$watch_mode" in
+        module)
+            do_module_build "$@" || return 1
+            do_module "$@" || true
+            ;;
+        changed)
+            do_changed || return 1
+            ;;
+        *)
+            do_build || return 1
+            case "$watch_mode" in
+                # CTest failure previously terminated watch under errexit.
+                # Keep it fatal even though build failures return to the loop.
+                unit) do_ctest || exit $? ;;
+                e2e) do_e2e ;;
+                *) do_smoke ;;
+            esac
+            ;;
+    esac
+}
+
 do_watch() {
     local watch_mode="${1:-smoke}"
     shift 2>/dev/null || true
@@ -8240,16 +8329,7 @@ do_watch() {
     echo ""
 
     # 先运行一次
-    SKIP_BUILD=0
-    do_build || return 1
-    case "$watch_mode" in
-        smoke)   do_smoke ;;
-        unit)    do_ctest ;;
-        module)  do_module "${watch_args[@]}" || true ;;
-        e2e)     do_e2e ;;
-        changed) SKIP_BUILD=1 do_changed ;;
-        *)       do_smoke ;;
-    esac
+    do_watch_iteration "$watch_mode" "${watch_args[@]}" || return 1
     show_summary
 
     # 监视文件变更
@@ -8272,16 +8352,7 @@ do_watch() {
         TOTAL_TESTS=0 PASSED_TESTS=0 FAILED_TESTS=0 SKIPPED_TESTS=0 TOTAL_TIME_MS=0
         REPORT_ENTRIES=()
 
-        SKIP_BUILD=0
-        do_build || continue
-        case "$watch_mode" in
-            smoke)   do_smoke ;;
-            unit)    do_ctest ;;
-            module)  do_module "${watch_args[@]}" || true ;;
-            e2e)     do_e2e ;;
-            changed) SKIP_BUILD=1 do_changed ;;
-            *)       do_smoke ;;
-        esac
+        do_watch_iteration "$watch_mode" "${watch_args[@]}" || continue
         show_summary
     done
 }
@@ -8688,7 +8759,7 @@ case "$MODE" in
             log_info "使用 'module all' 测试全部模块"
             exit 1
         fi
-        do_build
+        do_module_build "${MODE_ARGS[@]}" || exit $?
         do_module "${MODE_ARGS[@]}" || true
         show_summary
         ;;
@@ -8746,7 +8817,7 @@ case "$MODE" in
             { (( ${#MODE_ARGS[@]} == 1 )) && [[ "${MODE_ARGS[1]}" != "--deep" ]]; }; then
             usage_error "用法: $0 ${MODE} [--deep] (--slow 仅用于 module)"
         fi
-        do_changed "${MODE_ARGS[@]}"
+        do_changed "${MODE_ARGS[@]}" || exit $?
         show_summary
         ;;
 
