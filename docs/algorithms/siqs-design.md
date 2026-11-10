@@ -345,6 +345,12 @@ The crucial knobs by digit band:
 - `small_prime_cutoff` — primes below this are skipped during sieving and
   paid back via `small_contrib` in the threshold computation
 
+The A chooser estimates each prime from the bit length of `sqrt(2N)/M`.
+Estimates beyond the `uint32_t` range saturate at its maximum before conversion,
+placing the candidate window at the upper end of the factor base. Large
+exponents do not evaluate an overflowing `pow`. Representable estimates retain
+their existing truncation, candidate window, and random-number consumption.
+
 Two-large-prime collection and the legacy greedy merge remain disabled by
 setting `lp_bound_sq = 0`. The low-level sieve now has an optional caller-owned
 capture controller with checked relation and logical-payload limits. Its

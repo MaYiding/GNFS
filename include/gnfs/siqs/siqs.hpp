@@ -620,7 +620,15 @@ inline void choose_A(const Integer& N, uint32_t M, uint32_t num_factors,
     // target^(1/num_factors), then pick around that range
     double log_target = static_cast<double>(mpz_sizeinbase(target_a.get_mpz(), 2));
     double log_per_factor = log_target / num_factors;
-    uint32_t ideal_p = static_cast<uint32_t>(std::pow(2.0, log_per_factor));
+    // An oversized target belongs at the upper end of the factor base. Avoid
+    // both pow overflow and an out-of-range float-to-integer conversion while
+    // preserving the existing truncation for representable estimates.
+    constexpr uint32_t max_ideal_p = std::numeric_limits<uint32_t>::max();
+    uint32_t ideal_p = max_ideal_p;
+    if (log_per_factor < std::numeric_limits<uint32_t>::digits) {
+        const double estimate = std::pow(2.0, log_per_factor);
+        ideal_p = static_cast<uint32_t>(std::min(estimate, static_cast<double>(max_ideal_p)));
+    }
 
     // Find the FB index closest to ideal_p
     size_t center = 1; // skip index 0 (sign)

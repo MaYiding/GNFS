@@ -17,6 +17,7 @@
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <random>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -535,6 +536,72 @@ void test_factor_base_rejects_unrepresentable_count() {
         overflow_seen = true;
     }
     require_test(overflow_seen, "factor-base count overflow was not rejected");
+}
+
+void test_choose_A_target_range() {
+    // Only p is used by choose_A. The widely separated final primes make the
+    // safe 2^31 estimate select a different window from saturated estimates.
+    const std::vector<FBPrime> fb{
+        {0, 0, 0},  {2, 0, 0},           {3, 0, 0},           {5, 0, 0},
+        {7, 0, 0},  {11, 0, 0},          {13, 0, 0},          {17, 0, 0},
+        {19, 0, 0}, {23, 0, 0},          {29, 0, 0},          {31, 0, 0},
+        {37, 0, 0}, {2147483647u, 0, 0}, {2147483659u, 0, 0}, {4294967291u, 0, 0}};
+    const auto check_window = [&](const Integer& n, uint32_t sieve_half, uint32_t factors,
+                                  std::initializer_list<size_t> expected_window,
+                                  std::string_view label) {
+        for (const uint32_t seed : {0u, 42u, 314159u, std::numeric_limits<uint32_t>::max()}) {
+            std::mt19937 expected_rng(seed);
+            std::vector<size_t> candidates(expected_window);
+            // Use this platform's shuffle on an independently specified window;
+            // do not impose another standard library's permutation as a golden.
+            std::shuffle(candidates.begin(), candidates.end(), expected_rng);
+            candidates.resize(factors);
+            std::sort(candidates.begin(), candidates.end());
+            std::vector<uint32_t> expected_indices;
+            Integer expected_a(1);
+            for (const size_t index : candidates) {
+                expected_indices.push_back(static_cast<uint32_t>(index));
+                expected_a *= static_cast<int64_t>(fb[index].p);
+            }
+
+            std::mt19937 actual_rng(seed);
+            std::vector<uint32_t> actual_indices{0};
+            Integer actual_a(-1);
+            choose_A(n, sieve_half, factors, fb, actual_rng, actual_indices, actual_a);
+            const std::string context = std::string(label) + ", seed=" + std::to_string(seed);
+            require_test(actual_indices == expected_indices,
+                         context + ": choose_A selected a different candidate window");
+            require_test(actual_a == expected_a,
+                         context + ": choose_A product differs from selected primes");
+            require_test(actual_rng == expected_rng,
+                         context + ": choose_A changed shuffle RNG consumption");
+        }
+    };
+
+    // floor(sqrt(2N)) crosses 2^31 between these adjacent odd inputs. Its bit
+    // length changes from 31 to 32, so the estimate crosses the uint32 domain.
+    check_window(Integer("2305843009213693951"), 1, 1, {12, 13, 14, 15}, "safe estimate 2^31");
+    check_window(Integer("2305843009213693953"), 1, 1, {13, 14, 15}, "first odd estimate 2^32");
+    check_window(Integer("18446744073709551617"), 1, 1, {13, 14, 15}, "finite estimate 2^33");
+    check_window(Integer("18446744073709551617"), 1, 2, {9, 10, 11, 12, 13, 14, 15},
+                 "safe two-factor fractional estimate");
+
+    Integer two_factor_boundary(1);
+    mpz_mul_2exp(two_factor_boundary.get_mpz(), two_factor_boundary.get_mpz(), 125);
+    check_window(two_factor_boundary, 1, 2, {11, 12, 13, 14, 15}, "two-factor estimate 2^32");
+
+    Integer huge(1);
+    mpz_mul_2exp(huge.get_mpz(), huge.get_mpz(), 4095);
+    check_window(huge, 1, 1, {13, 14, 15}, "overflowing one-factor pow");
+    check_window(huge, 1, 2, {11, 12, 13, 14, 15}, "overflowing two-factor pow");
+
+    check_window(Integer(1), 8, 1, {2, 3}, "target clamped to one");
+    check_window(Integer(1), 8, 2, {2, 3, 4, 5}, "sub-two estimate truncates to one");
+    // sqrt(2*2048)=64 has seven bits: 2^(7/3) truncates to 5. Rounding up
+    // would center the window on 7 and incorrectly admit index 10 as well.
+    check_window(Integer(2048), 1, 3, {2, 3, 4, 5, 6, 7, 8, 9},
+                 "fractional estimate truncates to five");
+    std::puts("  choose_A target range: PASS (finite/overflow bounds, windows, RNG state)");
 }
 
 void test_dense_gauss_kernel_oracle() {
@@ -1436,6 +1503,7 @@ int main() {
     test_factor_base();
     test_factor_base_cooperative_stop();
     test_factor_base_rejects_unrepresentable_count();
+    test_choose_A_target_range();
     test_dense_gauss_singleton_extraction();
     test_dense_gauss_kernel_oracle();
     test_dense_gauss_parallel_kernel();
