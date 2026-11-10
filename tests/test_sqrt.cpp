@@ -903,6 +903,55 @@ void test_couveignes_gray_code_invariants() {
               << std::endl;
 }
 
+void test_couveignes_zero_element() {
+    std::cout << "Testing Couveignes zero element..." << std::endl;
+
+    // f(8) = 65, so evaluation is a valid map to Z/65Z.
+    PolynomialContext ctx(Integer(65), {Integer(1), Integer(0), Integer(1)}, Integer(8));
+    NumberField nf(ctx);
+    CouveignesSqrtConfig config;
+    config.num_primes = 4;
+    config.prime_start = 100;
+    config.max_prime_checks = 1000;
+    CouveignesSqrt solver(config);
+
+    // Populate metrics first, then require exact zero to reset the search state.
+    GNFS_TEST_CHECK(solver.compute_from_element(nf.one(), nf).has_value());
+    GNFS_TEST_CHECK(solver.last_metrics().primes_used > 0);
+    auto check_zero = [&](CouveignesSqrt& current, const NumberFieldElement& zero) {
+        const auto root = current.compute_from_element(zero, nf);
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK(root->is_zero());
+        const auto& metrics = current.last_metrics();
+        GNFS_TEST_CHECK(metrics.found_sqrt);
+        GNFS_TEST_CHECK(metrics.primes_checked == 0);
+        GNFS_TEST_CHECK(metrics.primes_used == 0);
+        GNFS_TEST_CHECK(metrics.sign_patterns_tried == 0);
+        GNFS_TEST_CHECK(metrics.full_verifications == 0);
+        GNFS_TEST_CHECK(metrics.character_primes_used == 0);
+        GNFS_TEST_CHECK(metrics.character_filter_rejects == 0);
+    };
+    check_zero(solver, nf.zero());
+    check_zero(solver, NumberFieldElement{});
+
+    // sqrt(0) needs no candidate primes, unlike a nonzero element.
+    config.max_prime_checks = 0;
+    CouveignesSqrt no_search(config);
+    check_zero(no_search, NumberFieldElement(Integer(0)));
+    GNFS_TEST_CHECK(!no_search.compute_from_element(nf.one(), nf).has_value());
+    GNFS_TEST_CHECK(!no_search.last_metrics().found_sqrt);
+
+    const auto public_result = AlgebraicSqrt{}.compute_from_product(nf.zero(), nf);
+    GNFS_TEST_CHECK(public_result.success);
+    GNFS_TEST_CHECK(public_result.value.is_zero());
+
+    // The generic element API does not relax the relation-input contract.
+    GNFS_TEST_CHECK(!solver.compute({}, nf).has_value());
+    GNFS_TEST_CHECK(!solver.compute({{0, 0}}, nf).has_value());
+    GNFS_TEST_CHECK(!solver.last_metrics().found_sqrt);
+    std::cout << "  Couveignes zero element: PASSED" << std::endl;
+}
+
 // Test: compute_from_element() still works correctly for normal num_primes
 void test_couveignes_compute_from_element_normal() {
     std::cout << "Testing Couveignes compute_from_element (normal case)..." << std::endl;
@@ -1324,6 +1373,7 @@ int main() {
     test_modular_sqrt_quotient_representatives();
     test_couveignes_compute_from_element_terminates();
     test_couveignes_compute_from_element_normal();
+    test_couveignes_zero_element();
     test_couveignes_gray_code_invariants();
 
     std::cout << std::endl;
