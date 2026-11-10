@@ -101,6 +101,31 @@ void test_small_composite_classification() {
     std::cout << "  Small composite classification: PASSED" << std::endl;
 }
 
+void test_wide_signed_algebraic_norm() {
+    using core::Integer;
+    constexpr int64_t base = (int64_t{1} << 24) + 1; // 97 * 257 * 673
+    factor_base::FactorBase fb(core::FactorBaseParams{2, 673, 1000});
+    fb.add_rational(2, 1);
+    for (uint32_t prime : {97u, 257u, 673u})
+        fb.add_algebraic(prime, 0, 1);
+
+    for (const int sign : {-1, 1}) {
+        const int64_t a = sign * base;
+        // f(x) = x^3 + x - a, so f(a) = a^3 and |a - m| = 2^24.
+        core::PolynomialContext ctx(
+            Integer(base - 2), {Integer(-a), Integer(1), Integer(0), Integer(1)}, Integer(sign));
+        CHECK(ctx.verify());
+        CHECK(ctx.algebraic_norm(a, 1) == core::pow(Integer(a), 3));
+        Cofactorizer verifier(ctx, fb);
+        const auto rel = verifier.verify(a, 1);
+        CHECK(rel.has_value());
+        CHECK(rel->rational_factors == std::vector<uint32_t>(24, 0));
+        CHECK((rel->algebraic_factors == std::vector<uint32_t>{0, 0, 0, 1, 1, 1, 2, 2, 2}));
+        CHECK(rel->rational_large_prime.empty());
+        CHECK(rel->algebraic_large_prime.empty());
+    }
+}
+
 void test_full_factor_base_valuations() {
     using core::Integer;
     const Integer power = core::pow(Integer(2), 256);
@@ -1204,6 +1229,7 @@ int main() {
     test_primality();
     test_small_composite_classification();
     test_small_primality_oracle();
+    test_wide_signed_algebraic_norm();
     test_full_factor_base_valuations();
     test_relation_factor_count_limit();
     test_large_valuation_outside_sieve_prefix();

@@ -45,7 +45,6 @@ gnfs_run_process_supervisor() {
     fi
 
     local supervisor_exit_code=0
-    local wait_retried_after_signal=0
     while true; do
         local signal_generation_before_wait=$gnfs_forwarded_signal_generation
         if wait "$gnfs_active_supervisor_pid"; then
@@ -59,12 +58,15 @@ gnfs_run_process_supervisor() {
               gnfs_forwarded_signal_generation == signal_generation_before_wait )); then
             break
         fi
-        wait_retried_after_signal=1
+        # A high status may also be the child's exit, with the trap delivered
+        # just after wait consumed it. If the job is gone, probe a subshell's
+        # copy of zsh's saved statuses. A cached exit (even 127) is silent;
+        # an already consumed PID emits a diagnostic only inside that probe.
+        if [[ -z "${jobstates[(r)*:${gnfs_active_supervisor_pid}=*]}" &&
+              -n "$(builtin wait "$gnfs_active_supervisor_pid" 2>&1)" ]]; then
+            break
+        fi
     done
-    if (( wait_retried_after_signal && supervisor_exit_code == 127 &&
-            gnfs_forwarded_signal_status != 0 )); then
-        supervisor_exit_code=$gnfs_forwarded_signal_status
-    fi
 
     GNFS_TEST_PROCESS_FORWARDED_SIGNAL_NAME="$gnfs_forwarded_signal_name"
     GNFS_TEST_PROCESS_FORWARDED_SIGNAL_STATUS=$gnfs_forwarded_signal_status
