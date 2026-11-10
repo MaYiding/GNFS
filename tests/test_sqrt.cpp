@@ -952,6 +952,74 @@ void test_couveignes_zero_element() {
     std::cout << "  Couveignes zero element: PASSED" << std::endl;
 }
 
+void test_algebraic_sqrt_nonunit_derivative() {
+    std::cout << "Testing algebraic sqrt with a nonunit derivative..." << std::endl;
+    const Integer n(15);
+    // With delta = alpha - 4, delta^2 = -15. The four distinct factors have
+    // product (-16)*(-64) = 1024 = 32^2, while their rational product is 49.
+    PolynomialContext ctx(n, {Integer(31), Integer(-8), Integer(1)}, Integer(4));
+    NumberField nf(ctx);
+    GNFS_TEST_CHECK((ctx.evaluate(ctx.m()) % n).is_zero());
+    GNFS_TEST_CHECK((Integer(2) * ctx.m() - Integer(8)).is_zero());
+    const std::vector<std::pair<int64_t, uint64_t>> pairs = {{5, 1}, {3, 1}, {11, 1}, {-3, 1}};
+    std::vector<Relation> relations;
+    BitVector dependency(pairs.size());
+    Integer product(1);
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        const auto [a, b] = pairs[i];
+        const Integer value = Integer(a) - Integer(b) * ctx.m();
+        Integer value_gcd;
+        mpz_gcd(value_gcd.get_mpz(), value.get_mpz(), n.get_mpz());
+        GNFS_TEST_CHECK(value_gcd.is_one());
+        product *= value;
+        relations.emplace_back(a, b);
+        relations.back().algebraic_factors.assign(i < 2 ? 4 : 6, 0);
+        dependency.set(i);
+    }
+    GNFS_TEST_CHECK(product == Integer(49));
+    GNFS_TEST_CHECK(verify_algebraic_ideal_powers(dependency, relations));
+    const auto direct = CouveignesSqrt{}.compute(pairs, nf, false);
+    GNFS_TEST_CHECK(direct.has_value());
+    const Integer direct_value = nf.evaluate_at_m_mod_n(*direct);
+    GNFS_TEST_CHECK((direct_value * direct_value) % n == product % n);
+
+    const auto result = AlgebraicSqrt{}.compute(dependency, relations, ctx);
+    GNFS_TEST_CHECK(result.success);
+    GNFS_TEST_CHECK((result.value * result.value) % n == product % n);
+
+    // A proper nonunit gcd is not a square root: f'(1) = 3, but the
+    // repeated relation has rational product 1, whereas 3^2 != 1 mod 15.
+    PolynomialContext proper_ctx(n, {Integer(13), Integer(1), Integer(1)}, Integer(1));
+    GNFS_TEST_CHECK((proper_ctx.evaluate(proper_ctx.m()) % n).is_zero());
+    Relation repeated(2, 1);
+    repeated.algebraic_factors = {0}; // Each norm is 19.
+    BitVector both(2);
+    both.set(0);
+    both.set(1);
+    const auto proper_result = AlgebraicSqrt{}.compute(both, {repeated, repeated}, proper_ctx);
+    GNFS_TEST_CHECK(proper_result.success);
+    GNFS_TEST_CHECK((proper_result.value * proper_result.value) % n == Integer(1));
+
+    // Constant 2 has a square root in every inert quadratic residue field,
+    // but none modulo 3, so final CRT verification must reject it modulo 15.
+    // Even norm exponents deliberately pass the ideal-parity precheck.
+    Relation nonsquare(2, 0);
+    nonsquare.algebraic_factors = {0, 0};
+    BitVector single(1);
+    single.set(0);
+    GNFS_TEST_CHECK(verify_algebraic_ideal_powers(single, {nonsquare}));
+    CouveignesSqrt direct_nonsquare;
+    GNFS_TEST_CHECK(!direct_nonsquare.compute({{2, 0}}, nf, false).has_value());
+    GNFS_TEST_CHECK(direct_nonsquare.last_metrics().full_verifications > 0);
+    for (const bool verify : {true, false}) {
+        AlgebraicSqrtConfig config;
+        config.verify = verify;
+        const auto rejected = AlgebraicSqrt(config).compute(single, {nonsquare}, ctx);
+        GNFS_TEST_CHECK(!rejected.success);
+    }
+    std::cout << "  Algebraic sqrt nonunit derivative: PASSED" << std::endl;
+}
+
 // Test: compute_from_element() still works correctly for normal num_primes
 void test_couveignes_compute_from_element_normal() {
     std::cout << "Testing Couveignes compute_from_element (normal case)..." << std::endl;
@@ -1374,6 +1442,7 @@ int main() {
     test_couveignes_compute_from_element_terminates();
     test_couveignes_compute_from_element_normal();
     test_couveignes_zero_element();
+    test_algebraic_sqrt_nonunit_derivative();
     test_couveignes_gray_code_invariants();
 
     std::cout << std::endl;
