@@ -1284,6 +1284,12 @@ private:
 
         // Pre-compute f_lead_inv once (avoid recomputing per-factor)
         auto fli = compute_f_lead_inv(f, d, modulus);
+        Integer linear_constant;
+        if (d == 1) {
+            linear_constant = f[0] * fli;
+            linear_constant %= modulus;
+        }
+        Integer b_value;
 
         // Start with 1 (other coeffs default to 0 via Integer ctor)
         std::vector<Integer> product(d);
@@ -1295,6 +1301,11 @@ private:
         for (const auto& [a, b] : ab_pairs) {
             // Factor = a - b·x
             factor[0] = a; // mpz_set_si direct
+            if (d == 1) {
+                // x = -f[0]/f[1], so a-b*x is a scalar in the quotient.
+                b_value = b;
+                mpz_addmul(factor[0].get_mpz(), b_value.get_mpz(), linear_constant.get_mpz());
+            }
             factor[0] %= modulus;
             if (factor[0].is_negative())
                 factor[0] += modulus;
@@ -1346,6 +1357,11 @@ private:
 
         // Pre-compute f_lead_inv once (shared across all threads)
         auto fli = compute_f_lead_inv(f, d, modulus);
+        Integer linear_constant;
+        if (d == 1) {
+            linear_constant = f[0] * fli;
+            linear_constant %= modulus;
+        }
 
         std::vector<std::vector<Integer>> partials(actual_threads);
         std::vector<std::thread> threads;
@@ -1355,40 +1371,47 @@ private:
             size_t start = t * chunk;
             size_t end = std::min(start + chunk, n);
 
-            threads.emplace_back([&partials, &ab_pairs, &f, &modulus, &fli, d, t, start, end]() {
-                std::vector<Integer> product(d);
-                product[0] = int64_t(1); // other coeffs already 0 from ctor
+            threads.emplace_back(
+                [&partials, &ab_pairs, &f, &modulus, &fli, &linear_constant, d, t, start, end]() {
+                    std::vector<Integer> product(d);
+                    product[0] = int64_t(1); // other coeffs already 0 from ctor
 
-                // v22: factor vector 移到 loop 外, 复用 d 个 Integer.
-                // factor[0], factor[1] 每 iter 用 mpz_set 覆写, factor[i>=2] 保持 0.
-                // 节省 ab_pairs.size() × d 次 mpz_init/clear 周期.
-                std::vector<Integer> factor(d);
+                    // v22: factor vector 移到 loop 外, 复用 d 个 Integer.
+                    // factor[0], factor[1] 每 iter 用 mpz_set 覆写, factor[i>=2] 保持 0.
+                    // 节省 ab_pairs.size() × d 次 mpz_init/clear 周期.
+                    std::vector<Integer> factor(d);
+                    Integer b_value;
 
-                for (size_t j = start; j < end; ++j) {
-                    auto [a, b] = ab_pairs[j];
+                    for (size_t j = start; j < end; ++j) {
+                        auto [a, b] = ab_pairs[j];
 
-                    // a mod modulus (复用 factor[0] buffer via operator=(int64_t))
-                    factor[0] = a; // mpz_set_si direct
-                    factor[0] %= modulus;
-                    if (factor[0].is_negative())
-                        factor[0] += modulus;
+                        // a mod modulus (复用 factor[0] buffer via operator=(int64_t))
+                        factor[0] = a; // mpz_set_si direct
+                        if (d == 1) {
+                            b_value = b;
+                            mpz_addmul(factor[0].get_mpz(), b_value.get_mpz(),
+                                       linear_constant.get_mpz());
+                        }
+                        factor[0] %= modulus;
+                        if (factor[0].is_negative())
+                            factor[0] += modulus;
 
-                    if (d > 1) {
-                        // -b mod modulus (复用 factor[1] buffer)
-                        factor[1] = b;
-                        factor[1].negate();
-                        factor[1] %= modulus;
-                        if (factor[1].is_negative())
-                            factor[1] += modulus;
+                        if (d > 1) {
+                            // -b mod modulus (复用 factor[1] buffer)
+                            factor[1] = b;
+                            factor[1].negate();
+                            factor[1] %= modulus;
+                            if (factor[1].is_negative())
+                                factor[1] += modulus;
+                        }
+                        // factor[i] for i>=2 是 0 (初始化时), poly_mul_mod 不改 input,
+                        // 后续 iter 仍是 0, 无需重置.
+
+                        product = poly_mul_mod(product, factor, f, d, modulus, fli);
                     }
-                    // factor[i] for i>=2 是 0 (初始化时), poly_mul_mod 不改 input,
-                    // 后续 iter 仍是 0, 无需重置.
 
-                    product = poly_mul_mod(product, factor, f, d, modulus, fli);
-                }
-
-                partials[t] = std::move(product);
-            });
+                    partials[t] = std::move(product);
+                });
         }
 
         for (auto& th : threads)

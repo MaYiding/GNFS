@@ -1296,6 +1296,34 @@ void test_modular_sqrt_quotient_representatives() {
     std::cout << "  Quotient representative invariance: PASSED" << std::endl;
 }
 
+void test_hensel_linear_product() {
+    std::cout << "Testing Hensel products in degree-one fields..." << std::endl;
+    const Integer n(55);
+    for (const int64_t sign : {int64_t(1), int64_t(-1)}) {
+        const NumberField nf(PolynomialContext(n, {Integer(sign), Integer(3 * sign)}, Integer(18)));
+        auto check_square = [&](size_t count, uint64_t b) {
+            const std::vector<std::pair<int64_t, uint64_t>> pairs(count, {1, b});
+            const Integer factor = Integer(1) - Integer(b) * nf.m();
+            Integer expected_product(1);
+            for (size_t i = 0; i < count; ++i) {
+                expected_product *= factor;
+                mpz_mod(expected_product.get_mpz(), expected_product.get_mpz(), n.get_mpz());
+            }
+            HenselSqrt solver;
+            const auto root = solver.compute(pairs, nf);
+            GNFS_TEST_CHECK(root.has_value());
+            GNFS_TEST_CHECK((*root * *root) % n == expected_product);
+            GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+        };
+        // alpha=-1/3, so beta*f'(alpha)=+/-4 has integral coefficients.
+        check_square(2, 1);
+        // (1-3*alpha)=2, giving integral beta*f'(alpha)=+/-3*2^50.
+        // One hundred relations also exercise the multi-prime CRT path.
+        check_square(100, 3);
+    }
+    std::cout << "  Hensel products in degree-one fields: PASSED" << std::endl;
+}
+
 void test_hensel_wide_precision() {
     std::cout << "Testing Hensel recovery with wide coefficients..." << std::endl;
     const Integer n(10403); // 101 * 103
@@ -1384,6 +1412,7 @@ int main() {
     test_couveignes_compute_from_element_terminates();
     test_couveignes_compute_from_element_normal();
     test_couveignes_gray_code_invariants();
+    test_hensel_linear_product();
     test_hensel_wide_precision();
 
     std::cout << std::endl;
