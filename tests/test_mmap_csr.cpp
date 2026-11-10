@@ -13,8 +13,11 @@
 #include <gnfs/util/temp_path.hpp>
 #include <gnfs/util/thread_pool.hpp>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <random>
+#include <span>
+#include <utility>
 #include <vector>
 
 using gnfs::linalg::BlockVector;
@@ -269,6 +272,91 @@ static void write_raw_csr(const std::string& path, uint64_t rows, uint64_t cols,
     out.flush();
 }
 
+void test_empty_wire_layout_and_rejected_overwrite() {
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_writer.csrmat"));
+    const auto read_bytes = [&] {
+        std::ifstream input(tmp.path, std::ios::binary);
+        return std::vector<char>(std::istreambuf_iterator<char>(input), {});
+    };
+
+    // Default and explicitly packed empty matrices use the same V2 zero offset.
+    MmapCSRMatrix::save(CSRMatrix(SparseMatrix(0, 0)), tmp.path);
+    const auto expected = read_bytes();
+    MmapCSRMatrix::save(CSRMatrix{}, tmp.path);
+    TEST_ASSERT(expected.size() == 5 * sizeof(uint64_t) && read_bytes() == expected,
+                "both empty matrices write the canonical 40-byte V2 image");
+    {
+        MmapCSRMatrix loaded(tmp.path);
+        TEST_ASSERT(loaded.num_rows() == 0 && loaded.num_cols() == 0 && loaded.nnz() == 0,
+                    "the default empty matrix can be mapped");
+    }
+
+    SparseMatrix sparse(1, 2);
+    sparse.row(0).set(1);
+    CSRMatrix source(sparse);
+    const CSRMatrix owner(std::move(source));
+    MmapCSRMatrix::save(owner, tmp.path);
+    const auto previous = read_bytes();
+    // A moved-from vector's state is unspecified. Exercise its missing table
+    // when the scalar dimensions still describe a nonempty matrix.
+    if (source.num_rows() != 0 && source.row_offsets().size() != source.num_rows() + 1) {
+        bool rejected = false;
+        try {
+            MmapCSRMatrix::save(source, tmp.path);
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        TEST_ASSERT(rejected && read_bytes() == previous,
+                    "rejecting inconsistent dimensions preserves the previous matrix");
+    }
+    constexpr uint32_t max_columns = std::numeric_limits<uint32_t>::max();
+    MmapCSRMatrix::save(CSRMatrix(SparseMatrix(0, max_columns)), tmp.path);
+    {
+        MmapCSRMatrix loaded(tmp.path);
+        TEST_ASSERT(loaded.num_cols() == max_columns, "the maximum V2 column count is mappable");
+    }
+    write_raw_csr(tmp.path, 0, uint64_t{max_columns} + 1, 0, {0}, {});
+    bool rejected = false;
+    try {
+        MmapCSRMatrix invalid(tmp.path);
+    } catch (const std::overflow_error&) {
+        rejected = sizeof(size_t) == sizeof(uint32_t);
+    } catch (const std::invalid_argument&) {
+        rejected = sizeof(size_t) > sizeof(uint32_t);
+    }
+    TEST_ASSERT(rejected, "V2 rejects a column dimension above UINT32_MAX");
+    TEST_PASS("empty CSR wire layout and writer validation");
+}
+
+void test_widened_offset_stream() {
+    std::vector<uint32_t> offsets(16385);
+    for (size_t i = 0; i < offsets.size(); ++i) {
+        offsets[i] = static_cast<uint32_t>(i);
+    }
+    offsets.back() = std::numeric_limits<uint32_t>::max();
+
+    size_t count = 0;
+    size_t calls = 0;
+    bool valid = true;
+    auto check_block = [&](const uint64_t* values, size_t bytes) {
+        ++calls;
+        const size_t entries = bytes / sizeof(uint64_t);
+        if (bytes == 0 || bytes % sizeof(uint64_t) != 0 || entries > offsets.size() - count) {
+            valid = false;
+            return;
+        }
+        for (size_t i = 0; i < entries; ++i) {
+            if (values[i] != offsets[count++])
+                valid = false;
+        }
+    };
+    gnfs::linalg::detail::write_widened_csr_offsets(std::span<const uint32_t>(offsets),
+                                                    check_block);
+    TEST_ASSERT(valid && count == offsets.size() && calls > 1,
+                "narrow offsets are widened in order across block boundaries");
+    TEST_PASS("bounded V2 offset conversion");
+}
+
 void test_rejects_malformed_files() {
     TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_malformed.csrmat"));
 
@@ -319,6 +407,8 @@ int main() {
     test_zero_nnz_nonempty_shape();
     test_single_row();
     test_rejects_malformed_files();
+    test_empty_wire_layout_and_rejected_overwrite();
+    test_widened_offset_stream();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
