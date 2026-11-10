@@ -2,7 +2,10 @@
 #include "gnfs/core/params.hpp"
 #include "support/test_check.hpp"
 
+#include <cerrno>
 #include <clocale>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -206,37 +209,83 @@ void test_large_prime_bound() {
 void test_lp_bits_env_override() {
     std::cout << "Testing GNFS_OVERRIDE_LP_BITS ENV override..." << std::endl;
 
-    // Default: 60d (197-bit) → lp_bits = 26
+    struct ValidCase {
+        const char* text;
+        uint32_t expected;
+    };
+    const ValidCase valid_cases[] = {
+        {"1", 1}, {"25", 25}, {"27", 27}, {"30", 30}, {"+25", 25}, {"025", 25}, {" \t25", 25},
+    };
+    const char* invalid_cases[] = {
+        "4294967321",
+        "-4294967271",
+        "2147483648",
+        "-2147483649",
+        "9223372036854775807",
+        "9223372036854775808",
+        "-9223372036854775808",
+        "-9223372036854775809",
+        "18446744073709551616",
+        "99999999999999999999999999999999999999999999999999",
+        "",
+        " \t",
+        "0",
+        "31",
+        "99",
+        "-1",
+        "-25",
+        "+",
+        "-",
+        "garbage",
+        "25junk",
+        "1e6",
+        "25.0",
+        "0x19",
+        "25 27",
+        "25 ",
+    };
+
+    // Cover disabled LP, small gates, 100-150 bits, and 50/60/90-digit defaults.
+    for (size_t bits :
+         {size_t{197}, size_t{20}, size_t{81}, size_t{128}, size_t{164}, size_t{300}}) {
+        unsetenv("GNFS_OVERRIDE_LP_BITS");
+        errno = EDOM;
+        const auto baseline = GNFSParams::compute(bits);
+        const int baseline_errno = errno;
+        if (bits == 197) {
+            GNFS_TEST_CHECK(baseline.large_prime_bits == 26);
+        }
+
+        for (const auto& valid : valid_cases) {
+            setenv("GNFS_OVERRIDE_LP_BITS", valid.text, 1);
+            const auto overridden = GNFSParams::compute(bits);
+            GNFS_TEST_CHECK(overridden.large_prime_bits == valid.expected);
+            GNFS_TEST_CHECK(overridden.large_prime_bound == (uint64_t{1} << valid.expected));
+        }
+
+        for (const char* invalid : invalid_cases) {
+            setenv("GNFS_OVERRIDE_LP_BITS", invalid, 1);
+            errno = EDOM;
+            const auto actual = GNFSParams::compute(bits);
+            GNFS_TEST_CHECK(errno == baseline_errno);
+            if (actual.large_prime_bits != baseline.large_prime_bits) {
+                std::cerr << "compute(" << bits << "): override=\"" << invalid
+                          << "\", actual lp_bits=" << actual.large_prime_bits
+                          << ", expected=" << baseline.large_prime_bits << std::endl;
+            }
+            GNFS_TEST_CHECK(actual.large_prime_bits == baseline.large_prime_bits);
+            GNFS_TEST_CHECK(actual.large_prime_bound == baseline.large_prime_bound);
+            GNFS_TEST_CHECK(actual.rational_threshold == baseline.rational_threshold);
+            GNFS_TEST_CHECK(actual.algebraic_threshold == baseline.algebraic_threshold);
+            GNFS_TEST_CHECK(actual.max_special_q == baseline.max_special_q);
+            GNFS_TEST_CHECK(actual.estimated_relations_needed() ==
+                            baseline.estimated_relations_needed());
+            GNFS_TEST_CHECK(actual.raw_relation_target(1000) == baseline.raw_relation_target(1000));
+        }
+    }
+
     unsetenv("GNFS_OVERRIDE_LP_BITS");
-    auto default_60d = GNFSParams::compute(197);
-    GNFS_TEST_CHECK(default_60d.large_prime_bits == 26);
-
-    // ENV=25 → lp_bits = 25
-    setenv("GNFS_OVERRIDE_LP_BITS", "25", 1);
-    auto override_25 = GNFSParams::compute(197);
-    GNFS_TEST_CHECK(override_25.large_prime_bits == 25);
-    GNFS_TEST_CHECK(override_25.large_prime_bound == (1ULL << 25));
-
-    // ENV=27 → lp_bits = 27 (any 1..30 in range)
-    setenv("GNFS_OVERRIDE_LP_BITS", "27", 1);
-    auto override_27 = GNFSParams::compute(197);
-    GNFS_TEST_CHECK(override_27.large_prime_bits == 27);
-
-    // ENV=0 (out of range 1..30) → no override (back to default 26)
-    setenv("GNFS_OVERRIDE_LP_BITS", "0", 1);
-    auto invalid_0 = GNFSParams::compute(197);
-    GNFS_TEST_CHECK(invalid_0.large_prime_bits == 26);
-
-    // ENV=99 (out of range) → no override
-    setenv("GNFS_OVERRIDE_LP_BITS", "99", 1);
-    auto invalid_99 = GNFSParams::compute(197);
-    GNFS_TEST_CHECK(invalid_99.large_prime_bits == 26);
-
-    // Clean up
-    unsetenv("GNFS_OVERRIDE_LP_BITS");
-    auto cleanup = GNFSParams::compute(197);
-    GNFS_TEST_CHECK(cleanup.large_prime_bits == 26);
-
+    GNFS_TEST_CHECK(GNFSParams::compute(197).large_prime_bits == 26);
     std::cout << "  PASS" << std::endl;
 }
 

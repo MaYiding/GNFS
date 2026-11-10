@@ -246,7 +246,14 @@ MatrixBuilder wall time 和 nonzeros。记录在 deterministic trim 完成后、
 
 ## lp_bits 实验 (GNFS_OVERRIDE_LP_BITS)
 
-**ENV `GNFS_OVERRIDE_LP_BITS=N`** (commit `dce0a5e`, `e271c5a`): runtime override `params.hpp` digit-based lp_bits default. 范围 1-30. 不在范围则忽略 (default).
+`GNFS_OVERRIDE_LP_BITS=N` 在 `GNFSParams::compute()` 中覆盖按输入位数选择的
+`lp_bits`，有效范围为 1–30。输入按十进制整数完整解析；接受前导空白、可选的
+`+` 和前导零。未设置、空值、负数、范围外整数、整数溢出或任何尾部字符
+（包括尾部空白）均忽略，保留默认参数。
+
+合法覆盖会参与大素数上界、筛阈值和关系预算的计算。忽略非法输入时，这些派生参数
+与未设置变量时一致。`test_params` 覆盖正负溢出、尾部垃圾、边界值，以及无 LP、
+81 位、128 位和约 50/60/90 位十进制输入的默认参数。
 
 ```bash
 GNFS_OVERRIDE_LP_BITS=25 ./test_stress 2 2   # 60d with lp_bits=25 (vs default 26)
