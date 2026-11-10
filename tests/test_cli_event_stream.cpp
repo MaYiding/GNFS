@@ -496,6 +496,30 @@ void test_success_cases(const std::filesystem::path& executable) {
     }
 }
 
+void test_config_read(const std::filesystem::path& executable,
+                      const std::filesystem::path& temporary_root) {
+    const auto empty = temporary_root / "empty.conf";
+    std::ofstream(empty).close();
+    (void)validate_protocol(executable,
+                            {"--event-stream", "--complete", "--config", empty.string(), "360"}, 0,
+                            EventKind::result, true, "empty config file");
+
+    const auto directory = temporary_root.string();
+    const auto rejected =
+        validate_protocol(executable, {"--event-stream", "--config", directory, "360"}, 1,
+                          EventKind::error, false, "config directory");
+    check_terminal_contains(rejected, "\"code\":\"config_error\"", "config directory");
+
+    const auto run = run_cli(executable, {"--lang", "en", "--config", directory, "360"});
+    CHECK_CONTEXT(run.error == BoundedChildProcessError::normal_nonzero &&
+                      run.termination.exit_code == 1,
+                  describe(run));
+    CHECK_CONTEXT(run.stdout_bytes.empty(), "config directory");
+    CHECK_CONTEXT(run.stderr_bytes.find("Config error:") != std::string::npos &&
+                      run.stderr_bytes.find(directory) != std::string::npos,
+                  "config directory");
+}
+
 void test_verbose_cases(const std::filesystem::path& executable,
                         const std::filesystem::path& temporary_root) {
     (void)validate_protocol(executable, {"--event-stream", "--verbose", "--complete", "360"}, 0,
@@ -545,7 +569,7 @@ void test_configured_output(const std::filesystem::path& executable,
     const std::filesystem::path text_output_path = temporary_root / "configured.txt";
     {
         std::ofstream config(text_config_path);
-        config << "output_file = " << text_output_path.string() << "\n";
+        config << "output_file = " << text_output_path.string(); // Final line without a newline.
         CHECK_CONTEXT(static_cast<bool>(config), "write text output config");
     }
     const auto text_run =
@@ -706,6 +730,7 @@ int main(int argc, char* argv[]) {
 
         TempDirectory temporary;
         test_success_cases(executable);
+        test_config_read(executable, temporary.path());
         test_verbose_cases(executable, temporary.path());
         test_configured_output(executable, temporary.path());
         test_output_errors(executable, test_executable, temporary.path());
