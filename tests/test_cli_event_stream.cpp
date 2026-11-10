@@ -2,6 +2,14 @@
 
 #include <gnfs/util/bounded_child_process.hpp>
 
+#ifndef _WIN32
+#include <csignal>
+#include <cstdio>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -12,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -498,6 +507,17 @@ void test_config_read(const std::filesystem::path& executable,
                             {"--event-stream", "--complete", "--config", empty.string(), "360"}, 0,
                             EventKind::result, true, "empty config file");
 
+    const auto invalid = temporary_root / "invalid-after-crlf.cfg";
+    {
+        std::ofstream config(invalid, std::ios::binary);
+        config << "\r\n \t\r\ninvalid\r\n";
+        CHECK_CONTEXT(static_cast<bool>(config), "write invalid CRLF config");
+    }
+    const auto invalid_run = validate_protocol(
+        executable, {"--event-stream", "--lang", "en", "--config", invalid.string(), "360"}, 1,
+        EventKind::error, false, "invalid config after CRLF blank lines");
+    check_terminal_contains(invalid_run, "line 3: missing '='", "CRLF config line number");
+
     const auto directory = temporary_root.string();
     const auto rejected =
         validate_protocol(executable, {"--event-stream", "--config", directory, "360"}, 1,
@@ -562,7 +582,8 @@ void test_configured_output(const std::filesystem::path& executable,
     const std::filesystem::path text_config_path = temporary_root / "text-output.conf";
     const std::filesystem::path text_output_path = temporary_root / "configured.txt";
     {
-        std::ofstream config(text_config_path);
+        std::ofstream config(text_config_path, std::ios::binary);
+        config << "\r\n \t\r\n# Output settings\r\n";
         config << "output_file = " << text_output_path.string(); // Final line without a newline.
         CHECK_CONTEXT(static_cast<bool>(config), "write text output config");
     }
@@ -579,6 +600,88 @@ void test_configured_output(const std::filesystem::path& executable,
         CHECK_CONTEXT(contents.find("360 =") != std::string::npos, text_context);
     }
 }
+
+#ifndef _WIN32
+constexpr std::size_t limited_stdout_bytes = 1024;
+
+bool redirect_to_limited_stdout(const char* path) {
+    // Leave room for the coverage runtime to write its ordinary profile files.
+    // Seeking near the end of a sparse file leaves only the stdout prefix writable.
+    rlimit limit{};
+    if (::getrlimit(RLIMIT_FSIZE, &limit) != 0)
+        return false;
+    limit.rlim_cur = std::min<rlim_t>(limit.rlim_cur, 64ULL * 1024 * 1024);
+    if (limit.rlim_cur < limited_stdout_bytes || !std::freopen(path, "wb", stdout))
+        return false;
+    const auto offset = static_cast<off_t>(limit.rlim_cur - limited_stdout_bytes);
+    return ::lseek(STDOUT_FILENO, offset, SEEK_SET) == offset &&
+           std::signal(SIGXFSZ, SIG_IGN) != SIG_ERR && ::setrlimit(RLIMIT_FSIZE, &limit) == 0;
+}
+#endif
+
+void test_output_errors(const std::filesystem::path& executable,
+                        [[maybe_unused]] const std::filesystem::path& test_executable,
+                        const std::filesystem::path& temporary_root) {
+    const auto check_error = [](const BoundedChildProcessResult& run,
+                                const std::string& diagnostic) {
+        const auto context = diagnostic + " " + describe(run);
+        CHECK_CONTEXT(run.error == BoundedChildProcessError::normal_nonzero, context);
+        CHECK_CONTEXT(run.termination.kind == BoundedChildTerminationKind::exited &&
+                          run.termination.exit_code == 1,
+                      context);
+        CHECK_CONTEXT(run.stdout_bytes.empty(), context);
+        CHECK_CONTEXT(run.stderr_bytes.find(diagnostic) != std::string::npos, context);
+        CHECK_CONTEXT(run.stderr_bytes.find("Result written to") == std::string::npos, context);
+    };
+
+    const auto missing = (temporary_root / "missing" / "result.txt").string();
+    check_error(run_cli(executable, {"--lang", "en", "--output", missing, "360"}),
+                "Cannot open output file: " + missing);
+#ifdef __APPLE__
+    // Darwin opens /dev/fd/1 as a duplicate of the positioned stdout descriptor.
+    const auto output = (temporary_root / "limited result.txt").string();
+    check_error(
+        run_cli(test_executable, {"--with-limited-stdout", output, executable.string(), "--lang",
+                                  "en", "--json", "--output", "/dev/fd/1", "360"}),
+        "Cannot write output file: /dev/fd/1");
+#elif !defined(_WIN32)
+    check_error(run_cli(executable, {"--lang", "en", "--output", "/dev/full", "360"}),
+                "Cannot write output file: /dev/full");
+#endif
+}
+
+#ifndef _WIN32
+void test_stdout_failure(const std::filesystem::path& executable,
+                         const std::filesystem::path& test_executable,
+                         const std::filesystem::path& temporary_root) {
+    const auto path = temporary_root / "limited stdout";
+    for (const auto format : {"--json", "--event-stream"}) {
+        const auto run =
+            run_cli(test_executable, {"--with-limited-stdout", path.string(), executable.string(),
+                                      "--lang", "en", "--quiet", format, "360"});
+        const auto context = std::string(format) + ": " + describe(run);
+        CHECK_CONTEXT(run.error == BoundedChildProcessError::normal_nonzero &&
+                          run.termination.exit_code == 1,
+                      context);
+        CHECK_CONTEXT(run.stdout_bytes.empty(), context);
+        CHECK_CONTEXT(split_lines(run.stderr_bytes) ==
+                          std::vector<std::string>{"Cannot write to standard output."},
+                      context);
+        std::ifstream output(path, std::ios::binary);
+        output.seekg(-static_cast<std::streamoff>(limited_stdout_bytes), std::ios::end);
+        const std::string bytes((std::istreambuf_iterator<char>(output)), {});
+        // A leading zero would mean the read included the sparse hole.
+        CHECK_CONTEXT(bytes.size() == limited_stdout_bytes && bytes.front() == '{', context);
+        if (std::string_view(format) == "--event-stream") {
+            const auto lines = split_lines(bytes);
+            CHECK_CONTEXT(!lines.empty() && classify_event(lines.front()) == EventKind::started &&
+                              classify_event(lines.back()) == EventKind::result &&
+                              !JsonSyntax(lines.back()).parse_object_document(),
+                          context);
+        }
+    }
+}
+#endif
 
 void test_input_errors(const std::filesystem::path& executable) {
     const auto invalid = validate_protocol(executable, {"--event-stream", "not-a-number"}, 1,
@@ -672,6 +775,14 @@ void test_incompatible_options(const std::filesystem::path& executable,
 } // namespace
 
 int main(int argc, char* argv[]) {
+#ifndef _WIN32
+    if (argc >= 4 && std::string_view(argv[1]) == "--with-limited-stdout") {
+        if (!redirect_to_limited_stdout(argv[2]))
+            return 2;
+        ::execv(argv[3], argv + 3);
+        return 2;
+    }
+#endif
     if (argc < 1 || argc > 2) {
         std::cerr << "Usage: test_cli_event_stream [gnfs-executable]\n";
         return 2;
@@ -690,6 +801,10 @@ int main(int argc, char* argv[]) {
         test_config_read(executable, temporary.path());
         test_verbose_cases(executable, temporary.path());
         test_configured_output(executable, temporary.path());
+        test_output_errors(executable, test_executable, temporary.path());
+#ifndef _WIN32
+        test_stdout_failure(executable, test_executable, temporary.path());
+#endif
         test_input_errors(executable);
         test_unsigned_option_values(executable);
         test_event_stream_token_used_as_value(executable);
