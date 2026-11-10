@@ -3,13 +3,17 @@
 // Verifies that save→load round-trip produces identical SpMV results
 // as the in-memory CSRMatrix.
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/detail/spmv_kernels.hpp>
 #include <gnfs/linalg/mmap_csr_matrix.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 #include <gnfs/util/thread_pool.hpp>
 #include <iostream>
@@ -17,6 +21,7 @@
 #include <limits>
 #include <random>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -237,6 +242,29 @@ void test_zero_nnz_nonempty_shape() {
     TEST_PASS("non-empty zero-NNZ mmap shape and SpMV");
 }
 
+void test_zero_column_dependencies() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_zero_columns_" +
+                                       std::to_string(gnfs::util::process_id()) + "_" +
+                                       std::to_string(stamp) + ".csrmat"));
+    MmapCSRMatrix::save(CSRMatrix(SparseMatrix(3, 0)), tmp.path);
+    MmapCSRMatrix mapped(tmp.path);
+    TEST_ASSERT(mapped.num_rows() == 3 && mapped.num_cols() == 0 && mapped.nnz() == 0,
+                "save/open must preserve the 3-by-zero matrix shape");
+
+    gnfs::linalg::BlockWiedemann solver;
+    std::vector<std::vector<bool>> expected = {
+        {true, false, false}, {false, true, false}, {false, false, true}};
+    TEST_ASSERT(solver.find_dependencies_view(mapped, 3) == expected,
+                "mapped zero-column kernel must contain three independent unit vectors");
+    gnfs::linalg::BlockWiedemann::SeededPolicy policy;
+    policy.pool_threads = 1;
+    std::reverse(expected.begin(), expected.end());
+    TEST_ASSERT(solver.find_dependencies_view_seeded(mapped, 3, 42, 1, policy) == expected,
+                "mapped seeded zero-column kernel must retain its sorted independent basis");
+    TEST_PASS("zero-column mmap dependencies");
+}
+
 void test_single_row() {
     TempFile tmp(gnfs::util::temp_path("gnfs_test_csr_1row.csrmat"));
 
@@ -405,6 +433,7 @@ int main() {
     test_large_matrix();
     test_empty_matrix();
     test_zero_nnz_nonempty_shape();
+    test_zero_column_dependencies();
     test_single_row();
     test_rejects_malformed_files();
     test_empty_wire_layout_and_rejected_overwrite();

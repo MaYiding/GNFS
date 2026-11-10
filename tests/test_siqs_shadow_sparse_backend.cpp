@@ -401,12 +401,13 @@ void test_seeded_scratch_isolation_under_concurrency() {
 }
 
 void test_seeded_view_zero_column_boundary() {
-    // A CSR view may have rows but no equations.  The public BW boundary is
-    // intentionally a no-op for this degenerate shape; SIQS itself handles
-    // such rows before invoking BW.
+    // With no equations, the complete left kernel consists of three
+    // independent row-unit vectors, sorted by the seeded API.
     CSRMatrix matrix(3, 0, std::vector<size_t>{0, 0, 0, 0}, {});
     BlockWiedemann solver;
-    CHECK(solver.find_dependencies_view_seeded(matrix, 3, 42, 1).empty());
+    const std::vector<std::vector<bool>> expected = {
+        {false, false, true}, {false, true, false}, {true, false, false}};
+    CHECK(solver.find_dependencies_view_seeded(matrix, 3, 42, 1) == expected);
 }
 
 void test_seeded_empty_view_validation_order() {

@@ -3,6 +3,9 @@
 // Verifies that Block Wiedemann produces valid GF(2) null space vectors
 // by cross-validating against Block Lanczos on the same matrices.
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/block_wiedemann.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
@@ -10,6 +13,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <vector>
 
 using gnfs::linalg::BlockLanczos;
 using gnfs::linalg::BlockWiedemann;
@@ -963,6 +967,92 @@ void test_bw_empty_matrix_fall_through() {
     TEST_PASS("BW fall-through on degenerate matrix (BACKLOG [TEST] valid_polys==0 path)");
 }
 
+// Every row-unit vector lies in the left kernel of an m-by-zero matrix.
+// Requiring distinct unit vectors proves independence as well as validity.
+static bool is_unit_basis(const SparseMatrix& matrix,
+                          const std::vector<std::vector<bool>>& dependencies, size_t budget) {
+    if (dependencies.size() != std::min(matrix.num_rows(), budget))
+        return false;
+    std::vector<bool> used(matrix.num_rows(), false);
+    for (const auto& dependency : dependencies) {
+        if (!verify_dependency(matrix, dependency))
+            return false;
+        size_t unit = matrix.num_rows();
+        for (size_t row = 0; row < matrix.num_rows(); ++row) {
+            if (!dependency[row])
+                continue;
+            if (unit != matrix.num_rows())
+                return false;
+            unit = row;
+        }
+        if (unit == matrix.num_rows() || used[unit])
+            return false;
+        used[unit] = true;
+    }
+    return true;
+}
+
+void test_zero_column_owning_dependencies() {
+    BlockWiedemann solver;
+    for (size_t rows : {size_t{0}, size_t{3}, size_t{70}}) {
+        SparseMatrix matrix(rows, 0);
+        for (size_t budget : {size_t{0}, size_t{1}, size_t{2}, size_t{65}, size_t{80}}) {
+            TEST_ASSERT(is_unit_basis(matrix, solver.find_dependencies(matrix, budget), budget),
+                        "owning zero-column kernel must honor the dependency budget");
+        }
+    }
+    TEST_ASSERT(solver.find_dependencies(SparseMatrix(0, 3)).empty(),
+                "a zero-row matrix has no nonzero left-kernel vector");
+    TEST_PASS("zero-column owning dependencies");
+}
+
+void test_zero_column_view_dependencies() {
+    BlockWiedemann solver;
+    BlockWiedemann::SeededPolicy policy;
+    policy.pool_threads = 1;
+    for (size_t rows : {size_t{0}, size_t{3}, size_t{70}}) {
+        SparseMatrix matrix(rows, 0);
+        gnfs::linalg::CSRMatrix view(matrix);
+        for (size_t budget : {size_t{0}, size_t{1}, size_t{2}, size_t{65}, size_t{80}}) {
+            TEST_ASSERT(is_unit_basis(matrix, solver.find_dependencies_view(view, budget), budget),
+                        "view zero-column kernel must honor the dependency budget");
+            const auto seeded = solver.find_dependencies_view_seeded(view, budget, 42, 2, 1);
+            TEST_ASSERT(is_unit_basis(matrix, seeded, budget),
+                        "seeded zero-column kernel must retain independent vectors");
+            const auto explicit_seeded =
+                solver.find_dependencies_view_seeded(view, budget, 123, 1, policy);
+            TEST_ASSERT(is_unit_basis(matrix, explicit_seeded, budget),
+                        "explicit seeded zero-column kernel must honor the budget");
+            TEST_ASSERT(seeded == explicit_seeded, "a trivial kernel must be seed-independent");
+            TEST_ASSERT(std::is_sorted(seeded.begin(), seeded.end()),
+                        "seeded dependencies must keep their canonical ordering");
+        }
+    }
+    const gnfs::linalg::CSRMatrix no_rows(SparseMatrix(0, 3));
+    TEST_ASSERT(solver.find_dependencies_view(no_rows).empty(),
+                "a zero-row view has no nonzero left-kernel vector");
+    const gnfs::linalg::CSRMatrix no_columns(SparseMatrix(3, 0));
+    bool rejected = false;
+    try {
+        (void)solver.find_dependencies_view_seeded(no_columns, 1, 42, 0, policy);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    TEST_ASSERT(rejected, "zero-column shortcuts must not bypass retry validation");
+    policy.use_krylov_compression = true;
+    policy.use_krylov_mmap = false;
+    rejected = false;
+    try {
+        (void)solver.find_dependencies_view_seeded(no_columns, 1, 42, 1, policy);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    TEST_ASSERT(rejected, "zero-column shortcuts must not bypass policy validation");
+    TEST_ASSERT(solver.find_dependencies_view_seeded(no_columns, 0, 42, 0, policy).empty(),
+                "zero budget must remain an unconditional no-op");
+    TEST_PASS("zero-column view dependencies");
+}
+
 int main() {
     std::cout << "═══════════════════════════════════════════\n";
     std::cout << "  Block Wiedemann Unit Tests\n";
@@ -991,6 +1081,9 @@ int main() {
     test_matrix_bm_constant_sequence();
     test_matrix_bm_powers_of_random_B();
     test_matrix_bm_multiword_L128();
+
+    test_zero_column_owning_dependencies();
+    test_zero_column_view_dependencies();
 
     // Original BW tests
     test_scalar_bm_basic();
