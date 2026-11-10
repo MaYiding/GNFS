@@ -36,6 +36,12 @@ std::vector<uint64_t> small_primes_up_to(uint64_t N) {
 
 } // namespace
 
+void test_add_mod_u64() {
+    GNFS_TEST_CHECK(add_mod_u64(17, 26, 7) == 1);
+    GNFS_TEST_CHECK(add_mod_u64(U64_MAX - 1, U64_MAX - 1, U64_MAX) == U64_MAX - 2);
+    GNFS_TEST_CHECK(add_mod_u64(17, 26, 0) == 0);
+}
+
 void test_mul_mod_u64() {
     std::cout << "Testing mul_mod_u64..." << std::endl;
 
@@ -296,6 +302,7 @@ void test_pow_mod_overflow_paranoia() {
 int main() {
     std::cout << "=== util/primes.hpp tests ===" << std::endl;
 
+    test_add_mod_u64();
     test_mul_mod_u64();
     test_pow_mod_u64();
     test_is_prime_u64_basics();
