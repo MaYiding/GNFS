@@ -2977,6 +2977,10 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME CLIEventStream
         COMMAND test_cli_event_stream $<TARGET_FILE:gnfs>)
     set_tests_properties(CLIEventStream PROPERTIES LABELS "instant" TIMEOUT 60)
+    add_test(NAME CLIReplConfig
+        COMMAND ${CMAKE_COMMAND} "-DCLI=$<TARGET_FILE:gnfs>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_repl_config.cmake)
+    set_tests_properties(CLIReplConfig PROPERTIES LABELS "instant" TIMEOUT 20)
 
     # Method selection 测试
     add_executable(test_method_selection
