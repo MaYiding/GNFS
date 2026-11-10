@@ -59,6 +59,16 @@ process supervisor used by their timeout wrapper and CTest contract. The full
 local `gate` also builds and runs `test_regression_gate`. CMake builds the
 dependencies of the selected targets. `--no-build` uses existing binaries.
 
+`module` and `changed` also build only their selected test binaries, the process
+supervisor, and executables required by their CTest contracts. Module selections
+include slow tests only with `--slow`. Changed selections include their smoke
+fallback or conditional E2E and 50-digit probe contracts. Build targets are
+deduplicated without changing test execution or report entries. Each
+`watch module` or `watch changed` iteration recomputes and builds its selection.
+These selected builds refresh CMake configuration before excluding targets
+unavailable on Windows; only generated `WIN32=1` metadata permits exclusion.
+Configuration or build failures stop the iteration before any tests execute.
+
 `scripts/test.sh changed --deep` adds mapped module dependencies and the API
 contract to applicable change selections. It also selects `test_siqs_e2e` once
 when a changed path maps directly to the `siqs` module, including

@@ -124,7 +124,8 @@ definitions = '\n'.join(
 definitions += '\n' + extract(r'^typeset -a MODULE_ORDER\nMODULE_ORDER=\(.*?\)$')
 definitions += '\n' + '\n'.join(
     extract(rf'^{name}\(\) \{{\n.*?^\}}')
-    for name in ['path_to_module', 'do_module', 'do_changed']
+    for name in ['path_to_module', 'module_build_targets', 'do_module_build',
+                 'do_module', 'do_changed']
 )
 # Use the production failure-count-to-exit conversion as well as its selector.
 exit_status = extract(r'^if \(\( FAILED_TESTS > 0 \)\); then\n.*?^exit 0$')
@@ -137,6 +138,7 @@ TOTAL_TESTS=0
 MODE=module
 SKIP_TEST=""
 typeset -a REPORT_ENTRIES=()
+typeset -a SMOKE_TESTS=(test_integer)
 log_header() { :; }
 log_section() { :; }
 log_info() { :; }
@@ -146,6 +148,7 @@ log_success() { :; }
 log_skip() { :; }
 resolve_changed_base() { print fixture; }
 collect_changed_files() { print -r -- "$ROUTE_PATHS"; }
+do_build_selected_tests() { :; }
 run_ctest_contract_group() { :; }
 do_50d_probe_contracts() { print 'SELECTED:50d_contract'; }
 do_smoke() { print 'SELECTED:smoke'; }
@@ -212,6 +215,22 @@ route([header], ['--deep'], 1, fail_test='test_siqs_e2e')
 if 'test_int_polynomial' not in route(['tests/test_int_polynomial.cpp'], [], 0):
     raise SystemExit('Catalog routing must use the real module iteration order')
 print('[PASS] changed selection, SIQS deep E2E, and failure propagation')
+
+# Build failures must stop each changed-mode branch even when its caller has
+# disabled errexit with || true. No stale binary or CTest may execute afterward.
+for paths, unmapped in [([], False), (['docs/note.md'], False),
+                        (['CMakeLists.txt'], True), ([header], False)]:
+    driver = (recorders + '\n' + definitions + '\n'
+              'ROUTE_PATHS=$1; FAIL_TEST=""\n'
+              'do_build_selected_tests() { print BUILD_FAILED; return 41; }\n'
+              + ('path_to_module() { :; }\n' if unmapped else '')
+              + 'do_changed --deep || true\n')
+    result = subprocess.run(['zsh', '-s', '--', '\n'.join(paths)], input=driver,
+                            text=True, capture_output=True, cwd=root, timeout=10, check=True)
+    if result.stdout.splitlines().count('BUILD_FAILED') != 1 or 'SELECTED:' in result.stdout:
+        raise SystemExit(f'Failed selective build reached execution: {paths!r}\n'
+                         f'{result.stdout}{result.stderr}')
+print('[PASS] changed build failures stop execution inside an ignored-status caller')
 
 # Module requests are the coverage oracle: changed selection may remove repeated
 # no-argument calls, but may not remove any member of the selected module union.
@@ -368,8 +387,11 @@ def check_argument_case(options):
         text=True, capture_output=True, cwd=fixture, env=environment, timeout=10,
     )
     rejected = options in invalid
+    # changed catches build failures at its selection boundary; direct build
+    # dispatchers retain CMake's original status.
+    expected_status = 2 if rejected else (1 if {'changed', 'diff'} & set(options) else 99)
     calls = marker.read_text().splitlines() if marker.exists() else []
-    if (result.returncode != (2 if rejected else 99)
+    if (result.returncode != expected_status
             or calls != ([] if rejected else ['called'])
             or (rejected and '参数错误' not in result.stdout + result.stderr)):
         raise SystemExit(f'Argument validation failed for {options!r}: '
@@ -381,7 +403,7 @@ for options in invalid + valid:
     check_argument_case(options)
 
 # A Debug request on a cached Release build takes the reconfiguration path.
-# It must propagate the same CMake failure before attempting to build.
+# It must fail at the same boundary before attempting to build.
 cached_build = Path(environment['GNFS_BUILD_DIR'])
 cached_build.mkdir(exist_ok=True)
 (cached_build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Release\n')
@@ -395,6 +417,278 @@ module = subprocess.run(
 if module.stdout.splitlines().count('SELECTED:test_siqs_e2e') != 1:
     raise SystemExit('Explicit module --slow must still select SIQS E2E once')
 print('[PASS] changed arguments fail before CMake; module --slow remains supported')
+PY
+
+# Run the complete runner against an isolated repository and fake build tools.
+# Binaries exist only after their target is built, so execution and JSON reports
+# independently prove that the selected build covered the requested behavior.
+python3 - "$PROJECT_ROOT" "${TEST_TMPDIR}/selective runner" <<'PY'
+from collections import Counter
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+project, fixture = map(Path, sys.argv[1:])
+(fixture / 'scripts/lib').mkdir(parents=True)
+(fixture / 'scripts/test-catalog').mkdir()
+for name in ['lib/changed_files.zsh', 'lib/process_tree_timeout.zsh',
+             'test-catalog/windows-unavailable.txt']:
+    shutil.copy2(project / 'scripts' / name, fixture / 'scripts' / name)
+runner = (project / 'scripts/test.sh').read_text()
+optional = (project / 'scripts/test-catalog/windows-unavailable.txt').read_text().split()[0]
+modules = {
+    'core': ['test_integer', 'test_regressions'],
+    'util': ['test_small_vector'],
+    'polynomial': ['test_int_polynomial', 'test_regressions'],
+    'sieve': ['test_sieve_basic', optional],
+    'relation': ['test_relation_collector'],
+    'api': ['test_api'],
+    'siqs': ['test_siqs'],
+}
+slow = {'polynomial': ['test_kleinjung_large'], 'siqs': ['test_siqs_e2e']}
+smoke = ['test_integer', 'test_small_vector']
+
+
+def require(condition, detail):
+    if not condition:
+        raise SystemExit(detail)
+
+
+def replace(pattern, replacement):
+    global runner
+    runner, count = re.subn(pattern, lambda _: replacement, runner,
+                            count=1, flags=re.MULTILINE | re.DOTALL)
+    require(count == 1, f'Cannot prepare runner fixture: {pattern}')
+
+
+for name, table in [('MODULE_TESTS', modules), ('MODULE_SLOW_TESTS', slow),
+                    ('MODULE_DEPS', {'core': ['polynomial', 'api'], 'util': ['siqs']})]:
+    replace(rf'^{name}=\(\n.*?^\)', name + '=(\n' + '\n'.join(
+        f'    {key} "{" ".join(values)}"' for key, values in table.items()) + '\n)')
+replace(r'^MODULE_ORDER=\(.*?\)$', 'MODULE_ORDER=(' + ' '.join(modules) + ')')
+# The 50-digit schema contract is covered elsewhere. At this execution boundary,
+# require the selected probe binary to exist, just like a real contract needs it.
+replace(r'^self_check_50d_probe_contracts\(\) \{\n.*?^\}',
+        'self_check_50d_probe_contracts() {\n'
+        '    "${BUILD_DIR}/test_structured_ooc_50d_probe" fixture-contract\n}')
+(fixture / 'scripts/test.sh').write_text(runner)
+(fixture / 'scripts/test-catalog/smoke.txt').write_text('\n'.join(smoke) + '\n')
+sources = ['include/gnfs/core/integer.hpp', 'include/gnfs/util/safe_math.hpp',
+           'include/gnfs/siqs/siqs.hpp', 'CMakeLists.txt', 'docs/note.md']
+for name in sources:
+    source = fixture / name
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text('// baseline\n')
+(fixture / '.gitignore').write_text('.cache/\n')
+for args in [['init', '-q'], ['add', '.'],
+             ['-c', 'user.name=Runner Fixture', '-c', 'user.email=fixture@example.invalid',
+              '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture baseline']]:
+    subprocess.run(['git', *args], cwd=fixture, check=True, stdout=subprocess.DEVNULL)
+base = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=fixture, text=True).strip()
+cache = fixture / '.cache'
+bin_dir = cache / 'bin'
+bin_dir.mkdir(parents=True)
+common = "import json, os, pathlib, subprocess, sys\n"
+common += "with open(os.environ['GNFS_STUB_LOG'], 'a') as stream:\n"
+common += "    stream.write(json.dumps([pathlib.Path(sys.argv[0]).name, *sys.argv[1:]]) + '\\n')\n"
+child = ('#!' + sys.executable + '\n' + common
+         + "if pathlib.Path(sys.argv[0]).name == 'gnfs_test_process_supervisor':\n"
+         + "    raise SystemExit(subprocess.call(sys.argv[sys.argv.index('--') + 1:]))\n")
+
+
+def executable(path, body):
+    path.write_text('#!' + sys.executable + '\n' + common + body)
+    path.chmod(0o755)
+
+
+executable(bin_dir / 'cmake', r'''
+args = sys.argv[1:]
+if '--build' not in args:
+    build = pathlib.Path(args[args.index('-B') + 1])
+    build.mkdir(parents=True, exist_ok=True)
+    build_type = next(a.split('=', 1)[1] for a in args if a.startswith('-DCMAKE_BUILD_TYPE='))
+    (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=' + build_type + '\n')
+    platform = os.environ['GNFS_STUB_WIN32']
+    if platform != 'missing':
+        (build / 'gnfs-test-platform.txt').write_text('WIN32=' + platform + '\n')
+    raise SystemExit(int(os.environ['GNFS_STUB_CONFIGURE_EXIT']))
+build = pathlib.Path(args[args.index('--build') + 1])
+if int(os.environ['GNFS_STUB_BUILD_EXIT']):
+    raise SystemExit(int(os.environ['GNFS_STUB_BUILD_EXIT']))
+targets = args[args.index('--target') + 1:] if '--target' in args else json.loads(os.environ['GNFS_STUB_ALL_TARGETS'])
+if os.environ['GNFS_STUB_WIN32'] == '1' and os.environ['GNFS_STUB_OPTIONAL'] in targets:
+    raise SystemExit('attempted to build a target CMake excludes on WIN32')
+for name in targets:
+    binary = build / name
+    binary.write_text(os.environ['GNFS_STUB_CHILD'])
+    binary.chmod(0o755)
+    if name == 'gnfs_test_process_supervisor':
+        dependency = build / 'bounded_child_process_fake_child'
+        dependency.write_text(os.environ['GNFS_STUB_CHILD'])
+        dependency.chmod(0o755)
+''')
+executable(bin_dir / 'ctest', r'''
+args = sys.argv[1:]
+build = pathlib.Path(args[args.index('--test-dir') + 1])
+regex = args[args.index('-R') + 1]
+required = []
+if 'CLIReplConfig' in regex:
+    required.append('gnfs')
+if 'ProcessSupervisor' in regex:
+    required.extend(['gnfs_test_process_supervisor', 'bounded_child_process_fake_child'])
+for name in required:
+    if not (build / name).is_file():
+        raise SystemExit('CTest dependency not built: ' + name)
+raise SystemExit(int(os.environ['GNFS_STUB_CTEST_EXIT']))
+''')
+executable(bin_dir / 'fswatch', "print('1')\n")
+# Timing is irrelevant here and should not dominate subprocess fixture costs.
+clock = bin_dir / 'clock'
+clock.write_text('#!/bin/sh\nprintf "0\\n"\n')
+clock.chmod(0o755)
+host = bin_dir / 'uname'
+host.write_text('#!/bin/sh\nprintf "%s\\n" "$GNFS_STUB_HOST"\n')
+host.chmod(0o755)
+all_targets = set(sum(modules.values(), []) + sum(slow.values(), []) + smoke)
+all_targets.update(['test_gnfs_e2e', 'test_structured_ooc_50d_probe',
+                    'gnfs', 'gnfs_test_process_supervisor', 'bounded_child_process_fake_child'])
+case_index = 0
+
+
+def invoke(options, *, changes=(), win32='0', host='Linux', build_exit=0,
+           configure_exit=0, ctest_exit=0, prebuilt=False, cached_win32=None):
+    global case_index
+    case_index += 1
+    for name in sources:
+        (fixture / name).write_text('// baseline\n' + ('// modified\n' if name in changes else ''))
+    build = cache / str(case_index) / 'build with spaces'
+    build.mkdir(parents=True)
+    if prebuilt or cached_win32 is not None:
+        (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Debug\n')
+        initial_platform = win32 if cached_win32 is None else cached_win32
+        (build / 'gnfs-test-platform.txt').write_text('WIN32=' + initial_platform + '\n')
+    if prebuilt:
+        for name in all_targets:
+            binary = build / name
+            binary.write_text(child)
+            binary.chmod(0o755)
+    log = build.parent / 'calls.jsonl'
+    log.write_text('')
+    env = {**os.environ, 'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'],
+           'GNFS_BUILD_DIR': str(build), 'GNFS_TEST_BASE_SHA': base,
+           'GNFS_PYTHON_EXECUTABLE': str(clock), 'GNFS_STUB_LOG': str(log),
+           'GNFS_STUB_WIN32': win32, 'GNFS_STUB_HOST': host,
+           'GNFS_STUB_BUILD_EXIT': str(build_exit), 'GNFS_STUB_CONFIGURE_EXIT': str(configure_exit),
+           'GNFS_STUB_CTEST_EXIT': str(ctest_exit),
+           'GNFS_STUB_ALL_TARGETS': json.dumps(sorted(all_targets)),
+           'GNFS_STUB_CHILD': child, 'GNFS_STUB_OPTIONAL': optional}
+    env.pop('GNFS_TEST_PROCESS_SUPERVISOR', None)
+    result = subprocess.run(['zsh', str(fixture / 'scripts/test.sh'), '--no-color', *options],
+                            cwd=fixture, env=env, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, timeout=20)
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    report_path = build / 'test_report.json'
+    report = json.loads(report_path.read_text()) if report_path.exists() else None
+    return result, calls, report
+
+
+def successful(options, executed, *, cli=False, contracts=0, iterations=1, skipped=(), **kwargs):
+    result, calls, report = invoke(options, **kwargs)
+    require(result.returncode == 0, f'{options!r} failed:\n{result.stdout}')
+    builds = [call for call in calls if call[:2] == ['cmake', '--build']]
+    if '--no-build' in options:
+        require(not any(call[0] == 'cmake' for call in calls), f'--no-build invoked CMake: {calls!r}')
+    else:
+        require(len(builds) == iterations, f'{options!r} built {len(builds)} times: {calls!r}')
+        expected = set(executed) | {'gnfs_test_process_supervisor'}
+        if cli:
+            expected.add('gnfs')
+        for call in builds:
+            require('--target' in call, f'{options!r} performed a full build: {call!r}')
+            targets = call[call.index('--target') + 1:]
+            require(set(targets) == expected and len(targets) == len(expected),
+                    f'{options!r} targets differ from selected union: {targets!r} != {sorted(expected)!r}')
+    binaries = [call[0] for call in calls if call[0].startswith('test_')]
+    require(Counter(binaries) == Counter(executed * iterations),
+            f'{options!r} executed wrong tests: {binaries!r}')
+    require(len([call for call in calls if call[0] == 'ctest']) == contracts * iterations,
+            f'{options!r} lost or repeated CTest contracts: {calls!r}')
+    if 'watch' in options:
+        # Watch intentionally shows each iteration's summary without publishing
+        # a final JSON report for an open-ended session.
+        require(report is None, f'Watch unexpectedly published a final report: {report!r}')
+        return calls
+    require(report is not None and report['failed'] == 0 and
+            report['passed'] == len(executed) + contracts and report['skipped'] == len(skipped),
+            f'{options!r} report does not reflect execution: {report!r}')
+    require({entry['name'] for entry in report['tests'] if entry['status'] == 'skip'} == set(skipped),
+            f'{options!r} reported incorrect platform skips: {report!r}')
+    return calls
+
+
+successful(['module', 'core'], modules['core'])
+successful(['mod', 'polynomial', '--slow'], modules['polynomial'] + slow['polynomial'])
+successful(['module', 'core', 'polynomial', 'core'],
+           modules['core'] + modules['polynomial'] + modules['core'])
+successful(['module', 'all'], sum(modules.values(), []), cli=True, contracts=2)
+successful(['module', 'api'], modules['api'], cli=True, contracts=1)
+successful(['module', 'util'], modules['util'], contracts=1)
+print('[PASS] module builds preserve default, slow, repeated, all, and CTest selections')
+
+core = ['include/gnfs/core/integer.hpp']
+siqs = ['include/gnfs/siqs/siqs.hpp']
+successful(['changed'], modules['core'] + ['test_gnfs_e2e'], changes=core)
+deep_core = list(dict.fromkeys(modules['core'] + modules['polynomial'] + modules['api']))
+successful(['changed', '--deep'], deep_core + ['test_gnfs_e2e'], changes=core, cli=True, contracts=1)
+successful(['diff', '--deep'], modules['siqs'] + ['test_siqs_e2e'], changes=siqs)
+successful(['changed', '--deep'], modules['util'] + modules['siqs'],
+           changes=['include/gnfs/util/safe_math.hpp'], contracts=1)
+for changes in [[], ['docs/note.md']]:
+    successful(['changed'], smoke, changes=changes, contracts=1)
+successful(['changed'], modules['util'] + ['test_structured_ooc_50d_probe'],
+           changes=['CMakeLists.txt'], contracts=1)
+print('[PASS] changed builds cover cascades, smoke fallbacks, E2E, and 50-digit contracts')
+
+# These cases start without a CMake cache or platform file. The build must use
+# target metadata produced by configuration, even when uname suggests otherwise.
+for platform, host_name in [('1', 'Linux'), ('0', 'MSYS_NT-10.0'),
+                            ('missing', 'MINGW64_NT-10.0'), ('invalid', 'MSYS_NT-10.0')]:
+    omitted = [optional] if platform == '1' else []
+    selected = [name for name in modules['sieve'] if name not in omitted]
+    successful(['module', 'sieve'], selected, win32=platform, host=host_name, skipped=omitted)
+for previous, current in [('1', '0'), ('0', '1')]:
+    omitted = [optional] if current == '1' else []
+    selected = [name for name in modules['sieve'] if name not in omitted]
+    successful(['module', 'sieve'], selected, win32=current, cached_win32=previous, skipped=omitted)
+print('[PASS] target filtering uses configured WIN32 metadata rather than host uname')
+
+for options, changes in [(['module', 'core'], []), (['changed'], core),
+                          (['changed'], []), (['changed'], ['CMakeLists.txt'])]:
+    for configure_exit, build_exit in [(43, 0), (0, 41)]:
+        result, calls, report = invoke(options, changes=changes, configure_exit=configure_exit,
+                                       build_exit=build_exit, prebuilt=bool(build_exit))
+        require(result.returncode != 0 and not any(call[0] != 'cmake' for call in calls),
+                f'Failed build reached stale binaries or CTest: {options!r}, {calls!r}\n{result.stdout}')
+        require(report is None or (report['failed'] > 0 and report['passed'] == 0),
+                f'Failed build published a successful report: {report!r}')
+print('[PASS] configuration and build failures stop before stale tests or success reports')
+
+successful(['--no-build', 'module', 'core'], modules['core'], prebuilt=True)
+successful(['--no-build', 'changed', '--deep'], modules['siqs'] + ['test_siqs_e2e'],
+           changes=siqs, prebuilt=True)
+# A finite fswatch stream produces one initial run and exactly one changed run.
+successful(['watch', 'module', 'core'], modules['core'], iterations=2)
+successful(['watch', 'changed'], modules['core'] + ['test_gnfs_e2e'],
+           changes=core, iterations=2)
+result, calls, _ = invoke(['watch', 'unit'], ctest_exit=47)
+require(result.returncode == 47 and len([call for call in calls if call[0] == 'ctest']) == 1
+        and not any(call[0] == 'fswatch' for call in calls),
+        f'Failed initial watch unit run continued or lost CTest exit status: {calls!r}\n{result.stdout}')
+print('[PASS] --no-build avoids CMake and watch builds once per iteration')
 PY
 
 print -r -- "Changed-mode base contract passed."
