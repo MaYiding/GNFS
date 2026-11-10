@@ -1382,6 +1382,196 @@ void test_hensel_wide_precision() {
     std::cout << "  Hensel recovery with wide coefficients: PASSED" << std::endl;
 }
 
+void test_hensel_denominator_recovery() {
+    std::cout << "Testing Hensel recovery with rational coefficients..." << std::endl;
+    auto check_repeated_square = [](const NumberField& nf, std::pair<int64_t, uint64_t> relation,
+                                    size_t count, bool append_unit, int64_t expected_root_value) {
+        GNFS_TEST_CHECK(count % 2 == 0);
+        const Integer& n = nf.n();
+        Integer polynomial_value(0);
+        Integer derivative_value(0);
+        for (uint32_t i = nf.degree(); i > 0; --i) {
+            polynomial_value = polynomial_value * nf.m() + nf.coeff(i);
+            derivative_value *= nf.m();
+            mpz_addmul_ui(derivative_value.get_mpz(), nf.coeff(i).get_mpz(), i);
+        }
+        polynomial_value = polynomial_value * nf.m() + nf.coeff(0);
+        GNFS_TEST_CHECK((polynomial_value % n).is_zero());
+        Integer gcd;
+        mpz_gcd(gcd.get_mpz(), derivative_value.get_mpz(), n.get_mpz());
+        GNFS_TEST_CHECK(gcd == Integer(1));
+
+        const auto [a, b] = relation;
+        const Integer factor = Integer(a) - Integer(b) * nf.m();
+        mpz_gcd(gcd.get_mpz(), factor.get_mpz(), n.get_mpz());
+        GNFS_TEST_CHECK(gcd == Integer(1));
+        Integer expected_root(1);
+        for (size_t i = 0; i < count / 2; ++i) {
+            expected_root *= factor;
+            mpz_mod(expected_root.get_mpz(), expected_root.get_mpz(), n.get_mpz());
+        }
+        GNFS_TEST_CHECK(expected_root == Integer(expected_root_value));
+
+        std::vector<std::pair<int64_t, uint64_t>> pairs(count, relation);
+        if (append_unit)
+            pairs.emplace_back(1, 0);
+        Integer expected_product(1);
+        for (const auto& [pair_a, pair_b] : pairs) {
+            expected_product *= Integer(pair_a) - Integer(pair_b) * nf.m();
+            mpz_mod(expected_product.get_mpz(), expected_product.get_mpz(), n.get_mpz());
+        }
+        GNFS_TEST_CHECK((expected_root * expected_root) % n == expected_product);
+        HenselSqrt solver;
+        const auto root = solver.compute(pairs, nf);
+        if (!root) {
+            std::cerr << "Hensel fixture failed: degree=" << nf.degree()
+                      << " leading=" << nf.coeff(nf.degree()).to_string() << " n=" << n.to_string()
+                      << " relations=" << pairs.size() << '\n';
+        }
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK((*root * *root) % n == expected_product);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    };
+
+    // For f=2*x^2+x+1 and beta=(1-alpha)^2, beta*f'(alpha)
+    // has coefficients (11/2, 9/2), so integral reconstruction alone fails.
+    const Integer n(407); // 11 * 37
+    const NumberField quadratic(
+        PolynomialContext(n, {Integer(1), Integer(1), Integer(2)}, Integer(14)));
+    for (const bool append_unit : {false, true}) {
+        check_repeated_square(quadratic, {1, 1}, 4, append_unit, 169);
+        // One hundred relations select CRT; an extra unit makes the count odd.
+        check_repeated_square(quadratic, {1, 1}, 100, append_unit, 210);
+    }
+
+    // The extra factor 2-10*alpha=[2*(1-alpha)]^2 makes the number of
+    // nonconstant factors odd as well, with root 2*(1-alpha)^(count/2+1).
+    for (const size_t count : {size_t(4), size_t(100)}) {
+        std::vector<std::pair<int64_t, uint64_t>> pairs(count, {1, 1});
+        pairs.emplace_back(2, 10);
+        Integer expected_root(2);
+        for (size_t i = 0; i < count / 2 + 1; ++i) {
+            expected_root *= int64_t(-13);
+            mpz_mod(expected_root.get_mpz(), expected_root.get_mpz(), n.get_mpz());
+        }
+        Integer expected_product(1);
+        for (const auto& [a, b] : pairs) {
+            expected_product *= Integer(a) - Integer(b) * quadratic.m();
+            mpz_mod(expected_product.get_mpz(), expected_product.get_mpz(), n.get_mpz());
+        }
+        GNFS_TEST_CHECK((expected_root * expected_root) % n == expected_product);
+        HenselSqrt solver;
+        const auto root = solver.compute(pairs, quadratic);
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK((*root * *root) % n == expected_product);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    }
+
+    // Negating the entire defining polynomial preserves the number field.
+    const NumberField negative(
+        PolynomialContext(n, {Integer(-1), Integer(-1), Integer(-2)}, Integer(14)));
+    check_repeated_square(negative, {1, 1}, 4, false, 169);
+    check_repeated_square(negative, {1, 1}, 100, false, 210);
+
+    // Degree one needs no denominator for two relations, but needs one for four.
+    const NumberField linear(PolynomialContext(Integer(55), {Integer(1), Integer(3)}, Integer(18)));
+    check_repeated_square(linear, {2, 0}, 4, false, 4);
+    check_repeated_square(linear, {1, 1}, 2, false, 38);
+    check_repeated_square(linear, {1, 1}, 4, false, 14);
+
+    // Here beta=(1-alpha)^4 gives beta*f'(alpha)=(21/2,-23/2,7).
+    const NumberField cubic(PolynomialContext(
+        Integer(133), {Integer(1), Integer(1), Integer(0), Integer(2)}, Integer(4)));
+    check_repeated_square(cubic, {1, 1}, 8, false, 81);
+    check_repeated_square(cubic, {1, 1}, 8, true, 81);
+
+    Integer magnitude(1);
+    mpz_mul_2exp(magnitude.get_mpz(), magnitude.get_mpz(), 64);
+    magnitude += int64_t(1);
+    for (const int sign : {1, -1}) {
+        Integer leading = magnitude;
+        if (sign < 0)
+            leading.negate();
+        Integer constant = n - Integer(14);
+        mpz_submul_ui(constant.get_mpz(), leading.get_mpz(), 196);
+        const NumberField wide(PolynomialContext(n, {constant, Integer(1), leading}, Integer(14)));
+        check_repeated_square(wide, {1, 1}, 4, false, 169);
+    }
+
+    // A nonunit leading coefficient must retain the unscaled recovery path
+    // when beta*f'(alpha) already has integral coefficients.
+    const NumberField nonunit(
+        PolynomialContext(Integer(15), {Integer(1), Integer(1), Integer(3)}, Integer(2)));
+    check_repeated_square(nonunit, {2, 0}, 4, false, 4);
+    check_repeated_square(nonunit, {1, 1}, 2, false, 14);
+    check_repeated_square(nonunit, {1, 1}, 100, false, 1);
+    std::cout << "  Hensel recovery with rational coefficients: PASSED" << std::endl;
+}
+
+void test_hensel_recovery_failure_contract() {
+    std::cout << "Testing Hensel recovery failure contract..." << std::endl;
+    const std::vector<Integer> coefficients{Integer(1), Integer(1), Integer(2)};
+    const NumberField nf(PolynomialContext(Integer(407), coefficients, Integer(14)));
+    HenselSqrt solver;
+    GNFS_TEST_CHECK(solver.compute({{1, 1}, {1, 1}}, nf).has_value());
+    GNFS_TEST_CHECK(solver.last_inert_prime() != 0);
+
+    // f'(12)=49 shares the factor 7 with N=301. A gcd is not a square root.
+    const NumberField nonunit_derivative(
+        PolynomialContext(Integer(301), coefficients, Integer(12)));
+    const auto rejected = solver.compute({{1, 1}, {1, 1}, {1, 1}, {1, 1}}, nonunit_derivative);
+    GNFS_TEST_CHECK(!rejected.has_value());
+    GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+
+    GNFS_TEST_CHECK(solver.compute({{1, 1}, {1, 1}}, nf).has_value());
+    GNFS_TEST_CHECK(solver.last_inert_prime() != 0);
+    const auto empty_root = solver.compute({}, nf);
+    GNFS_TEST_CHECK(empty_root.has_value());
+    GNFS_TEST_CHECK(*empty_root == Integer(1));
+    GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+
+    // Rational 2 is a square in every inert F_p^2, but not modulo 37.
+    // All CRT sign combinations must fail, setting the exhaustion flag.
+    std::vector<std::pair<int64_t, uint64_t>> invalid_crt_pairs(100, {1, 0});
+    invalid_crt_pairs.back() = {2, 0};
+    GNFS_TEST_CHECK(!solver.compute(invalid_crt_pairs, nf).has_value());
+    GNFS_TEST_CHECK(solver.was_crt_sign_exhausted());
+    GNFS_TEST_CHECK(!solver.compute({{1, 1}, {1, 1}}, nonunit_derivative).has_value());
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+
+    GNFS_TEST_CHECK(!solver.compute(invalid_crt_pairs, nf).has_value());
+    GNFS_TEST_CHECK(solver.was_crt_sign_exhausted());
+    const auto empty_after_crt = solver.compute({}, nf);
+    GNFS_TEST_CHECK(empty_after_crt.has_value());
+    GNFS_TEST_CHECK(*empty_after_crt == Integer(1));
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+
+    // Norm(1-alpha)=2 is not a rational square. Its image 394 mod 407
+    // is also a nonsquare modulo 37, so no valid modular root may be returned.
+    HenselSqrt::Config config;
+    config.cached_inert_prime = 3;
+    HenselSqrt nonsquare_solver(config);
+    const auto nonsquare = nonsquare_solver.compute({{1, 1}}, nf);
+    GNFS_TEST_CHECK(!nonsquare.has_value());
+    GNFS_TEST_CHECK(!nonsquare_solver.was_crt_sign_exhausted());
+
+    // An unscaled nonunit-leading fallback cannot prove integral recovery.
+    // Here the product is 2 mod 15, so no method may accept a root or expose
+    // its CRT exhaustion as a supported-domain failure.
+    const NumberField nonunit_leading(
+        PolynomialContext(Integer(15), {Integer(1), Integer(1), Integer(3)}, Integer(2)));
+    auto invalid_nonunit_pairs = invalid_crt_pairs;
+    invalid_nonunit_pairs[0] = {1, 1};
+    invalid_nonunit_pairs[1] = {1, 1};
+    GNFS_TEST_CHECK(!solver.compute(invalid_nonunit_pairs, nonunit_leading).has_value());
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    std::cout << "  Hensel recovery failure contract: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -1414,6 +1604,8 @@ int main() {
     test_couveignes_gray_code_invariants();
     test_hensel_linear_product();
     test_hensel_wide_precision();
+    test_hensel_denominator_recovery();
+    test_hensel_recovery_failure_contract();
 
     std::cout << std::endl;
     std::cout << "=== All Square Root Tests PASSED ===" << std::endl;

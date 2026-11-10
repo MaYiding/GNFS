@@ -11,11 +11,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <span>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // ─── BACKLOG P3 DEBT — Hensel verbose 编译期裁剪 ──────────────────────────
@@ -42,11 +45,10 @@ using core::PolynomialContext;
 /// Hensel lifting algebraic square root
 ///
 /// Computes algebraic sqrt by:
-/// 1. Finding sqrt mod (f, p) for a single inert prime p
+/// 1. Finding sqrt mod (f, p) for inert primes p
 /// 2. Hensel lifting to mod (f, p^{2^k}) until precision suffices
-/// 3. Evaluating at m mod N to get the integer result
-///
-/// This avoids the CRT sign determination problem entirely.
+/// 3. Clearing coefficient denominators and reconstructing by centering or CRT
+/// 4. Evaluating at m mod N and removing the scale and derivative factors
 class HenselSqrt {
 public:
     struct Config {
@@ -64,8 +66,8 @@ public:
         return last_inert_prime_;
     }
 
-    /// True if CRT searched all 2^15 sign combos without finding a match.
-    /// When true, the dependency is almost certainly invalid — skip fallback methods.
+    /// True if CRT exhausted all sign choices with denominator recovery available.
+    /// This records a failed bounded search, not a proof that the product is nonsquare.
     [[nodiscard]] bool was_crt_sign_exhausted() const noexcept {
         return crt_sign_exhausted_;
     }
@@ -80,6 +82,8 @@ public:
     compute(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
             const NumberField& nf) const {
 
+        crt_sign_exhausted_ = false;
+        last_inert_prime_ = 0;
         if (ab_pairs.empty())
             return Integer(1);
         auto t0_compute = std::chrono::steady_clock::now();
@@ -105,15 +109,39 @@ public:
             }
         }
 
+        // For non-monic f, S = beta*f'(alpha) can have rational coefficients.
+        // Recover D*S instead, where D = |c_d|^q clears those denominators.
+        const auto exponent = denominator_exponent(ab_pairs, nf);
+        if (!exponent)
+            return std::nullopt;
+        size_t recovery_exponent = *exponent;
+        bool integral_recovery_available = true;
+        if (recovery_exponent != 0) {
+            const Integer denominator = denominator_mod(nf, recovery_exponent, n);
+            Integer denominator_inv;
+            if (mpz_invert(denominator_inv.get_mpz(), denominator.get_mpz(), n.get_mpz())) {
+                f_prime_m_inv *= denominator_inv;
+                f_prime_m_inv %= n;
+                target_bits +=
+                    static_cast<double>(recovery_exponent) * log2_abs(nf.coeff(nf.degree()));
+            } else {
+                // Some products already have integral S even when c_d is not
+                // a unit modulo N. Preserve that existing recovery path.
+                recovery_exponent = 0;
+                integral_recovery_available = false;
+                HENSEL_VERBOSE(std::cerr << "[Hensel] Denominator not invertible mod N; "
+                                            "trying unscaled recovery\n");
+            }
+        }
+
         // Nguyen hybrid: K small primes + Hensel lift each + CRT + small sign search
         // For small inputs (<100 factors), single-prime Hensel is fast enough.
         // Retry Nguyen with doubled precision before falling back to slow single-prime.
-        crt_sign_exhausted_ = false;
         if (ab_pairs.size() >= 100) {
             double nguyen_target = target_bits;
             for (int nguyen_attempt = 0; nguyen_attempt < 3; ++nguyen_attempt) {
                 auto result = compute_nguyen_hybrid(ab_pairs, nf, nguyen_target, product_at_m,
-                                                    f_prime_m, f_prime_m_inv);
+                                                    recovery_exponent, f_prime_m_inv);
                 if (result) {
                     if (config_.verbose) {
                         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -123,19 +151,21 @@ public:
                     }
                     return result;
                 }
-                if (crt_sign_exhausted_) {
-                    // In F_{p^d} (a field for inert p), there are exactly 2 square
-                    // roots ±S. The 2^(K-1) sign search covers all combos. If ALL
-                    // fail, the product is NOT a perfect square — dep is invalid.
-                    // This holds regardless of prime replacement.
+                if (crt_sign_exhausted_ && integral_recovery_available) {
+                    // The 2^(K-1) sign search failed at the estimated precision.
+                    // Stop this bounded recovery attempt only when coefficient
+                    // denominators are covered by the reconstruction scheme.
                     if (config_.verbose) {
                         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                       std::chrono::steady_clock::now() - t0_compute)
                                       .count();
-                        std::cerr << "[Nguyen] CRT exhausted (" << ms << "ms) — dep invalid\n";
+                        std::cerr << "[Nguyen] CRT sign search exhausted (" << ms << "ms)\n";
                     }
                     return std::nullopt;
                 }
+                // An unscaled fallback can still have rational coefficients.
+                // Do not let its CRT failure suppress the remaining methods.
+                crt_sign_exhausted_ = false;
                 // Double precision for next Nguyen attempt
                 nguyen_target *= 2.0;
                 if (config_.verbose) {
@@ -151,7 +181,7 @@ public:
         }
 
         // Fallback: classic single-prime Hensel lifting (slow for large inputs)
-        return compute_hensel_lifting(ab_pairs, nf, target_bits, product_at_m, f_prime_m,
+        return compute_hensel_lifting(ab_pairs, nf, target_bits, product_at_m, recovery_exponent,
                                       f_prime_m_inv);
     }
 
@@ -159,6 +189,51 @@ private:
     Config config_;
     mutable uint64_t last_inert_prime_ = 0;
     mutable bool crt_sign_exhausted_ = false; // true if CRT searched all combos
+
+    /// A sufficient denominator for beta*f'(alpha) is |c_d|^q, where
+    /// q = max(0, ceil(k/2) + d - 2) and k counts nonconstant linear factors.
+    /// See docs/algorithms/hensel-denominator-recovery.md for the trace-dual proof.
+    [[nodiscard]] static std::optional<size_t>
+    denominator_exponent(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
+                         const NumberField& nf) {
+        const uint32_t d = nf.degree();
+        if (d == 0 || nf.coeff(d).is_zero())
+            return std::nullopt;
+        if (mpz_cmpabs_ui(nf.coeff(d).get_mpz(), 1) == 0)
+            return 0;
+        size_t nonconstant = 0;
+        for (const auto& pair : ab_pairs)
+            nonconstant += pair.second != 0;
+        const size_t half = nonconstant / 2 + nonconstant % 2;
+        if (d == 1)
+            return half == 0 ? 0 : half - 1;
+        if (half > std::numeric_limits<size_t>::max() - (d - 2))
+            return std::nullopt;
+        return half + d - 2;
+    }
+
+    /// Compute the scale only modulo the requested modulus. Keep the exponent
+    /// in an Integer so Windows LLP64 does not truncate it to unsigned long.
+    [[nodiscard]] static Integer denominator_mod(const NumberField& nf, size_t exponent,
+                                                 const Integer& modulus) {
+        Integer leading;
+        mpz_abs(leading.get_mpz(), nf.coeff(nf.degree()).get_mpz());
+        const Integer power(static_cast<unsigned long long>(exponent));
+        Integer scale;
+        mpz_powm(scale.get_mpz(), leading.get_mpz(), power.get_mpz(), modulus.get_mpz());
+        return scale;
+    }
+
+    static void scale_recovery_coefficients(std::vector<Integer>& coeffs, const NumberField& nf,
+                                            size_t exponent, const Integer& modulus) {
+        if (exponent == 0)
+            return;
+        const Integer scale = denominator_mod(nf, exponent, modulus);
+        for (auto& coefficient : coeffs) {
+            coefficient *= scale;
+            coefficient %= modulus;
+        }
+    }
 
     /// Compute log2(|value|) without converting its full magnitude to double.
     [[nodiscard]] static double log2_abs(const Integer& value) {
@@ -217,7 +292,8 @@ private:
         // embedding bound for long dependencies.
         double adaptive_safety =
             std::max(static_cast<double>(config_.extra_precision), log_bound * 0.05);
-        return log_bound / 2.0 + log_recovery_bound + adaptive_safety;
+        // Centered recovery requires a modulus greater than twice the bound.
+        return log_bound / 2.0 + log_recovery_bound + 1.0 + adaptive_safety;
     }
 
     /// Compute ∏(a_i - b_i*m) mod N
@@ -501,7 +577,7 @@ private:
     [[nodiscard]] std::optional<Integer>
     compute_nguyen_hybrid(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
                           const NumberField& nf, double target_bits, const Integer& product_at_m,
-                          const Integer& /* f_prime_m */, const Integer& f_prime_m_inv) const {
+                          size_t recovery_exponent, const Integer& recovery_inverse) const {
 
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
@@ -626,6 +702,11 @@ private:
                       << "ms total]\n";
         }
 
+        // Scale every completed slot, including replacement primes, before
+        // constructing CRT residues, sign deltas, or cached evaluations.
+        for (auto& slot : lifted)
+            scale_recovery_coefficients(slot.coeffs, nf, recovery_exponent, slot.modulus);
+
         // ---- Step 2: CRT combine + sign search ----
         // M = product of all per-prime moduli
         Integer M(1);
@@ -722,7 +803,7 @@ private:
             }
             if (val_buf.is_negative())
                 val_buf += n;
-            val_buf *= f_prime_m_inv;
+            val_buf *= recovery_inverse;
             val_buf %= n;
             if (val_buf.is_negative())
                 val_buf += n;
@@ -797,7 +878,7 @@ private:
     [[nodiscard]] std::optional<Integer>
     compute_hensel_lifting(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
                            const NumberField& nf, double target_bits, const Integer& product_at_m,
-                           const Integer& /* f_prime_m */, const Integer& f_prime_m_inv) const {
+                           size_t recovery_exponent, const Integer& recovery_inverse) const {
 
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
@@ -877,12 +958,13 @@ private:
                           << " modulus_bits~=" << static_cast<size_t>(mod_bits) << "\n";
             }
 
-            auto result_elem = hensel_lift_and_extract(sqrt_mod_p, ab_pairs, nf, p, num_lifts, d);
+            auto result_elem = hensel_lift_and_extract(sqrt_mod_p, ab_pairs, nf, p, num_lifts, d,
+                                                       recovery_exponent);
             if (!result_elem)
                 continue;
 
             Integer Y = nf.evaluate_at_m_mod_n(*result_elem);
-            Y *= f_prime_m_inv;
+            Y *= recovery_inverse;
             Y %= n;
             if (Y.is_negative())
                 Y += n;
@@ -903,7 +985,8 @@ private:
     [[nodiscard]] std::optional<NumberFieldElement>
     hensel_lift_and_extract(const ModularPoly& sqrt_mod_p,
                             const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
-                            const NumberField& nf, uint64_t p, size_t num_lifts, uint32_t d) const {
+                            const NumberField& nf, uint64_t p, size_t num_lifts, uint32_t d,
+                            size_t recovery_exponent) const {
 
         const Integer& n = nf.n();
 
@@ -971,7 +1054,8 @@ private:
 
             P_final = compute_product_mod_parallel(ab_pairs, f_int, d, final_mod, config_.verbose);
 
-            // Multiply P by f'(x)^2 to ensure sqrt ∈ Z[α] after lifting.
+            // Lift S = beta*f'(alpha); clear any remaining denominators
+            // only when extracting the completed lift.
             auto f_prime_int = compute_f_derivative_int(f_int, d);
             auto fli_final = compute_f_lead_inv(f_int, d, final_mod);
             auto f_prime_sq =
@@ -1123,7 +1207,7 @@ private:
         Integer half_mod;
         mpz_tdiv_q_2exp(half_mod.get_mpz(), modulus.get_mpz(), 1);
 
-        // Diagnostic: print pre-centering and pre-mod-N coefficient sizes
+        // Diagnostic: unscaled S before denominator recovery and reduction mod N.
         if (config_.verbose) {
             size_t max_pre_center = 0, max_post_center = 0;
             bool any_centered = false;
@@ -1136,7 +1220,7 @@ private:
                 }
                 max_post_center = std::max(max_post_center, centered.bit_length());
             }
-            std::cerr << "[Hensel] pre-center max bits=" << max_pre_center
+            std::cerr << "[Hensel] unscaled pre-center max bits=" << max_pre_center
                       << " post-center max bits=" << max_post_center
                       << " (centered=" << (any_centered ? "yes" : "no") << ")\n";
 
@@ -1167,6 +1251,9 @@ private:
             std::cerr << "[Hensel] φ(S)^2 mod N == φ(P_final) mod N ? "
                       << (s2_at_m.compare(p_at_m) == 0 ? "YES" : "NO") << "\n";
         }
+
+        // Keep Newton and its diagnostics in S, then recover integral D*S.
+        scale_recovery_coefficients(S, nf, recovery_exponent, modulus);
 
         // v22: result_coeffs[i] = S[i] (mpz_set into default-init slot)
         std::vector<Integer> result_coeffs(d);
