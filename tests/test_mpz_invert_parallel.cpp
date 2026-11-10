@@ -16,8 +16,9 @@
 //   * 100-base random batch matches scalar mpz_invert reference at N=1 and
 //     stays bit-identical at N=4 and N=hardware_concurrency.
 //   * Failure case (gcd != 1) flagged correctly in both sequential and
-//     parallel paths -- the helper is documented to report this branch
-//     because the GNFS pipeline relies on it for lucky-factor extraction.
+//     parallel paths; callers can inspect the gcd using the original inputs.
+//   * Output/modulus aliasing, forced output growth, and in-place batches
+//     preserve the original modulus and leave failed slots unchanged.
 //   * Cache reset hook re-parses ENV between assertions.
 
 #include "support/test_check.hpp"
@@ -296,6 +297,159 @@ void test_nonzero_modulus_boundaries() {
                 GNFS_TEST_CHECK(results[0] == Integer(3));
                 GNFS_TEST_CHECK(results[1] == Integer(2));
             }
+        }
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+std::vector<Integer> integer_values(std::initializer_list<int64_t> values) {
+    std::vector<Integer> result;
+    result.reserve(values.size());
+    for (const int64_t value : values)
+        result.emplace_back(value);
+    return result;
+}
+
+void check_inverse_products(const std::vector<Integer>& original_bases,
+                            const Integer& original_modulus, const std::vector<Integer>& results,
+                            const std::vector<bool>& success) {
+    GNFS_TEST_CHECK(success.size() == original_bases.size());
+    GNFS_TEST_CHECK(results.size() >= original_bases.size());
+    Integer magnitude(original_modulus);
+    magnitude.abs();
+    const Integer expected_residue = Integer(1) % magnitude;
+    for (std::size_t i = 0; i < original_bases.size(); ++i) {
+        if (!success[i])
+            continue;
+        GNFS_TEST_CHECK(!results[i].is_negative());
+        GNFS_TEST_CHECK(results[i] < magnitude);
+        Integer residue = (original_bases[i] * results[i]) % magnitude;
+        if (residue.is_negative())
+            residue += magnitude;
+        GNFS_TEST_CHECK(residue == expected_residue);
+    }
+}
+
+void test_modulus_aliases_output() {
+    std::cout << "Testing modulus aliases an output slot..." << std::flush;
+    const auto bases = integer_values({2, 3});
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        for (const int modulus_value : {5, -5}) {
+            const Integer original_modulus(modulus_value);
+            for (const bool trailing_slot : {false, true}) {
+                auto results = integer_values({modulus_value, 777});
+                auto expected = integer_values({3, 2});
+                if (trailing_slot) {
+                    results.emplace_back(999);
+                    expected.emplace_back(999);
+                }
+                const auto success = parallel_mpz_invert(bases, results.front(), results);
+                GNFS_TEST_CHECK(success == std::vector<bool>({true, true}));
+                GNFS_TEST_CHECK(results == expected);
+                check_inverse_products(bases, original_modulus, results, success);
+            }
+
+            const std::vector<Integer> empty_bases;
+            auto results = integer_values({modulus_value, 777});
+            const auto original = results;
+            const auto success = parallel_mpz_invert(empty_bases, results.front(), results);
+            GNFS_TEST_CHECK(success.empty());
+            GNFS_TEST_CHECK(results == original);
+        }
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_modulus_alias_survives_resize() {
+    std::cout << "Testing output growth with an aliased modulus..." << std::flush;
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        for (const int modulus_value : {5, -5}) {
+            auto results = integer_values({modulus_value});
+            const std::size_t count = results.capacity() + 1;
+            std::vector<Integer> bases(count, Integer(2));
+            bases.back() = int64_t{3};
+            const Integer original_modulus(results.front());
+            const auto success = parallel_mpz_invert(bases, results.front(), results);
+            GNFS_TEST_CHECK(results.size() == count);
+            GNFS_TEST_CHECK(success == std::vector<bool>(count, true));
+            for (std::size_t i = 0; i < count; ++i)
+                GNFS_TEST_CHECK(results[i] == Integer(i + 1 == count ? 2 : 3));
+            check_inverse_products(bases, original_modulus, results, success);
+        }
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_in_place_inverse_ownership() {
+    std::cout << "Testing in-place inverse ownership..." << std::flush;
+    const auto original = integer_values({2, 3, 4, 5, 7, 0, 10, -2});
+    const auto expected = integer_values({8, 3, 4, 5, 13, 0, 10, 7});
+    const std::vector<bool> expected_success{true, false, true, false, true, false, false, true};
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        for (const int modulus_value : {15, -15}) {
+            auto values = original;
+            const Integer modulus(modulus_value);
+            const auto success = parallel_mpz_invert(values, modulus, values);
+            GNFS_TEST_CHECK(success == expected_success);
+            GNFS_TEST_CHECK(values == expected);
+            check_inverse_products(original, modulus, values, success);
+        }
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_three_way_inverse_alias() {
+    std::cout << "Testing shared bases, results, and modulus storage..." << std::flush;
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        for (const int modulus_value : {15, -15, 1, -1}) {
+            auto values = integer_values({modulus_value, 2, 3, 4, 7});
+            const auto original = values;
+            const Integer original_modulus(values.front());
+            const auto success = parallel_mpz_invert(values, values.front(), values);
+            if (modulus_value == 1 || modulus_value == -1) {
+                // Here the first successful output replaces the modulus with zero.
+                GNFS_TEST_CHECK(success == std::vector<bool>(original.size(), true));
+                GNFS_TEST_CHECK(values == std::vector<Integer>(original.size()));
+            } else {
+                GNFS_TEST_CHECK(success == std::vector<bool>({false, true, false, true, true}));
+                GNFS_TEST_CHECK(values == integer_values({modulus_value, 8, 3, 4, 13}));
+            }
+            check_inverse_products(original, original_modulus, values, success);
+        }
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_failed_inverse_slots_preserve_sentinels() {
+    std::cout << "Testing successful commits preserve failed slots..." << std::flush;
+    const auto bases = integer_values({2, 3, 0, 4, 5, 7, 10, -2});
+    const auto expected = integer_values({8, 777, 777, 4, 777, 13, 777, 7});
+    const std::vector<bool> expected_success{true, false, false, true, false, true, false, true};
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        for (const int modulus_value : {15, -15}) {
+            const Integer modulus(modulus_value);
+            std::vector<Integer> results(bases.size(), Integer(777));
+            const auto success = parallel_mpz_invert(bases, modulus, results);
+            GNFS_TEST_CHECK(success == expected_success);
+            GNFS_TEST_CHECK(results == expected);
+            check_inverse_products(bases, modulus, results, success);
+
+            const auto grow_bases = integer_values({3, 0, 2});
+            auto grow_results = integer_values({777});
+            const auto grow_success = parallel_mpz_invert(grow_bases, modulus, grow_results);
+            GNFS_TEST_CHECK(grow_success == std::vector<bool>({false, false, true}));
+            GNFS_TEST_CHECK(grow_results == integer_values({777, 0, 8}));
+            check_inverse_products(grow_bases, modulus, grow_results, grow_success);
         }
     }
     apply_env(nullptr);
@@ -744,6 +898,11 @@ int main() {
     test_empty_bases();
     test_zero_modulus_preserves_outputs();
     test_nonzero_modulus_boundaries();
+    test_modulus_aliases_output();
+    test_modulus_alias_survives_resize();
+    test_in_place_inverse_ownership();
+    test_three_way_inverse_alias();
+    test_failed_inverse_slots_preserve_sentinels();
     test_single_base_n1();
     test_single_base_n4_no_stall();
     test_n1_baseline_matches_scalar();
