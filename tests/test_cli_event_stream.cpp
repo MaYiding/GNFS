@@ -507,6 +507,17 @@ void test_config_read(const std::filesystem::path& executable,
                             {"--event-stream", "--complete", "--config", empty.string(), "360"}, 0,
                             EventKind::result, true, "empty config file");
 
+    const auto invalid = temporary_root / "invalid-after-crlf.cfg";
+    {
+        std::ofstream config(invalid, std::ios::binary);
+        config << "\r\n \t\r\ninvalid\r\n";
+        CHECK_CONTEXT(static_cast<bool>(config), "write invalid CRLF config");
+    }
+    const auto invalid_run = validate_protocol(
+        executable, {"--event-stream", "--lang", "en", "--config", invalid.string(), "360"}, 1,
+        EventKind::error, false, "invalid config after CRLF blank lines");
+    check_terminal_contains(invalid_run, "line 3: missing '='", "CRLF config line number");
+
     const auto directory = temporary_root.string();
     const auto rejected =
         validate_protocol(executable, {"--event-stream", "--config", directory, "360"}, 1,
@@ -571,7 +582,8 @@ void test_configured_output(const std::filesystem::path& executable,
     const std::filesystem::path text_config_path = temporary_root / "text-output.conf";
     const std::filesystem::path text_output_path = temporary_root / "configured.txt";
     {
-        std::ofstream config(text_config_path);
+        std::ofstream config(text_config_path, std::ios::binary);
+        config << "\r\n \t\r\n# Output settings\r\n";
         config << "output_file = " << text_output_path.string(); // Final line without a newline.
         CHECK_CONTEXT(static_cast<bool>(config), "write text output config");
     }

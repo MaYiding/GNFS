@@ -458,16 +458,11 @@ static bool run_repl() {
         if (!std::getline(std::cin, line))
             break;
 
-        // Trim
-        auto start = line.find_first_not_of(" \t");
+        constexpr std::string_view whitespace = " \t\r\n";
+        const auto start = line.find_first_not_of(whitespace);
         if (start == std::string::npos)
             continue;
-        line = line.substr(start);
-        auto end = line.find_last_not_of(" \t\r\n");
-        if (end != std::string::npos)
-            line = line.substr(0, end + 1);
-        if (line.empty())
-            continue;
+        line = line.substr(start, line.find_last_not_of(whitespace) - start + 1);
 
         if (line == "quit" || line == "exit" || line == "q")
             break;
@@ -504,7 +499,8 @@ static bool run_repl() {
         }
         if (line == "config") {
             std::cout << repl_config.to_string();
-            if (!repl_config.degree && !repl_config.rational_bound)
+            if (!repl_config.method && !repl_config.degree && !repl_config.rational_bound &&
+                !repl_config.algebraic_bound && !repl_config.large_prime_bound)
                 std::cout << TR(S::REPL_CONFIG_ALL_AUTO) << "\n";
             continue;
         }
@@ -549,13 +545,13 @@ static bool run_repl() {
                 if (key == "method")
                     repl_config.method = parse_method(val);
                 else if (key == "degree")
-                    repl_config.degree = Config::parse_uint32(val, key);
+                    repl_config.set_degree(Config::parse_uint32(val, key));
                 else if (key == "rational_bound" || key == "fb_rational")
-                    repl_config.rational_bound = Config::parse_uint32(val, key);
+                    repl_config.set_rational_bound(Config::parse_uint32(val, key));
                 else if (key == "algebraic_bound" || key == "fb_algebraic")
-                    repl_config.algebraic_bound = Config::parse_uint32(val, key);
+                    repl_config.set_algebraic_bound(Config::parse_uint32(val, key));
                 else if (key == "large_prime_bound" || key == "lp_bound")
-                    repl_config.large_prime_bound = Config::parse_uint64(val, key);
+                    repl_config.set_large_prime_bound(Config::parse_uint64(val, key));
                 else {
                     std::cout << TR(S::REPL_UNKNOWN_KEY) << " " << key << "\n";
                     continue;
