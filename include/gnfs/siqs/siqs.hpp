@@ -820,14 +820,14 @@ inline void init_poly(const Integer& /*N*/, const std::vector<FBPrime>& fb, uint
         uint32_t x2 = mod_mul32(diff2, ainv, p);
 
         uint32_t m_mod = M % p;
-        uint32_t s1 = x1 + m_mod;
+        uint64_t s1 = static_cast<uint64_t>(x1) + m_mod;
         if (s1 >= p)
             s1 -= p;
-        uint32_t s2 = x2 + m_mod;
+        uint64_t s2 = static_cast<uint64_t>(x2) + m_mod;
         if (s2 >= p)
             s2 -= p;
 
-        poly.solns[j] = {s1, s2};
+        poly.solns[j] = {static_cast<uint32_t>(s1), static_cast<uint32_t>(s2)};
     }
 }
 
@@ -854,30 +854,21 @@ inline void next_poly_B(const std::vector<FBPrime>& fb, uint32_t sieve_half, SIQ
         uint32_t p = fb[i].p;
 
         // Delta = 2 * B_part * A^{-1} mod p (using precomputed B_parts mod p)
-        // Single mod: 2 × bp_mod × ainv ≤ 2 × p² < 2^65 fits uint64
+        // Reduce 2 * bp_mod before multiplying by ainv, so both products fit uint64.
         uint32_t bp_mod = poly.bp_mod_p[gray_bit * poly.bp_fb_size + i];
         uint32_t delta = static_cast<uint32_t>((static_cast<uint64_t>(2) * bp_mod % p * ainv) % p);
 
-        if (add) {
-            // soln1 -= delta, soln2 += delta (mod p)
-            uint32_t s1 = poly.solns[i].soln1 + (p - delta); // ∈ [0, 2p)
-            if (s1 >= p)
-                s1 -= p;
-            poly.solns[i].soln1 = s1;
-            uint32_t s2 = poly.solns[i].soln2 + delta; // ∈ [0, 2p)
-            if (s2 >= p)
-                s2 -= p;
-            poly.solns[i].soln2 = s2;
-        } else {
-            uint32_t s1 = poly.solns[i].soln1 + delta;
-            if (s1 >= p)
-                s1 -= p;
-            poly.solns[i].soln1 = s1;
-            uint32_t s2 = poly.solns[i].soln2 + (p - delta);
-            if (s2 >= p)
-                s2 -= p;
-            poly.solns[i].soln2 = s2;
-        }
+        // Both roots are (plus/minus sqrt(N) - B) / A. Increasing B subtracts
+        // delta from both offsets; decreasing B adds it to both. Widen the
+        // sums so primes near UINT32_MAX cannot wrap before reduction.
+        const uint32_t shift = add ? p - delta : delta;
+        uint64_t s1 = static_cast<uint64_t>(poly.solns[i].soln1) + shift;
+        if (s1 >= p)
+            s1 -= p;
+        uint64_t s2 = static_cast<uint64_t>(poly.solns[i].soln2) + shift;
+        if (s2 >= p)
+            s2 -= p;
+        poly.solns[i] = {static_cast<uint32_t>(s1), static_cast<uint32_t>(s2)};
     }
 }
 
