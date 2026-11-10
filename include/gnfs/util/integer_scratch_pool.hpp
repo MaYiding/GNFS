@@ -7,11 +7,8 @@
 // inner ECM arithmetic). Every Integer ctor calls `mpz_init` and the dtor
 // calls `mpz_clear`. While the mpz_t header itself is stack-allocated by
 // the Integer member, the GMP-internal limb buffer is heap-allocated on
-// demand. In tight loops this drives:
-//   * Per-temporary `mpz_init` (small, but not free)
-//   * Per-temporary heap alloc + free for limbs (significant under
-//     contention on macOS / M5 multi-core dispatch)
-//   * Heap fragmentation when many short-lived Integers churn the allocator
+// demand. Repeatedly destroying populated temporaries therefore releases
+// their limb buffers, requiring another allocation for subsequent values.
 //
 // This helper provides an opt-in `thread_local` pool of `Integer` objects.
 // Borrowing returns an `IntegerScratchHandle`; the RAII destructor returns
@@ -20,10 +17,9 @@
 // buffer via `mpz_realloc` semantics — when the next user assigns a value
 // of comparable size, GMP can reuse the existing limb storage).
 //
-// What this helper actually saves vs default path:
-//   1. struct header init/clear churn (small but constant overhead)
-//   2. limb buffer alloc/free churn (large for tight loops over big values)
-//   3. allocator-level fragmentation pressure (significant under SMP load)
+// Reusing a warmed limb buffer avoids allocations when the next value fits.
+// Integer headers still run through init/clear during handle construction
+// and destruction; this helper retains the separately allocated limb storage.
 //
 // What this helper does NOT do:
 //   * It does NOT change Integer's API or behavior. Any value computed
@@ -34,7 +30,7 @@
 //
 // ENV control:
 //   * GNFS_INTEGER_SCRATCH_POOL=1  → pool enabled
-//   * unset / "0" / anything else  → pool disabled (default, zero overhead)
+//   * unset / "0" / anything else  → pool disabled (default)
 //
 // Per-thread storage:
 //   * The pool is `thread_local`. Each thread has its own pool. There is
@@ -42,9 +38,10 @@
 //     Integers returned by another thread.
 //
 // Bit-for-bit guarantee:
-//   * Borrowed Integers are reset to 0 at borrow time (via `Integer(0)`
-//     assignment, which goes through `mpz_set_si(value, 0)` and does NOT
-//     reallocate limbs unless larger). Caller fills value as normal.
+//   * Borrowed Integers are reset to 0 using scalar assignment, which writes
+//     into the existing mpz_t without replacing its retained limb storage.
+//     Copy or scalar assignment can reuse it; moving a temporary Integer
+//     into the handle replaces the buffer with that temporary's storage.
 //   * Returned Integers retain their last value internally; the next
 //     borrow's reset-to-0 clears them. No leakage of state.
 //
@@ -60,6 +57,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -84,7 +82,8 @@ inline std::atomic<bool>& integer_scratch_pool_env_value() {
 
 inline bool parse_integer_scratch_pool_env() {
     const char* env = std::getenv("GNFS_INTEGER_SCRATCH_POOL");
-    if (env == nullptr) return false;
+    if (env == nullptr)
+        return false;
     // Strict matching: only "1" enables, all other values (incl. "0",
     // "true", "yes", empty string, "01", "2") evaluate to false. This
     // mirrors the boolean ENV convention used by other GNFS helpers
@@ -99,7 +98,7 @@ inline bool parse_integer_scratch_pool_env() {
 /// runs at thread exit and calls each pooled Integer's dtor (mpz_clear).
 inline thread_local std::vector<gnfs::core::Integer> tls_scratch_pool;
 
-}  // namespace detail
+} // namespace detail
 
 /// Read GNFS_INTEGER_SCRATCH_POOL and return whether the pool is enabled.
 ///
@@ -112,12 +111,10 @@ inline thread_local std::vector<gnfs::core::Integer> tls_scratch_pool;
 ///   * Any other value ("0", "true", "yes", etc.): returns false
 [[nodiscard]] inline bool integer_scratch_pool_enabled() noexcept {
     std::call_once(detail::integer_scratch_pool_env_once_flag(), []() {
-        detail::integer_scratch_pool_env_value().store(
-            detail::parse_integer_scratch_pool_env(),
-            std::memory_order_release);
+        detail::integer_scratch_pool_env_value().store(detail::parse_integer_scratch_pool_env(),
+                                                       std::memory_order_release);
     });
-    return detail::integer_scratch_pool_env_value().load(
-        std::memory_order_acquire);
+    return detail::integer_scratch_pool_env_value().load(std::memory_order_acquire);
 }
 
 /// Test-only: re-parse GNFS_INTEGER_SCRATCH_POOL.
@@ -128,9 +125,8 @@ inline thread_local std::vector<gnfs::core::Integer> tls_scratch_pool;
 /// returns the freshly parsed value without re-invoking the once_flag
 /// initializer.
 inline void integer_scratch_pool_reset_env_cache_for_testing() noexcept {
-    detail::integer_scratch_pool_env_value().store(
-        detail::parse_integer_scratch_pool_env(),
-        std::memory_order_release);
+    detail::integer_scratch_pool_env_value().store(detail::parse_integer_scratch_pool_env(),
+                                                   std::memory_order_release);
 }
 
 /// RAII borrow handle for a thread-local pooled `Integer`.
@@ -170,11 +166,10 @@ public:
                 // copy + limb-buffer alloc.
                 value_ = std::move(detail::tls_scratch_pool.back());
                 detail::tls_scratch_pool.pop_back();
-                // Reset to 0. mpz_set_si(value, 0) sets the size to 0
-                // but retains the limb buffer for reuse by subsequent
-                // assignments. This is precisely the optimization the
-                // pool aims to capture.
-                value_ = gnfs::core::Integer(static_cast<int64_t>(0));
+                // Scalar assignment keeps the borrowed limb allocation.
+                // Assigning an Integer temporary would swap that storage
+                // into the temporary and free it at the end of this line.
+                value_ = std::int64_t{0};
             }
             // else: pool empty, value_ is a fresh default-constructed Integer
         }
@@ -204,9 +199,8 @@ public:
     // Movable: transfer ownership. The moved-from handle is marked as
     // "returned" so it does not double-push to the pool.
     IntegerScratchHandle(IntegerScratchHandle&& other) noexcept
-        : value_(std::move(other.value_)),
-          returned_(other.returned_) {
-        other.returned_ = true;  // Prevent moved-from dtor from pushing.
+        : value_(std::move(other.value_)), returned_(other.returned_) {
+        other.returned_ = true; // Prevent moved-from dtor from pushing.
     }
 
     IntegerScratchHandle& operator=(IntegerScratchHandle&& other) noexcept {
@@ -227,16 +221,28 @@ public:
     }
 
     /// Direct access to the underlying Integer.
-    [[nodiscard]] gnfs::core::Integer& get() noexcept { return value_; }
-    [[nodiscard]] const gnfs::core::Integer& get() const noexcept { return value_; }
+    [[nodiscard]] gnfs::core::Integer& get() noexcept {
+        return value_;
+    }
+    [[nodiscard]] const gnfs::core::Integer& get() const noexcept {
+        return value_;
+    }
 
     /// Dereference shorthand.
-    [[nodiscard]] gnfs::core::Integer& operator*() noexcept { return value_; }
-    [[nodiscard]] const gnfs::core::Integer& operator*() const noexcept { return value_; }
+    [[nodiscard]] gnfs::core::Integer& operator*() noexcept {
+        return value_;
+    }
+    [[nodiscard]] const gnfs::core::Integer& operator*() const noexcept {
+        return value_;
+    }
 
     /// Member access shorthand.
-    [[nodiscard]] gnfs::core::Integer* operator->() noexcept { return &value_; }
-    [[nodiscard]] const gnfs::core::Integer* operator->() const noexcept { return &value_; }
+    [[nodiscard]] gnfs::core::Integer* operator->() noexcept {
+        return &value_;
+    }
+    [[nodiscard]] const gnfs::core::Integer* operator->() const noexcept {
+        return &value_;
+    }
 
 private:
     gnfs::core::Integer value_;
@@ -257,4 +263,4 @@ inline void integer_scratch_pool_clear() noexcept {
     detail::tls_scratch_pool.clear();
 }
 
-}  // namespace gnfs::util
+} // namespace gnfs::util
