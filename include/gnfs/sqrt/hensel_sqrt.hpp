@@ -50,7 +50,7 @@ public:
     struct Config {
         uint64_t prime_start = 1000;     // Starting prime search
         size_t extra_precision = 200;    // Extra bits of precision beyond estimate
-        uint64_t cached_inert_prime = 0; // Pre-found inert prime (0 = auto-find)
+        uint64_t cached_inert_prime = 0; // Optional hint, validated for the current number field
         bool verbose = false;
     };
 
@@ -275,7 +275,7 @@ private:
                                                           size_t count) const {
         std::vector<uint64_t> primes;
         primes.reserve(count);
-        uint64_t p = config_.prime_start;
+        uint64_t p = std::max(config_.prime_start, uint64_t(2));
         for (size_t att = 0; primes.size() < count && att < 100000; ++att) {
             p = next_prime(p);
             if (p == 0 || p > std::numeric_limits<uint32_t>::max())
@@ -784,30 +784,47 @@ private:
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 
-        // Find inert prime
+        // Newton lifting needs an odd field characteristic and a nonzero product.
+        // Treat a stale or malformed cache entry as a hint that missed.
+        last_inert_prime_ = 0;
         uint64_t p = config_.cached_inert_prime;
-        if (p > std::numeric_limits<uint32_t>::max())
-            return std::nullopt;
-        if (p == 0)
-            p = find_inert_prime(nf);
-        if (p == 0)
+        if (!is_usable_inert_prime(nf, p))
+            p = 0;
+        uint64_t search_after = config_.prime_start;
+        std::vector<uint64_t> f_mod_p;
+        ModularPoly product_mod_p;
+        constexpr size_t max_prime_attempts = 8;
+        bool have_nonzero_product = false;
+        for (size_t prime_attempt = 0; prime_attempt < max_prime_attempts; ++prime_attempt) {
+            if (p == 0)
+                p = find_inert_prime(nf, search_after);
+            if (p == 0)
+                return std::nullopt;
+
+            f_mod_p = get_f_mod_p(nf, p);
+            product_mod_p = ModularPoly(1);
+            for (const auto& [a, b] : ab_pairs) {
+                std::vector<uint64_t> cs(2);
+                int64_t am = a % static_cast<int64_t>(p);
+                if (am < 0)
+                    am += static_cast<int64_t>(p);
+                cs[0] = static_cast<uint64_t>(am);
+                cs[1] = (p - (b % p)) % p;
+                product_mod_p =
+                    ModularPoly::mul(product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
+            }
+            if (!product_mod_p.is_zero()) {
+                have_nonzero_product = true;
+                break;
+            }
+            HENSEL_VERBOSE(std::cerr << "[Hensel] Product vanishes at prime " << p
+                                     << "; trying another prime\n");
+            search_after = std::max(search_after, p);
+            p = 0;
+        }
+        if (!have_nonzero_product)
             return std::nullopt;
         last_inert_prime_ = p;
-
-        // Compute product and sqrt mod (f, p)
-        auto f_mod_p = get_f_mod_p(nf, p);
-        ModularPoly product_mod_p(1);
-        for (const auto& [a, b] : ab_pairs) {
-            std::vector<uint64_t> cs(2);
-            int64_t am = a % static_cast<int64_t>(p);
-            if (am < 0)
-                am += static_cast<int64_t>(p);
-            cs[0] = static_cast<uint64_t>(am);
-            cs[1] = (p - (b % p)) % p;
-            product_mod_p = ModularPoly::mul(product_mod_p, ModularPoly(std::move(cs)), f_mod_p, p);
-        }
-        if (product_mod_p.is_zero())
-            return std::nullopt;
 
         if (!ModularPoly::is_square(product_mod_p, f_mod_p, p))
             return std::nullopt;
@@ -1221,9 +1238,18 @@ private:
         return result;
     }
 
-    /// Find a prime p where f(x) is irreducible mod p
-    [[nodiscard]] uint64_t find_inert_prime(const NumberField& nf) const {
-        uint64_t p = config_.prime_start;
+    /// Validate a cached prime against the field used by this computation.
+    [[nodiscard]] static bool is_usable_inert_prime(const NumberField& nf, uint64_t p) {
+        if (p <= 2 || p > std::numeric_limits<uint32_t>::max() ||
+            !gnfs::util::is_prime_u32(static_cast<uint32_t>(p)))
+            return false;
+        const auto f_mod = get_f_mod_p(nf, p);
+        return f_mod.back() != 0 && ModularPoly::is_irreducible(f_mod, p);
+    }
+
+    /// Find an odd prime p where f(x) is irreducible mod p.
+    [[nodiscard]] uint64_t find_inert_prime(const NumberField& nf, uint64_t search_after) const {
+        uint64_t p = std::max(search_after, uint64_t(2));
 
         for (size_t attempts = 0; attempts < 100000; ++attempts) {
             p = next_prime(p);
