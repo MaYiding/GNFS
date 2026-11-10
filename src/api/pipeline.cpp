@@ -45,6 +45,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -61,9 +62,14 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <utility>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace gnfs::api {
 
@@ -82,22 +88,73 @@ namespace {
 
 std::atomic<uint64_t> g_linalg_mmap_scratch_nonce{0};
 
-class LinalgMmapScratchCleanup final {
+// The old PID/nonce leaf may survive a crashed process and PID reuse.
+// Reserve a directory before opening anything inside it.
+class LinalgMmapScratch final {
 public:
-    explicit LinalgMmapScratchCleanup(std::string path) : path_(std::move(path)) {}
-
-    LinalgMmapScratchCleanup(const LinalgMmapScratchCleanup&) = delete;
-    LinalgMmapScratchCleanup& operator=(const LinalgMmapScratchCleanup&) = delete;
-
-    ~LinalgMmapScratchCleanup() noexcept {
-        if (!path_.empty()) {
-            std::error_code ignored;
-            (void)std::filesystem::remove(path_, ignored);
+    LinalgMmapScratch(const std::filesystem::path& root, std::error_code& error) {
+        const auto parent = std::filesystem::absolute(root, error);
+        if (error) {
+            return;
         }
+        const std::string prefix = "gnfs_linalg_" + std::to_string(gnfs::util::process_id()) + "_n";
+        for (unsigned attempt = 0; attempt < 32; ++attempt) {
+            const auto nonce = g_linalg_mmap_scratch_nonce.fetch_add(1, std::memory_order_relaxed);
+            auto directory = parent / (prefix + std::to_string(nonce) + ".scratch");
+            auto matrix = directory / "matrix.csrmat";
+#ifdef _WIN32
+            const bool created = std::filesystem::create_directory(directory, error);
+#else
+            const bool created = ::mkdir(directory.c_str(), 0700) == 0;
+            if (!created) {
+                error = {errno, std::generic_category()};
+            }
+#endif
+            if (created) {
+                directory_ = std::move(directory);
+                matrix_ = std::move(matrix);
+                return;
+            }
+            // create_directory returns false without an error for an existing directory.
+            if (error && error != std::errc::file_exists) {
+                return;
+            }
+            error.clear();
+        }
+        error = std::make_error_code(std::errc::file_exists);
+    }
+
+    LinalgMmapScratch(const LinalgMmapScratch&) = delete;
+    LinalgMmapScratch& operator=(const LinalgMmapScratch&) = delete;
+
+    ~LinalgMmapScratch() noexcept {
+        if (directory_.empty()) {
+            return;
+        }
+        std::error_code ignored;
+        if (writing_matrix_) {
+            std::filesystem::remove(matrix_, ignored);
+        }
+        std::filesystem::remove(directory_, ignored);
+    }
+
+    [[nodiscard]] linalg::MmapCSRMatrix save(const linalg::SparseMatrix& matrix) {
+        // A log callback can act on the published scratch pathname.
+        if (std::filesystem::exists(std::filesystem::symlink_status(matrix_))) {
+            throw std::runtime_error("linalg scratch matrix already exists");
+        }
+        writing_matrix_ = true;
+        return linalg::save_sparse_as_mmap(matrix, matrix_.string());
+    }
+
+    [[nodiscard]] const std::filesystem::path& matrix_path() const noexcept {
+        return matrix_;
     }
 
 private:
-    std::string path_;
+    std::filesystem::path directory_;
+    std::filesystem::path matrix_;
+    bool writing_matrix_ = false;
 };
 
 // Rollback guards borrow a flag from an owner scope declared before them.
@@ -3623,21 +3680,24 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
             // .csrmat file (v2 layout, uint64_t row_offsets), open it
             // as MmapCSRMatrix, and route through the view-based BW
             // entry point that bypasses SparseMatrix internally.
-            const uint64_t scratch_nonce =
-                g_linalg_mmap_scratch_nonce.fetch_add(1, std::memory_order_relaxed);
-            const std::string mmap_path =
-                gnfs::util::temp_path("gnfs_linalg_" + std::to_string(gnfs::util::process_id()) +
-                                      "_n" + std::to_string(scratch_nonce) + ".csrmat");
-            LinalgMmapScratchCleanup mmap_cleanup(mmap_path);
-            char log_buf[512];
-            std::snprintf(log_buf, sizeof(log_buf), "[linalg-mmap] policy=%s nnz=%llu path=%s",
-                          policy == linalg::MmapPolicy::On ? "on" : "auto",
-                          static_cast<unsigned long long>(sge_nnz), mmap_path.c_str());
-            emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(log_buf));
-            std::fprintf(stderr, "%s\n", log_buf);
-
+            const auto scratch_root = gnfs::util::temp_directory_path();
+            std::error_code scratch_error;
+            LinalgMmapScratch scratch(scratch_root, scratch_error);
+            std::string mmap_log = std::string("[linalg-mmap] policy=") +
+                                   (policy == linalg::MmapPolicy::On ? "on" : "auto") +
+                                   " nnz=" + std::to_string(sge_nnz);
+            const auto mmap_path = scratch.matrix_path().string();
+            if (!scratch_error) {
+                mmap_log += " path=" + mmap_path;
+            }
+            emit_log(LogLevel::Info, Phase::LinearAlgebra, mmap_log);
+            std::fprintf(stderr, "%s\n", mmap_log.c_str());
             try {
-                linalg::MmapCSRMatrix mmap_csr = linalg::save_sparse_as_mmap(sge_red, mmap_path);
+                if (scratch_error) {
+                    throw std::filesystem::filesystem_error("reserve linalg scratch", scratch_root,
+                                                            scratch_error);
+                }
+                linalg::MmapCSRMatrix mmap_csr = scratch.save(sge_red);
                 dependencies = bw_solver.find_dependencies_view(mmap_csr);
             } catch (const std::exception& ex) {
                 // mmap path failed (disk full / permission / corruption):
