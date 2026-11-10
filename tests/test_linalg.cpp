@@ -1,14 +1,20 @@
 // test_linalg.cpp - Test linear algebra components
 
 #include "support/test_check.hpp"
+#include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/core/relation.hpp>
+#include <gnfs/core/types.hpp>
+#include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/relation_source.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/relation/filter.hpp>
+#include <gnfs/sqrt/number_field.hpp>
 
 #include <atomic>
 #include <cstddef>
@@ -563,6 +569,100 @@ void test_matrix_builder() {
     std::cout << "  MatrixBuilder: PASSED" << std::endl;
 }
 
+void check_class_group_square_dependency(const core::PolynomialContext& ctx,
+                                         core::ABPair first_pair, core::ABPair second_pair,
+                                         const core::Integer& rational_root,
+                                         core::ABPair algebraic_root) {
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 191;
+    auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    auto first = cofactorizer.verify(first_pair.a, first_pair.b);
+    auto second = cofactorizer.verify(second_pair.a, second_pair.b);
+    GNFS_TEST_CHECK(first && first->is_full() && second && second->is_full());
+    const std::vector<core::Relation> relations{*first, *second};
+
+    GNFS_TEST_CHECK(ctx.rational_value(first->a, first->b) *
+                        ctx.rational_value(second->a, second->b) ==
+                    rational_root * rational_root);
+    gnfs::sqrt::NumberField field(ctx);
+    const auto root = field.from_ab(algebraic_root.a, algebraic_root.b);
+    const auto product =
+        field.multiply(field.from_ab(first->a, first->b), field.from_ab(second->a, second->b));
+    GNFS_TEST_CHECK(product.coefficients() == field.multiply(root, root).coefficients());
+    const auto evaluated_root = field.evaluate_at_m(root);
+    const auto factor = core::gcd(rational_root + evaluated_root, ctx.n());
+    GNFS_TEST_CHECK(factor > core::Integer(1) && factor < ctx.n());
+    GNFS_TEST_CHECK(factor * core::gcd(rational_root - evaluated_root, ctx.n()) == ctx.n());
+
+    MatrixBuilderConfig config;
+    config.include_class_group = true;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    auto vector = builder.build_with_qc(relations, fb, ctx);
+    auto streaming = builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+    for (const auto* result : {&vector, &streaming}) {
+        GNFS_TEST_CHECK(result->matrix.row(0).indices() == result->matrix.row(1).indices());
+    }
+}
+
+void test_class_group_preserves_square_dependencies() {
+    using core::Integer;
+    core::PolynomialContext first(Integer(323), {Integer(-10), Integer(11), Integer(1)},
+                                  Integer(31));
+    check_class_group_square_dependency(first, {-197, 88}, {33, 43}, Integer(1950), {73, 51});
+
+    core::PolynomialContext second(Integer(183), {Integer(20), Integer(0), Integer(1)},
+                                   Integer(23));
+    check_class_group_square_dependency(second, {-45, 101}, {75, 29}, Integer(1184), {55, 57});
+
+    core::PolynomialContext third(Integer(779), {Integer(50), Integer(0), Integer(1)}, Integer(27));
+    check_class_group_square_dependency(third, {25, 1}, {-5, 1}, Integer(8), {5, 2});
+
+    // At the index prime 3 the two field primes share the polynomial root 0.
+    // Using v_3(a) gives opposite parities for these factors of (27 - 2*alpha)^2.
+    core::PolynomialContext split(Integer(2227), {Integer(162), Integer(-24), Integer(1)},
+                                  Integer(59));
+    check_class_group_square_dependency(split, {27, 1}, {9, 1}, Integer(40), {27, 2});
+}
+
+void test_certified_class_group_column_on_merged_relations() {
+    using core::Integer;
+    core::PolynomialContext ctx(Integer(57), {Integer(54), Integer(11), Integer(1)}, Integer(4));
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 191;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    std::vector<core::Relation> rows;
+    // The discriminant is -95. The unique prime over 5 has valuations 0, 1, 1
+    // on these elements, whose norms are respectively 26, 80 and 530.
+    for (const auto a : {-4, 2, 17}) {
+        auto rel = cofactorizer.verify(a, 1);
+        GNFS_TEST_CHECK(rel && rel->is_full());
+        rows.push_back(*rel);
+    }
+    rows.push_back(relation::PartialRelationMerger::merge_two(rows[0], rows[1]));
+    rows.push_back(relation::PartialRelationMerger::merge_two(rows[2], rows[3]));
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    config.include_class_group = true;
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(rows, fb, ctx);
+    const auto streaming = builder.build_with_qc_streaming(VectorRelationSource(rows), fb, ctx);
+    for (const auto* result : {&vector, &streaming}) {
+        GNFS_TEST_CHECK(result->mapping.num_class_group_columns == 1);
+        const auto column = static_cast<uint32_t>(result->mapping.class_group_start());
+        GNFS_TEST_CHECK(!result->matrix.row(0).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(1).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(2).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(3).test(column));
+        GNFS_TEST_CHECK(!result->matrix.row(4).test(column));
+    }
+}
+
 // Regression: sign-column evaluation must preserve uint64_t b on LLP64.
 void test_matrix_builder_sign_wide_b() {
     std::cout << "Testing MatrixBuilder sign column with wide b..." << std::endl;
@@ -590,6 +690,43 @@ void test_matrix_builder_sign_wide_b() {
     GNFS_TEST_CHECK(result.matrix.row(1).test(static_cast<uint32_t>(result.mapping.sign_column)));
 
     std::cout << "  Wide b sign column: PASSED" << std::endl;
+}
+
+void test_ramified_index_square_dependency() {
+    using core::Integer;
+    core::PolynomialContext ctx(Integer(299), {Integer(-27), Integer(0), Integer(1)}, Integer(25));
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 31;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    const core::ABPair left{0, 1}, right{36, 13};
+    const auto first = cofactorizer.verify(left.a, left.b);
+    const auto second = cofactorizer.verify(right.a, right.b);
+    GNFS_TEST_CHECK(first && first->is_full() && second && second->is_full());
+    const std::vector<core::Relation> relations{*first, *second};
+
+    // (-alpha)(36-13*alpha) = (18-alpha)^2, and (-25)(-289) = 85^2.
+    gnfs::sqrt::NumberField field(ctx);
+    const auto root = field.from_ab(18, 1);
+    const auto product =
+        field.multiply(field.from_ab(left.a, left.b), field.from_ab(right.a, right.b));
+    GNFS_TEST_CHECK(product.coefficients() == field.multiply(root, root).coefficients());
+    const Integer rational_root(85);
+    GNFS_TEST_CHECK(ctx.rational_value(left.a, left.b) * ctx.rational_value(right.a, right.b) ==
+                    rational_root * rational_root);
+    GNFS_TEST_CHECK(core::gcd(rational_root + field.evaluate_at_m(root), ctx.n()) == Integer(13));
+    GNFS_TEST_CHECK(core::gcd(rational_root - field.evaluate_at_m(root), ctx.n()) == Integer(23));
+
+    MatrixBuilderConfig config;
+    config.include_class_group = true;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(relations, fb, ctx);
+    const auto streaming =
+        builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+    GNFS_TEST_CHECK(vector.matrix.row(0).indices() == vector.matrix.row(1).indices());
+    GNFS_TEST_CHECK(streaming.matrix.row(0).indices() == streaming.matrix.row(1).indices());
 }
 
 // Test dependency finding
@@ -1714,9 +1851,12 @@ int main() {
     test_gaussian_free_columns_unique();
     test_matrix_builder();
     test_matrix_builder_sign_wide_b();
+    test_class_group_preserves_square_dependencies();
+    test_certified_class_group_column_on_merged_relations();
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();
+    test_ramified_index_square_dependency();
     test_find_dependencies();
     test_thin_matrix_dependencies();
     test_verify_dependency();
