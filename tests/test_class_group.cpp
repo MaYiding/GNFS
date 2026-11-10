@@ -2,11 +2,13 @@
 // Tests cover degree 3, 4, 5, 6 polynomials with known reference values.
 #include "gnfs/sqrt/class_group.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -155,6 +157,63 @@ void test_ideal_class_reduce_mod() {
     cls2.reduce_mod(3);
     TEST_ASSERT(cls2.is_principal(), "3 mod 3 = 0 → principal");
     TEST_PASS("IdealClass reduce_mod");
+}
+
+void test_ideal_class_exponent_bounds() {
+    constexpr int high = std::numeric_limits<int>::max();
+    constexpr int low = std::numeric_limits<int>::min();
+    const PrimeIdeal p{2, 0, 1}, q{3, 0, 1};
+    IdealClass cls;
+    cls.add_prime(p, high - 1);
+    cls.add_prime(p, 1);
+    cls.add_prime(q, low + 1);
+    cls.add_prime(q, -1);
+    TEST_ASSERT(cls.prime_powers.at(p) == high && cls.prime_powers.at(q) == low,
+                "exact exponent boundaries");
+
+    const auto snapshot = cls.prime_powers;
+    const auto overflows = [&](const PrimeIdeal& ideal, int increment) {
+        try {
+            cls.add_prime(ideal, increment);
+        } catch (const std::overflow_error&) {
+            return true;
+        }
+        return false;
+    };
+    TEST_ASSERT(overflows(p, 1) && cls.prime_powers == snapshot, "overflow preserves exponents");
+    TEST_ASSERT(overflows(q, -1) && cls.prime_powers == snapshot, "underflow preserves exponents");
+
+    cls.add_prime(p, low);
+    cls.add_prime(q, high);
+    TEST_ASSERT(cls.prime_powers.at(p) == -1 && cls.prime_powers.at(q) == -1,
+                "opposite extreme increments");
+    cls.add_prime(p, 1);
+    cls.add_prime(q, 1);
+    TEST_ASSERT(cls.is_principal(), "opposite increments cancel");
+    TEST_PASS("IdealClass checked exponent addition");
+}
+
+void test_ideal_class_modulus_bounds() {
+    constexpr int order = std::numeric_limits<int>::max();
+    const PrimeIdeal p{2, 0, 1}, q{3, 0, 1}, r{5, 0, 1}, t{7, 0, 1};
+    IdealClass cls;
+    cls.add_prime(p, order - 1);
+    cls.add_prime(q, std::numeric_limits<int>::min());
+    cls.add_prime(r, order);
+    cls.add_prime(t, 0);
+
+    const auto snapshot = cls.prime_powers;
+    for (int noop : {0, -1, std::numeric_limits<int>::min()}) {
+        cls.reduce_mod(noop);
+        TEST_ASSERT(cls.prime_powers == snapshot, "nonpositive order preserves all entries");
+    }
+    cls.reduce_mod(order);
+    TEST_ASSERT(cls.prime_powers.at(p) == order - 1 && cls.prime_powers.at(q) == order - 1,
+                "positive and negative residues modulo INT_MAX");
+    TEST_ASSERT(cls.prime_powers.size() == 2, "remove multiples and explicit zero entries");
+    cls.reduce_mod(1);
+    TEST_ASSERT(cls.prime_powers.empty(), "modulo one removes every exponent");
+    TEST_PASS("IdealClass full-width modular reduction");
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -518,6 +577,48 @@ void test_relation_search_with_large_minkowski_bound() {
     TEST_PASS("bounded relation storage with a large Minkowski bound");
 }
 
+void test_smith_diagonal_with_large_intermediates() {
+    // The invariant factors, independently evaluated over Z, are eleven 1s and 799304.
+    // The original int reduction overflowed while multiplying 973575 by -2750.
+    constexpr int rows[][12] = {
+        {2, 0, 0, 1, 1, 1, 3, 1, 2, 0, 3, 1}, {3, 0, 1, 1, 1, 1, 0, 2, 0, 1, 1, 3},
+        {1, 1, 3, 0, 0, 2, 2, 1, 0, 1, 0, 1}, {2, 1, 3, 0, 1, 2, 0, 1, 2, 2, 3, 1},
+        {0, 0, 2, 0, 1, 1, 1, 0, 0, 1, 0, 1}, {1, 3, 0, 1, 2, 3, 1, 3, 1, 3, 0, 0},
+        {1, 1, 3, 0, 0, 3, 1, 0, 3, 0, 0, 0}, {3, 0, 3, 1, 2, 2, 0, 3, 3, 3, 0, 1},
+        {3, 3, 3, 0, 2, 0, 3, 2, 1, 0, 1, 0}, {3, 1, 2, 1, 3, 2, 3, 0, 0, 0, 2, 0},
+        {0, 2, 0, 3, 3, 2, 0, 2, 0, 1, 1, 1}, {2, 1, 0, 1, 2, 0, 3, 0, 0, 1, 0, 3}};
+    std::vector<std::vector<Integer>> matrix;
+    for (const auto& row : rows) {
+        auto& values = matrix.emplace_back();
+        for (int v : row)
+            values.emplace_back(v);
+    }
+    gnfs::sqrt::detail::reduce_class_group_relations(matrix);
+    for (size_t i = 0; i < matrix.size(); ++i) {
+        for (size_t j = 0; j < matrix[i].size(); ++j) {
+            const int diagonal = i + 1 == matrix.size() ? 799304 : 1;
+            TEST_ASSERT(matrix[i][j] == I(i == j ? diagonal : 0), "exact Smith diagonal");
+        }
+    }
+
+    // An upper unitriangular block, with its first basis vector added to the last
+    // row. The determinant is one, but eliminating that row generates powers of two.
+    constexpr size_t n = 68;
+    matrix.assign(n, std::vector<Integer>(n));
+    for (size_t i = 0; i < n; ++i) {
+        matrix[i][i] = 1;
+        if (i + 2 < n)
+            matrix[i][i + 1] = 2;
+    }
+    matrix.back().front() = 1;
+    gnfs::sqrt::detail::reduce_class_group_relations(matrix);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j)
+            TEST_ASSERT(matrix[i][j] == I(i == j ? 1 : 0), "unimodular matrix reduces to identity");
+    }
+    TEST_PASS("Smith diagonal with intermediates wider than machine integers");
+}
+
 void test_prime_search_domain() {
     // For x^2 - k with positive nonsquare k, the computed bound is sqrt(k).
     // Each k below is 1 modulo 15, so 1 is a root modulo the input N.
@@ -612,6 +713,9 @@ void test_simple_root_ideal_exponents() {
     ClassGroup legacy(nonmonic, config);
     TEST_ASSERT(legacy.compute_character(3, 7) == legacy.compute_character(3, 1),
                 "retain the nonmonic estimate");
+    TEST_ASSERT(legacy.num_binary_characters() == 0 &&
+                    legacy.compute_binary_characters(3, 7).empty(),
+                "a nonmonic estimated valuation supplies no matrix column");
     TEST_PASS("simple-root valuations in selected class group coordinates");
 }
 
@@ -656,6 +760,124 @@ void test_simple_root_relation_collection() {
     TEST_PASS("simple-root valuations in collected class group relations");
 }
 
+void test_ramified_quadratic_exponents() {
+    // For f=x^2+11x-10, the discriminant is 7*23 and the repeated root at 7 is 5.
+    PolynomialContext ctx(I(16), {I(-10), I(11), I(1)}, I(2));
+    const PrimeIdeal ideal{7, 5, 1};
+    const std::array<uint32_t, 1> ramified{7};
+    const auto exponent = [&](int64_t a, uint64_t b) {
+        const auto powers =
+            gnfs::sqrt::detail::class_group_ideal_exponents(ctx, a, b, {ideal}, {}, ramified);
+        return powers.contains(ideal) ? powers.at(ideal) : 0;
+    };
+
+    // 4F(A,B) = (2A+11B)^2 - 161B^2. For primitive (A,B) at 7 the
+    // valuation is one at the repeated root and zero elsewhere.
+    for (int a = -12; a <= 12; ++a) {
+        for (unsigned b = 0; b <= 12; ++b) {
+            if (a % 7 == 0 && b % 7 == 0)
+                continue;
+            const int primitive = (a - 5 * static_cast<int>(b)) % 7 == 0;
+            for (int content = 0, scale = 1; content <= 2; ++content, scale *= 7) {
+                TEST_ASSERT(exponent(static_cast<int64_t>(a) * scale,
+                                     b * static_cast<uint64_t>(scale)) == 2 * content + primitive,
+                            "ramified valuation of a scaled primitive pair");
+            }
+        }
+    }
+    TEST_ASSERT(exponent(0, 0) == 0, "zero norm has no coordinates");
+
+    // For x^2+p at its unique root 0, F(0,p^2)=p^5, with p^2 above INT64_MAX.
+    constexpr uint32_t p = 4294967291U;
+    const uint64_t square = static_cast<uint64_t>(p) * p;
+    const PrimeIdeal root{p, 0, 1};
+    const std::array<uint32_t, 1> large_ramified{p};
+    PolynomialContext large(Integer(uint64_t{p} + 1), {Integer(p), I(0), I(1)}, I(1));
+    const auto wide = gnfs::sqrt::detail::class_group_ideal_exponents(large, 0, square, {root}, {},
+                                                                      large_ramified);
+    TEST_ASSERT(wide.at(root) == 5, "ramified valuation with full-width denominator");
+    TEST_PASS("quadratic ramified valuations of primitive and scaled elements");
+}
+
+void test_ramified_quadratic_class_group() {
+    // At (2,0), (2,1), (3,0), the collected rows for (-10,2), (-10,6),
+    // (-9,1) are (1,3,0), (1,2,0), (0,4,1). Their determinant is -1.
+    PolynomialContext ctx(I(4), {I(-6), I(3), I(1)}, I(2));
+    ClassGroup collected(ctx);
+    TEST_ASSERT(collected.class_number() == 1, "the three collected coordinates span Z^3");
+
+    // The discriminant of x^2+33x+225 is 27*7. At the ramified prime
+    // multiplying by 7 adds two to the valuation, preserving every parity.
+    PolynomialContext character_ctx(I(259), {I(225), I(33), I(1)}, I(1));
+    ClassGroup characters(character_ctx);
+    TEST_ASSERT(characters.compute_character(7, 0) == characters.compute_character(1, 0),
+                "the ramified rational prime has even character exponents");
+    TEST_ASSERT(characters.compute_character(7, 7) == characters.compute_character(1, 1),
+                "common scaling preserves the character at a ramified root");
+
+    // The discriminant of x^2-24x+162 is -8*3^2. Its unit -8 is a
+    // square modulo 3, so the two field primes share a polynomial root.
+    PolynomialContext uncertified(I(139), {I(162), I(-24), I(1)}, I(1));
+    ClassGroupConfig config;
+    config.max_primes = 3;
+    ClassGroup legacy(uncertified, config);
+    const auto bits = legacy.compute_character(3, 0);
+    for (size_t i = 0; i < bits.size(); ++i) {
+        TEST_ASSERT(bits[i] == (legacy.generators()[i].p == 3),
+                    "retain the estimate for a split quadratic index prime");
+    }
+    TEST_PASS("quadratic ramified valuations in public relations and characters");
+}
+
+void test_ramified_quadratic_index_primes() {
+    const PrimeIdeal root{3, 0, 1};
+    const std::array<uint32_t, 1> ramified{3};
+    for (auto [radicand, valuation] : {std::pair{27, 3}, std::pair{243, 5}}) {
+        // In Q(sqrt(3)), pi=sqrt(3) generates the prime above 3 and alpha=pi^valuation.
+        // The valuations of a and b*alpha have opposite parity whenever both are nonzero.
+        PolynomialContext ctx(I(10000 - radicand), {I(-radicand), I(0), I(1)}, I(100));
+        const auto exponent = [&](int64_t a, uint64_t b) {
+            const auto powers =
+                gnfs::sqrt::detail::class_group_ideal_exponents(ctx, a, b, {root}, {}, ramified);
+            return powers.contains(root) ? powers.at(root) : 0;
+        };
+        TEST_ASSERT(exponent(3, 1) == 2, "the rational prime has valuation two");
+        TEST_ASSERT(exponent(0, 1) == valuation, "valuation of alpha at the order index");
+        TEST_ASSERT(exponent(-9, 1) == std::min(4, valuation), "distinct valuations cannot cancel");
+        TEST_ASSERT(exponent(27, 0) == 6, "valuation of a rational power");
+        TEST_ASSERT(exponent(0, std::numeric_limits<uint64_t>::max()) == valuation + 2,
+                    "the full-width denominator has one factor of three");
+        TEST_ASSERT(exponent(std::numeric_limits<int64_t>::min(), 1) == 0,
+                    "the signed endpoint is a unit at three");
+    }
+    // The discriminant is -7*5^5. Multiplication by 5 adds two at the
+    // unique field prime above 5, so the rational prime has trivial parity.
+    PolynomialContext fifth(I(5489), {I(5481), I(7), I(1)}, I(1));
+    ClassGroupConfig config;
+    config.max_primes = 3;
+    ClassGroup group(fifth, config);
+    TEST_ASSERT(group.compute_character(5, 0) == group.compute_character(1, 0),
+                "recognize the ramified field prime at discriminant valuation five");
+    TEST_PASS("ramified valuations at quadratic order indices");
+}
+
+void test_inert_quadratic_index_primes() {
+    // Both defining polynomials generate Q(sqrt(-2)), whose field discriminant
+    // is -8 and whose Minkowski bound is below 2. The repeated root at 5
+    // comes from the index of the order generated by alpha.
+    PolynomialContext index_five(I(779), {I(50), I(0), I(1)}, I(27));
+    ClassGroup group(index_five);
+    TEST_ASSERT(group.class_number() == 1, "x^2+50 defines a field of class number one");
+    // (25-alpha)(-5-alpha) = (5-2alpha)^2. The two character rows must agree.
+    TEST_ASSERT(group.compute_character(25, 1) == group.compute_character(-5, 1),
+                "an inert prime cannot split a square dependency");
+
+    PolynomialContext index_twenty_five(I(1251), {I(1250), I(0), I(1)}, I(1));
+    ClassGroup higher(index_twenty_five);
+    TEST_ASSERT(higher.class_number() == 1, "the discriminant contains four factors of 5");
+    TEST_PASS("inert primes at quadratic order indices");
+}
+
 void test_compute_character_trivial_all_false() {
     auto ctx = make_cubic_131();
     ClassGroup cg(ctx);
@@ -667,6 +889,69 @@ void test_compute_character_trivial_all_false() {
         }
     }
     TEST_PASS("character trivial → all false");
+}
+
+void test_binary_characters_select_even_smith_factors() {
+    gnfs::sqrt::detail::ClassGroupTorsion torsion;
+    torsion.add_nontrivial_factor(I(3).get_mpz());
+    TEST_ASSERT(torsion.order == 3 && torsion.binary_rank == 0,
+                "odd factor has no binary character");
+    const std::array<PrimeIdeal, 3> ideals{{{2, 0, 1}, {3, 0, 1}, {5, 0, 1}}};
+    const std::span<const PrimeIdeal> generators(ideals);
+    TEST_ASSERT(torsion.even_generators(generators.first(1)).empty(), "omit an odd-order ideal");
+    torsion.add_nontrivial_factor(I(6).get_mpz());
+    TEST_ASSERT(torsion.order == 18 && torsion.binary_rank == 1, "mixed orders 3 and 6");
+    TEST_ASSERT(torsion.even_generators(generators.first(2)).front() == ideals[1],
+                "retain the second representative");
+    const auto large_factor = I(6) * pow(I(2), 65);
+    torsion.add_nontrivial_factor(large_factor.get_mpz());
+    TEST_ASSERT(torsion.order == std::numeric_limits<uint32_t>::max() && torsion.binary_rank == 2,
+                "saturation preserves exact factor parity");
+    const auto even = torsion.even_generators(generators);
+    TEST_ASSERT(even.size() == 2 && even[0] == ideals[1] && even[1] == ideals[2],
+                "preserve even component order");
+    PolynomialContext ctx(I(369806), {I(-504), I(37021), I(1)}, I(10));
+    ClassGroupConfig config;
+    config.max_primes = 137;
+    ClassGroup group(ctx, config);
+    const auto bits = group.compute_binary_characters(-7, 1);
+    TEST_ASSERT(bits.size() == group.num_binary_characters() &&
+                    bits.size() <= group.compute_character(-7, 1).size(),
+                "public matrix width fits the selected representatives");
+    if (group.class_number() != std::numeric_limits<uint32_t>::max() &&
+        group.class_number() % 2 == 1)
+        TEST_ASSERT(bits.empty(), "an odd-order presentation supplies no matrix columns");
+    TEST_PASS("binary characters select even Smith factors");
+}
+
+void test_matrix_valuations_at_repeated_roots() {
+    // In Q(sqrt(-2)), alpha = 12 + 3 sqrt(-2). Both primes over 3 reduce
+    // to the same root of this order. The product is (27 - 2 alpha)^2.
+    PolynomialContext split(I(2227), {I(162), I(-24), I(1)}, I(59));
+    ClassGroup group(split);
+    TEST_ASSERT(group.compute_binary_characters(27, 1) == group.compute_binary_characters(9, 1),
+                "the two square factors have equal matrix parities");
+    TEST_ASSERT(group.num_binary_characters() == 0, "omit the shared root over 3");
+
+    // This cubic has a double root at 8 modulo 11. Its fallback valuation
+    // supplies an estimated bit but no certified matrix column.
+    PolynomialContext cubic(I(13), {I(-6), I(-6), I(-2), I(1)}, I(1));
+    ClassGroupConfig config;
+    config.max_primes = 6;
+    ClassGroup repeated(cubic, config);
+    TEST_ASSERT(repeated.num_binary_characters() == 0 &&
+                    repeated.compute_binary_characters(8, 1).empty(),
+                "omit a repeated root of a cubic");
+
+    // The cubic x^3+x^2-3x+3 has a simple root at 2 modulo 3.
+    PolynomialContext supported(I(9), {I(3), I(-3), I(1), I(1)}, I(2));
+    config.max_primes = 3;
+    ClassGroup simple(supported, config);
+    TEST_ASSERT(simple.num_binary_characters() == 1 &&
+                    simple.compute_binary_characters(-7, 1) == std::vector<bool>{true} &&
+                    simple.compute_binary_characters(2, 1) == std::vector<bool>{false},
+                "retain the odd and even norm valuations at a simple cubic root");
+    TEST_PASS("certified matrix valuations on simple and repeated roots");
 }
 
 void test_generators_are_valid_prime_ideals() {
@@ -692,6 +977,8 @@ int main() {
     test_prime_ideal_ordering();
     test_ideal_class_basics();
     test_ideal_class_reduce_mod();
+    test_ideal_class_exponent_bounds();
+    test_ideal_class_modulus_bounds();
 
     // Sturm's theorem — real root counting
     test_sturm_linear();
@@ -730,11 +1017,18 @@ int main() {
     test_trivial_class_group_small_discriminant();
     test_nontrivial_class_group_runs();
     test_relation_search_with_large_minkowski_bound();
+    test_smith_diagonal_with_large_intermediates();
     test_prime_search_domain();
     test_simple_root_ideal_exponents();
     test_simple_root_relation_collection();
+    test_ramified_quadratic_exponents();
+    test_ramified_quadratic_class_group();
+    test_ramified_quadratic_index_primes();
+    test_inert_quadratic_index_primes();
     test_compute_character_trivial_all_false();
     test_generators_are_valid_prime_ideals();
+    test_binary_characters_select_even_smith_factors();
+    test_matrix_valuations_at_repeated_roots();
 
     std::cout << "\n═══════════════════════════════════════════\n";
     std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";

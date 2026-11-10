@@ -298,16 +298,13 @@ private:
 #if defined(__SIZEOF_INT128__)
             auto [norm_i128, ok] = ctx_.algebraic_norm_i128(a, b);
             if (ok) {
+                auto magnitude = static_cast<__uint128_t>(norm_i128);
                 if (norm_i128 < 0)
-                    norm_i128 = -norm_i128;
-                if (norm_i128 <= static_cast<__int128>(UINT64_MAX)) {
-                    alg_norm = static_cast<uint64_t>(norm_i128); // mpz_set_ui
-                } else {
-                    // Fits __int128 but not uint64 — construct via string or GMP
-                    alg_norm = ctx_.algebraic_norm(a, b);
-                    if (alg_norm.is_negative())
-                        alg_norm.negate();
-                }
+                    magnitude = -magnitude;
+                if (magnitude <= UINT64_MAX)
+                    alg_norm = static_cast<uint64_t>(magnitude);
+                else
+                    detail::trial_integer_from_u128(alg_norm, magnitude);
             } else {
                 alg_norm = ctx_.algebraic_norm(a, b);
                 if (alg_norm.is_negative())
