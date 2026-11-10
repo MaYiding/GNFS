@@ -526,6 +526,7 @@ MODULE_SLOW_TESTS=(
 # 模块 → 非二进制 CTest 合同映射
 typeset -A MODULE_CTEST_CONTRACTS
 MODULE_CTEST_CONTRACTS=(
+    api "^CLIReplConfig$"
     util "^(ProcessSupervisor|HarnessProcessTreeTimeout)$"
 )
 SMOKE_CTEST_CONTRACT="^ProcessSupervisor$"
@@ -1148,7 +1149,7 @@ path_to_module() {
         tests/test_relation_corpus_sha256.cpp|tests/test_relation_collector.cpp|tests/test_relation_corpus.cpp|tests/test_relation_sink.cpp|tests/test_relation_reduction_engine.cpp|tests/test_lp_bloom.cpp|tests/test_ooc_store_integrity.cpp|tests/test_ooc_durable_handoff.cpp|tests/test_ooc_cleanup_transaction.cpp) echo "relation" ;;
         tests/test_structured*.cpp) echo "relation" ;;
         tests/test_krylov_sequence_mmap.cpp|tests/test_bw_krylov_mmap_integration.cpp|tests/test_krylov_compress.cpp|tests/test_krylov_compression.cpp) echo "linalg" ;;
-        tests/test_api.cpp|tests/test_event_stream.cpp|tests/test_cli_event_stream.cpp|tests/test_i18n.cpp|tests/test_method_selection.cpp|*api/*|src/cli/*|apps/macos/GNFSWorkbench/*) echo "api" ;;
+        tests/test_api.cpp|tests/test_event_stream.cpp|tests/test_cli_event_stream.cpp|tests/test_cli_repl_config.cmake|tests/test_i18n.cpp|tests/test_method_selection.cpp|*api/*|src/cli/*|apps/macos/GNFSWorkbench/*) echo "api" ;;
         tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
         tests/test_sieve_basic.cpp|tests/test_sieve_checkpoint.cpp|tests/test_distributed_sieve.cpp|tests/test_distributed_sieve_worker_entry.cpp|tests/test_distributed_sieve_worker_writer_authority.cpp|tests/test_distributed_sieve_worker_execution.cpp|tests/test_distributed_sieve_worker_process.cpp|tests/test_distributed_sieve_wave_store_windows.cpp|tests/test_distributed_sieve_work_identity_codec.cpp|tests/test_distributed_sieve_work_package_codec.cpp|tests/test_distributed_sieve_worker_cleanup_codec.cpp|tests/test_distributed_sieve_merge_writer_codec.cpp|tests/test_distributed_sieve_merge_writer.cpp|tests/test_distributed_sieve_merge_writer_authority.cpp|tests/test_distributed_sieve_wave_merge_commit.cpp|tests/test_distributed_sieve_worker_cleanup_tail.cpp|tests/test_distributed_sieve_worker_cleanup_authorization_publisher.cpp|tests/test_distributed_sieve_worker_cleanup_orchestrator.cpp|tests/test_distributed_sieve_wave_result.cpp|tests/support/distributed_sieve_wave_merge_commit_fixture.hpp|tests/test_distributed_sieve_worker_work_package_file.cpp|tests/test_distributed_sieve_execution_policy.cpp|tests/test_distributed_sieve_seed_v2.cpp|tests/test_distributed_sieve_resume.cpp) echo "sieve" ;;
         *core/*)       echo "core" ;;
@@ -7673,7 +7674,7 @@ do_module() {
         if [[ -n "$contract_regex" ]]; then
             (( mod_total += 1 ))
             local failed_before=$FAILED_TESTS
-            run_ctest_contract_group "${mod} process supervisor" "$contract_regex" || true
+            run_ctest_contract_group "$mod" "$contract_regex" || true
             if (( FAILED_TESTS > failed_before )); then
                 (( mod_failed += 1 ))
             else
