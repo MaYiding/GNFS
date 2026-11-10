@@ -8,7 +8,9 @@
 #include "modular_poly.hpp"
 #include "number_field.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -158,48 +160,64 @@ private:
     mutable uint64_t last_inert_prime_ = 0;
     mutable bool crt_sign_exhausted_ = false; // true if CRT searched all combos
 
+    /// Compute log2(|value|) without converting its full magnitude to double.
+    [[nodiscard]] static double log2_abs(const Integer& value) {
+        if (value.is_zero())
+            return -std::numeric_limits<double>::infinity();
+        mp_exp_t exponent = 0;
+        const double fraction = mpz_get_d_2exp(&exponent, value.get_mpz());
+        return static_cast<double>(exponent) + std::log2(std::abs(fraction));
+    }
+
+    /// Given log2(x) and log2(y), compute log2(x + y) without forming x or y.
+    [[nodiscard]] static double log2_sum(double x, double y) {
+        const double zero_log = -std::numeric_limits<double>::infinity();
+        if (x == zero_log)
+            return y;
+        if (y == zero_log)
+            return x;
+        const double larger = std::max(x, y);
+        return larger + std::log2(1.0 + std::exp2(std::min(x, y) - larger));
+    }
+
     /// Estimate target bits for sqrt coefficient recovery.
     ///
-    /// For sqrt S of product γ in Z[α]/(f), the coefficient bound comes from:
-    ///   |sⱼ| ≤ ||V⁻¹||∞ · max_k |σ_k(S)| · |f'(α_k)|
-    /// where σ_k are the d complex embeddings and V is the Vandermonde matrix.
-    /// The LEADING term is log_bound/2 (from the worst single embedding),
-    /// with O(d·log R) correction from the Vandermonde inverse and f'(α).
+    /// If beta^2 is the relation product, interpolation of S = beta*f'(alpha)
+    /// gives S(x) = sum_k sigma_k(beta) * f(x)/(x-alpha_k). With |alpha_k| <= R,
+    /// each coefficient is bounded by d*|c_d|*(1+R)^(d-1)*max_k|sigma_k(beta)|.
     [[nodiscard]] double
     estimate_target_bits(const std::vector<std::pair<int64_t, uint64_t>>& ab_pairs,
                          const NumberField& nf) const {
         uint32_t d = nf.degree();
-        double max_root = std::abs(nf.m().to_double());
-        {
-            double c_d_abs = std::abs(nf.coeff(d).to_double());
-            if (c_d_abs > 0) {
-                for (uint32_t i = 0; i < d; ++i) {
-                    double ratio = std::abs(nf.coeff(i).to_double()) / c_d_abs;
-                    max_root = std::max(max_root, 1.0 + ratio);
-                }
+        const double log_leading = log2_abs(nf.coeff(d));
+        // Cauchy's root bound R >= 1 + |c_i/c_d|, and the evaluation point m.
+        // Keeping the bound in log space also handles coefficients and m
+        // whose magnitudes exceed the finite range of double.
+        double log_max_root = std::max(0.0, log2_abs(nf.m()));
+        if (!nf.coeff(d).is_zero()) {
+            for (uint32_t i = 0; i < d; ++i) {
+                const double log_ratio = log2_abs(nf.coeff(i)) - log_leading;
+                log_max_root = std::max(log_max_root, log2_sum(0.0, log_ratio));
             }
         }
         double log_bound = 0;
         for (const auto& [a, b] : ab_pairs) {
-            double val = std::abs(static_cast<double>(a)) + static_cast<double>(b) * max_root;
-            log_bound += std::log2(std::max(val, 1.0));
+            const double zero_log = -std::numeric_limits<double>::infinity();
+            const double log_a = a == 0 ? zero_log : std::log2(std::abs(static_cast<double>(a)));
+            const double log_b = b == 0 ? zero_log : std::log2(static_cast<double>(b));
+            log_bound += std::max(0.0, log2_sum(log_a, log_b + log_max_root));
         }
-        // f'(α) bound: |f'(α_k)| ≤ d · R^{d-1}
-        double log_f_prime_bound = std::log2(static_cast<double>(d));
+        // The interpolation bound includes |c_d|. Omitting it can exhaust
+        // every CRT sign choice even when the relation product is a square.
+        double log_recovery_bound = log_leading + std::log2(static_cast<double>(d));
         if (d > 1)
-            log_f_prime_bound += static_cast<double>(d) * std::log2(max_root + 1.0);
+            log_recovery_bound += static_cast<double>(d - 1) * log2_sum(log_max_root, 0.0);
 
-        // Leading term: log_bound/2 (sqrt of worst-case single embedding)
-        // Correction: log_f_prime_bound (f'(α)² trick), log₂(d) (Vandermonde)
-        // Adaptive safety margin:大类群/大 R 下 extra_precision=200 常量
-        // 可能偏低 ~50 bits 导致 center 步骤错位 → -Y 兜底失败 50% 概率。
-        // 改为 max(extra_precision, 0.05 * log_bound) 让安全余量随关系数
-        // 量级 scaling。Stage1 估算 log_bound ≈ 10000 时 safety = 500,
-        // 远超原 200。小问题(<4000 bits)不受影响。
+        // Keep the configured headroom and increase it with the accumulated
+        // embedding bound for long dependencies.
         double adaptive_safety =
             std::max(static_cast<double>(config_.extra_precision), log_bound * 0.05);
-        return log_bound / 2.0 + log_f_prime_bound + std::log2(static_cast<double>(d)) +
-               adaptive_safety;
+        return log_bound / 2.0 + log_recovery_bound + adaptive_safety;
     }
 
     /// Compute ∏(a_i - b_i*m) mod N

@@ -4,6 +4,7 @@
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/sqrt/couveignes.hpp>
+#include <gnfs/sqrt/hensel_sqrt.hpp>
 #include <gnfs/sqrt/modular_poly.hpp>
 #include <gnfs/sqrt/number_field.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
@@ -1295,6 +1296,64 @@ void test_modular_sqrt_quotient_representatives() {
     std::cout << "  Quotient representative invariance: PASSED" << std::endl;
 }
 
+void test_hensel_wide_precision() {
+    std::cout << "Testing Hensel recovery with wide coefficients..." << std::endl;
+    const Integer n(10403); // 101 * 103
+    auto check_square = [&](const NumberField& nf,
+                            const std::vector<std::pair<int64_t, uint64_t>>& pairs) {
+        Integer derivative = nf.coeff(2) * nf.m();
+        derivative *= int64_t(2);
+        derivative += nf.coeff(1);
+        Integer derivative_gcd;
+        mpz_gcd(derivative_gcd.get_mpz(), derivative.get_mpz(), n.get_mpz());
+        GNFS_TEST_CHECK(derivative_gcd == Integer(1));
+
+        Integer expected_product(1);
+        for (const auto& [a, b] : pairs) {
+            const Integer factor = Integer(a) - Integer(b) * nf.m();
+            expected_product *= factor;
+            mpz_mod(expected_product.get_mpz(), expected_product.get_mpz(), n.get_mpz());
+        }
+        HenselSqrt solver;
+        const auto root = solver.compute(pairs, nf);
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK((*root * *root) % n == expected_product);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    };
+
+    for (const unsigned long bits : {64UL, 512UL, 2048UL, 8192UL}) {
+        Integer magnitude(1);
+        mpz_mul_2exp(magnitude.get_mpz(), magnitude.get_mpz(), bits);
+        magnitude += int64_t(1);
+        for (const int sign : {1, -1}) {
+            Integer leading = magnitude;
+            if (sign < 0)
+                leading.negate();
+            Integer constant = n - Integer(2);
+            mpz_submul_ui(constant.get_mpz(), leading.get_mpz(), 4);
+            // f(2) = N. For beta = a-b*alpha, beta*f'(alpha) has integral
+            // coefficients even though f is non-monic.
+            const NumberField nf(PolynomialContext(n, {constant, Integer(1), leading}, Integer(2)));
+            check_square(nf, {{1, 1}, {1, 1}});
+            check_square(nf, {{0, 1}, {0, 1}});
+            check_square(nf, {{2, 0}, {2, 0}});
+            // Trigger the multi-prime CRT path with an integral constant beta.
+            check_square(nf, std::vector<std::pair<int64_t, uint64_t>>(120, {2, 0}));
+        }
+    }
+
+    // A monic polynomial whose evaluation point and constant coefficient
+    // cannot be converted to finite doubles still needs finite precision.
+    Integer m(1);
+    mpz_mul_2exp(m.get_mpz(), m.get_mpz(), 1200);
+    const Integer constant = n - m * m - m;
+    const NumberField nf(PolynomialContext(n, {constant, Integer(1), Integer(1)}, m));
+    check_square(nf, {{1, 1}, {1, 1}});
+    check_square(nf, {{0, 1}, {0, 1}});
+    check_square(nf, {{2, 0}, {2, 0}});
+    std::cout << "  Hensel recovery with wide coefficients: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -1325,6 +1384,7 @@ int main() {
     test_couveignes_compute_from_element_terminates();
     test_couveignes_compute_from_element_normal();
     test_couveignes_gray_code_invariants();
+    test_hensel_wide_precision();
 
     std::cout << std::endl;
     std::cout << "=== All Square Root Tests PASSED ===" << std::endl;
