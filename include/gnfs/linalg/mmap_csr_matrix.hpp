@@ -2,6 +2,7 @@
 
 #include "gnfs/linalg/sparse_matrix.hpp"
 #include "gnfs/util/mmap_file.hpp"
+#include "gnfs/util/utf8_path.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -98,7 +99,7 @@ public:
             throw std::runtime_error("MmapCSRMatrix::save: row_offsets size inconsistent");
         }
 
-        std::ofstream out(path, std::ios::binary);
+        std::ofstream out(gnfs::util::path_from_utf8(path), std::ios::binary);
         if (!out)
             throw std::runtime_error("MmapCSRMatrix::save: cannot open " + path);
 
