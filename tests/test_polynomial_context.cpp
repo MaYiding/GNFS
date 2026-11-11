@@ -1,5 +1,6 @@
 // Unit tests for PolynomialContext — evaluate, norms, verify, edge cases
 #include "gnfs/core/polynomial_context.hpp"
+#include "gnfs/util/joining_thread.hpp"
 #include "support/test_check.hpp"
 
 #include <array>
@@ -240,11 +241,11 @@ void test_algebraic_norm_owned_results_and_threads() {
         GNFS_TEST_CHECK(ctx.algebraic_norm(a, b) == expected);
     };
     {
-        std::jthread first([&] {
+        gnfs::util::JoiningThread first([&] {
             exercise(cubic, degree_nine, std::numeric_limits<int64_t>::min(),
                      std::numeric_limits<uint64_t>::max());
         });
-        std::jthread second([&] {
+        gnfs::util::JoiningThread second([&] {
             exercise(degree_nine, cubic, std::numeric_limits<int64_t>::max(), uint64_t{1} << 32);
         });
     }
