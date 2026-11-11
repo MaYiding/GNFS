@@ -1291,6 +1291,144 @@ void test_schirokauer_overflow_guards() {
     std::cout << "  Schirokauer overflow and parameter guards: PASSED" << std::endl;
 }
 
+GFPolyOps::Poly schirokauer_test_residues(const std::vector<core::Integer>& coefficients,
+                                          uint64_t modulus) {
+    const core::Integer integer_modulus(modulus);
+    GFPolyOps::Poly residues;
+    residues.reserve(coefficients.size());
+    for (const auto& coefficient : coefficients) {
+        core::Integer residue = coefficient % integer_modulus;
+        if (residue.is_negative())
+            residue += integer_modulus;
+        residues.push_back(residue.to_uint64());
+    }
+    return residues;
+}
+
+void check_schirokauer_lift_product(const std::vector<GFPolyOps::Poly>& factors,
+                                    const std::vector<core::Integer>& coefficients,
+                                    uint64_t modulus) {
+    using core::Integer;
+    // Reconstruct over arbitrary-precision integers, independently of the
+    // native modular multiply and accumulation used by the lift.
+    std::vector<Integer> product{Integer(1)};
+    for (const auto& factor : factors) {
+        GNFS_TEST_CHECK(!factor.empty());
+        GNFS_TEST_CHECK(factor.back() == 1);
+        for (const uint64_t coefficient : factor)
+            GNFS_TEST_CHECK(coefficient < modulus);
+        std::vector<Integer> next(product.size() + factor.size() - 1);
+        for (std::size_t i = 0; i < product.size(); ++i) {
+            for (std::size_t j = 0; j < factor.size(); ++j)
+                next[i + j] += product[i] * Integer(factor[j]);
+        }
+        product.swap(next);
+    }
+    GNFS_TEST_CHECK(product.size() == coefficients.size());
+    GNFS_TEST_CHECK(schirokauer_test_residues(product, modulus) ==
+                    schirokauer_test_residues(coefficients, modulus));
+}
+
+void test_schirokauer_lift_residues() {
+    std::cout << "Testing canonical Schirokauer Hensel lift residues..." << std::endl;
+    using core::Integer;
+    struct LiftCase {
+        uint32_t ell;
+        uint32_t exponent;
+        uint64_t modulus;
+    };
+    const LiftCase cases[] = {{2, 1, 2}, {2, 8, 256}, {2, 62, UINT64_C(4611686018427387904)},
+                              {5, 1, 5}, {5, 4, 625}, {5, 27, UINT64_C(7450580596923828125)}};
+    const std::vector<Integer> coefficients{Integer(2), Integer(-3), Integer(1)};
+    for (const auto& test : cases) {
+        // f=(x-1)(x-2); the coprime factors have unique monic lifts.
+        // For exponent=1 this also checks the no-lift boundary.
+        const GFPolyOps::Poly g0{test.ell - 1, 1};
+        const GFPolyOps::Poly h0{test.ell - 2, 1};
+        const GFPolyOps::Poly t{test.ell - 1}; // h0^{-1} modulo g0
+        auto g = g0;
+        auto h = h0;
+        GFPolyOps::hensel_lift_pair(schirokauer_test_residues(coefficients, test.modulus), g, h, g0,
+                                    h0, t, test.ell, test.exponent);
+        GNFS_TEST_CHECK(g == GFPolyOps::Poly({test.modulus - 1, 1}));
+        GNFS_TEST_CHECK(h == GFPolyOps::Poly({test.modulus - 2, 1}));
+        check_schirokauer_lift_product({g, h}, coefficients, test.modulus);
+    }
+
+    // Two irreducible, coprime quadratics over F_5. Multiple products
+    // contribute to each coefficient, exercising modular accumulation as
+    // well as normalization when the lift modulus is close to INT64_MAX.
+    constexpr uint64_t modulus = UINT64_C(7450580596923828125);
+    const std::vector<Integer> quartic{Integer(8), Integer(16), Integer(2), Integer(-6),
+                                       Integer(1)};
+    const GFPolyOps::Poly g0{3, 3, 1}, h0{1, 1, 1}, t{1, 3};
+    auto g = g0;
+    auto h = h0;
+    GFPolyOps::hensel_lift_pair(schirokauer_test_residues(quartic, modulus), g, h, g0, h0, t, 5,
+                                27);
+    GNFS_TEST_CHECK(g == GFPolyOps::Poly({modulus - 2, modulus - 2, 1}));
+    GNFS_TEST_CHECK(h == GFPolyOps::Poly({modulus - 4, modulus - 4, 1}));
+    check_schirokauer_lift_product({g, h}, quartic, modulus);
+    std::cout << "  Canonical Schirokauer Hensel lift residues: PASSED" << std::endl;
+}
+
+void test_schirokauer_wide_public_map() {
+    std::cout << "Testing public Schirokauer maps with wide lift moduli..." << std::endl;
+    using core::Integer;
+    using core::PolynomialContext;
+
+    // Irreducible over Q (discriminant 21), but split with distinct roots
+    // 1 and 2 modulo 5. This tests the public map without adding odd-prime
+    // columns to a GF(2) matrix. The context satisfies f(6)=15.
+    const std::vector<Integer> coefficients{Integer(-3), Integer(-3), Integer(1)};
+    const PolynomialContext ctx(Integer(15), coefficients, Integer(6));
+    GNFS_TEST_CHECK(ctx.verify());
+    for (const uint32_t exponent : {1u, 4u, 27u}) {
+        const Integer integer_modulus = core::pow(Integer(5), exponent);
+        const uint64_t modulus = integer_modulus.to_uint64();
+        SchirokaurConfig config;
+        config.primes = {5};
+        config.exponent_k = exponent;
+        const SchirokaurMap smap(ctx, config);
+        GNFS_TEST_CHECK(smap.prime_info_.size() == 1);
+        const auto& info = smap.prime_info_.front();
+        GNFS_TEST_CHECK(info.ell_k == modulus);
+        GNFS_TEST_CHECK(info.is_split && info.factors.size() == 2);
+        const auto maps = smap.compute(3, 1);
+        GNFS_TEST_CHECK(maps.size() == 1 && maps[0].size() == 2);
+        std::vector<GFPolyOps::Poly> factors;
+        bool seen_root_one = false;
+        bool seen_root_two = false;
+        for (std::size_t i = 0; i < info.factors.size(); ++i) {
+            const auto& factor = info.factors[i];
+            GNFS_TEST_CHECK(factor.degree == 1 && factor.f_mod[1] == 1);
+            // Independently lifted exact roots modulo 5^27; reduction gives
+            // their unique roots at every lower precision used here.
+            uint64_t expected_constant;
+            if (factor.f_mod[0] % 5 == 4) {
+                GNFS_TEST_CHECK(!seen_root_one);
+                seen_root_one = true;
+                expected_constant = UINT64_C(2123718585086259604) % modulus;
+            } else {
+                GNFS_TEST_CHECK(factor.f_mod[0] % 5 == 3 && !seen_root_two);
+                seen_root_two = true;
+                expected_constant = UINT64_C(5326862011837568518) % modulus;
+            }
+            GNFS_TEST_CHECK(factor.f_mod[0] == expected_constant);
+            factors.push_back({factor.f_mod[0], factor.f_mod[1]});
+            const Integer root = integer_modulus - Integer(expected_constant);
+            const Integer gamma = Integer(3) - root;
+            const Integer residue = core::pow(gamma, 4) % integer_modulus;
+            const Integer expected_map = ((residue - Integer(1)) / Integer(5)) % Integer(5);
+            GNFS_TEST_CHECK(maps[0][i] < 5);
+            GNFS_TEST_CHECK(maps[0][i] == expected_map.to_uint64());
+        }
+        GNFS_TEST_CHECK(seen_root_one && seen_root_two);
+        check_schirokauer_lift_product(factors, coefficients, modulus);
+    }
+    std::cout << "  Public Schirokauer maps with wide lift moduli: PASSED" << std::endl;
+}
+
 // Regression test: parallel Block Lanczos produces same results as Gaussian
 // for a medium-sized matrix (verifies parallelization correctness)
 void test_parallel_block_lanczos_correctness() {
@@ -1867,6 +2005,8 @@ int main() {
     test_schirokauer_squarefree_reducible();
     test_gf_poly_factorization_determinism();
     test_schirokauer_overflow_guards();
+    test_schirokauer_lift_residues();
+    test_schirokauer_wide_public_map();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();
