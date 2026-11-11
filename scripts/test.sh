@@ -5536,6 +5536,7 @@ SIQS_256A_PROFILE_STDERR=""
 SIQS_256A_SCALE_PASS=0
 SIQS_256A_VALIDATOR_BASELINE=""
 SIQS_256A_VALIDATOR_NOT_ATTEMPTED=""
+SIQS_256A_VALIDATOR_GLOBAL_LIMIT=""
 
 validate_siqs_256a_profile_output() {
     local stdout="$1"
@@ -5946,6 +5947,8 @@ try:
         need(I(summary, "analysis_wall_ns") > 0)
 
     if terminal == "solver_ready":
+        # Pre-Gray-root-fix historical replay and parser-sample expectations.
+        # These frozen values are not current corrected-root scale evidence.
         frozen_config = {
             "planner_attempts": "256", "planner_duplicate_draws": "0",
             "first_a": "228011737959984857761", "last_a": "235884298804888144139",
@@ -6091,6 +6094,8 @@ siqs_256a_rss_validator_self_check() {
 # Cheap parser-only regression table. It deliberately never starts the profile
 # binary; the real modes run this before their single fresh Release build.
 siqs_256a_validator_self_check() {
+    # Historical pre-fix solver-ready fields with synthetic timing/RSS values;
+    # this parser sample is not a fresh corrected-root capture.
     local baseline
     baseline=$(<<'EOF'
 GNFS_SIQS_256A_CONFIG_V3 schema_version=3 status=solver_ready profile_id=siqs50_multi_a_256x32_scale_v3 build_type=Release ndebug=true band=50 digits=50 n=18027426610499408447671494571938206274555088868093 p=2041646378661656688438487 q=8829847714527711737483339 seed=42 max_a=256 unique_a=256 b_per_a=32 available_b_per_a=32 complete_b_family=true batch_schedule=0-1,1-4,4-16,16-32,32-48,48-64,64-80,80-96,96-112,112-128,128-144,144-160,160-176,176-192,192-208,208-224,224-240,240-256 batch_max_a=16 batch_barrier=true partition=static_contiguous admission_order=a_gray_relation admission_race_first=false global_cap_boundary=next_gt_limit timeout_seconds=1800 planner_attempts=256 planner_duplicate_draws=0 accepted_duplicate_a=0 first_a=228011737959984857761 last_a=235884298804888144139 plan_digest_low=2132402111948970426 plan_digest_high=3331495609548214574 multiplier=5 sieved_n=90137133052497042238357472859691031372775444340465 sieved_bits=166 factor_base_columns=1601 factor_base_last_prime=28979 param_fb_size=1600 param_sieve_half=65536 param_lp_multiplier=120 param_a_factors=6 param_sieve_error=12 param_small_prime_cutoff=25 threshold=61 relation_limit_per_slot=32 payload_limit_bytes_per_slot=65536 global_raw_limit=32768 global_payload_limit_bytes=67108864 graph_edge_limit=16384 graph_cycle_limit=4096 graph_incidence_limit=262144 row_candidate_limit=4096 pretrim_limit=4096 shadow_trim_excess=100 selected_required=1701 min_2lp_cycles=32 min_2lp_edge_source_a=16 rss_budget_bytes=536870912 solver_attempted=false promotion=false
@@ -6107,6 +6112,34 @@ EOF
     validate_siqs_256a_profile_output "$baseline" 1 6 0 10 || return 1
     (( SIQS_256A_SCALE_PASS == 1 )) || return 1
     local baseline_identity="$SIQS_256A_PROFILE_IDENTITY"
+
+    # Corrected-root fixed-budget diagnostic transcript (2026-11-10). Only the
+    # historical golden comparison was bypassed; all slots passed the GMP oracle.
+    # Preserve observed counters; validity must clear the preceding scale pass.
+    local global_limit terminal_mutation terminal_change
+    global_limit=$(cat <<'EOF'
+GNFS_SIQS_256A_CONFIG_V3 schema_version=3 status=global_relation_limit profile_id=siqs50_multi_a_256x32_scale_v3 build_type=Release ndebug=true band=50 digits=50 n=18027426610499408447671494571938206274555088868093 p=2041646378661656688438487 q=8829847714527711737483339 seed=42 max_a=256 unique_a=256 b_per_a=32 available_b_per_a=32 complete_b_family=true batch_schedule=0-1,1-4,4-16,16-32,32-48,48-64,64-80,80-96,96-112,112-128,128-144,144-160,160-176,176-192,192-208,208-224,224-240,240-256 batch_max_a=16 batch_barrier=true partition=static_contiguous admission_order=a_gray_relation admission_race_first=false global_cap_boundary=next_gt_limit timeout_seconds=1800 planner_attempts=256 planner_duplicate_draws=0 accepted_duplicate_a=0 first_a=228011737959984857761 last_a=235884298804888144139 plan_digest_low=8586677481376314543 plan_digest_high=908571124910866282 multiplier=5 sieved_n=90137133052497042238357472859691031372775444340465 sieved_bits=166 factor_base_columns=1601 factor_base_last_prime=28979 param_fb_size=1600 param_sieve_half=65536 param_lp_multiplier=120 param_a_factors=6 param_sieve_error=12 param_small_prime_cutoff=25 threshold=61 relation_limit_per_slot=32 payload_limit_bytes_per_slot=65536 global_raw_limit=32768 global_payload_limit_bytes=67108864 graph_edge_limit=16384 graph_cycle_limit=4096 graph_incidence_limit=262144 row_candidate_limit=4096 pretrim_limit=4096 shadow_trim_excess=100 selected_required=1701 min_2lp_cycles=32 min_2lp_edge_source_a=16 rss_budget_bytes=536870912 solver_attempted=false promotion=false
+GNFS_SIQS_256A_CAPTURE_V3 schema_version=3 status=global_relation_limit profile_id=siqs50_multi_a_256x32_scale_v3 batches=18 completed_batches=9 unstarted_batches=9 planned_a=256 completed_a=112 unstarted_a=144 planned_slots=8192 completed_slots=3584 unstarted_slots=4608 produced_relations=33399 admitted_relations=32768 discarded_relations=631 produced_full=2966 produced_one_lp=29835 produced_two_lp=598 admitted_full=2909 admitted_one_lp=29275 admitted_two_lp=584 admitted_payload_bytes=54822388 discarded_payload_bytes=1055573 terminal_slot_a=none terminal_slot_gray=none first_rejected_a=109 first_rejected_gray=28 first_rejected_relation=0 first_rejected_reason=global_relation_limit global_cap_precedence=relation_then_payload threshold_candidates=75031 unrepresentable_residuals=0 rejected_residuals=41632 observed_full=2966 observed_one_lp=29835 observed_two_lp=598 produced_payload_bytes=55877961 slot_stop_none=3584 slot_stop_relation_limit=0 slot_stop_payload_limit=0 slot_digest_low=18381139196814733249 slot_digest_high=14062357446981375558 raw_digest_low=13232783756420127779 raw_digest_high=16309366546622770640 workers=1 resolved_workers=1 peak_workers=1 capture_wall_ns=822522916 solver_attempted=false promotion=false
+GNFS_SIQS_256A_GRAPH_V3 schema_version=3 status=global_relation_limit profile_id=siqs50_multi_a_256x32_scale_v3 attempted=false adapter_input=0 adapter_full=0 adapter_accepted_one_lp=0 adapter_accepted_two_lp=0 adapter_rejected=0 adapter_exact_duplicate=0 adapter_malformed_source_shape=0 adapter_unsupported_encoding=0 adapter_invalid_one_large_prime=0 adapter_invalid_two_large_prime_split=0 graph_status=not_attempted graph_input_edges=0 graph_vertices=0 graph_edges=0 graph_components=0 graph_cycles=0 graph_cycle_incidences=0 graph_max_cycle_length=0 cycles_with_accepted_2lp=0 cycles_without_accepted_2lp=0 two_lp_edge_source_a_count=0 cycle_source_a_count=0 cycle_provenance_digest_low=0 cycle_provenance_digest_high=0 row_candidate_upper=0 solver_attempted=false promotion=false
+GNFS_SIQS_256A_ASSEMBLY_V3 schema_version=3 status=global_relation_limit profile_id=siqs50_multi_a_256x32_scale_v3 attempted=false assembly_status=not_attempted graph_edges=0 graph_cycles=0 valid_full=0 full_sources=0 partial_sources=0 valid_cycle_rows=0 rejected_cycle_rows=0 rows_before_dedup=0 arithmetic_duplicates_removed=0 pretrim_rows=0 required_rows=1701 row_deficit=1701 selected_rows=0 selected_full_rows=0 selected_cycle_rows=0 trimmed_rows=0 source_fingerprint_low=0 source_fingerprint_high=0 pretrim_fingerprint_low=0 pretrim_fingerprint_high=0 selected_fingerprint_low=0 selected_fingerprint_high=0 solver_attempted=false promotion=false
+GNFS_SIQS_256A_PROOF_V3 schema_version=3 attempted=false status=not_attempted factor=none cofactor=none deterministic_terminal=global_relation_limit solver_attempted=false promotion=false
+GNFS_SIQS_256A_SUMMARY_V3 schema_version=3 status=global_relation_limit profile_id=siqs50_multi_a_256x32_scale_v3 stdout_records=6 config_records=1 capture_records=1 graph_records=1 assembly_records=1 proof_records=1 summary_records=1 workers=1 rss_scope=self_lifetime rss_backend=darwin_getrusage rss_evidence=pass scale_evidence=terminal final_current_rss_bytes=96223232 final_peak_rss_bytes=96223232 plan_wall_ns=2452515500 capture_wall_ns=822522916 analysis_wall_ns=0 wall_ns=3275475041 solver_attempted=false proof_status=not_attempted promotion=false
+EOF
+    )
+    validate_siqs_256a_profile_output "$global_limit" 1 6 0 10 || return 1
+    [[ "$SIQS_256A_PROFILE_OUTPUT" == "$global_limit" && SIQS_256A_SCALE_PASS -eq 0 ]] || return 1
+    for terminal_change in \
+        "6:scale_evidence=pass" "5:status=factor_found" \
+        "2:discarded_relations=630" "2:discarded_payload_bytes=1055572" \
+        "2:first_rejected_a=112" "3:attempted=true"; do
+        terminal_mutation=$(siqs_256a_mutate_transcript "$global_limit" "$terminal_change") || return 1
+        if validate_siqs_256a_profile_output "$terminal_mutation" 1 6 0 10 2>/dev/null; then
+            log_fail "SIQS 256-A terminal self-check 未拒绝 ${terminal_change}"
+            return 1
+        fi
+    done
+    SIQS_256A_VALIDATOR_GLOBAL_LIMIT="$global_limit"
+
     local unknown missing duplicate field_order line_order conservation attempted forged_scale
     local frozen_drift over_payload over_incidence selected_subtype unsupported_numeric
     local false_row_candidate false_pretrim false_insufficient
@@ -6664,6 +6697,8 @@ try:
     need(I(summary, "analysis_wall_ns") >= I(summary, "solver_wall_ns") + I(summary, "verify_extract_wall_ns"))
 
     if proof["status"] == "factor_found":
+        # Preserve the pre-Gray-root-fix historical proof/parser sample.
+        # A valid corrected-root terminal transcript does not establish this result.
         golden = {
             "matrix_rows": "1701", "matrix_columns": "1601",
             "matrix_projected_dense_bytes": "345816", "minimum_nullity": "100",
@@ -6707,6 +6742,7 @@ PY
 }
 
 siqs_256a_proof_validator_self_check() {
+    # Historical pre-fix factor-found fields with synthetic timing/RSS values.
     siqs_256a_validator_self_check || return 1
     local -a gate_lines
     gate_lines=("${(@f)SIQS_256A_VALIDATOR_BASELINE}")
@@ -6733,6 +6769,40 @@ siqs_256a_proof_validator_self_check() {
     validate_siqs_256a_proof_output "$baseline" 1 6 0 10 || return 1
     (( SIQS_256A_PROOF_GATE_SCALE_PASS == 1 && SIQS_256A_PROOF_PASS == 1 )) || return 1
     local baseline_identity="$SIQS_256A_PROOF_IDENTITY"
+
+    # The corrected-root V4 diagnostic has the same four gate records as V3,
+    # apart from schema tags and measured capture time. Keep its actual proof
+    # and summary tail: no solver ran, so both preceding success flags must clear.
+    local global_limit="" terminal_mutation terminal_change
+    local -a global_limit_lines
+    global_limit_lines=("${(@f)SIQS_256A_VALIDATOR_GLOBAL_LIMIT}")
+    (( ${#global_limit_lines[@]} == 6 )) || return 1
+    for (( record_index = 1; record_index <= 4; ++record_index )); do
+        gate_line="${global_limit_lines[$record_index]/_V3 /_V4 }"
+        gate_line="${gate_line/ schema_version=3 / schema_version=4 }"
+        global_limit+="$gate_line"$'\n'
+    done
+    global_limit+=$(cat <<'EOF'
+GNFS_SIQS_256A_PROOF_V4 schema_version=4 attempted=false status=not_attempted deterministic_terminal=global_relation_limit matrix_status=not_attempted dependency_status=not_attempted factor_status=not_attempted matrix_rows=0 matrix_columns=0 matrix_projected_dense_bytes=not_attempted solver_max_dependencies=64 solver_elimination_workers=1 solver_parallel_column_threshold=0 solver_max_dense_matrix_bytes=345816 solver_max_dense_variable_count=1701 elimination_mode=not_attempted dependency_search=first_free_column_basis_prefix dependency_combinations_attempted=false dependency_search_complete=not_attempted dependency_ordinal_base=0 minimum_nullity=0 dependencies_returned=0 dependencies_examined=0 dependencies_verified=0 dependency_cap_reached=false dependency_digest_low=none dependency_digest_high=none first_failed_dependency=none factor_no_factor_count=0 factor_found_count=0 winning_dependency=none winning_dependency_size=none square_modulus=sieved_n gcd_target=n factor=none cofactor=none solver_wall_ns=0 verify_extract_wall_ns=0 solver_attempted=false promotion=false
+GNFS_SIQS_256A_SUMMARY_V4 schema_version=4 status=global_relation_limit profile_id=siqs50_multi_a_256x32_scale_v3 stdout_records=6 config_records=1 capture_records=1 graph_records=1 assembly_records=1 proof_records=1 summary_records=1 workers=1 rss_scope=self_lifetime rss_backend=darwin_getrusage rss_evidence=pass scale_evidence=terminal proof_evidence=not_attempted final_current_rss_bytes=96043008 final_peak_rss_bytes=96043008 plan_wall_ns=2494112333 capture_wall_ns=878944667 analysis_wall_ns=0 solver_wall_ns=0 verify_extract_wall_ns=0 wall_ns=3373292458 solver_attempted=false proof_status=not_attempted matrix_status=not_attempted dependency_status=not_attempted factor_status=not_attempted dependencies_returned=0 dependencies_examined=0 dependency_cap_reached=false factor=none cofactor=none promotion=false
+EOF
+    )
+    global_limit=$(siqs_256a_mutate_transcript "$global_limit" \
+        "2:capture_wall_ns=878944667") || return 1
+    validate_siqs_256a_proof_output "$global_limit" 1 6 0 10 || return 1
+    [[ "$SIQS_256A_PROOF_OUTPUT" == "$global_limit" && \
+       SIQS_256A_PROOF_GATE_SCALE_PASS -eq 0 && SIQS_256A_PROOF_PASS -eq 0 ]] || return 1
+    for terminal_change in \
+        "6:scale_evidence=pass" "6:proof_evidence=factor_found" \
+        "5:status=factor_found" "5:attempted=true" \
+        "2:discarded_relations=630" "2:discarded_payload_bytes=1055572"; do
+        terminal_mutation=$(siqs_256a_mutate_transcript "$global_limit" "$terminal_change") || return 1
+        if validate_siqs_256a_proof_output "$terminal_mutation" 1 6 0 10 2>/dev/null; then
+            log_fail "SIQS 256-A proof terminal self-check 未拒绝 ${terminal_change}"
+            return 1
+        fi
+    done
+
     local unknown missing order digest factor summary_mismatch
     unknown=$(printf '%s\n' "$baseline" | awk 'NR == 5 { $0 = $0 " unknown=1" } { print }')
     missing="${baseline/ matrix_status=valid/}"
