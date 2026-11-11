@@ -245,6 +245,42 @@ void test_size_1_inputs() {
     std::cout << "  PASS (size-1 multiply correct under On / Off / schoolbook)" << std::endl;
 }
 
+// CRT residues must be reduced into the next modulus before subtraction.
+// Here a[0]*b[0] = 655953900102920796 has r1=q1-1 and r2=0. Since
+// q1>q2, subtracting r1 directly from r2+q2 would wrap uint64_t.
+void test_crt_residue_ordering() {
+    std::cout << "test_crt_residue_ordering..." << std::endl;
+    struct Fixture {
+        uint64_t modulus;
+        uint64_t constant_term;
+    };
+    for (const Fixture fixture :
+         {Fixture{4294967291ULL, 4063149908ULL}, Fixture{kPrime31, 1457487757ULL}}) {
+        // The sparse larger case also reaches NTT through the default gate.
+        for (const size_t size : {size_t{2}, kNttAutoThreshold}) {
+            std::vector<uint64_t> a(size, 0), b(size, 0), expected(2 * size - 1, 0);
+            a.front() = 985661441ULL;
+            b.front() = 665496156ULL;
+            a.back() = b.back() = 1;
+            expected.front() = fixture.constant_term;
+            expected[size - 1] = 1651157597ULL;
+            expected.back() = 1;
+            for (const char* gate : {"0", "1", "auto"}) {
+                gnfs_setenv("GNFS_POLY_NTT", gate);
+                poly_ntt_reset_env_cache_for_testing();
+                std::vector<uint64_t> actual;
+                ntt_mul_mod(a, b, fixture.modulus, actual);
+                expect_equal(expected, actual,
+                             "crt_residue_ordering_p=" + std::to_string(fixture.modulus) +
+                                 "_size=" + std::to_string(size) + "_gate=" + gate);
+            }
+        }
+    }
+    gnfs_unsetenv("GNFS_POLY_NTT");
+    poly_ntt_reset_env_cache_for_testing();
+    std::cout << "  PASS (golden CRT results under Off / On / Auto)" << std::endl;
+}
+
 // ====================== Correctness (schoolbook parity) ======================
 
 // Runs `ntt_mul_mod` (with ENV=ForceOn so NTT path actually runs even at
@@ -454,6 +490,8 @@ int main() {
     // 2 edge cases.
     test_empty_inputs();
     test_size_1_inputs();
+
+    test_crt_residue_ordering();
 
     // 4 correctness parity tests (multiple primes / sizes).
     test_parity_size_10();
