@@ -13,20 +13,16 @@
 //   * Move construction transfers ownership without double-push
 //   * Move assignment releases prior + adopts new
 
-// Force assert() to remain live even under -DNDEBUG so Release builds
-// do not silently strip verification.
-#ifdef NDEBUG
-#  undef NDEBUG
-#endif
-
-#include "gnfs/util/integer_scratch_pool.hpp"
 #include "gnfs/core/integer.hpp"
+#include "gnfs/util/integer_scratch_pool.hpp"
+#include "support/test_check.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <iostream>
 #include <random>
 #include <string>
@@ -49,7 +45,7 @@ static void test_env_unset_default_off() {
     std::cout << "Testing GNFS_INTEGER_SCRATCH_POOL unset => off..." << std::endl;
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
     integer_scratch_pool_reset_env_cache_for_testing();
-    assert(integer_scratch_pool_enabled() == false);
+    GNFS_TEST_CHECK(integer_scratch_pool_enabled() == false);
     std::cout << "  ENV unset: PASS (disabled)" << std::endl;
 }
 
@@ -57,7 +53,7 @@ static void test_env_one_enabled() {
     std::cout << "Testing GNFS_INTEGER_SCRATCH_POOL=1 => on..." << std::endl;
     setenv("GNFS_INTEGER_SCRATCH_POOL", "1", 1);
     integer_scratch_pool_reset_env_cache_for_testing();
-    assert(integer_scratch_pool_enabled() == true);
+    GNFS_TEST_CHECK(integer_scratch_pool_enabled() == true);
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
     integer_scratch_pool_reset_env_cache_for_testing();
     std::cout << "  ENV=1: PASS (enabled)" << std::endl;
@@ -67,7 +63,7 @@ static void test_env_zero_explicit_off() {
     std::cout << "Testing GNFS_INTEGER_SCRATCH_POOL=0 => off..." << std::endl;
     setenv("GNFS_INTEGER_SCRATCH_POOL", "0", 1);
     integer_scratch_pool_reset_env_cache_for_testing();
-    assert(integer_scratch_pool_enabled() == false);
+    GNFS_TEST_CHECK(integer_scratch_pool_enabled() == false);
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
     integer_scratch_pool_reset_env_cache_for_testing();
     std::cout << "  ENV=0: PASS (disabled)" << std::endl;
@@ -80,7 +76,7 @@ static void test_env_other_values_off() {
         setenv("GNFS_INTEGER_SCRATCH_POOL", v, 1);
         integer_scratch_pool_reset_env_cache_for_testing();
         bool en = integer_scratch_pool_enabled();
-        assert(en == false && "Only the exact string \"1\" should enable the pool");
+        GNFS_TEST_CHECK(en == false && "Only the exact string \"1\" should enable the pool");
     }
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
     integer_scratch_pool_reset_env_cache_for_testing();
@@ -99,13 +95,13 @@ static void test_borrow_default_off_returns_fresh() {
 
     {
         IntegerScratchHandle h;
-        assert(h.get().is_zero());
+        GNFS_TEST_CHECK(h.get().is_zero());
         // Use it like a fresh Integer
         h.get() = Integer(static_cast<int64_t>(42));
-        assert(h.get() == Integer(static_cast<int64_t>(42)));
+        GNFS_TEST_CHECK(h.get() == Integer(static_cast<int64_t>(42)));
     }
     // Pool stays at 0 size since pool is off
-    assert(integer_scratch_pool_size() == 0);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 0);
 
     std::cout << "  borrow OFF: PASS (fresh zero Integer, no pool growth)" << std::endl;
 }
@@ -118,21 +114,21 @@ static void test_borrow_enabled_returns_zero_initially() {
 
     {
         IntegerScratchHandle h;
-        assert(h.get().is_zero());
+        GNFS_TEST_CHECK(h.get().is_zero());
     }
     // Pool size should be exactly 1 (one Integer returned)
-    assert(integer_scratch_pool_size() == 1);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 1);
 
     // Next borrow should reuse the pooled Integer and re-zero it
     {
         IntegerScratchHandle h2;
-        assert(h2.get().is_zero());
+        GNFS_TEST_CHECK(h2.get().is_zero());
         // Use it
         h2.get() = Integer(static_cast<int64_t>(99999));
-        assert(h2.get() == Integer(static_cast<int64_t>(99999)));
+        GNFS_TEST_CHECK(h2.get() == Integer(static_cast<int64_t>(99999)));
     }
     // Returned to pool again
-    assert(integer_scratch_pool_size() == 1);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 1);
 
     clear_thread_pool();
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
@@ -145,7 +141,7 @@ static void test_return_to_pool() {
     setenv("GNFS_INTEGER_SCRATCH_POOL", "1", 1);
     integer_scratch_pool_reset_env_cache_for_testing();
     clear_thread_pool();
-    assert(integer_scratch_pool_size() == 0);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 0);
 
     // Three scoped borrows. Pool grows to 3 since each handle returns its
     // Integer at scope exit (no reuse occurs because borrow happens after
@@ -159,10 +155,10 @@ static void test_return_to_pool() {
         IntegerScratchHandle c;
         c.get() = Integer(static_cast<int64_t>(3));
         // All three alive: pool still empty (each took or default-constructed)
-        assert(integer_scratch_pool_size() == 0);
+        GNFS_TEST_CHECK(integer_scratch_pool_size() == 0);
     }
     // After scope exit: all three pushed back
-    assert(integer_scratch_pool_size() == 3);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 3);
 
     clear_thread_pool();
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
@@ -170,7 +166,7 @@ static void test_return_to_pool() {
     std::cout << "  return to pool: PASS (3 borrows -> pool size 3)" << std::endl;
 }
 
-static void test_reuse_limb_buffer() {
+static void test_repeated_borrow_count() {
     std::cout << "Testing many borrow-release cycles do not unbounded grow pool..." << std::endl;
     setenv("GNFS_INTEGER_SCRATCH_POOL", "1", 1);
     integer_scratch_pool_reset_env_cache_for_testing();
@@ -181,16 +177,51 @@ static void test_reuse_limb_buffer() {
     // recycled between borrows).
     for (int i = 0; i < 1000; ++i) {
         IntegerScratchHandle h;
-        h.get() = Integer(static_cast<int64_t>(i));
-        assert(h.get() == Integer(static_cast<int64_t>(i)));
+        h.get() = static_cast<int64_t>(i);
+        GNFS_TEST_CHECK(h.get() == Integer(static_cast<int64_t>(i)));
     }
     // After the loop: exactly one Integer in the pool (the recycled slot).
-    assert(integer_scratch_pool_size() == 1);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 1);
 
     clear_thread_pool();
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
     integer_scratch_pool_reset_env_cache_for_testing();
-    std::cout << "  reuse limb buffer: PASS (1000 sequential borrows -> pool size 1)" << std::endl;
+    std::cout << "  Pool size: PASS (1000 sequential borrows -> pool size 1)" << std::endl;
+}
+
+static void test_warm_buffer_survives_reset() {
+    std::cout << "Testing warm limb storage survives reset before refill..." << std::endl;
+    setenv("GNFS_INTEGER_SCRATCH_POOL", "1", 1);
+    integer_scratch_pool_reset_env_cache_for_testing();
+    for (const std::size_t bits : {64u, 256u, 4096u, 65536u}) {
+        clear_thread_pool();
+        Integer source(17);
+        mpz_setbit(source.get_mpz(), static_cast<mp_bitcnt_t>(bits - 1));
+        const Integer& value = source;
+        std::uintptr_t warm_address = 0;
+        {
+            IntegerScratchHandle h;
+            h.get() = value;
+            warm_address = reinterpret_cast<std::uintptr_t>(mpz_limbs_read(h.get().get_mpz()));
+            GNFS_TEST_CHECK(h.get() == value);
+        }
+        for (int iteration = 0; iteration < 32; ++iteration) {
+            IntegerScratchHandle h;
+            GNFS_TEST_CHECK(h.get().is_zero());
+            GNFS_TEST_CHECK(reinterpret_cast<std::uintptr_t>(mpz_limbs_read(h.get().get_mpz())) ==
+                            warm_address);
+            h.get() = value;
+            GNFS_TEST_CHECK(h.get() == value);
+            GNFS_TEST_CHECK(reinterpret_cast<std::uintptr_t>(mpz_limbs_read(h.get().get_mpz())) ==
+                            warm_address);
+            h.get().negate();
+        }
+        GNFS_TEST_CHECK(integer_scratch_pool_size() == 1);
+    }
+    clear_thread_pool();
+    unsetenv("GNFS_INTEGER_SCRATCH_POOL");
+    integer_scratch_pool_reset_env_cache_for_testing();
+    std::cout << "  Warm buffer reuse: PASS (four sizes, zero before every refill)" << std::endl;
 }
 
 static void test_disabled_no_pool_growth() {
@@ -198,13 +229,13 @@ static void test_disabled_no_pool_growth() {
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
     integer_scratch_pool_reset_env_cache_for_testing();
     clear_thread_pool();
-    assert(integer_scratch_pool_size() == 0);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 0);
 
     for (int i = 0; i < 1000; ++i) {
         IntegerScratchHandle h;
-        h.get() = Integer(static_cast<int64_t>(i));
+        h.get() = static_cast<int64_t>(i);
     }
-    assert(integer_scratch_pool_size() == 0);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 0);
 
     std::cout << "  disabled no growth: PASS (1000 borrows OFF -> pool size 0)" << std::endl;
 }
@@ -231,7 +262,7 @@ static void test_bit_for_bit_parity() {
     off_outputs.reserve(values.size());
     for (int64_t v : values) {
         IntegerScratchHandle h;
-        h.get() = Integer(v);
+        h.get() = v;
         // Round-trip a non-trivial computation to make sure value
         // behaves identically in pooled state.
         Integer doubled = h.get() + h.get();
@@ -247,17 +278,17 @@ static void test_bit_for_bit_parity() {
     on_outputs.reserve(values.size());
     for (int64_t v : values) {
         IntegerScratchHandle h;
-        h.get() = Integer(v);
+        h.get() = v;
         Integer doubled = h.get() + h.get();
         Integer plus_one = doubled + Integer(static_cast<int64_t>(1));
         on_outputs.push_back(plus_one.to_string());
     }
 
     // Strict equality element-by-element (same input sequence => same output)
-    assert(off_outputs.size() == on_outputs.size());
+    GNFS_TEST_CHECK(off_outputs.size() == on_outputs.size());
     for (std::size_t i = 0; i < off_outputs.size(); ++i) {
-        assert(off_outputs[i] == on_outputs[i]
-               && "OFF vs ON path produced different result for some index");
+        GNFS_TEST_CHECK(off_outputs[i] == on_outputs[i] &&
+                        "OFF vs ON path produced different result for some index");
     }
 
     // Also check as multisets (order-insensitive sanity).
@@ -265,7 +296,7 @@ static void test_bit_for_bit_parity() {
     auto on_sorted = on_outputs;
     std::sort(off_sorted.begin(), off_sorted.end());
     std::sort(on_sorted.begin(), on_sorted.end());
-    assert(off_sorted == on_sorted);
+    GNFS_TEST_CHECK(off_sorted == on_sorted);
 
     clear_thread_pool();
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
@@ -291,18 +322,18 @@ static void test_clear_pool() {
             handles.back().get() = Integer(static_cast<int64_t>(i));
         }
     }
-    assert(integer_scratch_pool_size() == 5);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 5);
 
     integer_scratch_pool_clear();
-    assert(integer_scratch_pool_size() == 0);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 0);
 
     // Verify the pool still functions after clear
     {
         IntegerScratchHandle h;
-        assert(h.get().is_zero());
+        GNFS_TEST_CHECK(h.get().is_zero());
         h.get() = Integer(static_cast<int64_t>(123));
     }
-    assert(integer_scratch_pool_size() == 1);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 1);
 
     clear_thread_pool();
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
@@ -316,17 +347,17 @@ static void test_reset_env_cache() {
     // Establish initial cached value as OFF
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
     integer_scratch_pool_reset_env_cache_for_testing();
-    assert(integer_scratch_pool_enabled() == false);
+    GNFS_TEST_CHECK(integer_scratch_pool_enabled() == false);
 
     // Change env and reset cache; should now read ON
     setenv("GNFS_INTEGER_SCRATCH_POOL", "1", 1);
     integer_scratch_pool_reset_env_cache_for_testing();
-    assert(integer_scratch_pool_enabled() == true);
+    GNFS_TEST_CHECK(integer_scratch_pool_enabled() == true);
 
     // Toggle again
     setenv("GNFS_INTEGER_SCRATCH_POOL", "0", 1);
     integer_scratch_pool_reset_env_cache_for_testing();
-    assert(integer_scratch_pool_enabled() == false);
+    GNFS_TEST_CHECK(integer_scratch_pool_enabled() == false);
 
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
     integer_scratch_pool_reset_env_cache_for_testing();
@@ -345,10 +376,10 @@ static void test_move_semantics() {
         a.get() = Integer(static_cast<int64_t>(7));
         IntegerScratchHandle b(std::move(a));
         // b owns the Integer now
-        assert(b.get() == Integer(static_cast<int64_t>(7)));
+        GNFS_TEST_CHECK(b.get() == Integer(static_cast<int64_t>(7)));
         // After scope exit, only b's destructor pushes to pool (1 entry).
     }
-    assert(integer_scratch_pool_size() == 1);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 1);
     clear_thread_pool();
 
     // Move assignment: lhs releases old, adopts new
@@ -358,17 +389,17 @@ static void test_move_semantics() {
         IntegerScratchHandle b;
         b.get() = Integer(static_cast<int64_t>(20));
         // Both alive: pool size 0
-        assert(integer_scratch_pool_size() == 0);
+        GNFS_TEST_CHECK(integer_scratch_pool_size() == 0);
 
         // Move a -> b: b's old Integer is pushed to pool, b adopts a's
         b = std::move(a);
-        assert(b.get() == Integer(static_cast<int64_t>(10)));
+        GNFS_TEST_CHECK(b.get() == Integer(static_cast<int64_t>(10)));
         // b's old (value 20) is now in the pool
-        assert(integer_scratch_pool_size() == 1);
+        GNFS_TEST_CHECK(integer_scratch_pool_size() == 1);
     }
     // After scope: b's destructor pushes (one entry); a's dtor sees
     // returned_=true and skips push. Pool grows from 1 to 2.
-    assert(integer_scratch_pool_size() == 2);
+    GNFS_TEST_CHECK(integer_scratch_pool_size() == 2);
 
     clear_thread_pool();
     unsetenv("GNFS_INTEGER_SCRATCH_POOL");
@@ -390,7 +421,7 @@ static void perf_info_borrow_loop() {
     int64_t accum_off = 0;
     for (int i = 0; i < N; ++i) {
         IntegerScratchHandle h;
-        h.get() = Integer(static_cast<int64_t>(i));
+        h.get() = static_cast<int64_t>(i);
         accum_off += h.get().to_int64() & 0xFF;
     }
     auto t1 = std::chrono::steady_clock::now();
@@ -405,7 +436,7 @@ static void perf_info_borrow_loop() {
     int64_t accum_on = 0;
     for (int i = 0; i < N; ++i) {
         IntegerScratchHandle h;
-        h.get() = Integer(static_cast<int64_t>(i));
+        h.get() = static_cast<int64_t>(i);
         accum_on += h.get().to_int64() & 0xFF;
     }
     auto t3 = std::chrono::steady_clock::now();
@@ -416,7 +447,7 @@ static void perf_info_borrow_loop() {
     integer_scratch_pool_reset_env_cache_for_testing();
 
     // Sanity check
-    assert(accum_off == accum_on);
+    GNFS_TEST_CHECK(accum_off == accum_on);
     std::cout << "  OFF " << ms_off << " ms, ON " << ms_on << " ms (info only)" << std::endl;
 }
 
@@ -435,7 +466,8 @@ int main() {
     test_borrow_default_off_returns_fresh();
     test_borrow_enabled_returns_zero_initially();
     test_return_to_pool();
-    test_reuse_limb_buffer();
+    test_repeated_borrow_count();
+    test_warm_buffer_survives_reset();
     test_disabled_no_pool_growth();
 
     // Correctness (1)
