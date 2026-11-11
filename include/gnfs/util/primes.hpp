@@ -64,7 +64,7 @@ namespace detail {
 [[nodiscard]] inline uint64_t pow_mod_u64(uint64_t base, uint64_t exp, uint64_t mod) {
     if (mod == 0)
         return 0;
-    uint64_t result = 1;
+    uint64_t result = 1 % mod;
     base %= mod;
     while (exp > 0) {
         if (exp & 1)

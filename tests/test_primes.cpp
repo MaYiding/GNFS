@@ -91,6 +91,10 @@ void test_pow_mod_u64() {
     // of evaluating base %= 0.
     GNFS_TEST_CHECK(pow_mod_u64(5, 10, 0) == 0);
 
+    // Modulo one has only the zero residue, including the exponent-zero case.
+    GNFS_TEST_CHECK(pow_mod_u64(5, 0, 1) == 0);
+    GNFS_TEST_CHECK(pow_mod_u64(5, 10, 1) == 0);
+
     // Carmichael: 561 = 3 * 11 * 17; 2^560 ≡ 1 (mod 561) but 561 composite.
     // We can still compute and verify.
     GNFS_TEST_CHECK(pow_mod_u64(2, 560, 561) == 1);
