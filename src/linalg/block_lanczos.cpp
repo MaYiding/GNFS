@@ -115,8 +115,10 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
     size_t m = matrix.num_rows();
     size_t n = matrix.num_cols();
 
-    if (m == 0 || n == 0)
+    if (m == 0 || max_deps == 0)
         return dependencies;
+    if (n == 0)
+        return detail::zero_column_dependencies(m, max_deps);
 
     PackedGF2Matrix aug(m, m + n);
 
@@ -371,8 +373,11 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
 std::vector<std::vector<bool>> BlockLanczos::find_dependencies(const SparseMatrix& matrix,
                                                                size_t max_deps) {
 
-    if (matrix.num_rows() == 0 || matrix.num_cols() == 0) {
+    if (max_deps == 0 || matrix.num_rows() == 0) {
         return {};
+    }
+    if (matrix.num_cols() == 0) {
+        return detail::zero_column_dependencies(matrix.num_rows(), std::min(max_deps, size_t{64}));
     }
 
     // Ensure all rows sorted before any access — eliminates const_cast UB
