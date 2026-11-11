@@ -2022,6 +2022,11 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(SqrtDebug PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Nguyen hybrid Hensel lift parallel dispatch (GNFS_SQRT_HENSEL_THREADS)
+    add_executable(test_hensel_product_worker_failure tests/test_hensel_product_worker_failure.cpp)
+    target_link_libraries(test_hensel_product_worker_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME HenselProductWorkerFailure COMMAND test_hensel_product_worker_failure)
+    set_tests_properties(HenselProductWorkerFailure PROPERTIES LABELS "fast" TIMEOUT 120)
+
     add_executable(test_hensel_parallel
         tests/test_hensel_parallel.cpp
     )

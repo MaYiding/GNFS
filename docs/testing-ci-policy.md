@@ -141,6 +141,13 @@ Release builds.
 The `MpzMulParallel` instant contract keeps invalid environment-value fallback,
 empty-batch and resolver boundaries, and fixed small-value product checks active
 in Release builds.
+The `HenselProductWorkerFailure` fast contract reaches inner product workers
+through the public square-root API with outer prime parallelism disabled. It
+injects one worker allocation failure, requires propagation to the caller, and
+checks a same-instance retry against a known square modulo 65. Its checks stay
+active in Release. A single-worker host verifies the healthy arithmetic result
+but cannot exercise the worker failure. The `JoiningThread` contract separately
+covers indexed launch failures in the reused joined-worker primitive.
 The `SieveIntegration` fast contract keeps polynomial selection and context
 verification, non-empty special-Q and candidate flow, candidate lattice and
 coprimality invariants, relation classification, and degenerate-region
