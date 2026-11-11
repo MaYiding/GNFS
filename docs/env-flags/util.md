@@ -479,7 +479,7 @@ pattern 多 limb 路径 parity).
 
 ## GMP mpz_mul 批量并行 (GNFS_MPZ_MUL_BATCH_THREADS)
 
-**ENV `GNFS_MPZ_MUL_BATCH_THREADS=N`** (2026-05-23 实施, W15 T5, default 1, range [1, hardware_concurrency * 2]):
+**ENV `GNFS_MPZ_MUL_BATCH_THREADS=N`** (2026-05-23 实施, W15 T5, default 1, range [1, min(hardware_concurrency * 2, INT_MAX)]):
 W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS`, W12 T3 `GNFS_MPZ_INVERT_BATCH_THREADS`,
 W13 T5 `GNFS_MPZ_MOD_BATCH_THREADS` 与 W14 T5 `GNFS_MPZ_GCD_BATCH_THREADS`
 的兄弟 helper, parallel-dispatcher 家族第 12 名成员 (与同波 W15 T3
@@ -499,9 +499,16 @@ GNFS_MPZ_MUL_BATCH_THREADS=8 ./gnfs <N>    # 8 workers
 unset GNFS_MPZ_MUL_BATCH_THREADS           # same as N=1
 ```
 
+解析保留前导空白、可选正号和十进制数字前缀；例如 `"  +12abc"` 按 12 处理。
+未设置、空值、无数字前缀、零或负值均回退到 1。超出 `int` 或
+`unsigned long long` 范围的正值仍钳制到上限，不回绕为负数；超大负值仍回退到 1。
+硬件并发数未知时按 4 计算；上限为 `min(hw * 2, INT_MAX)`。
+解析先使用无符号宽位值，完成上限约束后才转换为 `int`。
+
 **Helper API** (`include/gnfs/util/mpz_mul_parallel.hpp`):
-- `mpz_mul_batch_threads()` — cached `std::once_flag` + `std::atomic<int>`
-  ENV reader, default 1, clamp `[1, hw*2]`
+
+- `mpz_mul_batch_threads()` — 使用 `std::atomic<int>` 缓存解析结果，
+  默认 1，上限为 `min(hw * 2, INT_MAX)`
 - `resolve_mpz_mul_batch_threads(batch_size)` — 返回
   `min(threads, batch_size)`, empty batch (size==0) 返回 0
 - `parallel_mpz_mul(a_values, b_values, results)` — 主入口, void return
@@ -585,16 +592,17 @@ failure case.
 
 **集成点** (2026-05-23, W15 T5):
 - `include/gnfs/util/mpz_mul_parallel.hpp` — `mpz_mul_batch_threads()` env
-  reader with `std::once_flag` cache + `parallel_mpz_mul(a_values, b_values,
+  reader with atomic cache + `parallel_mpz_mul(a_values, b_values,
   results)` dispatcher + `resolve_mpz_mul_batch_threads(batch_size)` helper +
   `mpz_mul_batch_threads_reset_env_cache_for_testing()` test hook
-- `tests/test_mpz_mul_parallel.cpp` — 16 个测试 (5 env parsing 含 leading
+- `tests/test_mpz_mul_parallel.cpp` — Release 下仍执行的超大正负值、空白、正号和
+  数字前缀检查；另有 env parsing 含 leading
   whitespace 与 "12abc" partial parse / empty / single pair N=1 / single
   pair N=4 no-stall / N=1 vs scalar mpz_mul 5 boundary
   (0*0=0 / a*0=0 / 0*b=0 / 12*18=216 / negative * positive → negative
   product 符号传播) / N=1 vs N=4 parity / N=1 vs N=hw parity /
   P*Q pattern 5 cases 100-bit primes 多 limb / mismatched span size
   throws invalid_argument / results undersized defensive clamp /
-  reset env cache hook / 1000-pair 200-bit perf info)
+  reset env cache hook / 1000-pair 200-bit perf info
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   util 模块
