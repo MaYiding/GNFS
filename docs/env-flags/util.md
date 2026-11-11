@@ -160,50 +160,53 @@ W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS` 的姐妹 helper. GMP `mpz_invert(result,
 base, modulus)` (modular inverse `base^{-1} mod modulus`) 在多个独立 base
 之间相互独立 (embarrassingly parallel). 每次 `mpz_invert` 调用是
 `(base, modulus)` 的 deterministic function, 满足 GMP per-call disjoint-
-operands thread-safety 契约 (每个 worker 写自己 disjoint 的 result slot,
-共享 `modulus` 仅 read). N=1 (默认) 走 sequential per-base 循环, 不创建
-ThreadPool, 零开销保留原行为. N>=2 时把 K 个 base dispatch 到大小为
+operands thread-safety 契约。每个 worker 写入自己的候选值，成功后提交结果。
+所有 worker 只读同一份模数快照。N=1（默认）顺序处理，不创建
+ThreadPool。N>=2 时把 K 个 base dispatch 到大小为
 min(N, K) 的 ThreadPool, base 之间靠 future 同步收口.
 
 ```bash
-GNFS_MPZ_INVERT_BATCH_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
+GNFS_MPZ_INVERT_BATCH_THREADS=1 ./gnfs <N>    # default sequential, no ThreadPool
 GNFS_MPZ_INVERT_BATCH_THREADS=4 ./gnfs <N>    # 4 workers for CZ root finding / ECM batch inv / Schirokauer normalisation
 GNFS_MPZ_INVERT_BATCH_THREADS=8 ./gnfs <N>    # 8 workers
 unset GNFS_MPZ_INVERT_BATCH_THREADS           # same as N=1
 ```
 
-**与 W11 T3 powm dispatcher 的关键差异 — Failure semantics**:
-`mpz_invert(out, base, modulus)` 在 `gcd(base, modulus) != 1` 时返回 0
-(no inverse exists in (Z/modulusZ)^*). 这不是 "永远不发生" 的前置条件 —
-GNFS pipeline 真实路径 (Cantor-Zassenhaus root finding 跨系数, ECM
-Montgomery batch inversion 的 prefix product collision, Schirokauer base
-normalisation, lattice basis Bezout) 都会真实触发此分支, 是 standard "lucky
-factor" 提取信号. helper 通过返回 `std::vector<bool> success` 暴露这个分支:
-- `success[i] == true`: `results[i]` 是合法 inverse mod modulus
-- `success[i] == false`: `gcd(bases[i], modulus) > 1`, `results[i]` *不被
-  写入* (caller 预填充的值保持原样). caller 可通过 `gcd(bases[i], modulus)`
-  提取 nontrivial factor
+**输入域：** 空 `bases` 返回空成功标记，保留 `results`，不创建线程池；
+即使模数为零，空批次也保持此行为。非空批次遇到零模数时抛出
+`std::domain_error`，校验发生在输出扩容、写入和线程派发之前。
+非零模数按其绝对值求逆，因此负模数有效；模数 `1` 或 `-1` 的结果为零。
+标量入口 `gnfs::core::mod_inverse` 同样拒绝零模数；对于非零模数，
+仍以零值表示逆元不存在，或表示单位模数下的零余数。
 
-W11 T3 `parallel_mpz_powm` 没有这个 success vector — `mpz_powm` 不会失败
-(只要 modulus > 0, exp 任意), 所有 slot 永远 valid. 本 helper 必须额外
-return path, 是 "result type" 的真实差异 (W11 T3 void return vs W12 T3
-`std::vector<bool>`).
+**存储与别名：** 非空批次在扩容或写入输出前复制一次模数。
+`modulus` 可以引用 `results` 的元素；所有计算都使用调用时的模数值。
+`bases` 和 `results` 也可以是同一向量，各项在提交前先读取自己的 base。
+函数不复制整个输入或输出向量，不修改超出输入长度的尾部槽位。
 
-**并行模型**:
-- Outer = `parallel_mpz_invert(bases, modulus, results)` over n bases
-- Inner = `gnfs::util::ThreadPool` 大小为 min(N, bases.size()), 每 task 调
-  `mpz_invert(results[i], bases[i], modulus)` 写到 disjoint `results[i]` slot
-- 内部 GMP modular inverse 算法 bit-identical (helper 仅改变外层 dispatch,
-  不触碰 `mpz_invert` 内核或 `gnfs::core::modinv` wrapper)
-- 共享 `modulus` 仅由 worker read, 满足 "concurrent read 是安全的, 仅
-  concurrent write 通过 alias `mpz_t` 才需要 disjoint operands" 的 GMP
-  线程安全 invariant
-- 空 batch (n==0) / 单 base (n==1) 都走 sequential 短路, 不创建 pool
-- per-task success bit 经 `std::vector<char>` 暂存 (一字节一 slot,
-  disjoint), 收口后再 copy 进 `std::vector<bool>`. 这绕开了
-  `std::vector<bool>` packed bit 的并发写 race
-- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
-  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+**失败语义：** `mpz_invert` 在逆元存在时返回非零值，否则返回零。
+GMP 不保证失败后的输出内容。本 wrapper 先计算局部 `candidate`，
+仅在 GMP 返回非零时，通过移动赋值提交到对应的 `results[i]`。
+返回的 `std::vector<bool>` 描述每项是否提交成功：
+
+- `success[i] == true`：`results[i]` 是原模数绝对值下的非负逆元。
+- `success[i] == false`：保留已有槽位的原值；扩容新增的槽位保持零值。
+
+失败槽位保留是 wrapper 的提交规则，不依赖 GMP 失败时是否写入候选值。
+原位调用后若还需要计算因子，调用方应保留所需的原始输入和模数。
+`parallel_mpz_powm` 返回 `void`；求逆接口额外返回每项的成功标记。
+
+**并行模型：**
+
+- 默认顺序路径复用一个局部候选值；单项输入也走此路径。
+- 并行路径使用大小为 `min(N, bases.size())` 的 `ThreadPool`。
+  每项任务独占候选值，成功后只提交自己的输出槽位。
+- worker 共享只读模数快照，成功标记先写入各自的 `std::vector<char>` 槽位。
+  收齐任务后，再单线程写入 `std::vector<bool>`，避免位打包造成的数据竞争。
+- 模数快照、字节标记和 future 容器先于线程池构造。
+  如果提交任务时抛异常，线程池先等待已提交任务，再析构这些局部存储。
+- worker 异常会在收齐全部 future 后重新抛出。
+  分配或任务异常不承诺整批回滚，已提交成功的槽位可以保留新值。
 
 **Bit-for-bit guarantee**: 每 base `mpz_invert` 是 pure function of
 `(base, modulus)`, 不依赖 dispatch 顺序. Sequential (N=1) 与 parallel (N>=2)
@@ -214,6 +217,9 @@ modulus N=1 vs N=4 vs N=hw 严格 per-index `mpz_cmp == 0` + success bit
 sequential vs parallel agreement).
 
 **ROI 与定位**:
+- 每个非空批次增加一次模数拷贝。顺序路径复用候选值，
+  并行路径每项任务持有自己的候选值；成功提交使用移动赋值。
+  这些存储成本需在实际调用方测量，不代表分解流水线已经提速。
 - 主要 ROI: 50d+/60d cofactor pipeline 与 Schirokauer maps 的 batch inversion
   hot path 上, modulus 100-300 bit, base wider. K base 并发后 outer wall ~
   T_max_base + tasking overhead, 替代 sum(K) sequential 累计. 对大 modulus
@@ -234,8 +240,7 @@ sequential vs parallel agreement).
   / lattice basis 主路径. 调用方需要自己 batch up 一组 base (典型 a vector
   of per-relation `Integer`) + 共享 `modulus` 后传入 `parallel_mpz_invert`.
   当前主 pipeline 无 wire-in 调用, 是 future-infra.
-- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
-  明确 opt-in 时启用.
+- 默认 N=1 顺序处理；N>=2 才创建线程池。两条路径遵守相同的提交规则。
 
 **集成点** (2026-05-22, W12 T3):
 - `include/gnfs/util/mpz_invert_parallel.hpp` — `mpz_invert_batch_threads()`
@@ -243,11 +248,10 @@ sequential vs parallel agreement).
   modulus, results) -> std::vector<bool>` dispatcher +
   `resolve_mpz_invert_batch_threads(batch_size)` helper +
   `mpz_invert_batch_threads_reset_env_cache_for_testing()` test hook
-- `tests/test_mpz_invert_parallel.cpp` — 14 个测试 (5 env parsing 含 "12abc"
-  partial parse / empty / single base N=1 / single base N=4 no-stall / N=1
-  vs scalar mpz_invert reference / N=1 vs N=4 parity 200-bit prime modulus /
-  N=1 vs N=hw parity / composite modulus failure case 4-success/6-fail seq
-  vs par agreement / cache reset hook / perf info)
+- `tests/test_mpz_invert_parallel.cpp` 使用 `GNFS_TEST_CHECK`，在 Release 中
+  验证环境解析、空批、零模数拒绝与输出保留、负模数和单位模数、
+  顺序与并行求逆一致性。别名回归覆盖模数引用输出、必定扩容、
+  原位与三重别名，以及合数模数下的失败槽位保留。
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   util 模块
 
