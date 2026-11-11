@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
@@ -862,16 +863,28 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
             uint64_t base;
             uint8_t exp;
             if (is_perfect_power(c, base, exp) && exp > 1) {
-                if (is_probable_prime_u64(base)) {
-                    if (base <= large_prime_bound) {
-                        result.type = CofactorClass::PrimePower;
-                        result.factor1 = base;
-                        result.power = exp;
-                        return result;
-                    } else {
-                        result.type = CofactorClass::TooLarge;
-                        return result;
+                for (;;) {
+                    if (is_probable_prime_u64(base)) {
+                        if (base <= large_prime_bound) {
+                            result.type = CofactorClass::PrimePower;
+                            result.factor1 = base;
+                            result.power = exp;
+                            return result;
+                        } else {
+                            result.type = CofactorClass::TooLarge;
+                            return result;
+                        }
                     }
+                    // The first representation can have a composite base:
+                    // 3^12 is found as 729^2, then 27^4, and finally 3^12.
+                    // Keep reducing the base until it is prime or not a power.
+                    uint64_t nested_base;
+                    uint8_t nested_exp;
+                    if (!is_perfect_power(base, nested_base, nested_exp))
+                        break;
+                    base = nested_base;
+                    // A uint64 value with base >= 2 has total exponent <= 63.
+                    exp = static_cast<uint8_t>(exp * nested_exp);
                 }
             }
         }
@@ -1026,6 +1039,28 @@ classify_cofactor_impl_v1(const Integer& cofactor, uint64_t large_prime_bound, b
         }
         result.type = CofactorClass::TooLarge;
         return result;
+    }
+
+    // A residual in the B^2 window can still be a prime power above uint64.
+    // Do not rely on ECM to split it into two primes: p^k with k > 2 can
+    // never satisfy that condition. The uint64 bound limits this branch to
+    // 128 bits, so every possible exponent is representable in result.power.
+    if (cofactor.is_positive() && mpz_perfect_power_p(cofactor.get_mpz()) != 0) {
+        Integer root;
+        const size_t bits = mpz_sizeinbase(cofactor.get_mpz(), 2);
+        for (unsigned long exponent = 2; exponent < bits; ++exponent) {
+            if (mpz_root(root.get_mpz(), cofactor.get_mpz(), exponent) == 0 ||
+                !is_probable_prime(root))
+                continue;
+            if (root.compare(lp_int) > 0) {
+                result.type = CofactorClass::TooLarge;
+                return result;
+            }
+            result.type = CofactorClass::PrimePower;
+            result.factor1 = root.to_uint64();
+            result.power = static_cast<uint8_t>(exponent);
+            return result;
+        }
     }
 
     // 尝试 ECM 分解
