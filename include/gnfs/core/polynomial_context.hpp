@@ -165,50 +165,45 @@ public:
     /// N(a - b*α) = b^d * f(a/b)
     /// 展开形式: N = sum_{i=0}^{d} f_i * a^i * b^{d-i}
     [[nodiscard]] Integer algebraic_norm(int64_t a, uint64_t b) const {
-        // thread_local workspace: hot path in sieve cofactor (~100K calls/sec).
-        // MAX_DEG=8 covers all practical GNFS degrees.
-        static constexpr uint32_t MAX_DEG = 8;
-        thread_local Integer ws_a_power, ws_term;
-        thread_local std::array<Integer, MAX_DEG + 1> ws_b_powers;
-        thread_local std::vector<Integer> ws_b_powers_heap;
+        if (f_coeffs_.empty())
+            return Integer{};
 
-        Integer* b_powers;
-        if (degree_ <= MAX_DEG) {
-            b_powers = ws_b_powers.data();
-        } else {
-            ws_b_powers_heap.resize(degree_ + 1);
-            b_powers = ws_b_powers_heap.data();
-        }
+        // Trailing zeros remain in f_coeffs_; seed from the effective degree.
+        // The returned value owns its storage, independently of the TLS scratch.
+        Integer result(f_coeffs_[degree_]);
+        if (degree_ == 0)
+            return result;
 
-        // GMP's *_ui APIs accept unsigned long, which is only 32 bits on
-        // Windows LLP64.  Keep the full uint64_t operand for wide b values.
-        const bool b_fits_ulong = b <= std::numeric_limits<unsigned long>::max();
-        Integer b_value;
-        if (!b_fits_ulong) {
+        thread_local Integer b_power;
+        b_power = int64_t(1);
+
+        // GMP's signed/unsigned long operands are only 32 bits on Windows
+        // LLP64. Import each wide coordinate once, outside the recurrence.
+        const bool a_fits_long =
+            a >= (std::numeric_limits<long>::min)() && a <= (std::numeric_limits<long>::max)();
+        const bool b_fits_ulong = b <= (std::numeric_limits<unsigned long>::max)();
+        Integer a_value, b_value;
+        if (!a_fits_long)
+            a_value = a;
+        if (!b_fits_ulong)
             b_value = b;
-        }
 
-        Integer result; // return value — must be independent (thread_local can't escape)
-        ws_a_power = int64_t(1);
-        b_powers[0] = int64_t(1);
-        for (uint32_t i = 1; i <= degree_; ++i) {
+        // Homogeneous Horner: B <- B*b; R <- R*a + f_{i-1}*B.
+        // This evaluates b^d*f(a/b), including b=0, without division or
+        // sign alternation for the a - b*alpha convention.
+        for (uint32_t i = degree_; i > 0; --i) {
             if (b_fits_ulong) {
-                mpz_mul_ui(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(),
-                           static_cast<unsigned long>(b));
+                mpz_mul_ui(b_power.get_mpz(), b_power.get_mpz(), static_cast<unsigned long>(b));
             } else {
-                mpz_mul(b_powers[i].get_mpz(), b_powers[i - 1].get_mpz(), b_value.get_mpz());
+                mpz_mul(b_power.get_mpz(), b_power.get_mpz(), b_value.get_mpz());
             }
-        }
 
-        // term = a^i * b^{d-i}, then result += f_i * term via mpz_addmul (fused FMA)
-        // Note: No sign alternation for N(a - bα) = b^d * f(a/b)
-        for (uint32_t i = 0; i <= degree_; ++i) {
-            mpz_mul(ws_term.get_mpz(), ws_a_power.get_mpz(), b_powers[degree_ - i].get_mpz());
-            mpz_addmul(result.get_mpz(), f_coeffs_[i].get_mpz(), ws_term.get_mpz());
-
-            if (i < degree_) {
-                ws_a_power *= a;
+            if (a_fits_long) {
+                mpz_mul_si(result.get_mpz(), result.get_mpz(), static_cast<long>(a));
+            } else {
+                mpz_mul(result.get_mpz(), result.get_mpz(), a_value.get_mpz());
             }
+            mpz_addmul(result.get_mpz(), f_coeffs_[i - 1].get_mpz(), b_power.get_mpz());
         }
 
         return result;
