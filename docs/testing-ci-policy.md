@@ -101,6 +101,10 @@ be valid and preserves bit-for-bit results across memory, mmap, and mmap+zip
 storage. Its trace assertions prove that neither on-disk route fell back to the
 scalar solver and that compressed scratch data was reopened, copied, and
 removed.
+The `LinearAlgebra` contract keeps Schirokauer Hensel lifts active in Release
+at small and large accepted moduli, including `2^62` and `5^27`. Exact Integer
+convolution checks the lifted factors independently, and public-map tests cover
+odd-prime configurations separately from the GF(2) matrix prime policy.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,
