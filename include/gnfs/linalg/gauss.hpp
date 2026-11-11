@@ -41,7 +41,8 @@ public:
         size_t num_rows = matrix.num_rows();
         size_t num_cols = matrix.num_cols();
 
-        if (num_rows == 0 || num_cols == 0) {
+        // With no rows, all columns are free right-kernel coordinates.
+        if (num_cols == 0) {
             return result;
         }
 

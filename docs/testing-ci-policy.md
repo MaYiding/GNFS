@@ -151,6 +151,10 @@ scoped ownership, and stopwatch restart checks active in Release builds; its
 `noexcept` contract remains compile-time checked.
 The `MpzPowmParallel` instant contract keeps invalid environment-value fallback
 and empty-batch return-path checks active in Release builds.
+The `MpzInvertParallel` instant contract keeps environment parsing, inverse
+values, success flags, and zero-modulus rejection active in Release builds.
+An empty batch leaves outputs unchanged even with a zero modulus; a nonempty
+batch rejects zero before output resizing or dispatch.
 The `MpzModParallel` instant contract keeps invalid environment-value fallback,
 empty-batch return paths, resolver boundaries, and known modular residues active
 in Release builds.

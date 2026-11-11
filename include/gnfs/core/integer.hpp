@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <gmp.h>
 #include <iosfwd>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 
@@ -245,9 +246,13 @@ Integer pow(const Integer& base, uint32_t exp);
 /// Return floor(sqrt(n)). Throws std::domain_error if n is negative.
 Integer sqrt(const Integer& n);
 
-/// 计算 a 模 m 的逆元 (a^{-1} mod m)
-/// 如果逆元不存在返回 0
+/// Return the inverse of a modulo |m| as a nonnegative residue, or zero if
+/// no inverse exists. Unit moduli also return zero. Throws std::domain_error
+/// when m is zero.
 inline Integer mod_inverse(const Integer& a, const Integer& m) {
+    if (m.is_zero()) {
+        throw std::domain_error("Integer modular inverse with zero modulus");
+    }
     Integer result;
     int ok = mpz_invert(result.get_mpz(), a.get_mpz(), m.get_mpz());
     if (!ok)

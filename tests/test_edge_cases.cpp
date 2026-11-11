@@ -588,13 +588,16 @@ void test_block_lanczos_empty_matrix() {
 }
 
 void test_block_lanczos_zero_cols() {
-    std::cout << "Testing BlockLanczos on matrix with 0 cols → no deps..." << std::endl;
+    std::cout << "Testing BlockLanczos on matrix with 0 cols → bounded deps..." << std::endl;
 
     SparseMatrix m(3, 0);
     BlockLanczos solver;
     auto deps = solver.find_dependencies(m, 1);
-    // 0 cols → early return, no dependencies
-    assert(deps.empty());
+    // No column constrains the left kernel; the caller requested one vector.
+    GNFS_TEST_CHECK(deps.size() == 1);
+    GNFS_TEST_CHECK(deps.front().size() == 3);
+    GNFS_TEST_CHECK(deps.front()[0]);
+    GNFS_TEST_CHECK(!deps.front()[1] && !deps.front()[2]);
 
     std::cout << "  PASS" << std::endl;
 }
