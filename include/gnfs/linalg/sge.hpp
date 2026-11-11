@@ -145,8 +145,16 @@ public:
         result.original_rows = n_rows;
         result.original_cols = n_cols;
 
-        if (n_rows == 0 || n_cols == 0) {
+        if (n_rows == 0) {
             result.reduced_matrix = SparseMatrix(0, 0);
+            return result;
+        }
+        if (n_cols == 0) {
+            result.reduced_matrix = SparseMatrix(n_rows, 0);
+            result.row_composition.resize(n_rows);
+            for (size_t row = 0; row < n_rows; ++row) {
+                result.row_composition[row] = {row};
+            }
             return result;
         }
 

@@ -461,8 +461,10 @@ std::vector<std::vector<bool>> BlockWiedemann::find_dependencies(const SparseMat
 
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
-    if (m == 0 || n == 0)
+    if (m == 0)
         return {};
+    if (n == 0)
+        return detail::zero_column_dependencies(m, max_deps);
 
     // BACKLOG #80 step 7: thin matrix (m<n) over GF(2) requires a different
     // operator (B' = M^T·M) than the standard B = M·M^T, because over GF(2)
@@ -1530,8 +1532,10 @@ static std::vector<std::vector<bool>> find_dependencies_view_impl(const MV& matr
 
     const size_t m = matrix.num_rows();
     const size_t n = matrix.num_cols();
-    if (m == 0 || n == 0)
+    if (m == 0)
         return {};
+    if (n == 0)
+        return detail::zero_column_dependencies(m, max_deps);
 
     const bool is_thin = (m < n);
     const uint32_t num_streams = bw_num_streams();
@@ -1655,8 +1659,14 @@ find_dependencies_view_seeded_impl(const MV& matrix, size_t max_deps, uint64_t s
                                           : detail::SpmvMetalPolicy::disabled;
     }
 
-    if (matrix.num_rows() == 0 || matrix.num_cols() == 0)
+    if (matrix.num_rows() == 0)
         return {};
+    if (matrix.num_cols() == 0) {
+        auto dependencies = detail::zero_column_dependencies(matrix.num_rows(), max_deps);
+        // Match the lexicographic ordering used after seeded retry merging.
+        std::reverse(dependencies.begin(), dependencies.end());
+        return dependencies;
+    }
 
     const bool is_thin = matrix.num_rows() < matrix.num_cols();
     std::vector<std::vector<bool>> merged;

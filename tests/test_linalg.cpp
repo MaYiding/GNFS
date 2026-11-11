@@ -16,6 +16,7 @@
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/sqrt/number_field.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -523,6 +524,40 @@ void test_gaussian_free_columns_unique() {
     GNFS_TEST_CHECK(!result.null_space[0].test(3));
 
     std::cout << "  Gaussian free-column uniqueness: PASSED" << std::endl;
+}
+
+// A zero-row matrix has no right-kernel constraints, whereas a zero-column
+// matrix has no right-kernel coordinates. These are different empty shapes.
+void test_gaussian_zero_dimensions() {
+    for (size_t budget : {size_t{0}, size_t{1}, size_t{3}, size_t{8}}) {
+        GaussianConfig config;
+        config.max_null_vectors = budget;
+        SparseMatrix matrix(0, 3);
+        const auto result = GaussianEliminator(config).eliminate(matrix);
+        GNFS_TEST_CHECK(result.rank == 0);
+        GNFS_TEST_CHECK(result.pivot_cols.empty());
+        GNFS_TEST_CHECK(result.free_cols == std::vector<size_t>({0, 1, 2}));
+        GNFS_TEST_CHECK(result.null_space.size() == std::min(budget, size_t{3}));
+        for (size_t i = 0; i < result.null_space.size(); ++i) {
+            GNFS_TEST_CHECK(result.null_space[i].size() == 3);
+            for (size_t col = 0; col < 3; ++col) {
+                GNFS_TEST_CHECK(result.null_space[i].test(col) == (i == col));
+            }
+        }
+    }
+    SparseMatrix no_columns(3, 0);
+    const auto result = GaussianEliminator().eliminate(no_columns);
+    GNFS_TEST_CHECK(result.rank == 0);
+    GNFS_TEST_CHECK(result.free_cols.empty());
+    GNFS_TEST_CHECK(result.null_space.empty());
+
+    GaussianConfig config;
+    config.compute_null_space = false;
+    SparseMatrix no_rows(0, 3);
+    const auto rank_only = GaussianEliminator(config).eliminate(no_rows);
+    GNFS_TEST_CHECK(rank_only.free_cols.size() == 3);
+    GNFS_TEST_CHECK(rank_only.null_space.empty());
+    std::cout << "  Gaussian zero dimensions: PASSED" << std::endl;
 }
 
 // Test matrix builder with relations
@@ -1935,6 +1970,105 @@ void test_sge_alternating_cascade() {
     std::cout << "  PASSED" << std::endl;
 }
 
+void test_zero_column_dependencies() {
+    BlockLanczos solver;
+    GNFS_TEST_CHECK(solver.find_dependencies(SparseMatrix(0, 0)).empty());
+    GNFS_TEST_CHECK(solver.find_dependencies(SparseMatrix(0, 3)).empty());
+    const SparseMatrix matrix(70, 0);
+    for (size_t budget : {size_t{0}, size_t{1}, size_t{3}, size_t{80}}) {
+        const auto dependencies = solver.find_dependencies(matrix, budget);
+        GNFS_TEST_CHECK(dependencies.size() == std::min(budget, size_t{64}));
+        for (size_t i = 0; i < dependencies.size(); ++i) {
+            GNFS_TEST_CHECK(dependencies[i].size() == matrix.num_rows());
+            for (size_t row = 0; row < matrix.num_rows(); ++row) {
+                GNFS_TEST_CHECK(dependencies[i][row] == (i == row));
+            }
+        }
+    }
+    std::cout << "  Zero-column left kernel: PASSED" << std::endl;
+}
+
+void test_sge_zero_column_dependencies() {
+    const auto verify = [](const SparseMatrix& matrix, size_t expected_rows) {
+        const auto reduced = SGE::preprocess(matrix);
+        GNFS_TEST_CHECK(reduced.original_rows == matrix.num_rows());
+        GNFS_TEST_CHECK(reduced.original_cols == matrix.num_cols());
+        GNFS_TEST_CHECK(reduced.reduced_matrix.num_rows() == expected_rows);
+        GNFS_TEST_CHECK(reduced.reduced_matrix.num_cols() == 0);
+        GNFS_TEST_CHECK(reduced.row_composition.size() == expected_rows);
+        BlockLanczos solver;
+        for (size_t budget : {size_t{0}, size_t{1}, size_t{2}, size_t{10}}) {
+            const auto dependencies = solver.find_dependencies(reduced.reduced_matrix, budget);
+            GNFS_TEST_CHECK(dependencies.size() == std::min(expected_rows, budget));
+            for (const auto& dependency : reduced.expand_dependencies(dependencies)) {
+                GNFS_TEST_CHECK(dependency.size() == matrix.num_rows());
+                GNFS_TEST_CHECK(std::any_of(dependency.begin(), dependency.end(),
+                                            [](bool bit) { return bit; }));
+                for (size_t col = 0; col < matrix.num_cols(); ++col) {
+                    bool parity = false;
+                    for (size_t row = 0; row < matrix.num_rows(); ++row) {
+                        parity ^= dependency[row] && matrix.test(row, col);
+                    }
+                    GNFS_TEST_CHECK(!parity);
+                }
+            }
+        }
+
+        // Enumerate the original kernel independently and compare it with the
+        // full span of the expanded basis, including the zero vector.
+        std::vector<size_t> kernel;
+        for (size_t mask = 0; mask < (size_t{1} << matrix.num_rows()); ++mask) {
+            bool valid = true;
+            for (size_t col = 0; col < matrix.num_cols(); ++col) {
+                bool parity = false;
+                for (size_t row = 0; row < matrix.num_rows(); ++row) {
+                    parity ^= ((mask >> row) & 1U) && matrix.test(row, col);
+                }
+                valid = valid && !parity;
+            }
+            if (valid)
+                kernel.push_back(mask);
+        }
+        std::vector<size_t> span{0};
+        for (const auto& dependency :
+             reduced.expand_dependencies(solver.find_dependencies(reduced.reduced_matrix))) {
+            size_t mask = 0;
+            for (size_t row = 0; row < matrix.num_rows(); ++row) {
+                if (dependency[row])
+                    mask |= size_t{1} << row;
+            }
+            const size_t old_size = span.size();
+            for (size_t i = 0; i < old_size; ++i)
+                span.push_back(span[i] ^ mask);
+        }
+        std::sort(span.begin(), span.end());
+        GNFS_TEST_CHECK(span == kernel);
+    };
+
+    SparseMatrix pair(2, 1);
+    pair.set(0, 0);
+    pair.set(1, 0);
+    verify(pair, 1);
+
+    SparseMatrix pairs(4, 2);
+    pairs.set(0, 0);
+    pairs.set(1, 0);
+    pairs.set(2, 1);
+    pairs.set(3, 1);
+    verify(pairs, 2);
+
+    SparseMatrix cycle(3, 3);
+    cycle.set(0, 0);
+    cycle.set(0, 1);
+    cycle.set(1, 1);
+    cycle.set(1, 2);
+    cycle.set(2, 0);
+    cycle.set(2, 2);
+    verify(cycle, 1);
+    verify(SparseMatrix(3, 0), 3);
+    std::cout << "  SGE zero-column dependency expansion: PASSED" << std::endl;
+}
+
 void test_sge_edge_cases() {
     std::cout << "Testing SGE edge cases..." << std::endl;
 
@@ -1973,6 +2107,8 @@ int main() {
     std::cout << "=== Linear Algebra Tests ===" << std::endl;
     std::cout << std::endl;
 
+    test_sge_zero_column_dependencies();
+    test_zero_column_dependencies();
     test_sparse_row();
     test_sparse_row_constructor_parity();
     test_sparse_row_xor();
@@ -1987,6 +2123,7 @@ int main() {
     test_gaussian_simple();
     test_gaussian_larger();
     test_gaussian_free_columns_unique();
+    test_gaussian_zero_dimensions();
     test_matrix_builder();
     test_matrix_builder_sign_wide_b();
     test_class_group_preserves_square_dependencies();
