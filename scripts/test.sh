@@ -286,6 +286,7 @@ ALL_TEST_BINARIES=(
     test_sqrt
     test_sqrt_debug
     test_hensel_parallel
+    test_hensel_product_worker_failure
     test_couveignes_large_class_group
     test_couveignes_parallel
     test_murphy
@@ -507,7 +508,7 @@ MODULE_TESTS=(
     relation       "test_relation_corpus_sha256 test_relation_collector test_relation_corpus test_relation_sink test_ooc_store_integrity test_ooc_durable_handoff test_ooc_cleanup_transaction test_filter test_lp_key_contract test_relation_identity test_relation_reduction_engine test_structured_filter test_structured_filter_policy test_structured_tree_basis test_structured_tree_basis_property test_structured_budgeted_driver test_structured_conflict_batch test_structured_parallel_prepare test_structured_batch_commit test_structured_parallel_driver test_structured_parallel_failures test_structured_incidence_builder test_structured_materialization test_filter_radix_sort test_lp_bloom test_lp_key_hash test_merger_parallel test_clique_merger test_clique_merger_50d_synthetic test_3lp_merge test_ooc_relations test_ooc_policy test_v0_bfs_policy test_integration test_relation_pool_integration"
     linalg         "test_linalg test_sge_batch_pivots test_block_wiedemann test_bw_rank_est test_matrix_diagnostics test_sge_streaming test_mmap_csr test_krylov_sequence_mmap test_bw_krylov_mmap_integration test_schirokauer_deg4 test_schirokauer_fastpoly test_schirokauer_strip test_schirokauer_parallel test_edge_cases test_integration test_matrix_view_concept test_save_sparse_as_mmap test_linalg_mmap_policy test_bw_krylov_parallel test_metal_spmv test_spmv_simd test_transpose_blocked test_popcount_simd test_and_popcnt_simd test_xor_words_simd test_and_words_simd test_xor_popcnt_simd test_row_popcount_simd test_krylov_compress test_krylov_compression test_bl_checkpoint test_bl_checkpoint_stream_failure test_bl_resume_integration test_linalg_progress"
     integration    "test_integration"
-    sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_class_group test_couveignes_large_class_group test_couveignes_parallel"
+    sqrt           "test_sqrt test_sqrt_debug test_hensel_parallel test_hensel_product_worker_failure test_class_group test_couveignes_large_class_group test_couveignes_parallel"
     api            "test_api test_i18n test_method_selection test_event_stream test_cli_event_stream test_relation_reduction_engine"
     siqs           "test_siqs test_siqs_budget_admission test_siqs_multiplier_coordinator test_siqs_2lp test_siqs_live_sieve_capture test_siqs_2lp_graph test_siqs_2lp_materializer test_siqs_2lp_adapter test_siqs_2lp_congruence test_siqs_post_merge_row test_siqs_post_merge_row_wire test_siqs_shadow_assembly test_siqs_shadow_linear_algebra test_siqs_shadow_sparse_backend test_siqs_shadow_proof_runner test_siqs_shadow_proof_observe test_siqs_shadow_proof_observe_record_codec test_siqs_runtime_facts test_siqs_shadow_proof_rss_probe_execution_identity test_siqs_shadow_observe_rss_holdouts test_siqs_shadow_proof_rss_gate test_siqs_shadow_proof_rss_terminal_gate_record test_siqs_shadow_proof_rss_policy_record test_siqs_shadow_proof_rss_campaign test_siqs_shadow_proof_rss_campaign_journal test_siqs_shadow_proof_rss_campaign_journal_codec test_siqs_shadow_proof_rss_campaign_journal_layout test_siqs_shadow_proof_rss_campaign_artifact_layout test_siqs_shadow_proof_rss_campaign_journal_store test_siqs_shadow_proof_rss_campaign_entry test_siqs_shadow_proof_rss_holdout_probe_contract test_siqs_shadow_proof_rss_holdout_probe_record_codec test_siqs_shadow_proof_rss_holdout_stream_join test_siqs_shadow_proof_prefer test_siqs_shadow_prefer_route test_siqs_shadow_cross_size"
 )
@@ -618,6 +619,7 @@ TEST_TIMEOUT=(
     test_sqrt                10
     test_sqrt_debug          10
     test_hensel_parallel     60
+    test_hensel_product_worker_failure 120
     test_couveignes_large_class_group 60
     test_couveignes_parallel 60
     test_murphy              10
@@ -877,6 +879,7 @@ TEST_TIER=(
     test_sqrt                "instant"
     test_sqrt_debug          "instant"
     test_hensel_parallel     "instant"
+    test_hensel_product_worker_failure "fast"
     test_couveignes_large_class_group "instant"
     test_couveignes_parallel "instant"
     test_murphy              "instant"
