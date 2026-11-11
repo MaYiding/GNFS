@@ -179,19 +179,25 @@ void test_rational_sqrt_uint64_b_portability() {
     const Integer m(1);
     const uint64_t b = uint64_t{1} << 34;
 
-    // |a - b*m| = 2^34 = 2^17 squared, with an even rational factor
-    // exponent so this is a valid one-row square-root dependency.
+    // Each factor is -2^34. Two selected copies make a positive square
+    // with even sign parity as well as even rational prime exponents.
     Relation relation(0, b);
     relation.rational_factors.assign(34, 0);
-    std::vector<Relation> relations = {relation};
-    BitVector dependency(1);
+    std::vector<Relation> relations = {relation, relation};
+    BitVector dependency(2);
     dependency.set(0);
+    dependency.set(1);
 
     const auto result = RationalSqrt{}.compute(dependency, relations, fb, n, m);
     GNFS_TEST_CHECK(result.success);
 
-    Integer expected = n - Integer(uint64_t{1} << 17);
+    const Integer expected = Integer(b) % n;
     GNFS_TEST_CHECK(result.value == expected);
+    GNFS_TEST_CHECK((result.value * result.value) % n == (Integer(b) * Integer(b)) % n);
+
+    // One selected factor has even prime exponents but negative sign parity.
+    dependency.clear(1);
+    GNFS_TEST_CHECK(!RationalSqrt{}.compute(dependency, relations, fb, n, m).success);
 
     std::cout << "  RationalSqrt preserved full-width b in sign/verify paths: PASSED" << std::endl;
 }
@@ -367,6 +373,70 @@ void test_rational_sqrt_simple() {
     GNFS_TEST_CHECK(result2.to_int64() == 200);
 
     std::cout << "  RationalSqrt (simple): PASSED" << std::endl;
+}
+
+void test_rational_sqrt_signed_product() {
+    std::cout << "Testing RationalSqrt signed products..." << std::endl;
+    FactorBase fb;
+    fb.add_rational(2, 1);
+    const Integer n(101);
+    const Integer m(5);
+
+    auto check = [&](const std::vector<Relation>& relations, const BitVector& dependency,
+                     bool expected_success) {
+        Integer product(1);
+        for (size_t i = 0; i < relations.size(); ++i) {
+            if (!dependency.test(i))
+                continue;
+            const auto& relation = relations[i];
+            product *= Integer(relation.a) - Integer(relation.b) * m;
+            for (const auto& [a, b] : relation.extra_ab_pairs)
+                product *= Integer(a) - Integer(b) * m;
+        }
+        GNFS_TEST_CHECK(product.is_negative() == !expected_success);
+        mpz_mod(product.get_mpz(), product.get_mpz(), n.get_mpz());
+        for (const bool verify : {true, false}) {
+            RationalSqrtConfig config;
+            config.verify = verify;
+            const auto result = RationalSqrt(config).compute(dependency, relations, fb, n, m);
+            GNFS_TEST_CHECK(result.success == expected_success);
+            if (expected_success) {
+                GNFS_TEST_CHECK((result.value * result.value) % n == product);
+            } else {
+                GNFS_TEST_CHECK(result.error.find("negative") != std::string::npos);
+            }
+        }
+    };
+    Relation positive(9, 1); // 9-5=4
+    positive.rational_factors = {0, 0};
+    Relation negative(1, 1); // 1-5=-4
+    negative.rational_factors = {0, 0};
+    BitVector single(1);
+    single.set(0);
+    check({positive}, single, true);
+    check({negative}, single, false);
+
+    BitVector both(2);
+    both.set(0);
+    both.set(1);
+    check({negative, negative}, both, true);
+    check({positive, negative}, both, false);
+
+    // Only selected rows contribute to the sign and the product.
+    BitVector first(2);
+    first.set(0);
+    check({positive, negative}, first, true);
+
+    Relation merged(9, 1);
+    merged.extra_ab_pairs = {{1, 1}};
+    merged.rational_factors = {0, 0, 0, 0};
+    check({merged}, single, false); // positive primary, negative constituent
+    merged.a = 1;
+    merged.extra_ab_pairs = {{9, 1}};
+    check({merged}, single, false); // negative primary, positive constituent
+    merged.extra_ab_pairs = {{1, 1}};
+    check({merged}, single, true); // two negatives in one merged relation
+    std::cout << "  RationalSqrt signed products: PASSED" << std::endl;
 }
 
 // Regression for RationalSqrt::compute_from_exponents on Windows LLP64.
@@ -1309,6 +1379,7 @@ int main() {
     test_rational_sqrt_uint64_b_portability();
     test_evaluate_at_m();
     test_rational_sqrt_simple();
+    test_rational_sqrt_signed_product();
     test_rational_sqrt_large_exponent_portability();
     test_sqrt_dependency_dimension_guard();
     test_factor_extraction();
