@@ -116,11 +116,14 @@
 #include "../core/integer.hpp"
 #include "./thread_pool.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <future>
 #include <gmp.h>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <stdexcept>
@@ -150,45 +153,55 @@ inline MpzMulBatchThreadsCache& mpz_mul_batch_threads_cache() noexcept {
 /// [1, hardware_concurrency * 2] (fallback hw = 4 when hardware_concurrency()
 /// reports 0 so the upper cap stays meaningful).
 ///
-/// Parser semantics mirror the rest of the parallel-dispatcher family
-/// (W11 T3 / W12 T3 / W13 T5 / W14 T5): `std::atoi` accepts a leading
-/// numeric prefix (so `"12abc"` parses to 12 and `"  4"` parses to 4
-/// because atoi consumes leading whitespace), empty / unset / "0" /
-/// negative all collapse to the sequential default, and any out-of-range
-/// value clamps to the cap rather than throwing.
+/// Preserve leading whitespace, an optional plus sign, and a decimal
+/// numeric prefix (so "12abc" parses to 12). Positive values above the
+/// integer range saturate at the cap. A leading minus sign always selects
+/// the sequential default, including when its magnitude overflows.
 inline int parse_mpz_mul_batch_threads_env() noexcept {
     const char* env = std::getenv("GNFS_MPZ_MUL_BATCH_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
-    int parsed = std::atoi(env);
-    if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+    const char* first = env;
+    while (*first != '\0' && std::isspace(static_cast<unsigned char>(*first))) {
+        ++first;
     }
+    if (*first == '-') {
+        return 1; // invalid / non-positive -> sequential
+    }
+
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(env, &end, 10);
+    if (end == env || parsed == 0) {
+        return 1; // invalid / non-positive -> sequential
+    }
+
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
-    int cap = static_cast<int>(hw) * 2;
-    if (parsed > cap) parsed = cap;
-    return parsed;
+    if (hw == 0)
+        hw = 4;
+    const unsigned long long cap_wide = static_cast<unsigned long long>(hw) * 2ULL;
+    const unsigned long long cap =
+        std::min(cap_wide, static_cast<unsigned long long>(std::numeric_limits<int>::max()));
+    return static_cast<int>(std::min(parsed, cap));
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_MPZ_MUL_BATCH_THREADS` env into a cached thread count.
 ///
-/// First call parses the env once (via `std::once_flag`); subsequent calls
-/// return the cached value. Range: [1, hardware_concurrency() * 2]. Default
+/// The first successful atomic publication caches the parsed value;
+/// subsequent calls return it. Range: [1, min(hardware_concurrency() * 2, INT_MAX)]. Default
 /// (unset / "" / non-numeric / <= 0): 1 (sequential). Out-of-range high
 /// values clamp to the upper cap.
 [[nodiscard]] inline int mpz_mul_batch_threads() noexcept {
     auto& cache = detail::mpz_mul_batch_threads_cache();
     int cached = cache.value.load(std::memory_order_acquire);
-    if (cached != 0) return cached;
+    if (cached != 0)
+        return cached;
 
     const int parsed = detail::parse_mpz_mul_batch_threads_env();
     int expected = 0;
-    if (cache.value.compare_exchange_strong(expected, parsed,
-                                            std::memory_order_acq_rel,
+    if (cache.value.compare_exchange_strong(expected, parsed, std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
         return parsed;
     }
@@ -204,10 +217,13 @@ inline int parse_mpz_mul_batch_threads_env() noexcept {
 /// (no workers needed at all).
 [[nodiscard]] inline int resolve_mpz_mul_batch_threads(std::size_t batch_size) noexcept {
     int threads = mpz_mul_batch_threads();
-    if (batch_size == 0) return 0;
-    if (threads <= 1) return 1;
+    if (batch_size == 0)
+        return 0;
+    if (threads <= 1)
+        return 1;
     auto b = static_cast<std::size_t>(threads);
-    if (b > batch_size) b = batch_size;
+    if (b > batch_size)
+        b = batch_size;
     return static_cast<int>(b);
 }
 
@@ -274,8 +290,7 @@ inline void parallel_mpz_mul(const std::vector<gnfs::core::Integer>& a_values,
                              const std::vector<gnfs::core::Integer>& b_values,
                              std::vector<gnfs::core::Integer>& results) {
     if (a_values.size() != b_values.size()) {
-        throw std::invalid_argument(
-            "parallel_mpz_mul: a_values.size() must equal b_values.size()");
+        throw std::invalid_argument("parallel_mpz_mul: a_values.size() must equal b_values.size()");
     }
 
     const std::size_t n = a_values.size();
@@ -290,10 +305,9 @@ inline void parallel_mpz_mul(const std::vector<gnfs::core::Integer>& a_values,
     // pre-size `results` to at least `n`; otherwise the trailing inputs
     // are silently dropped (matches the contract used by the sister batch
     // helpers W12 T3 / W13 T5 / W14 T5).
-    const std::size_t effective_n =
-        (results.size() < n) ? results.size() : n;
+    const std::size_t effective_n = (results.size() < n) ? results.size() : n;
     if (effective_n == 0) {
-        return;  // nothing to do (caller passed empty results too)
+        return; // nothing to do (caller passed empty results too)
     }
 
     const int threads = mpz_mul_batch_threads();
@@ -304,9 +318,7 @@ inline void parallel_mpz_mul(const std::vector<gnfs::core::Integer>& a_values,
     // task is never worth a pool spin-up.
     if (threads <= 1 || effective_n == 1) {
         for (std::size_t i = 0; i < effective_n; ++i) {
-            mpz_mul(results[i].get_mpz(),
-                    a_values[i].get_mpz(),
-                    b_values[i].get_mpz());
+            mpz_mul(results[i].get_mpz(), a_values[i].get_mpz(), b_values[i].get_mpz());
         }
         return;
     }
@@ -314,10 +326,9 @@ inline void parallel_mpz_mul(const std::vector<gnfs::core::Integer>& a_values,
     // Parallel path: bound pool size by min(threads, effective_n). Spawning
     // more workers than pairs wastes resources and adds futex pressure for
     // no throughput gain.
-    const std::size_t pool_size =
-        (static_cast<std::size_t>(threads) < effective_n)
-            ? static_cast<std::size_t>(threads)
-            : effective_n;
+    const std::size_t pool_size = (static_cast<std::size_t>(threads) < effective_n)
+                                      ? static_cast<std::size_t>(threads)
+                                      : effective_n;
     gnfs::util::ThreadPool pool(static_cast<uint32_t>(pool_size));
 
     std::vector<std::future<void>> futures;
@@ -330,9 +341,7 @@ inline void parallel_mpz_mul(const std::vector<gnfs::core::Integer>& a_values,
         // from disjoint per-index slots, satisfying GMP's per-call
         // disjoint-operand contract.
         futures.push_back(pool.submit([&a_values, &b_values, &results, i]() {
-            mpz_mul(results[i].get_mpz(),
-                    a_values[i].get_mpz(),
-                    b_values[i].get_mpz());
+            mpz_mul(results[i].get_mpz(), a_values[i].get_mpz(), b_values[i].get_mpz());
         }));
     }
 
@@ -359,4 +368,4 @@ inline void parallel_mpz_mul(const std::vector<gnfs::core::Integer>& a_values,
     }
 }
 
-}  // namespace gnfs::util
+} // namespace gnfs::util
