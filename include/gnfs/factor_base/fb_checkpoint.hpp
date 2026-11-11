@@ -222,10 +222,19 @@ struct FbCheckpoint {
         }
 
         out.seekp(0);
+        if (!out) {
+            throw std::runtime_error("FbCheckpoint::save: cannot seek to completion marker");
+        }
         magic = MAGIC;
         write_u64(out, magic);
         out.flush();
+        if (!out) {
+            throw std::runtime_error("FbCheckpoint::save: completion marker write failed");
+        }
         out.close();
+        if (!out) {
+            throw std::runtime_error("FbCheckpoint::save: close failed");
+        }
     }
 
     static FbCheckpoint load(const std::string& path, bool allow_incomplete = false) {

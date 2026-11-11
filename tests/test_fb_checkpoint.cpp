@@ -5,6 +5,9 @@
 #include "gnfs/util/temp_path.hpp"
 #include "support/test_check.hpp"
 
+#include <array>
+#include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -16,6 +19,14 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 using namespace gnfs::factor_base;
 using gnfs::core::AlgebraicPrime;
@@ -711,6 +722,69 @@ void test_remove_and_nonexistent() {
     std::cout << "  Remove + nonexistent: PASS" << std::endl;
 }
 
+void test_save_rejects_nonseekable_output() {
+#if defined(_WIN32)
+    std::cout << "  Nonseekable checkpoint output: SKIP (POSIX FIFO required)" << std::endl;
+#else
+    std::cout << "Testing checkpoint save to a nonseekable output..." << std::endl;
+
+    // A default v1 checkpoint has a 68-byte body, including its header. The
+    // whole payload fits into an empty FIFO without a concurrent reader.
+    constexpr size_t empty_checkpoint_size = 68;
+    static_assert(empty_checkpoint_size < PIPE_BUF);
+    std::array<unsigned char, 128> bytes{};
+    size_t received = 0;
+    bool rejected = false;
+    {
+        const auto path = tmp_ckpt_path("nonseekable_output");
+        if (::mkfifo(path.c_str(), S_IRUSR | S_IWUSR) != 0) {
+            throw std::runtime_error("cannot create checkpoint test FIFO");
+        }
+        CkptCleanup cleanup{path};
+        struct ReaderCleanup {
+            int fd;
+            ~ReaderCleanup() {
+                if (fd >= 0)
+                    ::close(fd);
+            }
+        } reader{::open(path.c_str(), O_RDONLY | O_NONBLOCK)};
+        if (reader.fd < 0) {
+            throw std::runtime_error("cannot open checkpoint test FIFO reader");
+        }
+
+        try {
+            FbCheckpoint{}.save(path);
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+
+        // The read end never blocks. Opening it before save also lets the
+        // writer open synchronously; the save's seek, not its open, must fail.
+        while (received < bytes.size()) {
+            const ssize_t count =
+                ::read(reader.fd, bytes.data() + received, bytes.size() - received);
+            if (count < 0 && errno == EINTR)
+                continue;
+            if (count < 0)
+                throw std::runtime_error("cannot read checkpoint test FIFO payload");
+            if (count == 0)
+                break;
+            received += static_cast<size_t>(count);
+        }
+    }
+
+    // Check the payload before the rejection oracle to prove that the open
+    // and initial body write succeeded even against the unfixed implementation.
+    GNFS_TEST_CHECK(received == empty_checkpoint_size);
+    uint64_t magic = 0;
+    for (size_t i = 0; i < sizeof(magic); ++i)
+        magic |= static_cast<uint64_t>(bytes[i]) << (8 * i);
+    GNFS_TEST_CHECK(magic == FbCheckpoint::MAGIC_INCOMPLETE);
+    GNFS_TEST_CHECK(rejected);
+    std::cout << "  Nonseekable checkpoint output: PASS" << std::endl;
+#endif
+}
+
 void test_serialized_rational_order() {
     std::cout << "Testing checkpoint rational-prime order..." << std::endl;
     const auto path = tmp_ckpt_path("rational_order");
@@ -823,6 +897,7 @@ int main() {
     test_serialized_algebraic_order();
     test_truncated_payload_rejected_before_allocation();
     test_remove_and_nonexistent();
+    test_save_rejects_nonseekable_output();
     std::cout << "\n===== All FbCheckpoint tests PASSED =====" << std::endl;
     return 0;
 }
