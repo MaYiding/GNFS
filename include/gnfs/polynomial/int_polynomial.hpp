@@ -12,6 +12,7 @@
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace gnfs::polynomial {
@@ -412,8 +413,9 @@ private:
         for (uint32_t i = 0; i <= d; ++i) {
             f_mod[i] = coeff_mod(i, p);
         }
-        // f_mod 可能 leading coeff == 0 (mod p)，跳过
-        MP f_poly(f_mod);
+        // The degree can drop modulo p. Use the normalized polynomial for
+        // modular exponentiation as well as GCD and root extraction.
+        MP f_poly(std::move(f_mod));
         if (f_poly.degree() <= 0)
             return {};
 
@@ -423,7 +425,7 @@ private:
 
         // x^p mod f mod p (repeated squaring, O(d² log p))
         const Integer p_int(p);
-        auto x_to_p = MP::power(x_poly, p_int, f_mod, p);
+        auto x_to_p = MP::power(x_poly, p_int, f_poly.coefficients(), p);
         auto x_p_minus_x = MP::sub(x_to_p, x_poly, p);
         auto h = MP::gcd(x_p_minus_x, f_poly, p);
 

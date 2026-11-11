@@ -65,6 +65,27 @@ void test_nan_alpha_bound_uses_minimum_valid_bound() {
     std::cout << "  PASSED" << std::endl;
 }
 
+void test_alpha_with_modular_degree_reduction() {
+    std::cout << "Testing alpha when a prime divides the leading coefficient..." << std::endl;
+
+    MurphyParams params;
+    params.alpha_bound = 1009;
+    MurphyEvaluator evaluator(params);
+    const IntPolynomial f(std::vector<Integer>{Integer(-1), Integer(1), Integer(1009)});
+
+    // Between the two bounds, only 1009 is added. Modulo that prime f is
+    // x-1, with one simple affine root and one projective root.
+    const double before = evaluator.compute_alpha(f, 997);
+    const double after = evaluator.compute_alpha(f, 1009);
+    const double p = 1009;
+    const double contribution = (2.0 / p - 1.0 / (p - 1.0)) * std::log(p);
+    GNFS_TEST_CHECK(std::isfinite(before));
+    GNFS_TEST_CHECK(std::isfinite(after));
+    GNFS_TEST_CHECK(std::abs((after - before) - contribution) < 1e-12);
+
+    std::cout << "  PASSED" << std::endl;
+}
+
 /// 黄金值快照:固定 (f, alpha_bound) 锁住数值,防止 Dickman 表/α 公式/
 /// 积分采样回归。值由当前实现快照得到(可与 CADO-NFS polyselect/alpha.c
 /// 对照来锁外部参考)。
@@ -423,6 +444,7 @@ int main() {
 
     test_dickman_rho();
     test_nan_alpha_bound_uses_minimum_valid_bound();
+    test_alpha_with_modular_degree_reduction();
     test_alpha_golden_values();
     test_alpha_computation();
     test_score_consistency();
