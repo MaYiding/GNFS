@@ -101,7 +101,7 @@ public:
 
         // ENV opt-in: Brent-Suyama (Stage 3) override
         apply_brent_suyama_env(config);
-        validate_config_bounds(config);
+        validate_config(config);
 
         // Use n's low bits + random_device to avoid repeating the same curves
         std::random_device rd;
@@ -118,6 +118,7 @@ public:
     [[nodiscard]] static std::optional<Integer> factor(const Integer& n, Config config,
                                                        const DeterministicCurveSchedule& schedule) {
         validate_deterministic_curve_schedule(schedule);
+        validate_brent_suyama_degree(config.brent_suyama_degree);
         if (schedule.sigmas.empty()) {
             return std::nullopt;
         }
@@ -129,7 +130,7 @@ public:
             auto_tune(n.bit_length(), config);
             config.num_curves = explicit_curve_count;
         }
-        validate_config_bounds(config);
+        validate_config(config);
         auto ctx = prepare_batch(config, schedule);
         return factor_with_batch(n, ctx);
     }
@@ -192,10 +193,7 @@ public:
     quick_factor(const Integer& n, const DeterministicCurveSchedule& schedule,
                  uint32_t brent_suyama_degree = 0) {
         validate_deterministic_curve_schedule(schedule);
-        if (brent_suyama_degree != 0 && !brent_suyama::is_supported_degree(brent_suyama_degree)) {
-            throw std::invalid_argument(
-                "ECM deterministic quick Brent-Suyama degree is unsupported");
-        }
+        validate_brent_suyama_degree(brent_suyama_degree);
         if (schedule.sigmas.empty() || !n.is_positive() || n.is_one() ||
             n.is_probable_prime() > 0) {
             return std::nullopt;
@@ -213,7 +211,7 @@ public:
 
         cached_ctx.sigma_pool = schedule.sigmas;
         cached_ctx.brent_suyama_degree = brent_suyama_degree;
-        return factor_with_batch(n, cached_ctx);
+        return factor_with_validated_batch(n, cached_ctx);
     }
 
     /// 共享上下文 — 跨多个 cofactor 复用的 N-independent 数据
@@ -231,7 +229,7 @@ public:
         uint64_t B2 = 0;
         std::vector<uint64_t> primes_cache; // ≤ B1 的素数
         std::vector<uint64_t> prime_powers; // 与 primes_cache 等长: pk = max p^e ≤ B1
-        std::vector<uint64_t> sigma_pool;   // 确定性 sigma 序列
+        std::vector<uint64_t> sigma_pool;   // sigma >= 6; full-width uint64_t values are valid
 
         /// Stage 3 Brent-Suyama polynomial degree (0 = OFF, classical BSGS).
         /// Valid: 0, 1, 2, 6, 12, 30. See `brent_suyama::is_supported_degree`.
@@ -250,7 +248,7 @@ public:
     [[nodiscard]] static BatchContext prepare_batch(const Config& config,
                                                     const DeterministicCurveSchedule& schedule) {
         validate_deterministic_curve_schedule(schedule);
-        validate_config_bounds(config);
+        validate_config(config);
 
         BatchContext ctx;
         ctx.B1 = config.B1;
@@ -279,6 +277,7 @@ public:
     /// Legacy BatchContext wrapper.
     /// sigma_seed=0 保持 ambient random_device 语义；非零 seed 委托显式 overload.
     [[nodiscard]] static BatchContext prepare_batch(const Config& config, uint64_t sigma_seed = 0) {
+        validate_config(config);
         uint64_t seed = sigma_seed;
         if (seed == 0) {
             std::random_device rd;
@@ -291,21 +290,71 @@ public:
     /// Batch ECM: 对一批 cofactor 应用 ECM, 共享 N-independent 数据
     /// 返回 vector<optional<Integer>>, 与输入 ns 一一对应
     /// 单 cofactor 行为等价于 factor_with_batch(n, ctx)
+    /// Validate bounds, degree, and the entire sigma pool, even for an empty batch.
     [[nodiscard]] static std::vector<std::optional<Integer>>
     factor_batch(std::span<const Integer> ns, const BatchContext& ctx) {
+        validate_batch_parameters(ctx);
         std::vector<std::optional<Integer>> results;
         results.reserve(ns.size());
         for (const Integer& n : ns) {
-            results.push_back(factor_with_batch(n, ctx));
+            results.push_back(factor_with_validated_batch(n, ctx));
         }
         return results;
     }
 
     /// 单 cofactor 使用 BatchContext 共享数据
     /// 等价于 ECM::factor() 但跳过 primes_cache + prime_powers 重建
+    /// Invalid bounds, degree, or sigma throw before input/array early returns.
     [[nodiscard]] static std::optional<Integer> factor_with_batch(const Integer& n,
                                                                   const BatchContext& ctx) {
+        validate_batch_parameters(ctx);
+        return factor_with_validated_batch(n, ctx);
+    }
+
+private:
+    // Stage 1 allocates one sieve bit per integer up to B1. Stage 2 performs
+    // roughly (B2 / 2310) giant steps per curve, so these hard limits prevent
+    // accidental multi-gigabyte allocations and unbounded dispatch from a
+    // malformed or untrusted configuration. The Stage 2 limit matches the
+    // largest automatic parameter selected by auto_tune().
+    static constexpr uint64_t kMaxSieveBound = 100'000'000ULL;
+    static constexpr uint64_t kMaxStage2Bound = 5'000'000'000ULL;
+
+    static void validate_config(const Config& config) {
+        validate_config_bounds(config.B1, config.B2);
+        validate_brent_suyama_degree(config.brent_suyama_degree);
+    }
+
+    static void validate_config_bounds(uint64_t B1, uint64_t B2) {
+        if (B1 > kMaxSieveBound) {
+            throw std::invalid_argument("ECM B1 exceeds the 100M sieve bound");
+        }
+        if (B2 > kMaxStage2Bound) {
+            throw std::invalid_argument("ECM B2 exceeds the 5e9 Stage 2 bound");
+        }
+    }
+
+    static void validate_brent_suyama_degree(uint32_t degree) {
+        if (degree != 0 && !brent_suyama::is_supported_degree(degree)) {
+            throw std::invalid_argument("ECM Brent-Suyama degree is unsupported");
+        }
+    }
+
+    static void validate_batch_parameters(const BatchContext& ctx) {
         validate_config_bounds(ctx.B1, ctx.B2);
+        validate_brent_suyama_degree(ctx.brent_suyama_degree);
+        // Check the entire pool before a successful curve can return early.
+        // Unlike the deterministic schedule API, manually supplied contexts
+        // support every uint64_t sigma satisfying the mathematical lower bound.
+        for (uint64_t sigma : ctx.sigma_pool) {
+            if (sigma < 6) {
+                throw std::invalid_argument("ECM batch curve sigma must be >= 6");
+            }
+        }
+    }
+
+    [[nodiscard]] static std::optional<Integer>
+    factor_with_validated_batch(const Integer& n, const BatchContext& ctx) {
         if (!n.is_positive() || n.is_one() || n.is_probable_prime() > 0) {
             return std::nullopt;
         }
@@ -320,28 +369,6 @@ public:
             }
         }
         return std::nullopt;
-    }
-
-private:
-    // Stage 1 allocates one sieve bit per integer up to B1. Stage 2 performs
-    // roughly (B2 / 2310) giant steps per curve, so these hard limits prevent
-    // accidental multi-gigabyte allocations and unbounded dispatch from a
-    // malformed or untrusted configuration. The Stage 2 limit matches the
-    // largest automatic parameter selected by auto_tune().
-    static constexpr uint64_t kMaxSieveBound = 100'000'000ULL;
-    static constexpr uint64_t kMaxStage2Bound = 5'000'000'000ULL;
-
-    static void validate_config_bounds(const Config& config) {
-        validate_config_bounds(config.B1, config.B2);
-    }
-
-    static void validate_config_bounds(uint64_t B1, uint64_t B2) {
-        if (B1 > kMaxSieveBound) {
-            throw std::invalid_argument("ECM B1 exceeds the 100M sieve bound");
-        }
-        if (B2 > kMaxStage2Bound) {
-            throw std::invalid_argument("ECM B2 exceeds the 5e9 Stage 2 bound");
-        }
     }
 
     [[nodiscard]] static DeterministicCurveSchedule

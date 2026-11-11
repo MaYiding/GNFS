@@ -88,6 +88,22 @@ cfg.brent_suyama_degree = 12;  // opt-in, default 0 = OFF
 auto factor = ECM::factor(n, cfg);
 ```
 
+The C++ configuration accepts degree `0` (classical Stage 2) or one of
+`{1, 2, 6, 12, 30}`. Batch preparation rejects other values before allocating
+the sieve. The explicit deterministic factor and quick-factor APIs reject
+unsupported degrees even with an empty schedule or an input that needs no
+factoring. The ambient `factor(n, cfg)` API validates the effective degree
+after applying its environment override to a composite input.
+
+The public `factor_with_batch` and `factor_batch` APIs validate bounds, degree,
+and every sigma before any curve runs. Invalid parameters throw
+`std::invalid_argument`, including for an empty input batch, and take precedence
+over input or array-shape early returns. Manually supplied `BatchContext`
+values allow every `uint64_t` sigma at least `6`; the explicit deterministic
+schedule API retains its narrower `[6, 1000005]` range. With valid parameters,
+empty or mismatched prime/power arrays still produce no factor. Batch execution
+checks the sigma pool once for the whole batch.
+
 ### Environment Variables
 
 ```bash
@@ -98,9 +114,11 @@ GNFS_ECM_BRENT_SUYAMA=1 ./gnfs <N>
 GNFS_ECM_BRENT_SUYAMA=1 GNFS_ECM_BS_DEGREE=30 ./gnfs <N>
 ```
 
-Invalid degree values (anything outside `{1, 2, 6, 12, 30}`) fall back to
-the default `12`. Without `GNFS_ECM_BRENT_SUYAMA=1`, both env vars are
-ignored and classical BSGS runs.
+Invalid environment degree values (anything outside `{1, 2, 6, 12, 30}`)
+fall back to the default `12`. Without `GNFS_ECM_BRENT_SUYAMA=1`, both
+environment variables are ignored and the C++ configuration keeps its degree
+(default `0`, classical BSGS). Explicit deterministic APIs do not read these
+environment variables.
 
 ### Dispatch
 
