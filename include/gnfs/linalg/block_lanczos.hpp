@@ -12,6 +12,22 @@
 
 namespace gnfs::linalg {
 
+namespace detail {
+
+// With no columns, each row-unit vector is an independent left-kernel vector.
+inline std::vector<std::vector<bool>> zero_column_dependencies(size_t rows, size_t max_deps) {
+    const size_t count = std::min(rows, max_deps);
+    std::vector<std::vector<bool>> dependencies;
+    dependencies.reserve(count);
+    for (size_t row = 0; row < count; ++row) {
+        dependencies.emplace_back(rows, false);
+        dependencies.back()[row] = true;
+    }
+    return dependencies;
+}
+
+} // namespace detail
+
 /// Block Lanczos algorithm for finding GF(2) null space
 /// Implements Montgomery's Block Lanczos (1995) for large sparse matrices,
 /// with Gaussian elimination fallback for small matrices.
