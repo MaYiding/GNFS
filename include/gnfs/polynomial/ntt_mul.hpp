@@ -119,27 +119,26 @@ namespace detail_ntt {
 
 /// First Schönhage NTT prime: 998244353 = 119 · 2^23 + 1.
 inline constexpr uint64_t kNttPrime1 = 998244353ULL;
-inline constexpr uint64_t kNttRoot1  = 3ULL;
-inline constexpr int      kNttMaxLog1 = 23;
+inline constexpr uint64_t kNttRoot1 = 3ULL;
+inline constexpr int kNttMaxLog1 = 23;
 
 /// Second Schönhage NTT prime: 985661441 = 235 · 2^22 + 1.
 inline constexpr uint64_t kNttPrime2 = 985661441ULL;
-inline constexpr uint64_t kNttRoot2  = 3ULL;
-inline constexpr int      kNttMaxLog2 = 22;
+inline constexpr uint64_t kNttRoot2 = 3ULL;
+inline constexpr int kNttMaxLog2 = 22;
 
 /// Third Schönhage NTT prime: 754974721 = 45 · 2^24 + 1.
 inline constexpr uint64_t kNttPrime3 = 754974721ULL;
-inline constexpr uint64_t kNttRoot3  = 11ULL;
-inline constexpr int      kNttMaxLog3 = 24;
+inline constexpr uint64_t kNttRoot3 = 11ULL;
+inline constexpr int kNttMaxLog3 = 24;
 
 /// Maximum transform size supported (governed by smallest prime's k).
-inline constexpr size_t kNttMaxSize = 1ULL << kNttMaxLog2;  // 4 194 304
+inline constexpr size_t kNttMaxSize = 1ULL << kNttMaxLog2; // 4 194 304
 
 /// Modular exponentiation a^e mod m, with a < m < 2^31 (so a*a fits 62
 /// bits and the `%` reduction stays in uint64_t). Square-and-multiply
 /// with right-to-left bit scan.
-[[nodiscard]] inline uint64_t pow_mod_u64(uint64_t a, uint64_t e,
-                                          uint64_t m) noexcept {
+[[nodiscard]] inline uint64_t pow_mod_u64(uint64_t a, uint64_t e, uint64_t m) noexcept {
     uint64_t result = 1 % m;
     uint64_t base = a % m;
     while (e > 0) {
@@ -160,9 +159,11 @@ inline constexpr size_t kNttMaxSize = 1ULL << kNttMaxLog2;  // 4 194 304
 
 /// Round n up to the next power of two, or 1 if n == 0.
 [[nodiscard]] inline size_t next_pow2(size_t n) noexcept {
-    if (n <= 1) return 1;
+    if (n <= 1)
+        return 1;
     size_t r = 1;
-    while (r < n) r <<= 1;
+    while (r < n)
+        r <<= 1;
     return r;
 }
 
@@ -170,7 +171,8 @@ inline constexpr size_t kNttMaxSize = 1ULL << kNttMaxLog2;  // 4 194 304
 /// Used as the standard pre-pass for iterative Cooley-Tukey NTT.
 inline void bit_reverse_permute(std::vector<uint64_t>& a) noexcept {
     const size_t n = a.size();
-    if (n <= 1) return;
+    if (n <= 1)
+        return;
     size_t j = 0;
     for (size_t i = 1; i < n; ++i) {
         size_t bit = n >> 1;
@@ -179,7 +181,8 @@ inline void bit_reverse_permute(std::vector<uint64_t>& a) noexcept {
             bit >>= 1;
         }
         j ^= bit;
-        if (i < j) std::swap(a[i], a[j]);
+        if (i < j)
+            std::swap(a[i], a[j]);
     }
 }
 
@@ -193,13 +196,12 @@ inline void bit_reverse_permute(std::vector<uint64_t>& a) noexcept {
 /// When `inverse == false`: forward NTT with the supplied omega.
 /// When `inverse == true`: inverse NTT (with omega's inverse) followed
 /// by per-element multiplication by n^{-1} mod q.
-inline void ntt_inplace(std::vector<uint64_t>& a,
-                        uint64_t omega_full,
-                        uint64_t q,
+inline void ntt_inplace(std::vector<uint64_t>& a, uint64_t omega_full, uint64_t q,
                         bool inverse) noexcept {
     const size_t n = a.size();
     assert(n > 0 && (n & (n - 1)) == 0 && "NTT size must be power of two");
-    if (n == 1) return;
+    if (n == 1)
+        return;
 
     if (inverse) {
         omega_full = inv_mod_u64(omega_full, q);
@@ -211,9 +213,7 @@ inline void ntt_inplace(std::vector<uint64_t>& a,
     for (size_t len = 2; len <= n; len <<= 1) {
         // omega for this stage: omega_full raised to (n / len). Each
         // outer doubling halves the exponent, so we may also stride.
-        const uint64_t w_len =
-            pow_mod_u64(omega_full,
-                        static_cast<uint64_t>(n / len), q);
+        const uint64_t w_len = pow_mod_u64(omega_full, static_cast<uint64_t>(n / len), q);
         for (size_t i = 0; i < n; i += len) {
             uint64_t w = 1;
             const size_t half = len >> 1;
@@ -221,7 +221,8 @@ inline void ntt_inplace(std::vector<uint64_t>& a,
                 const uint64_t u = a[i + k];
                 const uint64_t v = (a[i + k + half] * w) % q;
                 uint64_t s = u + v;
-                if (s >= q) s -= q;
+                if (s >= q)
+                    s -= q;
                 a[i + k] = s;
                 uint64_t d = (u >= v) ? (u - v) : (u + q - v);
                 a[i + k + half] = d;
@@ -231,8 +232,7 @@ inline void ntt_inplace(std::vector<uint64_t>& a,
     }
 
     if (inverse) {
-        const uint64_t n_inv =
-            inv_mod_u64(static_cast<uint64_t>(n) % q, q);
+        const uint64_t n_inv = inv_mod_u64(static_cast<uint64_t>(n) % q, q);
         for (size_t i = 0; i < n; ++i) {
             a[i] = (a[i] * n_inv) % q;
         }
@@ -243,11 +243,8 @@ inline void ntt_inplace(std::vector<uint64_t>& a,
 /// `out` is the convolution `a * b` modulo q (NOT reduced modulo any
 /// user-facing p — that happens in the CRT reduction step). Output
 /// length is `a.size() + b.size() - 1` (or 0 if either input is empty).
-inline void ntt_mul_single_prime(const std::vector<uint64_t>& a,
-                                 const std::vector<uint64_t>& b,
-                                 uint64_t q,
-                                 uint64_t prim_root,
-                                 int max_log,
+inline void ntt_mul_single_prime(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b,
+                                 uint64_t q, uint64_t prim_root, int max_log,
                                  std::vector<uint64_t>& out) {
     if (a.empty() || b.empty()) {
         out.clear();
@@ -255,21 +252,20 @@ inline void ntt_mul_single_prime(const std::vector<uint64_t>& a,
     }
     const size_t result_size = a.size() + b.size() - 1;
     const size_t m = next_pow2(result_size);
-    assert(m <= (1ULL << max_log) &&
-           "NTT size exceeds Schönhage prime capacity");
+    assert(m <= (1ULL << max_log) && "NTT size exceeds Schönhage prime capacity");
 
     // Reduce input coefficients into [0, q) and zero-pad to m.
     std::vector<uint64_t> A(m, 0), B(m, 0);
-    for (size_t i = 0; i < a.size(); ++i) A[i] = a[i] % q;
-    for (size_t i = 0; i < b.size(); ++i) B[i] = b[i] % q;
+    for (size_t i = 0; i < a.size(); ++i)
+        A[i] = a[i] % q;
+    for (size_t i = 0; i < b.size(); ++i)
+        B[i] = b[i] % q;
 
     // omega is a primitive m-th root of unity mod q.
     // Per the prime's definition q - 1 = c * 2^max_log; therefore
     // omega_full = g^{(q-1) / m} mod q is a primitive m-th root for any
     // m = 2^L with L ≤ max_log.
-    const uint64_t omega_full =
-        pow_mod_u64(prim_root,
-                    (q - 1) / static_cast<uint64_t>(m), q);
+    const uint64_t omega_full = pow_mod_u64(prim_root, (q - 1) / static_cast<uint64_t>(m), q);
 
     ntt_inplace(A, omega_full, q, /*inverse=*/false);
     ntt_inplace(B, omega_full, q, /*inverse=*/false);
@@ -303,12 +299,10 @@ inline void ntt_mul_single_prime(const std::vector<uint64_t>& a,
 /// where each q_i (and thus q1*q2 mod p, precomputed by caller) is
 /// < 2^32 and each u_i is < 2^30, so each product is < 2^62 and fits
 /// uint64_t.
-[[nodiscard]] inline uint64_t crt_combine_3(
-        uint64_t r1, uint64_t r2, uint64_t r3,
-        uint64_t q1, uint64_t q2, uint64_t q3,
-        uint64_t inv_q1_mod_q2, uint64_t inv_q1q2_mod_q3,
-        uint64_t q1_mod_p, uint64_t q1q2_mod_p,
-        uint64_t p) noexcept {
+[[nodiscard]] inline uint64_t crt_combine_3(uint64_t r1, uint64_t r2, uint64_t r3, uint64_t q1,
+                                            uint64_t q2, uint64_t q3, uint64_t inv_q1_mod_q2,
+                                            uint64_t inv_q1q2_mod_q3, uint64_t q1_mod_p,
+                                            uint64_t q1q2_mod_p, uint64_t p) noexcept {
     // u2 = (r2 - r1) * inv(q1) mod q2.
     // q1 exceeds q2, so a residue modulo q1 can lie outside [0, q2).
     const uint64_t r1_mod_q2 = r1 % q2;
@@ -333,9 +327,11 @@ inline void ntt_mul_single_prime(const std::vector<uint64_t>& a,
     uint64_t t1 = (q1_mod_p * u2_mod_p) % p;
     uint64_t t2 = (q1q2_mod_p * u3_mod_p) % p;
     uint64_t x = r1_mod_p + t1;
-    if (x >= p) x -= p;
+    if (x >= p)
+        x -= p;
     x += t2;
-    if (x >= p) x -= p;
+    if (x >= p)
+        x -= p;
     return x;
 }
 
@@ -368,7 +364,7 @@ struct NttGateCache {
     return PolyNttMode::Auto;
 }
 
-}  // namespace detail_ntt
+} // namespace detail_ntt
 
 /// Returns the current process-wide NTT gate mode.
 ///
@@ -378,12 +374,10 @@ struct NttGateCache {
 [[nodiscard]] inline PolyNttMode poly_ntt_mode() noexcept {
     auto& cache = detail_ntt::ntt_gate_cache();
     std::call_once(cache.once, []() {
-        detail_ntt::ntt_gate_cache().mode.store(
-            static_cast<int>(detail_ntt::parse_ntt_gate_env()),
-            std::memory_order_relaxed);
+        detail_ntt::ntt_gate_cache().mode.store(static_cast<int>(detail_ntt::parse_ntt_gate_env()),
+                                                std::memory_order_relaxed);
     });
-    return static_cast<PolyNttMode>(
-        cache.mode.load(std::memory_order_relaxed));
+    return static_cast<PolyNttMode>(cache.mode.load(std::memory_order_relaxed));
 }
 
 /// Test-only: reset the ENV cache. After calling this, the next
@@ -393,8 +387,7 @@ inline void poly_ntt_reset_env_cache_for_testing() noexcept {
     auto& cache = detail_ntt::ntt_gate_cache();
     cache.once.~once_flag();
     new (&cache.once) std::once_flag();
-    cache.mode.store(static_cast<int>(PolyNttMode::Auto),
-                     std::memory_order_relaxed);
+    cache.mode.store(static_cast<int>(PolyNttMode::Auto), std::memory_order_relaxed);
 }
 
 /// Dispatcher decision: returns true iff NTT should be used for the
@@ -404,14 +397,17 @@ inline void poly_ntt_reset_env_cache_for_testing() noexcept {
 ///   - ForceOff → false
 ///   - ForceOn → true (for any non-trivial size ≥ 2)
 ///   - Auto → true iff max(deg_a, deg_b) >= kNttAutoThreshold
-[[nodiscard]] inline bool poly_ntt_enabled_for_size(size_t deg_a,
-                                                    size_t deg_b) noexcept {
-    if (deg_a == 0 || deg_b == 0) return false;
+[[nodiscard]] inline bool poly_ntt_enabled_for_size(size_t deg_a, size_t deg_b) noexcept {
+    if (deg_a == 0 || deg_b == 0)
+        return false;
     const size_t nmax = (deg_a > deg_b) ? deg_a : deg_b;
-    if (nmax <= 1) return false;
+    if (nmax <= 1)
+        return false;
     const PolyNttMode mode = poly_ntt_mode();
-    if (mode == PolyNttMode::ForceOff) return false;
-    if (mode == PolyNttMode::ForceOn)  return true;
+    if (mode == PolyNttMode::ForceOff)
+        return false;
+    if (mode == PolyNttMode::ForceOn)
+        return true;
     // Auto
     return nmax >= kNttAutoThreshold;
 }
@@ -422,10 +418,8 @@ inline void poly_ntt_reset_env_cache_for_testing() noexcept {
 ///
 /// Precondition: p prime, p < 2^32, all coefficients of `a` and `b` are
 /// in [0, p).
-inline void schoolbook_mul_mod(const std::vector<uint64_t>& a,
-                               const std::vector<uint64_t>& b,
-                               uint64_t p,
-                               std::vector<uint64_t>& out) {
+inline void schoolbook_mul_mod(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b,
+                               uint64_t p, std::vector<uint64_t>& out) {
     if (a.empty() || b.empty()) {
         out.clear();
         return;
@@ -434,14 +428,17 @@ inline void schoolbook_mul_mod(const std::vector<uint64_t>& a,
     out.assign(result_size, 0);
     for (size_t i = 0; i < a.size(); ++i) {
         const uint64_t ai = a[i];
-        if (ai == 0) continue;
+        if (ai == 0)
+            continue;
         for (size_t j = 0; j < b.size(); ++j) {
             const uint64_t bj = b[j];
-            if (bj == 0) continue;
+            if (bj == 0)
+                continue;
             // ai, bj < 2^32 so ai * bj < 2^64 fits in uint64_t.
             const uint64_t prod = (ai * bj) % p;
             uint64_t sum = out[i + j] + prod;
-            if (sum >= p) sum -= p;
+            if (sum >= p)
+                sum -= p;
             out[i + j] = sum;
         }
     }
@@ -466,9 +463,7 @@ inline void schoolbook_mul_mod(const std::vector<uint64_t>& a,
 ///   - gate == ForceOn  → NTT (for any non-trivial size ≥ 2)
 ///   - gate == Auto and max(|a|, |b|) >= kNttAutoThreshold → NTT
 ///   - gate == Auto and max(|a|, |b|) <  kNttAutoThreshold → schoolbook
-inline void ntt_mul_mod(const std::vector<uint64_t>& a,
-                        const std::vector<uint64_t>& b,
-                        uint64_t p,
+inline void ntt_mul_mod(const std::vector<uint64_t>& a, const std::vector<uint64_t>& b, uint64_t p,
                         std::vector<uint64_t>& out) {
     if (a.empty() || b.empty()) {
         out.clear();
@@ -490,24 +485,19 @@ inline void ntt_mul_mod(const std::vector<uint64_t>& a,
     ntt_mul_single_prime(a, b, kNttPrime3, kNttRoot3, kNttMaxLog3, r3);
 
     // CRT-precomputed scalars (constant across all output coefficients).
-    static const uint64_t inv_q1_mod_q2 =
-        inv_mod_u64(kNttPrime1 % kNttPrime2, kNttPrime2);
+    static const uint64_t inv_q1_mod_q2 = inv_mod_u64(kNttPrime1 % kNttPrime2, kNttPrime2);
     static const uint64_t inv_q1q2_mod_q3 =
-        inv_mod_u64((kNttPrime1 % kNttPrime3) * (kNttPrime2 % kNttPrime3) % kNttPrime3,
-                    kNttPrime3);
+        inv_mod_u64((kNttPrime1 % kNttPrime3) * (kNttPrime2 % kNttPrime3) % kNttPrime3, kNttPrime3);
 
     // Per-call p-dependent reductions.
-    const uint64_t q1_mod_p   = kNttPrime1 % p;
-    const uint64_t q1q2_mod_p =
-        (q1_mod_p * (kNttPrime2 % p)) % p;
+    const uint64_t q1_mod_p = kNttPrime1 % p;
+    const uint64_t q1q2_mod_p = (q1_mod_p * (kNttPrime2 % p)) % p;
 
     const size_t result_size = a.size() + b.size() - 1;
     out.assign(result_size, 0);
     for (size_t i = 0; i < result_size; ++i) {
-        out[i] = crt_combine_3(r1[i], r2[i], r3[i],
-                               kNttPrime1, kNttPrime2, kNttPrime3,
-                               inv_q1_mod_q2, inv_q1q2_mod_q3,
-                               q1_mod_p, q1q2_mod_p, p);
+        out[i] = crt_combine_3(r1[i], r2[i], r3[i], kNttPrime1, kNttPrime2, kNttPrime3,
+                               inv_q1_mod_q2, inv_q1q2_mod_q3, q1_mod_p, q1q2_mod_p, p);
     }
 
     // Trim trailing zeros to canonical form.
@@ -516,4 +506,4 @@ inline void ntt_mul_mod(const std::vector<uint64_t>& a,
     }
 }
 
-}  // namespace gnfs::polynomial
+} // namespace gnfs::polynomial
