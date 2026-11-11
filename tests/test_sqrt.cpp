@@ -4,6 +4,7 @@
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/sqrt/couveignes.hpp>
+#include <gnfs/sqrt/hensel_sqrt.hpp>
 #include <gnfs/sqrt/modular_poly.hpp>
 #include <gnfs/sqrt/number_field.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
@@ -434,6 +435,105 @@ void test_sqrt_dependency_dimension_guard() {
 }
 
 // Test factor extraction
+void test_hensel_prime_selection() {
+    std::cout << "Testing Hensel prime selection..." << std::endl;
+    auto check_square = [](const NumberField& nf,
+                           const std::vector<std::pair<int64_t, uint64_t>>& pairs,
+                           const HenselSqrt::Config& config) {
+        Integer product(1);
+        for (const auto& [a, b] : pairs) {
+            product *= Integer(a) - Integer(b) * nf.m();
+            mpz_mod(product.get_mpz(), product.get_mpz(), nf.n().get_mpz());
+        }
+        HenselSqrt solver(config);
+        const auto root = solver.compute(pairs, nf);
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK((*root * *root) % nf.n() == product);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+        return solver.last_inert_prime();
+    };
+    const NumberField nf(
+        PolynomialContext(Integer(407), {Integer(1), Integer(1), Integer(2)}, Integer(14)));
+    const std::vector<std::pair<int64_t, uint64_t>> square{{1, 1}, {1, 1}};
+
+    // Invalid hints include a ramified prime (7) and a prime at which f splits (1009).
+    const uint64_t u32_max = std::numeric_limits<uint32_t>::max();
+    const uint64_t u64_max = std::numeric_limits<uint64_t>::max();
+    for (const uint64_t cached : {uint64_t(1), uint64_t(2), uint64_t(4), uint64_t(7), uint64_t(9),
+                                  uint64_t(15), uint64_t(1009), u32_max, u32_max + 1, u64_max}) {
+        HenselSqrt::Config config;
+        config.cached_inert_prime = cached;
+        const uint64_t chosen = check_square(nf, square, config);
+        GNFS_TEST_CHECK(chosen > 2 && chosen <= u32_max);
+        GNFS_TEST_CHECK(chosen != cached);
+    }
+    HenselSqrt::Config valid_cache;
+    valid_cache.cached_inert_prime = 3;
+    GNFS_TEST_CHECK(check_square(nf, square, valid_cache) == 3);
+
+    // f remains irreducible modulo 2, but Newton lifting cannot invert 2*S there.
+    const NumberField monic(
+        PolynomialContext(Integer(91), {Integer(1), Integer(1), Integer(1)}, Integer(9)));
+    for (const uint64_t start : {uint64_t(0), uint64_t(1), uint64_t(2)}) {
+        HenselSqrt::Config config;
+        config.prime_start = start;
+        GNFS_TEST_CHECK(check_square(monic, square, config) > 2);
+        // The hybrid search must also exclude characteristic two.
+        check_square(monic, std::vector<std::pair<int64_t, uint64_t>>(100, {1, 1}), config);
+    }
+
+    // A valid inert prime can still divide this dependency's product.
+    HenselSqrt::Config vanishing_cache;
+    vanishing_cache.cached_inert_prime = 3;
+    GNFS_TEST_CHECK(check_square(nf, {{3, 0}, {3, 0}}, vanishing_cache) != 3);
+    GNFS_TEST_CHECK(check_square(nf, {{1013, 0}, {1013, 0}}, {}) > 1013);
+    // Two consecutive inert primes divide the factors; the third can recover them.
+    constexpr int64_t two_primes = 1013 * 1019;
+    GNFS_TEST_CHECK(check_square(monic, {{two_primes, 0}, {two_primes, 0}}, {}) > 1019);
+
+    // A zero relation is unusable at every prime and must exhaust a finite budget.
+    HenselSqrt zero_solver;
+    GNFS_TEST_CHECK(!zero_solver.compute({{0, 0}, {0, 0}}, nf).has_value());
+    GNFS_TEST_CHECK(zero_solver.last_inert_prime() == 0);
+    GNFS_TEST_CHECK(!zero_solver.was_crt_sign_exhausted());
+
+    // Preserve the uint32_t lifting limit and uint64_t next-prime overflow guard.
+    HenselSqrt::Config largest_prime;
+    largest_prime.prime_start = u32_max - 5;
+    GNFS_TEST_CHECK(check_square(nf, square, largest_prime) == u32_max - 4);
+    for (const uint64_t start : {u32_max, u32_max + 1, u64_max}) {
+        HenselSqrt::Config config;
+        config.prime_start = start;
+        config.cached_inert_prime = u64_max;
+        HenselSqrt solver(config);
+        GNFS_TEST_CHECK(!solver.compute(square, nf).has_value());
+        GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    }
+    std::cout << "  Hensel prime selection: PASSED" << std::endl;
+}
+
+void test_algebraic_sqrt_cached_prime_context() {
+    std::cout << "Testing algebraic square root cache across contexts..." << std::endl;
+    const PolynomialContext first(Integer(407), {Integer(1), Integer(1), Integer(2)}, Integer(14));
+    // The first context caches 1013. It divides the second polynomial's leading
+    // coefficient, so reusing it without validating this context throws.
+    const PolynomialContext second(Integer(4055), {Integer(1), Integer(1), Integer(1013)},
+                                   Integer(2));
+    const std::vector<Relation> relations{Relation(1, 1), Relation(1, 1)};
+    BitVector dependency(2);
+    dependency.set(0);
+    dependency.set(1);
+    AlgebraicSqrt solver;
+    const auto first_root = solver.compute(dependency, relations, first);
+    GNFS_TEST_CHECK(first_root.success);
+    GNFS_TEST_CHECK((first_root.value * first_root.value) % first.n() == Integer(169));
+    const auto second_root = solver.compute(dependency, relations, second);
+    GNFS_TEST_CHECK(second_root.success);
+    GNFS_TEST_CHECK((second_root.value * second_root.value) % second.n() == Integer(1));
+    std::cout << "  Algebraic square root cache across contexts: PASSED" << std::endl;
+}
+
 void test_factor_extraction() {
     std::cout << "Testing factor extraction..." << std::endl;
 
@@ -1311,6 +1411,8 @@ int main() {
     test_rational_sqrt_simple();
     test_rational_sqrt_large_exponent_portability();
     test_sqrt_dependency_dimension_guard();
+    test_hensel_prime_selection();
+    test_algebraic_sqrt_cached_prime_context();
     test_factor_extraction();
     test_norm_linear();
     test_is_irreducible();
