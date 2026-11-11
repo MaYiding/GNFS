@@ -27,7 +27,8 @@
 //   already has a batch of independent `(a, b)` pairs can opt into
 //   worker-pool parallelism without rewriting the multiplication loop.
 //
-//   `GNFS_MPZ_MUL_BATCH_THREADS = N` (default 1, range [1, hw_concurrency * 2])
+//   `GNFS_MPZ_MUL_BATCH_THREADS = N`
+//   (default 1, range [1, min(hw_concurrency * 2, INT_MAX)])
 //
 //   N = 1 keeps the sequential path bit-for-bit (no ThreadPool created, zero
 //   overhead). N >= 2 spawns up to N pool workers and submits each mul
@@ -150,8 +151,8 @@ inline MpzMulBatchThreadsCache& mpz_mul_batch_threads_cache() noexcept {
 /// Parse `GNFS_MPZ_MUL_BATCH_THREADS`. Returns 1 (sequential) on:
 ///   - ENV unset / empty / non-numeric / non-positive
 /// Otherwise returns the parsed value, clamped to
-/// [1, hardware_concurrency * 2] (fallback hw = 4 when hardware_concurrency()
-/// reports 0 so the upper cap stays meaningful).
+/// [1, min(hardware_concurrency * 2, INT_MAX)] (fallback hw = 4 when
+/// hardware_concurrency() reports 0 so the upper cap stays meaningful).
 ///
 /// Preserve leading whitespace, an optional plus sign, and a decimal
 /// numeric prefix (so "12abc" parses to 12). Positive values above the

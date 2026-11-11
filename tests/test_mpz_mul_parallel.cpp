@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <gmp.h>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <random>
