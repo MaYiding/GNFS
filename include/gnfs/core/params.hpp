@@ -9,7 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib> // getenv, atoi for GNFS_OVERRIDE_LP_BITS
+#include <cstdlib> // getenv, strtol for GNFS_OVERRIDE_LP_BITS
 #include <limits>
 #include <locale.h>
 #include <optional>
@@ -243,9 +243,16 @@ struct GNFSParams {
         // ENV override: GNFS_OVERRIDE_LP_BITS=N (1..30) — useful for experimentation
         // (e.g., 60d lp_bits=25 vs 26 trade-off comparison in BACKLOG OPT).
         if (const char* env_lp = std::getenv("GNFS_OVERRIDE_LP_BITS")) {
-            int v = std::atoi(env_lp);
-            if (v >= 1 && v <= 30) {
-                lp_bits = static_cast<uint32_t>(v);
+            // Check the complete value before narrowing. atoi can wrap an
+            // out-of-range override back into the accepted 1..30 interval.
+            char* end = nullptr;
+            const int saved_errno = errno;
+            errno = 0;
+            const long parsed = std::strtol(env_lp, &end, 10);
+            const int parse_errno = errno;
+            errno = saved_errno;
+            if (parse_errno == 0 && end != env_lp && *end == '\0' && parsed >= 1 && parsed <= 30) {
+                lp_bits = static_cast<uint32_t>(parsed);
             }
         }
 
