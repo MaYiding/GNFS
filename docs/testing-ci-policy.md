@@ -141,6 +141,13 @@ Release builds.
 The `MpzMulParallel` instant contract keeps invalid environment-value fallback,
 empty-batch and resolver boundaries, and fixed small-value product checks active
 in Release builds.
+The `FactorBaseSieveLaunchFailure` fast contract sweeps main-thread allocation
+failures in the segmented prime sieve and checks same-process retry results
+against the sequential sieve. It retains Release-active checks and exercises
+partial worker startup when the host supplies multiple workers. A single-worker
+host still tests allocation failure recovery but cannot prove the partial-startup
+case. This resource-sensitive test is excluded from smoke; allocation injection
+does not claim direct coverage of operating-system thread-creation errors.
 The `SieveIntegration` fast contract keeps polynomial selection and context
 verification, non-empty special-Q and candidate flow, candidate lattice and
 coprimality invariants, relation classification, and degenerate-region

@@ -865,6 +865,11 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME FactorBaseAddRollback COMMAND test_factor_base_add_rollback)
     set_tests_properties(FactorBaseAddRollback PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_factor_base_sieve_launch_failure tests/test_factor_base_sieve_launch_failure.cpp)
+    target_link_libraries(test_factor_base_sieve_launch_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME FactorBaseSieveLaunchFailure COMMAND test_factor_base_sieve_launch_failure)
+    set_tests_properties(FactorBaseSieveLaunchFailure PROPERTIES LABELS "fast" TIMEOUT 120)
+
     add_executable(test_special_q
         tests/test_special_q.cpp
     )

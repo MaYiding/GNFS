@@ -1,6 +1,7 @@
 #include "gnfs/factor_base/builder.hpp"
 #include "gnfs/factor_base/fb_roots_parallel.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
+#include "gnfs/util/joining_thread.hpp"
 #include "gnfs/util/primes.hpp"
 #include "gnfs/util/thread_pool.hpp"
 #include <algorithm>
@@ -540,11 +541,14 @@ std::vector<bool> FactorBaseBuilder::build_eratosthenes_sieve(uint32_t bound, bo
         }
     };
 
-    std::vector<std::thread> threads;
+    // A later launch may throw after earlier workers have started. Keep the
+    // owners after all captured data so unwinding joins those workers first.
+    std::vector<gnfs::util::JoiningThread> threads;
     threads.reserve(n_threads);
     for (size_t i = 0; i < n_threads; ++i) {
         threads.emplace_back(worker);
     }
+    // Result conversion must start only after all byte writes have finished.
     for (auto& t : threads)
         t.join();
 
