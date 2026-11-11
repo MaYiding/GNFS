@@ -82,74 +82,39 @@ borrow handle 退到 fresh Integer + skip pool push, `std::allocator` path
 
 ## GMP mpz_powm 批量并行 (GNFS_MPZ_POWM_BATCH_THREADS)
 
-**ENV `GNFS_MPZ_POWM_BATCH_THREADS=N`** (2026-05-22 实施, W11 T3, default 1, range [1, hardware_concurrency * 2]):
-GMP `mpz_powm`(modular exponentiation `base^exp mod modulus`) 在
-多个独立 base 之间相互独立 (embarrassingly parallel). 每次 `mpz_powm`
-调用是 `(base, exp, modulus)` 的 deterministic pure function, 满足
-GMP per-call disjoint-operands thread-safety 契约 (每个 worker 写自己
-disjoint 的 result slot, 共享 `exp` / `modulus` 仅 read). N=1 (默认)
-走 sequential per-base 循环, 不创建 ThreadPool, 零开销保留原行为.
-N>=2 时把 K 个 base dispatch 到大小为 min(N, K) 的 ThreadPool,
-base 之间靠 future 同步收口.
+`GNFS_MPZ_POWM_BATCH_THREADS` 控制 `parallel_mpz_powm` 的线程数。默认值为 1；
+未设置、空值、非数字及非正数均采用默认值。解析沿用 `std::atoi` 的数字前缀语义，
+例如 `"12abc"` 取 12，前导空白允许。正数上限为 `hardware_concurrency() * 2`，
+硬件线程数未知时按 4 计算。结果保存在原子缓存中；测试可用
+`mpz_powm_batch_threads_reset_env_cache_for_testing()` 在无调用运行时重置缓存。
 
-```bash
-GNFS_MPZ_POWM_BATCH_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
-GNFS_MPZ_POWM_BATCH_THREADS=4 ./gnfs <N>    # 4 workers for Schirokauer-style batch powm
-GNFS_MPZ_POWM_BATCH_THREADS=8 ./gnfs <N>    # 8 workers
-unset GNFS_MPZ_POWM_BATCH_THREADS           # same as N=1
-```
+`parallel_mpz_powm(bases, exp, modulus, results)` 处理前
+`min(bases.size(), results.size())` 个元素。输入或输出为空时立即返回，
+不复制操作数、不创建线程池，也不修改输出；多余的输出槽位保持原值。
+调用方须保证 `modulus > 0`；其余算术条件沿用 GMP `mpz_powm`，
+此 helper 不增加参数验证策略。
 
-**并行模型**:
-- Outer = `parallel_mpz_powm(bases, exp, modulus, results)` over n bases
-- Inner = `gnfs::util::ThreadPool` 大小为 min(N, bases.size()), 每 task 调
-  `mpz_powm(results[i], bases[i], exp, modulus)` 写到 disjoint `results[i]` slot
-- 内部 GMP modular exponentiation 算法 bit-identical (helper 仅改变外层
-  dispatch, 不触碰 `mpz_powm` 内核或 `gnfs::core::powmod` wrapper)
-- 共享 `exp` / `modulus` 仅由 worker read, 满足 "concurrent read 是安全的,
-  仅 concurrent write 通过 alias `mpz_t` 才需要 disjoint operands" 的 GMP
-  线程安全 invariant
-- 空 batch (n==0) / 单 base (n==1) 都走 sequential 短路, 不创建 pool
-- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
-  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+每个非空批次先各复制一次指数和模数，因此这两个参数可以引用输出中的元素，
+也可以同时引用同一元素。输入与输出起始地址相同时支持原位运算，无需复制 bases。
+起始地址不同但处理区间重叠时，先复制将要处理的 bases 前缀，避免写入覆盖后续输入；
+使用 `std::less` 比较指针，避免依赖无关对象指针的内建大小比较。
+不重叠的输入无需复制 bases。
 
-**Bit-for-bit guarantee**: 每 base `mpz_powm` 是 pure function of `(base, exp,
-modulus)`, 不依赖 dispatch 顺序. Sequential (N=1) 与 parallel (N>=2) 路径
-产生的 per-index `Integer` 完全一致. 由
-`tests/test_mpz_powm_parallel.cpp` 强制覆盖 (100-base random
-N=1 vs N=4 vs N=hw 严格 per-index `mpz_cmp == 0` assert, plus 200-bit
-prime modulus + 100-bit exponent 多 limb 路径 parity).
+线程数为 1 或仅处理一个元素时执行顺序循环。其余情况使用大小为
+`min(threads, processed_count)` 的 `ThreadPool`，每个任务只写一个输出槽位，
+共享标量读取不可变快照。快照和输入视图在线程池之前构造，确保提交异常时
+线程池先完成清理；正常提交后收集全部 future，再传播首个任务异常。
 
-**ROI 与定位**:
-- 主要 ROI: Schirokauer maps computation (`include/gnfs/linalg/schirokauer.hpp`)
-  per-relation 调用 `mpz_powm` (modulus 100-300 bit, exponent 数十 bit) 上
-  O(thousands) 关系的 batch wall-time 可观. K base 并发后 outer wall ~
-  T_max_base + tasking overhead, 替代 sum(K) sequential 累计. 对 50d+/60d 大
-  modulus 收益更显著 (single-call cost 增加, pool overhead 占比下降).
-- 与 W7/W8/W9/W10 T4 parallel dispatcher family 互补:
-    * W7 `GNFS_SQRT_HENSEL_THREADS` — Hensel lift K-prime slot
-    * W8 T1 `GNFS_ECM_STAGE2_PARALLEL` — ECM Stage 2 BSGS 多曲线
-    * W9 T1 `GNFS_ECM_STAGE1_PARALLEL_THREADS` — ECM Stage 1 Lucas-chain 多曲线
-    * W10 T4 `GNFS_FILTER_MERGE_THREADS` — LP-key bucket merge
-    * W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS` — batched `mpz_powm`
-  五者全部 default 1 (sequential), opt-in, 互不冲突. 可同时启用.
-- Helper 是 opt-in 工具, **不修改** `gnfs::core::powmod` /
-  Schirokauer maps / matrix-builder 主路径. 调用方需要自己 batch up 一组
-  base (典型 a vector of per-relation `Integer`) + 共享 `(exp, modulus)` 后
-  传入 `parallel_mpz_powm`. 当前主 pipeline 无 wire-in 调用, 是 future-infra.
-- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
-  明确 opt-in 时启用.
+**一致性与成本**：每项输出等于调用前的 `base^exp mod modulus`，线程数不影响结果。
+每个非空批次有两次 `Integer` 标量复制；错位重叠时还需复制处理范围内的 bases。
+顺序路径不创建线程池，但不是零开销。当前 `src/` 与 `include/` 没有生产调用点，
+设置此变量不会自动加速 GNFS 主流水线；接入前需针对实际批次测量收益。
 
-**集成点** (2026-05-22, W11 T3):
-- `include/gnfs/util/mpz_powm_parallel.hpp` — `mpz_powm_batch_threads()` env
-  reader with `std::once_flag` cache + `parallel_mpz_powm(bases, exp,
-  modulus, results)` dispatcher + `mpz_powm_batch_threads_reset_env_cache_for_testing()`
-  test hook
-- `tests/test_mpz_powm_parallel.cpp` — 14 个测试 (5 env parsing / empty /
-  single base N=1 / single base N=4 no-stall / N=1 vs scalar mpz_powm
-  reference / N=1 vs N=4 parity / N=1 vs N=hw parity / 200-bit modulus
-  common-exponent semantics / cache reset hook / perf info)
-- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
-  util 模块
+实现位于 `include/gnfs/util/mpz_powm_parallel.hpp`；
+`tests/test_mpz_powm_parallel.cpp` 覆盖环境解析、标量参考值、线程间一致性、
+共享标量别名、双向错位重叠、原位运算、短输出、空批次和宽整数。
+检查使用 Release 下仍生效的 `GNFS_TEST_CHECK`。测试目录、层级和超时以
+`./scripts/test.sh list` 为准，可通过 `./scripts/test.sh run test_mpz_powm_parallel` 验证。
 
 ---
 
@@ -255,104 +220,37 @@ sequential vs parallel agreement).
 
 ## GMP mpz_mod 批量并行 (GNFS_MPZ_MOD_BATCH_THREADS)
 
-**ENV `GNFS_MPZ_MOD_BATCH_THREADS=N`** (2026-05-22 实施, W13 T5, default 1, range [1, hardware_concurrency * 2]):
-W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS` 与 W12 T3 `GNFS_MPZ_INVERT_BATCH_THREADS`
-的兄弟 helper, parallel-dispatcher 家族第 9 名成员. GMP `mpz_mod(result,
-dividend, modulus)` (Euclidean reduction into the canonical residue class)
-在多个独立 dividend 之间相互独立 (embarrassingly parallel). 每次 `mpz_mod`
-调用是 `(dividend, modulus)` 的 deterministic pure function, 满足 GMP per-call
-disjoint-operands thread-safety 契约 (每个 worker 写自己 disjoint 的 result
-slot, 共享 `modulus` 仅 read). N=1 (默认) 走 sequential per-dividend 循环,
-不创建 ThreadPool, 零开销保留原行为. N>=2 时把 K 个 dividend dispatch 到大小
-为 min(N, K) 的 ThreadPool, dividend 之间靠 future 同步收口.
+`GNFS_MPZ_MOD_BATCH_THREADS` 控制 `parallel_mpz_mod` 的线程数。默认值为 1；
+未设置、空值、非数字及非正数均采用默认值。解析沿用 `std::atoi` 的数字前缀语义，
+例如 `"12abc"` 取 12，前导空白允许。正数上限为 `hardware_concurrency() * 2`，
+硬件线程数未知时按 4 计算。结果保存在原子缓存中；测试可用
+`mpz_mod_batch_threads_reset_env_cache_for_testing()` 在无调用运行时重置缓存。
+`resolve_mpz_mod_batch_threads(batch_size)` 返回线程数与批次大小的较小值，空批次返回 0。
 
-```bash
-GNFS_MPZ_MOD_BATCH_THREADS=1 ./gnfs <N>    # default sequential, zero overhead
-GNFS_MPZ_MOD_BATCH_THREADS=4 ./gnfs <N>    # 4 workers for Schirokauer-style batch mod / ECM accumulator reductions
-GNFS_MPZ_MOD_BATCH_THREADS=8 ./gnfs <N>    # 8 workers
-unset GNFS_MPZ_MOD_BATCH_THREADS           # same as N=1
-```
+`parallel_mpz_mod(dividends, modulus, results)` 计算各项的规范非负余数。
+调用方须保证 `modulus > 0`，且 `dividends` 和 `results` 是不同向量。
+模数允许引用输出元素：每个非空批次在调整输出大小或写入之前复制一次模数。
+因此，输出扩容导致的引用失效和较早结果覆盖模数都不会影响本批次的计算。
 
-**Helper API** (`include/gnfs/util/mpz_mod_parallel.hpp`):
-- `mpz_mod_batch_threads()` — cached `std::once_flag` + `std::atomic<int>`
-  ENV reader, default 1, clamp `[1, hw*2]`
-- `resolve_mpz_mod_batch_threads(batch_size)` — 返回 `min(threads, batch_size)`,
-  empty batch (size==0) 返回 0
-- `parallel_mpz_mod(dividends, modulus, results)` — 主入口, void return
-  (无 failure mode)
-- `mpz_mod_batch_threads_reset_env_cache_for_testing()` — 测试 re-resolve hook
+输出过小时扩展至输入大小，多余输出槽位保持原值。空输入立即返回，
+不复制模数、不调整输出大小，也不创建线程池。线程数为 1 或仅有一个输入时
+执行顺序循环；其余情况使用大小为 `min(threads, dividends.size())` 的
+`ThreadPool`。每个任务只写自己的输出槽位，共享不可变的模数快照。
+快照在线程池之前构造，保证提交异常时仍存活到线程池清理完毕；正常提交后
+收集全部 future，再传播首个任务异常。有效算术输入不需要逐项成功标记，
+但分配和线程池异常仍会传播给调用方。
 
-**并行模型**:
-- Outer = `parallel_mpz_mod(dividends, modulus, results)` over n dividends
-- Inner = `gnfs::util::ThreadPool` 大小为 min(N, dividends.size()), 每 task 调
-  `mpz_mod(results[i], dividends[i], modulus)` 写到 disjoint `results[i]` slot
-- 内部 GMP Euclidean reduction 算法 bit-identical (helper 仅改变外层 dispatch,
-  不触碰 `mpz_mod` 内核或任何 `gnfs::core::Integer` 模运算 operator)
-- 共享 `modulus` 仅由 worker read, 满足 "concurrent read 是安全的, 仅
-  concurrent write 通过 alias `mpz_t` 才需要 disjoint operands" 的 GMP
-  线程安全 invariant
-- 空 batch (n==0) / 单 dividend (n==1) 都走 sequential 短路, 不创建 pool
-- Exception path: dispatcher drain 全部 future, 第一个 thrown exception
-  通过 `std::rethrow_exception` 传给 caller (不 swallow); pool 析构干净 join
+**一致性与成本**：每项输出等于以调用前模数计算的 `dividends[i] mod modulus`，
+范围为 `[0, modulus)`，线程数不影响结果。每个非空批次有一次 `Integer` 模数复制，
+不复制 dividends；顺序路径不创建线程池，但不是零开销。
+当前 `src/` 与 `include/` 没有生产调用点，设置此变量不会自动加速 GNFS 主流水线；
+接入前需针对实际批次测量收益。
 
-**Bit-for-bit guarantee**: 每 dividend `mpz_mod` 是 pure function of
-`(dividend, modulus)`, 不依赖 dispatch 顺序. Sequential (N=1) 与 parallel
-(N>=2) 路径产生的 per-index `Integer` 完全一致. 由
-`tests/test_mpz_mod_parallel.cpp` 强制覆盖 (100-dividend random N=1 vs
-scalar reference / N=1 vs N=4 vs N=hw 严格 per-index `mpz_cmp == 0` assert,
-plus 200-bit prime modulus 多 limb 路径 parity, dividend < modulus 边界,
-dividend == modulus (residue==0) 边界, 与 negative dividend canonical
-non-negative residue 语义).
-
-**Failure semantics — 与 W12 T3 mpz_invert 关键差异**:
-`mpz_mod(out, dividend, modulus)` 是 *total* 函数 — 只要 `modulus > 0`,
-任何 dividend 都产出 canonical residue in `[0, modulus)`. 与 W12 T3
-`mpz_invert` 在 `gcd(base, modulus) != 1` 时 fail (返回 0 不写 result)
-不同, `mpz_mod` 永远成功. 故本 helper 返回 `void`, 不需要 `std::vector<bool>
-success` 返回值. 调用方不需要处理 per-slot failure case, 也不需要从
-success bit 提取 lucky factor — 这是 mpz_mod 与 mpz_invert / mpz_powm 三者
-里唯一无 failure mode 的 dispatcher.
-
-**ROI 与定位**:
-- 主要 ROI: 50d+/60d 余因子 pipeline 与 Schirokauer maps 的 batch reduction
-  hot path 上, modulus 100-300 bit, dividend wider (经 multiplication 后超
-  modulus). K dividend 并发后 outer wall ~ T_max_dividend + tasking overhead,
-  替代 sum(K) sequential 累计. 对大 modulus 收益更显著 (single-call cost
-  增加, pool overhead 占比下降).
-- 与 W7/W8/W9/W10 T4/W11 T3/W11 T4/W12 T3/W12 T4 parallel dispatcher family
-  互补, 本 helper 是第 9 名成员:
-    * W7 `GNFS_SQRT_HENSEL_THREADS` — Hensel lift K-prime slot
-    * W8 T1 `GNFS_ECM_STAGE2_PARALLEL` — ECM Stage 2 BSGS 多曲线
-    * W9 T1 `GNFS_ECM_STAGE1_PARALLEL_THREADS` — ECM Stage 1 Lucas-chain 多曲线
-    * W10 T4 `GNFS_FILTER_MERGE_THREADS` — LP-key bucket merge
-    * W11 T3 `GNFS_MPZ_POWM_BATCH_THREADS` — batched `mpz_powm`
-    * W11 T4 `GNFS_LATTICE_BASIS_PARALLEL_THREADS` — lattice basis reduction
-    * W12 T3 `GNFS_MPZ_INVERT_BATCH_THREADS` — batched `mpz_invert`
-    * W12 T4 `GNFS_SIEVE_APPLY_TILE_THREADS` — sieve apply tile
-    * W13 T5 `GNFS_MPZ_MOD_BATCH_THREADS` — batched `mpz_mod` (本 helper)
-  九者全部 default 1 (sequential), opt-in, 互不冲突. 可同时启用.
-- Helper 是 opt-in 工具, **不修改** 任何 `gnfs::core::Integer` 模运算
-  operator / Schirokauer maps / matrix-builder / 任何 reduction call-site 主路径.
-  调用方需要自己 batch up 一组 dividend (典型 a vector of per-relation
-  `Integer`) + 共享 `modulus` 后传入 `parallel_mpz_mod`. 当前主 pipeline
-  无 wire-in 调用, 是 future-infra.
-- Default OFF (N=1) 保证 zero behavior change for legacy callers, 仅当用户
-  明确 opt-in 时启用.
-
-**集成点** (2026-05-22, W13 T5):
-- `include/gnfs/util/mpz_mod_parallel.hpp` — `mpz_mod_batch_threads()` env
-  reader with `std::once_flag` cache + `parallel_mpz_mod(dividends, modulus,
-  results)` dispatcher + `resolve_mpz_mod_batch_threads(batch_size)` helper +
-  `mpz_mod_batch_threads_reset_env_cache_for_testing()` test hook
-- `tests/test_mpz_mod_parallel.cpp` — 17 个测试 (5 env parsing 含 leading
-  whitespace 与 "12abc" partial parse / empty / single dividend N=1 / single
-  dividend N=4 no-stall / N=1 vs scalar mpz_mod reference / N=1 vs N=4
-  parity / N=1 vs N=hw parity / 200-bit prime modulus multi-limb parity /
-  dividend < modulus boundary / dividend == modulus residue==0 boundary /
-  negative dividend canonical non-negative residue / reset env cache hook /
-  perf info)
-- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
-  util 模块
+实现位于 `include/gnfs/util/mpz_mod_parallel.hpp`；
+`tests/test_mpz_mod_parallel.cpp` 覆盖环境解析、标量参考值、线程间一致性、
+负数和宽整数、输出中保存的模数、强制输出扩容以及空输入和输出尾部保持。
+检查使用 Release 下仍生效的 `GNFS_TEST_CHECK`。测试目录、层级和超时以
+`./scripts/test.sh list` 为准，可通过 `./scripts/test.sh run test_mpz_mod_parallel` 验证。
 
 ---
 

@@ -25,8 +25,8 @@
 //
 //   `GNFS_MPZ_MOD_BATCH_THREADS = N` (default 1, range [1, hw_concurrency * 2])
 //
-//   N = 1 keeps the sequential path bit-for-bit (no ThreadPool created, zero
-//   overhead). N >= 2 spawns up to N pool workers and submits each dividend's
+//   N = 1 uses the sequential path without a ThreadPool. Each nonempty batch
+//   copies its modulus once. N >= 2 submits each dividend's
 //   `mpz_mod` invocation as an independent unit of work.
 //
 // No failure semantics (real difference vs W12 T3 mpz_invert):
@@ -46,8 +46,8 @@
 //     `mpz_mod(out, dividends[i], modulus)` regardless of `threads`.
 //   * GMP's documented thread-safety covers concurrent calls that touch
 //     disjoint operands. Per-task writes go into `results[i]` (a per-index
-//     disjoint `Integer`), and reads share an immutable reference to
-//     `modulus`, so the per-call disjoint-operand contract holds.
+//     disjoint `Integer`), and reads share an owned immutable modulus
+//     snapshot, including when the caller stores the modulus in `results`.
 //   * The `results` vector aliases caller-owned storage; the dispatcher
 //     writes each slot exactly once. Both sequential and parallel paths
 //     produce bit-for-bit identical contents.
@@ -86,7 +86,9 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <future>
 #include <gmp.h>
 #include <mutex>
@@ -125,20 +127,22 @@ inline MpzModBatchThreadsCache& mpz_mod_batch_threads_cache() noexcept {
 inline int parse_mpz_mod_batch_threads_env() noexcept {
     const char* env = std::getenv("GNFS_MPZ_MOD_BATCH_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
     int parsed = std::atoi(env);
     if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+        return 1; // invalid / non-positive -> sequential
     }
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
-    if (parsed > cap) parsed = cap;
+    if (parsed > cap)
+        parsed = cap;
     return parsed;
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_MPZ_MOD_BATCH_THREADS` env into a cached thread count.
 ///
@@ -149,12 +153,12 @@ inline int parse_mpz_mod_batch_threads_env() noexcept {
 [[nodiscard]] inline int mpz_mod_batch_threads() noexcept {
     auto& cache = detail::mpz_mod_batch_threads_cache();
     int cached = cache.value.load(std::memory_order_acquire);
-    if (cached != 0) return cached;
+    if (cached != 0)
+        return cached;
 
     const int parsed = detail::parse_mpz_mod_batch_threads_env();
     int expected = 0;
-    if (cache.value.compare_exchange_strong(expected, parsed,
-                                            std::memory_order_acq_rel,
+    if (cache.value.compare_exchange_strong(expected, parsed, std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
         return parsed;
     }
@@ -169,10 +173,13 @@ inline int parse_mpz_mod_batch_threads_env() noexcept {
 /// degrade to a single-task sequential run anyway.
 [[nodiscard]] inline int resolve_mpz_mod_batch_threads(std::size_t batch_size) noexcept {
     int threads = mpz_mod_batch_threads();
-    if (batch_size == 0) return 0;
-    if (threads <= 1) return 1;
+    if (batch_size == 0)
+        return 0;
+    if (threads <= 1)
+        return 1;
     auto b = static_cast<std::size_t>(threads);
-    if (b > batch_size) b = batch_size;
+    if (b > batch_size)
+        b = batch_size;
     return static_cast<int>(b);
 }
 
@@ -189,11 +196,9 @@ inline void mpz_mod_batch_threads_reset_env_cache_for_testing() noexcept {
 /// Compute `results[i] = dividends[i] mod modulus` for every i.
 ///
 /// Resizes `results` to match `dividends.size()` if undersized (each new slot
-/// is default-constructed `Integer(0)`). `modulus` is shared across the
-/// entire batch and read concurrently by every worker (this is safe because
-/// modulus is not mutated; GMP's per-call disjoint-operand contract only
-/// forbids concurrent writes through aliasing `mpz_t`s, not concurrent
-/// reads).
+/// is default-constructed `Integer(0)`). A nonempty batch copies `modulus`
+/// before resizing or writing `results`, so the modulus may name an output
+/// element. Workers share the immutable copy; extra output slots are untouched.
 ///
 /// Behavior:
 ///   - threads == 1 (default): sequential for-loop, no ThreadPool created
@@ -210,8 +215,7 @@ inline void mpz_mod_batch_threads_reset_env_cache_for_testing() noexcept {
 /// `test_n1_vs_n_hw_parity` strictly enforce per-index equality.
 ///
 /// Preconditions:
-///   - `modulus > 0` (caller responsibility; `mpz_mod` requires a positive
-///     modulus, matching the GMP documented contract).
+///   - `modulus > 0` (the dispatcher's caller precondition).
 ///   - `dividends` and `results` must not alias the same storage (caller
 ///     contract; the dispatcher does not detect or handle aliasing).
 ///
@@ -229,6 +233,10 @@ inline void parallel_mpz_mod(const std::vector<gnfs::core::Integer>& dividends,
         return;
     }
 
+    // Snapshot before resize can invalidate an output-owned modulus. Declare
+    // it before the pool so it also survives worker cleanup if submission throws.
+    const gnfs::core::Integer batch_modulus(modulus);
+
     // Defensive resize: keep the dispatcher robust when caller passed an
     // under-sized output buffer. This matches the contract used by
     // `parallel_mpz_invert` (W12 T3) and the SIMD batch helpers
@@ -240,15 +248,12 @@ inline void parallel_mpz_mod(const std::vector<gnfs::core::Integer>& dividends,
 
     const int threads = mpz_mod_batch_threads();
 
-    // Sequential path: zero overhead, preserves the bit-for-bit reference
-    // behaviour (no pool spawn, no future overhead). Also taken when the
+    // Sequential path: no pool spawn or futures. Also taken when the
     // caller asked for parallelism but only supplied a single dividend; one
     // task is never worth a pool spin-up.
     if (threads <= 1 || n == 1) {
         for (std::size_t i = 0; i < n; ++i) {
-            mpz_mod(results[i].get_mpz(),
-                    dividends[i].get_mpz(),
-                    modulus.get_mpz());
+            mpz_mod(results[i].get_mpz(), dividends[i].get_mpz(), batch_modulus.get_mpz());
         }
         return;
     }
@@ -257,23 +262,19 @@ inline void parallel_mpz_mod(const std::vector<gnfs::core::Integer>& dividends,
     // workers than dividends wastes resources and adds futex pressure for no
     // throughput gain.
     const std::size_t pool_size =
-        (static_cast<std::size_t>(threads) < n)
-            ? static_cast<std::size_t>(threads)
-            : n;
+        (static_cast<std::size_t>(threads) < n) ? static_cast<std::size_t>(threads) : n;
     gnfs::util::ThreadPool pool(static_cast<uint32_t>(pool_size));
 
     std::vector<std::future<void>> futures;
     futures.reserve(n);
     for (std::size_t i = 0; i < n; ++i) {
         // Each task captures the batch index plus references to the input
-        // vector, the shared modulus, and the output vector. Per-dividend
+        // vector, the owned modulus snapshot, and the output vector. Per-dividend
         // output slots are disjoint, so concurrent writes to `results[i]`
-        // are race-free even though `results` itself is shared. `modulus`
-        // is read-only and may be referenced from every worker.
-        futures.push_back(pool.submit([&dividends, &modulus, &results, i]() {
-            mpz_mod(results[i].get_mpz(),
-                    dividends[i].get_mpz(),
-                    modulus.get_mpz());
+        // are race-free even though `results` itself is shared. The snapshot
+        // is read-only and outlives the pool.
+        futures.push_back(pool.submit([&dividends, &batch_modulus, &results, i]() {
+            mpz_mod(results[i].get_mpz(), dividends[i].get_mpz(), batch_modulus.get_mpz());
         }));
     }
 
@@ -299,4 +300,4 @@ inline void parallel_mpz_mod(const std::vector<gnfs::core::Integer>& dividends,
     }
 }
 
-}  // namespace gnfs::util
+} // namespace gnfs::util
