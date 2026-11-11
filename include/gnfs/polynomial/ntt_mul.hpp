@@ -310,9 +310,9 @@ inline void ntt_mul_single_prime(const std::vector<uint64_t>& a,
         uint64_t q1_mod_p, uint64_t q1q2_mod_p,
         uint64_t p) noexcept {
     // u2 = (r2 - r1) * inv(q1) mod q2.
-    uint64_t diff2 = (r2 >= r1) ? (r2 - r1) : (r2 + q2 - r1);
-    // r1 < q1 < q2, so r1 < q2. If r2 < r1 (which can happen), the
-    // above adjusts correctly without overflow.
+    // q1 exceeds q2, so a residue modulo q1 can lie outside [0, q2).
+    const uint64_t r1_mod_q2 = r1 % q2;
+    const uint64_t diff2 = (r2 >= r1_mod_q2) ? (r2 - r1_mod_q2) : (q2 - (r1_mod_q2 - r2));
     uint64_t u2 = (diff2 * inv_q1_mod_q2) % q2;
 
     // u3 = (r3 - r1 - q1*u2) * inv(q1*q2) mod q3.
