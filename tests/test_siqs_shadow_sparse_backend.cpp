@@ -101,6 +101,7 @@ private:
 [[nodiscard]] std::vector<std::string> capture_bw_scratch_names(const std::string& extension) {
     std::vector<std::string> names;
     const std::string prefix = "gnfs_bw_krylov_" + std::to_string(gnfs::util::process_id()) + "_";
+    const std::string directory_suffix = extension + ".scratch";
     std::error_code error;
     std::filesystem::directory_iterator entries(gnfs::util::temp_directory_path(), error);
     if (error) {
@@ -108,7 +109,8 @@ private:
     }
     for (const auto& entry : entries) {
         const std::string leaf = entry.path().filename().string();
-        if (leaf.starts_with(prefix) && leaf.ends_with(extension)) {
+        if (leaf.starts_with(prefix) &&
+            (leaf.ends_with(extension) || leaf.ends_with(directory_suffix))) {
             names.push_back(leaf);
         }
     }
