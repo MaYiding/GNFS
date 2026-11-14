@@ -402,6 +402,61 @@ void test_discriminant_degree6() {
 // Tests: Minkowski bound uses correct signature
 // ═══════════════════════════════════════════════════════════
 
+void test_wide_quadratic_minkowski_bound() {
+    ClassGroupConfig config;
+    config.max_primes = 0;
+    for (uint32_t exponent : {1024u, 1025u, 2046u, 2047u, 2048u}) {
+        const Integer power = pow(I(2), exponent);
+        const double root =
+            std::scalbn(std::sqrt(exponent % 2 ? 2.0 : 1.0), static_cast<int>(exponent / 2));
+        // Both polynomials vanish at 1 modulo 4. Their bounded constant
+        // offsets are too small to change the rounded square root.
+        PolynomialContext real(I(4), {-(power + I(1)), I(0), I(1)}, I(1));
+        PolynomialContext imaginary(I(4), {power + I(3), I(0), I(1)}, I(1));
+        TEST_ASSERT(ClassGroup(real, config).minkowski_bound() == root,
+                    "wide real quadratic bound is sqrt(k)");
+        const double bound = ClassGroup(imaginary, config).minkowski_bound();
+        const double expected = (4.0 / std::acos(-1.0)) * root;
+        TEST_ASSERT(bound == expected ||
+                        std::abs(bound / expected - 1.0) <= std::numeric_limits<double>::epsilon(),
+                    "wide imaginary quadratic bound is (4/pi)*sqrt(k)");
+    }
+    // The rounding midpoint between the largest finite double and overflow.
+    const Integer midpoint = pow(I(2), 1024) - pow(I(2), 970);
+    const auto quadratic_bound = [&](const Integer& k) {
+        PolynomialContext ctx(k - I(1), {-k, I(0), I(1)}, I(1));
+        return ClassGroup(ctx, config).minkowski_bound();
+    };
+    TEST_ASSERT(quadratic_bound(midpoint * midpoint - I(1)) == std::numeric_limits<double>::max(),
+                "round below the overflow midpoint to the largest finite value");
+    TEST_ASSERT(std::isinf(quadratic_bound(midpoint * midpoint + I(1))),
+                "round above the overflow midpoint to infinity");
+    TEST_PASS("quadratic Minkowski bound across the double exponent range");
+}
+
+void test_high_degree_minkowski_bound() {
+    // x^144 - 2 is Eisenstein at 2, has signature (2,71), and
+    // |D| = 144^144 * 2^143. The complete bound fits in a double.
+    std::vector<Integer> coefficients(145);
+    coefficients.front() = I(-2);
+    coefficients.back() = I(1);
+    PolynomialContext ctx(I(2047), std::move(coefficients), I(2));
+    ClassGroupConfig config;
+    config.max_primes = 0;
+    const ClassGroup group(ctx, config);
+    TEST_ASSERT(std::abs(std::log2(group.minkowski_bound()) - 409.64183448) < 1e-7,
+                "high-degree bound retains the factorial and signature weights");
+    config.max_primes = 1;
+    bool rejected = false;
+    try {
+        ClassGroup enabled(ctx, config);
+    } catch (const std::overflow_error&) {
+        rejected = true;
+    }
+    TEST_ASSERT(rejected, "high-degree bound exceeds the prime search domain");
+    TEST_PASS("high-degree Minkowski bound and prime search domain");
+}
+
 void test_minkowski_bound_degree3() {
     // x^3 + x + 1: disc=-31, (r1,r2)=(1,1)
     // MB = (3!/3^3) * (4/π)^1 * sqrt(31) = (6/27) * 1.2732 * 5.568 = 0.2222 * 7.093 = 1.576
@@ -998,6 +1053,8 @@ int main() {
     test_discriminant_degree6();
 
     // Minkowski bound (correct signature)
+    test_wide_quadratic_minkowski_bound();
+    test_high_degree_minkowski_bound();
     test_minkowski_bound_degree3();
     test_minkowski_bound_degree4_0_2();
     test_minkowski_bound_degree4_4_0();
