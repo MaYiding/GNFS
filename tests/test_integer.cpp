@@ -143,6 +143,28 @@ void test_bit_operations() {
     n.clear_bit(1);
     GNFS_TEST_CHECK(!n.test_bit(1));
 
+    constexpr size_t last_index = static_cast<size_t>(std::numeric_limits<mp_bitcnt_t>::max());
+    GNFS_TEST_CHECK(!Integer(1).test_bit(last_index));
+    GNFS_TEST_CHECK(Integer(-2).test_bit(last_index));
+
+    if constexpr (std::numeric_limits<size_t>::digits > std::numeric_limits<mp_bitcnt_t>::digits) {
+        constexpr size_t past_end = last_index + size_t{1};
+        const auto check_rejected = [](Integer value, auto operation) {
+            const Integer original = value;
+            bool rejected = false;
+            try {
+                (value.*operation)(past_end);
+            } catch (const std::out_of_range&) {
+                rejected = true;
+            }
+            GNFS_TEST_CHECK(rejected);
+            GNFS_TEST_CHECK(value == original);
+        };
+        check_rejected(Integer(1), &Integer::test_bit);
+        check_rejected(Integer(0), &Integer::set_bit);
+        check_rejected(Integer(1), &Integer::clear_bit);
+    }
+
     Integer big("123456789012345678901234567890");
     GNFS_TEST_CHECK(big.bit_length() > 90);
 
