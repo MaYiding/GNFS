@@ -640,10 +640,11 @@ BlockWiedemann::block_wiedemann_scalar_solve(const SparseMatrix& matrix, size_t 
         std::snprintf(path_buf, sizeof(path_buf), "gnfs_bw_krylov_scalar_%d_%llu_n%llu.kry",
                       gnfs::util::process_id(), static_cast<unsigned long long>(seed),
                       static_cast<unsigned long long>(scratch_nonce));
-        seq_mmap_path = gnfs::util::temp_path(path_buf);
+        seq_mmap_path = gnfs::util::temp_directory_path() / path_buf;
         seq_mmap_cleanup = std::make_unique<ScratchFileCleanup>(seq_mmap_path);
-        seq_mmap = std::make_unique<KrylovSequenceMmap>(seq_mmap_path.string(), /*L=*/64,
-                                                        /*entry_size=*/seq_len);
+        seq_mmap = std::make_unique<KrylovSequenceMmap>(
+            detail::krylov_cached_path_string(seq_mmap_path), /*L=*/64,
+            /*entry_size=*/seq_len);
     } else {
         sequences.assign(64, std::vector<uint8_t>(seq_len, 0));
     }
@@ -980,10 +981,10 @@ block_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t po
                       gnfs::util::process_id(), static_cast<unsigned>(stream_tag),
                       static_cast<unsigned long long>(seed),
                       static_cast<unsigned long long>(scratch_nonce));
-        mmap_path = gnfs::util::temp_path(path_buf);
+        mmap_path = gnfs::util::temp_directory_path() / path_buf;
         mmap_cleanup = std::make_unique<ScratchFileCleanup>(mmap_path);
-        A_mmap =
-            std::make_unique<KrylovSequenceMmap>(mmap_path.string(), L, sizeof(DenseGF2_64x64));
+        A_mmap = std::make_unique<KrylovSequenceMmap>(detail::krylov_cached_path_string(mmap_path),
+                                                      L, sizeof(DenseGF2_64x64));
     } else {
         A_seq.resize(L);
     }
@@ -1293,10 +1294,10 @@ thin_solve_view_impl(const MV& csr, size_t max_deps, uint64_t seed, uint32_t poo
                       gnfs::util::process_id(), static_cast<unsigned>(stream_tag),
                       static_cast<unsigned long long>(seed),
                       static_cast<unsigned long long>(scratch_nonce));
-        mmap_path = gnfs::util::temp_path(path_buf);
+        mmap_path = gnfs::util::temp_directory_path() / path_buf;
         mmap_cleanup = std::make_unique<ScratchFileCleanup>(mmap_path);
-        A_mmap =
-            std::make_unique<KrylovSequenceMmap>(mmap_path.string(), L, sizeof(DenseGF2_64x64));
+        A_mmap = std::make_unique<KrylovSequenceMmap>(detail::krylov_cached_path_string(mmap_path),
+                                                      L, sizeof(DenseGF2_64x64));
     } else {
         A_seq.resize(L);
     }
