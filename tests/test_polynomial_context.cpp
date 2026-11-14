@@ -173,6 +173,26 @@ void test_trailing_zero_removal() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_default_context_evaluation() {
+    const PolynomialContext empty;
+    GNFS_TEST_CHECK(empty.coefficients().empty());
+    GNFS_TEST_CHECK(empty.evaluate(Integer(3)).is_zero());
+    GNFS_TEST_CHECK(empty.leading_coeff().is_zero());
+    GNFS_TEST_CHECK(empty.algebraic_norm(3, 2).is_zero());
+    GNFS_TEST_CHECK(empty.algebraic_norm(-3, 0).is_zero());
+
+    const PolynomialContext constant(Integer(7), {Integer(-5)}, Integer(0));
+    GNFS_TEST_CHECK(constant.leading_coeff() == Integer(-5));
+    GNFS_TEST_CHECK(constant.algebraic_norm(3, 2) == Integer(-5));
+#if defined(__SIZEOF_INT128__)
+    const auto [norm, ok] = empty.algebraic_norm_i128(3, 2);
+    GNFS_TEST_CHECK(ok && norm == 0);
+    GNFS_TEST_CHECK(!empty.algebraic_norm_i128(-3, 0).second);
+    const auto [constant_norm, constant_ok] = constant.algebraic_norm_i128(3, 2);
+    GNFS_TEST_CHECK(constant_ok && constant_norm == -5);
+#endif
+}
+
 void test_empty_poly_throws() {
     std::cout << "Testing empty polynomial throws..." << std::endl;
     bool threw = false;
@@ -182,7 +202,7 @@ void test_empty_poly_throws() {
     } catch (const std::invalid_argument&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -348,6 +368,7 @@ int main() {
     test_algebraic_norm();
     test_clone_is_independent();
     test_trailing_zero_removal();
+    test_default_context_evaluation();
     test_empty_poly_throws();
     test_n_digits();
     test_uint64_portability_and_overflow_boundaries();
