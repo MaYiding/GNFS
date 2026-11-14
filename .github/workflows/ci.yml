@@ -10,14 +10,15 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build-and-test:
     name: ${{ matrix.platform_label }}
     runs-on: ${{ matrix.os }}
+    # An older CI required job can stay queued after its tests are cancelled.
+    # Supersede each test job independently so the next run can start its matrix.
+    concurrency:
+      group: ci-${{ github.ref }}-matrix-${{ matrix.platform_label }}
+      cancel-in-progress: true
     continue-on-error: ${{ matrix.experimental }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
@@ -291,6 +292,9 @@ jobs:
   linux-release-gate:
     name: Linux x86_64 Release deep gate
     runs-on: ubuntu-24.04
+    concurrency:
+      group: ci-${{ github.ref }}-linux-release-gate
+      cancel-in-progress: true
     timeout-minutes: 75
 
     steps:
@@ -326,6 +330,9 @@ jobs:
   linux-musl-transport:
     name: Alpine 3.21 musl transport boundary
     runs-on: ubuntu-24.04
+    concurrency:
+      group: ci-${{ github.ref }}-linux-musl-transport
+      cancel-in-progress: true
     timeout-minutes: 15
 
     steps:
