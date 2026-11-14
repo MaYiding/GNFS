@@ -51,38 +51,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-format
 
-      - name: Select files
-        id: files
+      - name: Check formatting
         shell: bash
         run: |
           set -euo pipefail
 
           pathspec=( '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' )
+          # A leading ./ makes clang-format treat names beginning with @ as source paths.
+          files="${RUNNER_TEMP}/clang-format-files"
           if [[ "${FULL_SCAN}" == "true" || -z "${BASE_SHA}" || "${BASE_SHA}" =~ ^0+$ ]]; then
-            git ls-files -- "${pathspec[@]}" > /tmp/clang-format-files
+            git ls-files -z --format='./%(path)' -- "${pathspec[@]}" > "$files"
           else
-            git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${GITHUB_SHA}" -- \
-              "${pathspec[@]}" > /tmp/clang-format-files
+            git diff --name-only -z --line-prefix=./ --diff-filter=ACMR "${BASE_SHA}" "${GITHUB_SHA}" -- \
+              "${pathspec[@]}" > "$files"
           fi
 
-          sed -i '/^$/d' /tmp/clang-format-files
-          sort -u /tmp/clang-format-files -o /tmp/clang-format-files
-          {
-            echo 'files<<EOF'
-            cat /tmp/clang-format-files
-            echo 'EOF'
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Check formatting
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${STEPS_FILES_OUTPUTS_FILES}" ]]; then
+          if [[ ! -s "$files" ]]; then
             echo "No C/C++ files changed."
             exit 0
           fi
-
-          mapfile -t files <<< "${STEPS_FILES_OUTPUTS_FILES}"
-          clang-format --dry-run --Werror "${files[@]}"
-        env:
-          STEPS_FILES_OUTPUTS_FILES: ${{ steps.files.outputs.files }}
+          xargs -0 clang-format --dry-run --Werror -- < "$files"
