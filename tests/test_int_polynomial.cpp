@@ -2,6 +2,7 @@
 #include "gnfs/polynomial/int_polynomial.hpp"
 #include "support/test_check.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -238,6 +239,36 @@ void test_roots_mod_p_rejects_non_prime_moduli() {
             caught = true;
         }
         GNFS_TEST_CHECK(caught);
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_roots_mod_p_degree_reduction() {
+    std::cout << "Testing roots after reduction of the leading coefficients..." << std::endl;
+
+    // Cover both root-finding algorithms and primes near the uint32_t limit.
+    for (const uint32_t p : {997U, 1009U, 65537U, 4294967291U}) {
+        const int64_t multiple = static_cast<int64_t>(p);
+        const auto check_roots = [p](const IntPolynomial& f, std::vector<uint32_t> expected) {
+            auto roots = f.roots_mod_p(p);
+            std::sort(roots.begin(), roots.end());
+            GNFS_TEST_CHECK(roots == expected);
+            for (const uint32_t root : roots) {
+                // Exact integer evaluation supplies an independent oracle.
+                const Integer value = f.evaluate(Integer(root));
+                GNFS_TEST_CHECK(mpz_divisible_ui_p(value.get_mpz(), p) != 0);
+            }
+        };
+
+        // Modulo p, these become x-1, (x-1)(x-2), x(x-3), and (x-1)^2.
+        check_roots(make_poly({-1, 1, multiple}), {1});
+        check_roots(make_poly({2, -3, 1, multiple, -multiple}), {1, 2});
+        check_roots(make_poly({0, -3, 1, -multiple, multiple}), {0, 3});
+        check_roots(make_poly({1, -2, 1, multiple}), {1});
+
+        // A nonzero constant after reduction still has no roots.
+        check_roots(make_poly({1, multiple, -multiple}), {});
     }
 
     std::cout << "  PASS" << std::endl;
@@ -628,6 +659,7 @@ int main() {
     test_evaluate_mod();
     test_roots_mod_p();
     test_roots_mod_p_rejects_non_prime_moduli();
+    test_roots_mod_p_degree_reduction();
     test_addition();
     test_subtraction();
     test_scalar_multiply();

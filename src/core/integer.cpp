@@ -7,10 +7,18 @@
 #include <limits>
 #include <new>
 #include <stdexcept>
+#include <utility>
 
 namespace gnfs::core {
 
 namespace {
+
+mp_bitcnt_t checked_bit_index(size_t index) {
+    if (!std::in_range<mp_bitcnt_t>(index)) {
+        throw std::out_of_range("Integer bit index exceeds the GMP bit-count range");
+    }
+    return static_cast<mp_bitcnt_t>(index);
+}
 
 bool is_valid_string_base(int base) {
     return base >= 2 && base <= 62;
@@ -355,15 +363,15 @@ int Integer::compare(const Integer& other) const {
 // ============================================================
 
 bool Integer::test_bit(size_t index) const {
-    return mpz_tstbit(value_, index) != 0;
+    return mpz_tstbit(value_, checked_bit_index(index)) != 0;
 }
 
 void Integer::set_bit(size_t index) {
-    mpz_setbit(value_, index);
+    mpz_setbit(value_, checked_bit_index(index));
 }
 
 void Integer::clear_bit(size_t index) {
-    mpz_clrbit(value_, index);
+    mpz_clrbit(value_, checked_bit_index(index));
 }
 
 // ============================================================

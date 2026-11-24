@@ -23,7 +23,7 @@
 //   * Mutex-protected get/put for thread safety.
 //   * Single overflow-free policy: cache is bounded by capacity; any new
 //     entry evicts the LRU entry to make room (true LRU semantics, unlike
-//     W13 T3 ECM B1 prime cache which is insert-only with overflow slot).
+//     the ECM B1 prime cache which returns uncached results when full).
 //   * Process-singleton accessor `shared_cofactor_result_cache()`.
 //   * ENV-cached capacity reader with documented parse rules.
 //

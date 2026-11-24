@@ -307,10 +307,10 @@ private:
 
         // 投影根的额外贡献 (p | leading_coeff(f))
         // 参考 Guillevic & Singh (2021), Eq 4.7 + Prop 1.
-        if (f.leading_coeff().fits_uint64()) {
-            if (f.leading_coeff().to_uint64() % p == 0) {
-                contribution += log_p / p;
-            }
+        // Every prime in this sweep is uint32_t, so it fits GMP's unsigned
+        // long argument on both LP64 and LLP64. Test the full signed coefficient.
+        if (mpz_divisible_ui_p(f.leading_coeff().get_mpz(), static_cast<unsigned long>(p)) != 0) {
+            contribution += log_p / p;
         }
 
         return contribution;

@@ -20,8 +20,8 @@
 //
 //   `GNFS_MPZ_POWM_BATCH_THREADS = N` (default 1, range [1, hw_concurrency * 2])
 //
-//   N = 1 keeps the sequential path bit-for-bit (no ThreadPool created, zero
-//   overhead). N >= 2 spawns up to N pool workers and submits each base's
+//   N = 1 keeps the sequential path bit-for-bit (no ThreadPool created).
+//   N >= 2 spawns up to N pool workers and submits each base's
 //   `mpz_powm` invocation as an independent unit of work.
 //
 // Algorithmic equivalence (strict invariant):
@@ -30,8 +30,9 @@
 //     `bases[i]^exp mod modulus` regardless of `threads`.
 //   * GMP's documented thread-safety covers concurrent calls that touch
 //     disjoint operands. Per-task writes go into `results[i]` (a per-index
-//     disjoint `Integer`), and reads share immutable references to `exp` and
-//     `modulus`, so the per-call disjoint-operand contract holds.
+//     disjoint `Integer`), and reads share owned snapshots of `exp` and
+//     `modulus`. Shifted input/output overlaps use an owned base snapshot;
+//     exact in-place calls access one independent base/result per task.
 //   * The result span aliases caller-owned storage; the dispatcher writes
 //     each slot exactly once. Both sequential and parallel paths produce
 //     bit-for-bit identical contents.
@@ -45,14 +46,17 @@
 //     (one shared exponent, one shared modulus, varying base) is what this
 //     dispatcher targets.
 //   * We do NOT pre-allocate or pool `Integer` results. Caller owns the
-//     output span and is responsible for pre-sizing it to `bases.size()`.
+//     output span; its size limits the number of bases processed.
 
 #include "../core/integer.hpp"
 #include "./thread_pool.hpp"
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <exception>
+#include <functional>
 #include <future>
 #include <gmp.h>
 #include <mutex>
@@ -92,20 +96,22 @@ inline MpzPowmBatchThreadsCache& mpz_powm_batch_threads_cache() noexcept {
 inline int parse_mpz_powm_batch_threads_env() noexcept {
     const char* env = std::getenv("GNFS_MPZ_POWM_BATCH_THREADS");
     if (env == nullptr || env[0] == '\0') {
-        return 1;  // default sequential
+        return 1; // default sequential
     }
     int parsed = std::atoi(env);
     if (parsed <= 0) {
-        return 1;  // invalid / non-positive -> sequential
+        return 1; // invalid / non-positive -> sequential
     }
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     int cap = static_cast<int>(hw) * 2;
-    if (parsed > cap) parsed = cap;
+    if (parsed > cap)
+        parsed = cap;
     return parsed;
 }
 
-}  // namespace detail
+} // namespace detail
 
 /// Read the `GNFS_MPZ_POWM_BATCH_THREADS` env into a cached thread count.
 ///
@@ -116,12 +122,12 @@ inline int parse_mpz_powm_batch_threads_env() noexcept {
 [[nodiscard]] inline int mpz_powm_batch_threads() noexcept {
     auto& cache = detail::mpz_powm_batch_threads_cache();
     int cached = cache.value.load(std::memory_order_acquire);
-    if (cached != 0) return cached;
+    if (cached != 0)
+        return cached;
 
     const int parsed = detail::parse_mpz_powm_batch_threads_env();
     int expected = 0;
-    if (cache.value.compare_exchange_strong(expected, parsed,
-                                            std::memory_order_acq_rel,
+    if (cache.value.compare_exchange_strong(expected, parsed, std::memory_order_acq_rel,
                                             std::memory_order_acquire)) {
         return parsed;
     }
@@ -140,17 +146,18 @@ inline void mpz_powm_batch_threads_reset_env_cache_for_testing() noexcept {
 
 /// Compute `results[i] = bases[i]^exp mod modulus` for every i.
 ///
-/// `bases` and `results` must have the same size; the dispatcher writes into
-/// `results[i]` exactly once. `exp` and `modulus` are shared across the
-/// entire batch and read concurrently by every worker (this is safe because
-/// neither is mutated; GMP's per-call disjoint-operand contract only forbids
-/// concurrent writes through aliasing `mpz_t`s, not concurrent reads).
+/// Processes the first min(bases.size(), results.size()) bases and leaves
+/// trailing output slots unchanged. `exp` and `modulus` are copied before
+/// any writes, so either may refer to an output element. Input and output
+/// spans may overlap: exact in-place calls need no base copy, while shifted
+/// overlaps preserve the processed bases before dispatch.
 ///
 /// Behavior:
 ///   - threads == 1 (default):  sequential for-loop, no ThreadPool created
 ///   - threads >= 2:            ThreadPool dispatch via `submit()` +
 ///                              `future.get()`
 ///   - empty bases span:        no-op (no pool created, no writes)
+///   - empty results span:      no-op (no pool created, no writes)
 ///   - single base:             always sequential (no ThreadPool overhead
 ///                              even when threads >= 2)
 ///
@@ -161,43 +168,53 @@ inline void mpz_powm_batch_threads_reset_env_cache_for_testing() noexcept {
 /// `test_n1_vs_n_hw_parity` strictly enforce per-index equality.
 ///
 /// Preconditions:
-///   - `results.size() >= bases.size()` (debug build assert; release build
-///     silently writes only into the first `bases.size()` slots).
 ///   - `modulus > 0` (caller responsibility; GMP `mpz_powm` UB on zero
 ///     modulus, mirroring the existing `gnfs::core::powmod` contract).
 ///
-/// Exception propagation: GMP errors propagate up via `std::runtime_error`
-/// at the call site (consistent with the rest of the codebase, since
-/// `mpz_powm` itself does not throw). The dispatcher does not swallow or
-/// wrap exceptions; if any worker throws, the first observed exception
-/// rethrows after every other future has been drained so the pool joins
-/// cleanly.
+/// Exception propagation: this helper does not validate GMP's arithmetic
+/// domain or translate GMP domain errors into C++ exceptions. C++ exceptions
+/// from Integer allocation or ThreadPool machinery propagate unchanged. If
+/// a worker throws, every future is drained before the first observed
+/// exception is rethrown; pool teardown joins all remaining work.
 inline void parallel_mpz_powm(std::span<const gnfs::core::Integer> bases,
-                              const gnfs::core::Integer& exp,
-                              const gnfs::core::Integer& modulus,
+                              const gnfs::core::Integer& exp, const gnfs::core::Integer& modulus,
                               std::span<gnfs::core::Integer> results) {
     const std::size_t n = bases.size();
-    if (n == 0) return;
+    if (n == 0)
+        return;
 
     // Defensive clamp: if caller under-sized the output span, we still write
     // exactly the slots that exist. This mirrors the contract used by the
     // SIMD batch helpers (popcount_simd / and_popcnt_simd) -- avoid UB write
     // past the output rather than abort.
     const std::size_t out_n = (results.size() < n) ? results.size() : n;
-    if (out_n == 0) return;
+    if (out_n == 0)
+        return;
+
+    const gnfs::core::Integer exp_snapshot(exp);
+    const gnfs::core::Integer modulus_snapshot(modulus);
+    auto processed_bases = bases.first(out_n);
+    std::vector<gnfs::core::Integer> owned_bases;
+    const gnfs::core::Integer* output_begin = results.data();
+    const std::less<const gnfs::core::Integer*> pointer_less{};
+    // std::less gives unrelated allocation pointers a total order. Restrict
+    // both ranges to the slots this call actually reads or writes.
+    if (processed_bases.data() != output_begin &&
+        pointer_less(processed_bases.data(), output_begin + out_n) &&
+        pointer_less(output_begin, processed_bases.data() + out_n)) {
+        owned_bases.assign(processed_bases.begin(), processed_bases.end());
+        processed_bases = std::span<const gnfs::core::Integer>(owned_bases);
+    }
 
     const int threads = mpz_powm_batch_threads();
 
-    // Sequential path: zero overhead, preserves original behaviour
-    // bit-for-bit (no pool spawn, no future overhead). Also taken when the
-    // caller asked for parallelism but only supplied a single base; one
-    // task is never worth a pool spin-up.
+    // Sequential path preserves the scalar result without pool or future
+    // overhead. Also taken when the caller asked for parallelism but only
+    // supplied a single base; one task is never worth a pool spin-up.
     if (threads <= 1 || out_n == 1) {
         for (std::size_t i = 0; i < out_n; ++i) {
-            mpz_powm(results[i].get_mpz(),
-                     bases[i].get_mpz(),
-                     exp.get_mpz(),
-                     modulus.get_mpz());
+            mpz_powm(results[i].get_mpz(), processed_bases[i].get_mpz(), exp_snapshot.get_mpz(),
+                     modulus_snapshot.get_mpz());
         }
         return;
     }
@@ -206,25 +223,21 @@ inline void parallel_mpz_powm(std::span<const gnfs::core::Integer> bases,
     // workers than bases wastes resources and adds futex pressure for no
     // throughput gain.
     const std::size_t pool_size =
-        (static_cast<std::size_t>(threads) < out_n)
-            ? static_cast<std::size_t>(threads)
-            : out_n;
+        (static_cast<std::size_t>(threads) < out_n) ? static_cast<std::size_t>(threads) : out_n;
+    // The pool is destroyed before the snapshots, including if submission
+    // throws, so every worker finishes before its inputs are released.
     gnfs::util::ThreadPool pool(static_cast<uint32_t>(pool_size));
 
     std::vector<std::future<void>> futures;
     futures.reserve(out_n);
     for (std::size_t i = 0; i < out_n; ++i) {
-        // Each task captures the batch index plus references to the input
-        // span, shared exponent / modulus, and the output span. Per-base
-        // output slots are disjoint, so concurrent writes to `results[i]`
-        // are race-free even though `results` itself is shared. `exp` and
-        // `modulus` are read-only and may be referenced from every worker.
-        futures.push_back(pool.submit([&bases, &exp, &modulus, &results, i]() {
-            mpz_powm(results[i].get_mpz(),
-                     bases[i].get_mpz(),
-                     exp.get_mpz(),
-                     modulus.get_mpz());
-        }));
+        // Span views are captured by value; their backing storage and the
+        // shared scalar snapshots remain alive until the pool has joined.
+        futures.push_back(
+            pool.submit([processed_bases, &exp_snapshot, &modulus_snapshot, results, i]() {
+                mpz_powm(results[i].get_mpz(), processed_bases[i].get_mpz(), exp_snapshot.get_mpz(),
+                         modulus_snapshot.get_mpz());
+            }));
     }
 
     // Drain every future even when one rethrows: we want the pool to join
@@ -248,4 +261,4 @@ inline void parallel_mpz_powm(std::span<const gnfs::core::Integer> bases,
     }
 }
 
-}  // namespace gnfs::util
+} // namespace gnfs::util

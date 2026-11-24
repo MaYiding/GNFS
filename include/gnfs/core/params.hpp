@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../util/safe_math.hpp"
+#include "../util/scaled_size.hpp"
 #include "sieve_limits.hpp"
 #include "types.hpp"
 
@@ -9,7 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib> // getenv, atoi for GNFS_OVERRIDE_LP_BITS
+#include <cstdlib> // getenv, strtol for GNFS_OVERRIDE_LP_BITS
 #include <limits>
 #include <locale.h>
 #include <optional>
@@ -243,9 +244,16 @@ struct GNFSParams {
         // ENV override: GNFS_OVERRIDE_LP_BITS=N (1..30) — useful for experimentation
         // (e.g., 60d lp_bits=25 vs 26 trade-off comparison in BACKLOG OPT).
         if (const char* env_lp = std::getenv("GNFS_OVERRIDE_LP_BITS")) {
-            int v = std::atoi(env_lp);
-            if (v >= 1 && v <= 30) {
-                lp_bits = static_cast<uint32_t>(v);
+            // Check the complete value before narrowing. atoi can wrap an
+            // out-of-range override back into the accepted 1..30 interval.
+            char* end = nullptr;
+            const int saved_errno = errno;
+            errno = 0;
+            const long parsed = std::strtol(env_lp, &end, 10);
+            const int parse_errno = errno;
+            errno = saved_errno;
+            if (parse_errno == 0 && end != env_lp && *end == '\0' && parsed >= 1 && parsed <= 30) {
+                lp_bits = static_cast<uint32_t>(parsed);
             }
         }
 
@@ -447,8 +455,7 @@ struct GNFSParams {
         const double target_mult = sieve_target_multiplier;
 
         const size_t base_target = raw_relation_target_unscaled(matrix_columns);
-        const size_t scaled_target = util::size_from_nonnegative_double_floor(
-            static_cast<double>(base_target) * target_mult);
+        const size_t scaled_target = util::scaled_size_floor(base_target, target_mult);
         // A positive column budget must never turn into a zero stopping target
         // merely because the experiment multiplier is fractional. Preserve
         // zero for the explicit zero-column input, which remains a useful
@@ -550,10 +557,9 @@ private:
             const double birthday = std::sqrt(2.0 * lp_space * mc);
             // Use max(birthday, mc × 2.0) — birthday handles LP-heavy cases,
             // 2.0× handles cases where most relations are full.
-            double target = std::max(birthday, mc * 2.0);
-            // Cap at mc × 50 to prevent runaway targets for huge LP spaces.
-            target = std::min(target, mc * 50.0);
-            return util::size_from_nonnegative_double_floor(target);
+            return std::clamp(util::size_from_nonnegative_double_floor(birthday),
+                              util::saturating_size_product(matrix_columns, 2),
+                              util::saturating_size_product(matrix_columns, 50));
         }
 
         // No LP: need R/B > 3 to survive singleton filter.

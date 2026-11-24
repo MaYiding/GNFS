@@ -1,8 +1,15 @@
 // Unit tests for RelationFilter — singleton removal and filtering
+#if defined(__clang__)
+#pragma STDC FENV_ACCESS ON
+#endif
+
 #include "gnfs/relation/filter.hpp"
 
 #include <cassert>
+#include <cfenv>
+#include <cmath>
 #include <cstdlib>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <string_view>
@@ -345,6 +352,27 @@ void test_required_relations_extreme_inputs() {
                  "NaN excess maps to the minimum relation count");
     require_test(required_relations(100, 100, std::numeric_limits<double>::infinity()) == max_size,
                  "infinite excess saturates to SIZE_MAX");
+    require_test(required_relations(0, 0, std::numeric_limits<double>::infinity()) == 1,
+                 "zero columns retain the minimum target");
+    require_test(required_relations(100, 0, 1.2) == 121,
+                 "retain ordinary rounded target estimates");
+
+    const double limit = std::ldexp(1.0, std::numeric_limits<size_t>::digits);
+    const auto predecessor = static_cast<size_t>(std::nextafter(limit, 0.0));
+    const int original = std::fegetround();
+    for (int mode : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+        require_test(std::fesetround(mode) == 0, "set rounding mode");
+        require_test(required_relations(predecessor, 0, 1.0) ==
+                         gnfs::util::saturating_size_add(predecessor, 1),
+                     "a representable predecessor keeps its strict excess");
+        require_test(!has_enough_relations(max_size - 1, max_size, 0, 1.0),
+                     "a rounded maximal count cannot admit fewer relations");
+        require_test(required_relations(max_size / 2, 0, 2.0) == max_size,
+                     "double the column count before adding the strict excess");
+        require_test(required_relations((max_size / 3) * 2, 0, 1.5) == max_size,
+                     "saturate a fractional product at the integer boundary");
+    }
+    require_test(std::fesetround(original) == 0, "restore rounding mode");
 
     std::cout << "  PASS" << std::endl;
 }

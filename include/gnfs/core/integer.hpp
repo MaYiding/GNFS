@@ -183,7 +183,7 @@ public:
 
     int compare(const Integer& other) const;
 
-    // Bit operations
+    // Bit operations throw std::out_of_range if GMP cannot represent the index.
     bool test_bit(size_t index) const;
     void set_bit(size_t index);
     void clear_bit(size_t index);

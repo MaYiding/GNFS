@@ -2,6 +2,7 @@
 
 #include "../core/relation.hpp"
 #include "../util/safe_math.hpp"
+#include "../util/scaled_size.hpp"
 #include "large_prime_key.hpp"
 
 #include <algorithm>
@@ -806,8 +807,7 @@ private:
 [[nodiscard]] inline size_t required_relations(size_t factor_base_size, size_t unique_large_primes,
                                                double excess_factor = 1.05) {
     const size_t columns = effective_column_count(factor_base_size, unique_large_primes);
-    const size_t scaled =
-        util::size_from_nonnegative_double_floor(static_cast<double>(columns) * excess_factor);
+    const size_t scaled = util::scaled_size_floor(columns, excess_factor);
     return util::saturating_size_add(scaled, size_t{1});
 }
 
