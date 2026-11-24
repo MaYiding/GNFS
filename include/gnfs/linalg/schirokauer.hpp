@@ -435,11 +435,13 @@ struct GFPolyOps {
         for (uint32_t step = 1; step < k; ++step) {
             // Compute g*h over Z (using modular arithmetic at target precision)
             size_t g_sz = g.size(), h_sz = h.size();
-            std::vector<int64_t> prod(g_sz + h_sz - 1, 0);
+            // Keep every coefficient canonical without overflowing a signed
+            // intermediate when target is close to INT64_MAX.
+            std::vector<uint64_t> prod(g_sz + h_sz - 1, 0);
             for (size_t i = 0; i < g_sz; ++i) {
                 for (size_t j = 0; j < h_sz; ++j) {
-                    int64_t p = static_cast<int64_t>(gnfs::util::mul_mod_u64(g[i], h[j], target));
-                    prod[i + j] = (prod[i + j] + p) % static_cast<int64_t>(target);
+                    const uint64_t p = gnfs::util::mul_mod_u64(g[i], h[j], target);
+                    prod[i + j] = gnfs::util::add_mod_u64(prod[i + j], p, target);
                 }
             }
 
@@ -447,10 +449,8 @@ struct GFPolyOps {
             Poly eps(f_pk.size(), 0);
             for (size_t i = 0; i < f_pk.size(); ++i) {
                 int64_t fi = static_cast<int64_t>(f_pk[i]);
-                int64_t pi = (i < prod.size()) ? ((prod[i] % static_cast<int64_t>(target)) +
-                                                  static_cast<int64_t>(target)) %
-                                                     static_cast<int64_t>(target)
-                                               : 0;
+                // prod is already in [0, target), and target fits int64_t.
+                const int64_t pi = (i < prod.size()) ? static_cast<int64_t>(prod[i]) : 0;
                 int64_t diff = fi - pi;
                 if (diff < 0)
                     diff += static_cast<int64_t>(target);
