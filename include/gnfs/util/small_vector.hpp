@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -40,7 +41,7 @@ public:
     ~SmallVector() {
         clear();
         if (heap_data_) {
-            ::operator delete(heap_data_);
+            std::allocator<T>{}.deallocate(heap_data_, capacity_);
         }
     }
 
@@ -50,7 +51,7 @@ public:
         if (other.is_inline()) {
             // 从内联存储移动
             for (size_t i = 0; i < other.size_; ++i) {
-                new (inline_ptr() + i) T(std::move(other.inline_ptr()[i]));
+                std::construct_at(inline_ptr() + i, std::move(other.inline_ptr()[i]));
             }
             size_ = other.size_;
             // 销毁源的 inline 元素（move 后仍需调析构函数）
@@ -73,13 +74,13 @@ public:
         if (this != &other) {
             clear();
             if (heap_data_) {
-                ::operator delete(heap_data_);
+                std::allocator<T>{}.deallocate(heap_data_, capacity_);
                 heap_data_ = nullptr;
             }
 
             if (other.is_inline()) {
                 for (size_t i = 0; i < other.size_; ++i) {
-                    new (inline_ptr() + i) T(std::move(other.inline_ptr()[i]));
+                    std::construct_at(inline_ptr() + i, std::move(other.inline_ptr()[i]));
                 }
                 size_ = other.size_;
                 capacity_ = InlineCapacity;
@@ -189,22 +190,19 @@ public:
 
     // 修改操作
     void push_back(const T& value) {
-        ensure_append_capacity();
-        new (data() + size_) T(value);
-        ++size_;
+        emplace_back(value);
     }
 
     void push_back(T&& value) {
-        ensure_append_capacity();
-        new (data() + size_) T(std::move(value));
-        ++size_;
+        emplace_back(std::move(value));
     }
 
     template <typename... Args> T& emplace_back(Args&&... args) {
-        ensure_append_capacity();
-        T* ptr = new (data() + size_) T(std::forward<Args>(args)...);
-        ++size_;
-        return *ptr;
+        if (size_ == max_size()) {
+            throw std::length_error("SmallVector size exceeds max_size");
+        }
+        append(size_ + 1, [&](T* ptr) { std::construct_at(ptr, std::forward<Args>(args)...); });
+        return back();
     }
 
     void pop_back() noexcept {
@@ -229,10 +227,7 @@ public:
 
     void resize(size_t new_size) {
         if (new_size > size_) {
-            ensure_capacity(new_size);
-            for (size_t i = size_; i < new_size; ++i) {
-                new (data() + i) T();
-            }
+            append(new_size, [](T* ptr) { std::construct_at(ptr); });
         } else {
             for (size_t i = new_size; i < size_; ++i) {
                 data()[i].~T();
@@ -243,10 +238,7 @@ public:
 
     void resize(size_t new_size, const T& value) {
         if (new_size > size_) {
-            ensure_capacity(new_size);
-            for (size_t i = size_; i < new_size; ++i) {
-                new (data() + i) T(value);
-            }
+            append(new_size, [&](T* ptr) { std::construct_at(ptr, value); });
         } else {
             for (size_t i = new_size; i < size_; ++i) {
                 data()[i].~T();
@@ -269,49 +261,63 @@ private:
         return reinterpret_cast<const T*>(inline_storage_);
     }
 
-    void ensure_capacity(size_t required) {
-        if (required > capacity_) {
-            check_capacity(required);
-            // 至少翻倍增长
-            size_t new_cap = capacity_ > max_size() / 2 ? max_size() : capacity_ * 2;
-            if (new_cap < required) {
-                new_cap = required;
-            }
-            grow(new_cap);
-        }
-    }
-
-    void ensure_append_capacity() {
-        if (size_ == max_size()) {
-            throw std::length_error("SmallVector size exceeds max_size");
-        }
-        ensure_capacity(size_ + 1);
-    }
-
     static void check_capacity(size_t capacity) {
         if (capacity > max_size()) {
             throw std::length_error("SmallVector capacity exceeds max_size");
         }
     }
 
-    void grow(size_t new_cap) {
-        check_capacity(new_cap);
-        T* new_data = static_cast<T*>(::operator new(sizeof(T) * new_cap));
-
-        // 移动旧元素
+    // T's move constructor cannot throw. New elements must already be
+    // constructed before relocating values they may refer to.
+    void relocate_to(T* new_data, size_t new_cap) noexcept {
         T* old_data = data();
         for (size_t i = 0; i < size_; ++i) {
-            new (new_data + i) T(std::move(old_data[i]));
+            std::construct_at(new_data + i, std::move(old_data[i]));
             old_data[i].~T();
         }
 
         // 释放旧的堆存储
         if (heap_data_) {
-            ::operator delete(heap_data_);
+            std::allocator<T>{}.deallocate(heap_data_, capacity_);
         }
 
         heap_data_ = new_data;
         capacity_ = new_cap;
+    }
+
+    void grow(size_t new_cap) {
+        check_capacity(new_cap);
+        relocate_to(std::allocator<T>{}.allocate(new_cap), new_cap);
+    }
+
+    template <typename Construct> void append(size_t new_size, Construct&& construct) {
+        check_capacity(new_size);
+        const bool reallocating = new_size > capacity_;
+        size_t new_cap = capacity_;
+        T* destination = data();
+        if (reallocating) {
+            new_cap = capacity_ > max_size() / 2 ? max_size() : capacity_ * 2;
+            if (new_cap < new_size)
+                new_cap = new_size;
+            destination = std::allocator<T>{}.allocate(new_cap);
+        }
+
+        // Arguments may alias an element or its storage. Keep the original
+        // elements alive until every new element has been constructed.
+        size_t constructed = size_;
+        try {
+            for (; constructed < new_size; ++constructed)
+                construct(destination + constructed);
+        } catch (...) {
+            while (constructed > size_)
+                destination[--constructed].~T();
+            if (reallocating)
+                std::allocator<T>{}.deallocate(destination, new_cap);
+            throw;
+        }
+        if (reallocating)
+            relocate_to(destination, new_cap);
+        size_ = new_size;
     }
 };
 
