@@ -6,77 +6,44 @@
 
 ---
 
-## Integer thread-local scratch pool (GNFS_INTEGER_SCRATCH_POOL)
+## Integer Thread-Local Scratch Pool (GNFS_INTEGER_SCRATCH_POOL)
 
-**ENV `GNFS_INTEGER_SCRATCH_POOL={0,1}`** (2026-05-22 实施, default 0):
-GNFS hot path (cofactor pipeline / Hensel lift / Schirokauer compute /
-ECM arithmetic) 大量临时 `gnfs::core::Integer` 对象, 每次 ctor 走 `mpz_init`,
-dtor 走 `mpz_clear`. GMP 的 limb buffer 在 `mpz_clear` 时释放, tight loop
-反复 init/clear 触发 GMP malloc + heap fragmentation, M5 多 core 高并发
-ECM/cofactor 路径尤其明显.
+`GNFS_INTEGER_SCRATCH_POOL=1` 启用 `IntegerScratchHandle` 的线程局部缓存。
+只有完整字符串 `"1"` 有效；未设置、空串、`"0"`、空白或其他值均禁用。
+首次读取通过 `std::call_once` 缓存结果。测试可用专用 reset helper 重新读取。
 
-```bash
-GNFS_INTEGER_SCRATCH_POOL=1 ./gnfs <N>   # 启用 per-thread Integer pool
-unset GNFS_INTEGER_SCRATCH_POOL          # 默认 OFF (零开销)
-```
+当前主分解流程没有调用 `IntegerScratchHandle`。仅设置环境变量不会改变
+CLI 分解路径；后续集成需要调用方显式使用该类型，并单独验证计算结果和性能。
 
-**Helper API** (`include/gnfs/util/integer_scratch_pool.hpp`):
-- `integer_scratch_pool_enabled()` — cached ENV reader (`std::call_once` +
-  `std::atomic<bool>`), 严格仅 "1" 启用, 其它值 (unset / "0" / "true" /
-  非数字 / 空串) 均视为 OFF.
-- `IntegerScratchHandle` — RAII borrow handle, ctor 从 thread_local pool 取
-  (或 fresh default-construct), dtor 还回 pool (启用时). 提供 `get()` /
-  `operator*` / `operator->` 直接访问内部 `Integer`.
-- `integer_scratch_pool_size()` — 当前线程 pool 中 Integer 数 (测试 / debug 用).
-- `integer_scratch_pool_clear()` — 释放当前线程 pool 全部 Integer.
-- `integer_scratch_pool_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+**借用与归还：**
 
-**实现细节**:
-- `inline thread_local std::vector<gnfs::core::Integer> tls_scratch_pool` —
-  per-thread 存储, C++17 `inline` 保证多 TU 单实例. 线程退出时 vector
-  dtor 跑, 每个 pooled Integer dtor → `mpz_clear` → limb buffer 释放, 不泄漏.
-- Borrow 时: pool 非空 → pop_back 并 `mpz_set_si(value, 0)` 重置 (保留 limb
-  buffer, GMP 不 realloc). Pool 空 → 默认构造 fresh Integer (走原 `mpz_init`).
-- Return 时 (dtor): 启用时 push_back 到 pool, 不 clear. 下次 borrow 重置.
-- Move semantics: moved-from handle 标 `returned_ = true`, dtor 跳过 push,
-  避免 double-return. Move-assign 释放当前 Integer 后再 adopt 新.
-- Pool 是 per-thread, **无锁**. 不同 thread 的 pool 完全隔离.
+- 缓存为空或禁用时，handle 持有新建的零值 `Integer`。
+- 缓存有空闲对象时，借用会接管其 GMP limb 存储，再通过标量赋值归零。
+  归零保留已有缓冲区。用临时 `Integer(0)` 移动赋值会交换存储并释放原缓冲区，
+  因而不能用于这个重置操作。
+- 启用时，析构将对象归还当前线程的缓存；归还失败时由普通 `Integer` 析构清理。
+- 移动构造与移动赋值转移对象所有权，已移出的 handle 不会重复归还。
+- `integer_scratch_pool_clear()` 释放当前线程缓存；线程退出时也会销毁缓存。
 
-**Bit-for-bit guarantee**: 同一 `(a, b, ...)` 输入序列, pool ON vs OFF 产生
-完全相同的 Integer 值与最终计算结果. 单元测试 `test_integer_scratch_pool`
-强制覆盖 (1000 random int64_t 值, OFF vs ON 完全相同 `to_string()` 输出).
+**复用边界：**
 
-**ROI 与定位**:
-- 主要 ROI: 避免 GMP limb buffer 反复 malloc/free. Integer struct header
-  本身只是 stack-allocated 几个字 (`mp_size_t _mp_alloc, _mp_size; mp_limb_t* _mp_d`),
-  真正的 heap 分配在 `_mp_d` (limb buffer). Pool 借出时 limb buffer 已存在,
-  GMP `mpz_set_*` 在新值 ≤ 旧分配时不重新 malloc, 直接复用.
-- 主要受益场景: cofactor pipeline (trial / ECM / SQUFOF) 跑 hundreds-of-thousands
-  迭代的 Integer 临时变量, hot loop 频繁 5-10 字 limb buffer churn.
-- Hensel lift / Schirokauer maps 内部已用 `Integer` RAII, pool 加在 outer
-  loop 减小 outer alloc pressure.
-- 默认 OFF: 任何 caller 不设 ENV 时, `IntegerScratchHandle` 行为与 fresh
-  Integer 完全等价 (`get()` 返回 zero-initialized Integer, dtor 走 RAII).
-  零行为变化, helper-only, 不影响主路径.
-- 当前主 pipeline 不调用 helper, 是 future-infra 阶段. 调用方需在自己的
-  hot path 显式 wire-in `IntegerScratchHandle` 替代裸 `Integer tmp`.
+向借出的对象拷贝一个已有 `Integer`，或对其做标量赋值，可以复用容量足够的
+limb 缓冲区。赋值一个 `Integer` 临时对象会执行移动赋值，换入临时对象的存储。
+调用方需要保留缓存容量时，应使用拷贝、标量赋值或直接写入已有 GMP 对象。
+handle 仍有 `Integer` header 的初始化和清理开销；此缓存保留的是 limb 存储。
+缓存会保留使用过的容量，直到显式清空或线程退出。
 
-**线程退出安全**:
-- `thread_local std::vector<Integer>` 在 thread exit 时析构, 释放所有 limb buffer.
-- `IntegerScratchHandle::~IntegerScratchHandle()` push_back 抛异常 (e.g. OOM)
-  时吞掉 ([以保证 noexcept dtor 性质]), 让 Integer dtor 走 RAII 清理.
+**结果契约与验证：**
 
-**集成点** (W8 T5, 2026-05-22):
-- `include/gnfs/util/integer_scratch_pool.hpp` — 260 行 header-only, RAII +
-  ENV gate + thread_local pool + move semantics
-- `tests/test_integer_scratch_pool.cpp` — 13 个测试 (4 ENV + 5 borrow / return /
-  growth bound + 1 bit-for-bit parity 1000 values + 3 edge cases 含 move /
-  clear / reset cache + 1 perf-info probe 100k cycles OFF vs ON)
-- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout
+每次借出都返回零值；缓存开关不改变相同输入的整数计算结果。
+`test_integer_scratch_pool` 使用 `GNFS_TEST_CHECK`，在保留 `NDEBUG` 的
+Release 构建中验证环境解析、值一致性、池大小和移动所有权。
+缓冲复用回归覆盖 64、256、4096 和 65536-bit 数值，先检查重新借出的对象为零，
+再通过公开的 `mpz_limbs_read()` 检查其存储地址，然后拷贝数值并验证结果。
+不会解引用已经释放的指针，也不会把地址保留次数当成分配次数。
 
-**Default OFF**: ENV unset → `integer_scratch_pool_enabled()` 返回 false →
-borrow handle 退到 fresh Integer + skip pool push, `std::allocator` path
-完整保留, 零回归风险. 仅显式 `GNFS_INTEGER_SCRATCH_POOL=1` 时启用.
+源文件为 `include/gnfs/util/integer_scratch_pool.hpp`，测试为
+`tests/test_integer_scratch_pool.cpp`；当前 tier 和超时以 `scripts/test.sh list` 为准。
 
 ---
 
