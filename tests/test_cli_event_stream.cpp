@@ -604,16 +604,16 @@ void test_configured_output(const std::filesystem::path& executable,
 #ifndef _WIN32
 constexpr std::size_t limited_stdout_bytes = 1024;
 
-bool redirect_to_limited_stdout(const char* path) {
+bool redirect_to_limited_stdout(const char* path, std::size_t writable_bytes) {
     // Leave room for the coverage runtime to write its ordinary profile files.
     // Seeking near the end of a sparse file leaves only the stdout prefix writable.
     rlimit limit{};
     if (::getrlimit(RLIMIT_FSIZE, &limit) != 0)
         return false;
     limit.rlim_cur = std::min<rlim_t>(limit.rlim_cur, 64ULL * 1024 * 1024);
-    if (limit.rlim_cur < limited_stdout_bytes || !std::freopen(path, "wb", stdout))
+    if (limit.rlim_cur < writable_bytes || !std::freopen(path, "wb", stdout))
         return false;
-    const auto offset = static_cast<off_t>(limit.rlim_cur - limited_stdout_bytes);
+    const auto offset = static_cast<off_t>(limit.rlim_cur - writable_bytes);
     return ::lseek(STDOUT_FILENO, offset, SEEK_SET) == offset &&
            std::signal(SIGXFSZ, SIG_IGN) != SIG_ERR && ::setrlimit(RLIMIT_FSIZE, &limit) == 0;
 }
@@ -655,6 +655,15 @@ void test_stdout_failure(const std::filesystem::path& executable,
                          const std::filesystem::path& test_executable,
                          const std::filesystem::path& temporary_root) {
     const auto path = temporary_root / "limited stdout";
+    for (const auto mode : {"--version", "--help", "--interactive"}) {
+        const auto run = run_cli(test_executable, {"--with-full-stdout-live-stdin", path.string(),
+                                                   executable.string(), "--lang", "en", mode});
+        const auto context = std::string(mode) + ": " + describe(run);
+        CHECK_CONTEXT(run.error == BoundedChildProcessError::normal_nonzero &&
+                          run.termination.exit_code == 1,
+                      context);
+        CHECK_CONTEXT(run.stderr_bytes.ends_with("Cannot write to standard output.\n"), context);
+    }
     for (const auto format : {"--json", "--event-stream"}) {
         const auto run =
             run_cli(test_executable, {"--with-limited-stdout", path.string(), executable.string(),
@@ -776,9 +785,20 @@ void test_incompatible_options(const std::filesystem::path& executable,
 
 int main(int argc, char* argv[]) {
 #ifndef _WIN32
-    if (argc >= 4 && std::string_view(argv[1]) == "--with-limited-stdout") {
-        if (!redirect_to_limited_stdout(argv[2]))
+    if (argc >= 4 && (std::string_view(argv[1]) == "--with-limited-stdout" ||
+                      std::string_view(argv[1]) == "--with-full-stdout-live-stdin")) {
+        const auto capacity =
+            std::string_view(argv[1]) == "--with-full-stdout-live-stdin" ? 0 : limited_stdout_bytes;
+        if (!redirect_to_limited_stdout(argv[2], capacity))
             return 2;
+        if (capacity == 0) {
+            // Keep the writer open across exec. The REPL must detect a failed prompt
+            // before reading stdin, even when no command or EOF has arrived.
+            int input_pipe[2];
+            if (::pipe(input_pipe) != 0 || ::dup2(input_pipe[0], STDIN_FILENO) < 0)
+                return 2;
+            ::close(input_pipe[0]);
+        }
         ::execv(argv[3], argv + 3);
         return 2;
     }
