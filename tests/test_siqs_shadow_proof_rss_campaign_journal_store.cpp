@@ -28,6 +28,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -1700,12 +1701,17 @@ private:
 class TempStore final {
 public:
     TempStore() {
-        // Darwin's per-user temporary root has trusted ancestors; Linux /tmp
-        // does not. Project runners and CTest use a trusted working directory
-        // on non-Darwin POSIX hosts.
 #if defined(__APPLE__)
-        const auto temporary_root = std::filesystem::temp_directory_path();
+        // A TMPDIR below a home directory with an extended ACL cannot host a
+        // trusted store, even when the new directory itself has mode 0700.
+        std::array<char, PATH_MAX> directory{};
+        const auto size = ::confstr(_CS_DARWIN_USER_TEMP_DIR, directory.data(), directory.size());
+        if (size <= 1 || size > directory.size()) {
+            throw std::runtime_error("could not resolve Darwin's per-user temporary directory");
+        }
+        const std::filesystem::path temporary_root(directory.data());
 #else
+        // The Linux fixture needs a trusted working directory because /tmp is world-writable.
         const auto temporary_root = std::filesystem::current_path();
 #endif
         std::string pattern = (temporary_root / ".gnfs-rss-journal-store-XXXXXX").string();
