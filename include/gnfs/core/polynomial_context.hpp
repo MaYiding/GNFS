@@ -81,15 +81,15 @@ public:
 
     /// 获取系数 f_i（x^i 的系数）
     [[nodiscard]] const Integer& coeff(uint32_t i) const {
+        if (i < f_coeffs_.size())
+            return f_coeffs_[i];
         static const Integer zero(static_cast<int64_t>(0));
-        if (i >= f_coeffs_.size())
-            return zero;
-        return f_coeffs_[i];
+        return zero;
     }
 
     /// 获取 leading coefficient
     [[nodiscard]] const Integer& leading_coeff() const {
-        return f_coeffs_[degree_];
+        return coeff(degree_);
     }
 
     /// 获取所有系数
@@ -165,6 +165,9 @@ public:
     /// N(a - b*α) = b^d * f(a/b)
     /// 展开形式: N = sum_{i=0}^{d} f_i * a^i * b^{d-i}
     [[nodiscard]] Integer algebraic_norm(int64_t a, uint64_t b) const {
+        if (f_coeffs_.empty())
+            return {};
+
         // thread_local workspace: hot path in sieve cofactor (~100K calls/sec).
         // MAX_DEG=8 covers all practical GNFS degrees.
         static constexpr uint32_t MAX_DEG = 8;
@@ -297,6 +300,8 @@ public:
     [[nodiscard]] std::pair<__int128, bool> algebraic_norm_i128(int64_t a, uint64_t b) const {
         if (b == 0)
             return {0, false}; // b^(d-i) division would be UB
+        if (f_coeffs_.empty())
+            return {0, true};
 
         // 检查所有系数是否 fits int64
         for (uint32_t i = 0; i <= degree_; ++i) {
