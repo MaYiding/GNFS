@@ -19,7 +19,9 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -198,6 +200,50 @@ struct UnicodeScratchDirectory {
     }
 };
 
+std::vector<std::filesystem::path> seed_interrupted_runs(const std::filesystem::path& root) {
+    const auto pid = std::to_string(gnfs::util::process_id());
+    const std::string prefix = "gnfs_bw_krylov_" + pid + "_s0_42_n";
+    const auto directory = root / (prefix + "0.kry.scratch");
+    GNFS_TEST_CHECK(std::filesystem::create_directory(directory));
+    const std::vector<std::filesystem::path> markers{
+        root / (prefix + "0.kry"),
+        root / (prefix + "1.kryz"),
+        root / ("gnfs_bw_krylov_scalar_" + pid + "_42_n2.kry"),
+        root / (prefix + "3.kry"),
+        root / (prefix + "4.kryz"),
+        directory / "sequence.kry",
+        root / (prefix + "1.kry.scratch"),
+    };
+    for (const auto& path : markers) {
+        std::ofstream marker(path, std::ios::binary);
+        marker << "previous run";
+        marker.close();
+        GNFS_TEST_CHECK(marker.good());
+    }
+    return markers;
+}
+
+void check_and_remove_markers(const std::filesystem::path& root,
+                              const std::vector<std::filesystem::path>& markers) {
+    bool preserved = true;
+    for (const auto& path : markers) {
+        std::ifstream marker(path, std::ios::binary);
+        const std::string text(std::istreambuf_iterator<char>{marker}, {});
+        if (text != "previous run") {
+            preserved = false;
+            std::cerr << "lost scratch marker: " << path.filename() << '\n';
+        }
+    }
+    GNFS_TEST_CHECK(preserved);
+    std::cout << "  Preserved all " << markers.size() << " pre-existing scratch markers\n";
+    for (const auto& path : markers) {
+        GNFS_TEST_CHECK(std::filesystem::remove(path));
+        if (path.parent_path() != root) {
+            GNFS_TEST_CHECK(std::filesystem::remove(path.parent_path()));
+        }
+    }
+}
+
 void check_other_mmap_route(const std::filesystem::path& scratch, const SparseMatrix& matrix,
                             const char* algorithm, std::string_view marker) {
     const auto memory = run_solver(scratch, matrix, 1, StorageMode::memory, algorithm);
@@ -206,6 +252,11 @@ void check_other_mmap_route(const std::filesystem::path& scratch, const SparseMa
     GNFS_TEST_CHECK(mmap.stderr_output.find(", mmap)") != std::string::npos);
     require_dependencies(matrix, mmap, 1);
     GNFS_TEST_CHECK(memory.dependencies == mmap.dependencies);
+    if (algorithm == nullptr) {
+        const auto compressed = run_solver(scratch, matrix, 1, StorageMode::mmap_zip);
+        GNFS_TEST_CHECK(compressed.stderr_output.find(", mmap+zip)") != std::string::npos);
+        GNFS_TEST_CHECK(compressed.dependencies == memory.dependencies);
+    }
     std::cout << "  " << marker << " Unicode mmap: verified the same dependency as memory ("
               << matrix.num_rows() << " x " << matrix.num_cols() << ")\n";
 }
@@ -238,11 +289,13 @@ int main() {
         std::cout << "===== BW Krylov mmap Integration Tests =====\n";
 
         const UnicodeScratchDirectory scratch;
+        const auto markers = seed_interrupted_runs(scratch.path);
         test_storage_modes_are_bit_for_bit_identical(scratch.path);
         check_other_mmap_route(scratch.path, build_large_matrix(16, 16, 4984, 22222), "scalar",
                                "[BW-scalar]");
         check_other_mmap_route(scratch.path, build_large_matrix(64, 5000, 64, 22222), nullptr,
                                "[BW-thin]");
+        check_and_remove_markers(scratch.path, markers);
         GNFS_TEST_CHECK(std::filesystem::is_empty(scratch.path));
 
         std::cout << "===== All BW Krylov mmap integration tests PASSED =====\n";
