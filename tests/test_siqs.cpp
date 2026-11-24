@@ -17,6 +17,7 @@
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <random>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -949,6 +950,244 @@ void test_native_dependency_budgets() {
               "unit)");
 }
 
+namespace {
+
+std::array<uint32_t, 2> direct_sieve_roots(const SIQSPoly& poly, const FBPrime& prime,
+                                           uint32_t sieve_half) {
+    const Integer modulus(static_cast<uint64_t>(prime.p));
+    Integer inverse;
+    require_test(mpz_invert(inverse.get_mpz(), poly.A.get_mpz(), modulus.get_mpz()) != 0,
+                 "direct root oracle requires A invertible modulo p");
+    std::array<uint32_t, 2> roots{};
+    for (size_t side = 0; side < roots.size(); ++side) {
+        Integer residue(static_cast<uint64_t>(prime.sqrt_n));
+        if (side != 0)
+            residue.negate();
+        residue -= poly.B;
+        residue *= inverse;
+        residue += Integer(static_cast<uint64_t>(sieve_half));
+        mpz_mod(residue.get_mpz(), residue.get_mpz(), modulus.get_mpz());
+        roots[side] = static_cast<uint32_t>(mpz_get_ui(residue.get_mpz()));
+    }
+    return roots;
+}
+
+void check_siqs_sieve_roots(const Integer& n, const std::vector<FBPrime>& fb, uint32_t sieve_half,
+                            const SIQSPoly& poly) {
+    require_test(poly.solns.size() == fb.size() && poly.a_inv_mod_p.size() == fb.size(),
+                 "Gray update lost factor-base root state");
+    Integer polynomial_identity = poly.B * poly.B - n;
+    mpz_mod(polynomial_identity.get_mpz(), polynomial_identity.get_mpz(), poly.A.get_mpz());
+    require_test(polynomial_identity.is_zero(), "Gray polynomial no longer has B^2=N modulo A");
+    size_t valid_roots = 0;
+    for (size_t index = 1; index < fb.size(); ++index) {
+        const auto& prime = fb[index];
+        const Integer modulus(static_cast<uint64_t>(prime.p));
+        Integer inverse;
+        if (mpz_invert(inverse.get_mpz(), poly.A.get_mpz(), modulus.get_mpz()) == 0) {
+            require_test(poly.a_inv_mod_p[index] == 0 &&
+                             poly.solns[index].soln1 == std::numeric_limits<uint32_t>::max() &&
+                             poly.solns[index].soln2 == std::numeric_limits<uint32_t>::max(),
+                         "Gray update changed p-divides-A sentinels");
+            continue;
+        }
+        require_test(poly.a_inv_mod_p[index] == mpz_get_ui(inverse.get_mpz()),
+                     "cached A inverse differs from the GMP oracle");
+        const auto expected = direct_sieve_roots(poly, prime, sieve_half);
+        const std::array<uint32_t, 2> actual{poly.solns[index].soln1, poly.solns[index].soln2};
+        require_test(actual == expected, "Gray roots differ from direct linear congruence at p=" +
+                                             std::to_string(prime.p));
+        for (uint32_t offset : actual) {
+            require_test(offset < prime.p, "Gray root is outside its canonical residue range");
+            Integer x(static_cast<uint64_t>(offset));
+            x -= Integer(static_cast<uint64_t>(sieve_half));
+            const Integer value = poly.A * x + poly.B;
+            Integer residue = value * value - n;
+            mpz_mod(residue.get_mpz(), residue.get_mpz(), modulus.get_mpz());
+            require_test(residue.is_zero(),
+                         "Gray root fails the original quadratic at p=" + std::to_string(prime.p));
+            ++valid_roots;
+        }
+    }
+    require_test(valid_roots != 0, "Gray regression has no active factor-base roots");
+}
+
+void check_same_sieve_offsets(const SIQSPoly& actual, const SIQSPoly& expected) {
+    require_test(actual.solns.size() == expected.solns.size(), "root roundtrip changed table size");
+    for (size_t index = 0; index < actual.solns.size(); ++index) {
+        require_test(actual.solns[index].soln1 == expected.solns[index].soln1 &&
+                         actual.solns[index].soln2 == expected.solns[index].soln2,
+                     "Gray inverse roundtrip changed root offsets");
+    }
+}
+
+Integer direct_gray_b(const SIQSPoly& initial, size_t gray) {
+    Integer result = initial.B;
+    for (size_t bit = 0; bit < initial.B_parts.size(); ++bit) {
+        if (((gray >> bit) & size_t(1)) != 0) {
+            Integer twice;
+            mpz_mul_2exp(twice.get_mpz(), initial.B_parts[bit].get_mpz(), 1);
+            result -= twice;
+        }
+    }
+    return result;
+}
+
+} // namespace
+
+void test_gray_root_update_literal_fixture() {
+    const Integer n(319);
+    constexpr uint32_t sieve_half = 16;
+    const std::vector<FBPrime> fb{{0, 0, 0}, {2, 1, 1}, {3, 1, 1}, {5, 3, 2}, {7, 2, 2}};
+    SIQSPoly initial;
+    initial.A = Integer(15);
+    initial.a_indices = {2, 3};
+    init_poly(n, fb, sieve_half, initial);
+    require_test(initial.B_parts == std::vector<Integer>{Integer(10), Integer(3)} &&
+                     initial.B == Integer(-2),
+                 "literal Gray fixture lost its independently known CRT components");
+    require_test(initial.solns[4].soln1 == 6 && initial.solns[4].soln2 == 2,
+                 "literal Gray fixture lost its initial p=7 roots");
+    check_siqs_sieve_roots(n, fb, sieve_half, initial);
+    for (const bool add : {false, true}) {
+        SIQSPoly before = initial;
+        if (add) {
+            // Adding restores an already negated CRT component. Its valid
+            // starting B and roots are known independently for this fixture.
+            before.B = Integer(-22);
+            before.solns[4] = {5, 1};
+        }
+        check_siqs_sieve_roots(n, fb, sieve_half, before);
+        SIQSPoly poly = before;
+        next_poly_B(fb, sieve_half, poly, 0, add);
+        require_test(poly.B == Integer(add ? -2 : -22), "literal Gray B update is incorrect");
+        require_test(poly.solns[4].soln1 == (add ? 6u : 5u) &&
+                         poly.solns[4].soln2 == (add ? 2u : 1u),
+                     "the two p=7 roots must move in the same direction");
+        require_test(poly.solns[1].soln1 == before.solns[1].soln1 &&
+                         poly.solns[1].soln2 == before.solns[1].soln2 &&
+                         poly.solns[1].soln1 == poly.solns[1].soln2,
+                     "zero delta at p=2 changed the repeated root");
+        check_siqs_sieve_roots(n, fb, sieve_half, poly);
+        next_poly_B(fb, sieve_half, poly, 0, !add);
+        require_test(poly.B == before.B, "literal Gray inverse roundtrip changed B");
+        check_same_sieve_offsets(poly, before);
+        check_siqs_sieve_roots(n, fb, sieve_half, poly);
+    }
+    std::puts("  Gray root literal fixture: PASS");
+}
+
+void test_gray_root_update_full_sequences() {
+    const std::array<const char*, 3> moduli{"1000036000099", "100001880003211",
+                                            "1000000016000000063"};
+    const std::array<uint32_t, 3> sieve_halves{16, 128, 1024};
+    std::mt19937 rng(0x53495153u);
+    for (size_t sample = 0; sample < moduli.size(); ++sample) {
+        const Integer n(moduli[sample]);
+        const auto fb = build_factor_base(n, 48);
+        const uint32_t sieve_half = sieve_halves[sample];
+        const uint32_t factors = sample == 0 ? 3u : 4u;
+        for (size_t selection = 0; selection < 4; ++selection) {
+            SIQSPoly poly;
+            choose_A(n, sieve_half, factors, fb, rng, poly.a_indices, poly.A);
+            require_test(poly.a_indices.size() == factors,
+                         "Gray sequence fixture did not choose all A factors");
+            init_poly(n, fb, sieve_half, poly);
+            const SIQSPoly initial = poly;
+            check_siqs_sieve_roots(n, fb, sieve_half, poly);
+            const size_t states = size_t(1) << (factors - 1);
+            // The production path visits Gray(i)=i^(i>>1), keeping the final
+            // CRT component's sign fixed. Reconstruct each expected B from
+            // that complete sign mask instead of accumulating prior updates.
+            for (size_t state = 1; state < states; ++state) {
+                const size_t previous_gray = (state - 1) ^ ((state - 1) >> 1);
+                const size_t gray = state ^ (state >> 1);
+                const size_t bit = static_cast<size_t>(std::countr_zero(gray ^ previous_gray));
+                const bool add = ((gray >> bit) & size_t(1)) == 0;
+                next_poly_B(fb, sieve_half, poly, bit, add);
+                require_test(poly.B == direct_gray_b(initial, gray),
+                             "full Gray sequence B differs from the independent sign mask");
+                check_siqs_sieve_roots(n, fb, sieve_half, poly);
+            }
+            for (size_t state = states - 1; state > 0; --state) {
+                const size_t gray = state ^ (state >> 1);
+                const size_t previous_gray = (state - 1) ^ ((state - 1) >> 1);
+                const size_t bit = static_cast<size_t>(std::countr_zero(gray ^ previous_gray));
+                const bool add = ((previous_gray >> bit) & size_t(1)) == 0;
+                next_poly_B(fb, sieve_half, poly, bit, add);
+                require_test(poly.B == direct_gray_b(initial, previous_gray),
+                             "reverse Gray sequence B differs from the independent sign mask");
+                check_siqs_sieve_roots(n, fb, sieve_half, poly);
+            }
+            require_test(poly.B == initial.B, "full Gray roundtrip changed B");
+            check_same_sieve_offsets(poly, initial);
+        }
+    }
+    std::puts("  Gray root full sequences with real factor bases: PASS");
+}
+
+void test_gray_root_update_uint32_boundary() {
+    constexpr uint32_t large_prime = 4'294'967'291u;
+    const Integer n(1);
+    const std::vector<FBPrime> fb{{0, 0, 0}, {2, 1, 1}, {large_prime, 1, 31}};
+    for (uint32_t sieve_half : {0u, large_prime - 1}) {
+        SIQSPoly initial;
+        initial.A = Integer(1);
+        initial.B = Integer(2);
+        initial.B_parts = {Integer(1), Integer(static_cast<uint64_t>(large_prime - 1)),
+                           Integer(static_cast<uint64_t>(large_prime))};
+        initial.solns.resize(fb.size());
+        initial.a_inv_mod_p = {0, 1, 1};
+        initial.bp_fb_size = fb.size();
+        initial.bp_mod_p.resize(initial.B_parts.size() * fb.size());
+        for (size_t index = 1; index < fb.size(); ++index) {
+            const auto roots = direct_sieve_roots(initial, fb[index], sieve_half);
+            initial.solns[index] = {roots[0], roots[1]};
+            for (size_t bit = 0; bit < initial.B_parts.size(); ++bit) {
+                initial.bp_mod_p[bit * fb.size() + index] =
+                    static_cast<uint32_t>(mpz_fdiv_ui(initial.B_parts[bit].get_mpz(), fb[index].p));
+            }
+        }
+        check_siqs_sieve_roots(n, fb, sieve_half, initial);
+        // Parts 1 and p-1 overflow a uint32_t root+shift in opposite update
+        // directions. Part p makes delta zero, including the add=true branch.
+        for (size_t bit = 0; bit < initial.B_parts.size(); ++bit) {
+            for (const bool add : {false, true}) {
+                SIQSPoly poly = initial;
+                next_poly_B(fb, sieve_half, poly, bit, add);
+                Integer twice;
+                mpz_mul_2exp(twice.get_mpz(), initial.B_parts[bit].get_mpz(), 1);
+                require_test(poly.B == (add ? initial.B + twice : initial.B - twice),
+                             "wide-prime Gray B update is incorrect");
+                check_siqs_sieve_roots(n, fb, sieve_half, poly);
+                if (bit == 2)
+                    check_same_sieve_offsets(poly, initial);
+                next_poly_B(fb, sieve_half, poly, bit, !add);
+                require_test(poly.B == initial.B, "wide-prime Gray inverse changed B");
+                check_same_sieve_offsets(poly, initial);
+                check_siqs_sieve_roots(n, fb, sieve_half, poly);
+            }
+        }
+    }
+    std::puts("  Gray root uint32 boundaries and zero delta: PASS");
+}
+
+void test_init_poly_uint32_root_offsets() {
+    constexpr uint32_t large_prime = 4'294'967'291u;
+    constexpr uint32_t sieve_half = large_prime - 1;
+    const Integer n(1);
+    const std::vector<FBPrime> fb{{0, 0, 0}, {2, 1, 1}, {3, 1, 1}, {5, 1, 2}, {large_prime, 1, 31}};
+    SIQSPoly poly;
+    poly.A = Integer(15);
+    poly.a_indices = {2, 3};
+    init_poly(n, fb, sieve_half, poly);
+    require_test(poly.B == Integer(1), "wide init fixture did not produce B=1");
+    check_siqs_sieve_roots(n, fb, sieve_half, poly);
+    require_test(poly.solns.back().soln1 == large_prime - 1,
+                 "wide init lost the zero-plus-offset root");
+    std::puts("  init_poly uint32 root offsets: PASS");
+}
+
 void test_init_poly_handles_large_a_factor_count() {
     // The production table currently uses at most 12 A factors, but this is
     // a valid runtime shape for the public helper.  It also covers the former
@@ -1441,6 +1680,10 @@ int main() {
     test_dense_gauss_parallel_kernel();
     test_dense_gauss_cooperative_stop();
     test_native_dependency_budgets();
+    test_gray_root_update_literal_fixture();
+    test_gray_root_update_full_sequences();
+    test_gray_root_update_uint32_boundary();
+    test_init_poly_uint32_root_offsets();
     test_init_poly_handles_large_a_factor_count();
     test_siqs_rejects_tiny_inputs_without_sieving();
     test_split_cofactor_edge();

@@ -1,6 +1,8 @@
 #pragma once
 
-// Frozen deterministic identity for the bounded 256-A SIQS proof-shadow path.
+// Historical successful proof identity from before the Gray-root correction.
+// Retained for old corpus/parser evidence, not a current live-profile success.
+// Current unchanged capture budgets stop before the solver is attempted.
 // Worker counts, timings, and process-memory observations are evidence only.
 
 #include <cstddef>
