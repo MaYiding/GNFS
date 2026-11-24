@@ -155,6 +155,14 @@ partial worker startup when the host supplies multiple workers. A single-worker
 host still tests allocation failure recovery but cannot prove the partial-startup
 case. This resource-sensitive test is excluded from smoke; allocation injection
 does not claim direct coverage of operating-system thread-creation errors.
+
+The `HenselProductWorkerFailure` fast contract reaches inner product workers
+through the public square-root API with outer prime parallelism disabled. It
+injects one worker allocation failure, requires propagation to the caller, and
+checks a same-instance retry against a known square modulo 65. Its checks stay
+active in Release. A single-worker host verifies the healthy arithmetic result
+but cannot exercise the worker failure. The `JoiningThread` contract separately
+covers indexed launch failures in the reused joined-worker primitive.
 The `SieveIntegration` fast contract keeps polynomial selection and context
 verification, non-empty special-Q and candidate flow, candidate lattice and
 coprimality invariants, relation classification, and degenerate-region
