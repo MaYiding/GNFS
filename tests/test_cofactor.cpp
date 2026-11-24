@@ -101,6 +101,107 @@ void test_small_composite_classification() {
     std::cout << "  Small composite classification: PASSED" << std::endl;
 }
 
+// A perfect power may first be found with a composite base, such as 81 = 9^2.
+// Classification must recover the prime base and retain the full valuation.
+void test_nested_prime_power_classification() {
+    std::cout << "Testing nested prime-power classification..." << std::endl;
+    const auto fourth_power = classify_cofactor(core::Integer(81), 9);
+    CHECK(fourth_power.type == CofactorClass::PrimePower);
+    CHECK(fourth_power.factor1 == 3 && fourth_power.power == 4);
+
+    // Construct every representable exponent for these known primes. GMP
+    // supplies the independent bound and product oracles, including p^6,
+    // p^12, and powers near UINT64_MAX.
+    for (uint64_t prime : {2u, 3u, 5u, 7u, 11u, 13u, 17u, 251u, 65521u}) {
+        uint64_t value = prime;
+        for (uint8_t exponent = 2; value <= UINT64_MAX / prime; ++exponent) {
+            value *= prime;
+            const core::Integer input(value);
+            core::Integer bound;
+            mpz_sqrt(bound.get_mpz(), input.get_mpz());
+            if (bound * bound < input)
+                bound += core::Integer(1);
+            const auto cls = classify_cofactor(input, bound.to_uint64());
+            CHECK(cls.type == CofactorClass::PrimePower);
+            CHECK(cls.factor1 == prime && cls.power == exponent);
+            CHECK(core::pow(core::Integer(cls.factor1), cls.power) == input);
+            // Recovering the primitive base must not widen the B^2 window.
+            CHECK(classify_cofactor(input, bound.to_uint64() - 1).type == CofactorClass::TooLarge);
+        }
+    }
+
+    // An irreducible composite base must not become a single-prime result.
+    for (uint64_t base : {15u, 21u, 35u}) {
+        for (uint32_t exponent : {2u, 4u, 6u}) {
+            const auto cls =
+                classify_cofactor(core::pow(core::Integer(base), exponent), UINT64_MAX);
+            CHECK(cls.type == CofactorClass::Composite);
+        }
+    }
+
+    // Crossing UINT64_MAX must preserve the same classification contract.
+    // The final case approaches the 128-bit limit imposed by uint64 B^2.
+    const std::pair<uint64_t, uint32_t> wide_powers[] = {
+        {2, 64}, {2, 127}, {65537, 4}, {65537, 6}, {251, 12}, {3, 80}, {4294967291, 4}};
+    for (const auto& [prime, exponent] : wide_powers) {
+        const core::Integer input = core::pow(core::Integer(prime), exponent);
+        CHECK(!input.fits_uint64());
+        core::Integer bound;
+        mpz_sqrt(bound.get_mpz(), input.get_mpz());
+        if (bound * bound < input)
+            bound += core::Integer(1);
+        CHECK(bound.fits_uint64());
+        const auto cls = classify_cofactor(input, bound.to_uint64());
+        CHECK(cls.type == CofactorClass::PrimePower);
+        CHECK(cls.factor1 == prime && cls.power == exponent);
+        CHECK(core::pow(core::Integer(cls.factor1), cls.power) == input);
+        CHECK(classify_cofactor(input, bound.to_uint64() - 1).type == CofactorClass::TooLarge);
+    }
+    const std::pair<uint64_t, uint32_t> wide_composites[] = {{6, 26}, {15, 20}, {35, 20}};
+    for (const auto& [base, exponent] : wide_composites) {
+        const core::Integer input = core::pow(core::Integer(base), exponent);
+        CHECK(!input.fits_uint64());
+        CHECK(classify_cofactor(input, UINT64_MAX).type == CofactorClass::Composite);
+    }
+    CHECK(classify_cofactor(core::pow(core::Integer(2), 128), UINT64_MAX).type ==
+          CofactorClass::TooLarge);
+
+    // Check both sides of valid small and wide candidates through the seeded
+    // public path. Prime powers must not consume an ECM randomness schedule.
+    struct NoRandomness final : CofactorSeedProvider {
+        CofactorSeed256 seed_for(const CofactorSeedRequestV1&) const override {
+            throw std::runtime_error("prime-power classification requested randomness");
+        }
+    } no_randomness;
+    for (uint64_t prime : {3u, 65537u}) {
+        const core::Integer input = core::pow(core::Integer(prime), 4);
+        const core::Integer m = input + core::Integer(1);
+        core::PolynomialContext ctx(core::Integer(101), {-m, core::Integer(1)}, m);
+        CHECK(ctx.verify());
+        CHECK(ctx.rational_value(1, 1) == -input && ctx.algebraic_norm(1, 1) == -input);
+        factor_base::FactorBase fb(core::FactorBaseParams{2, 2, prime * prime});
+        Cofactorizer verifier(ctx, fb);
+        const auto relation = verifier.verify(1, 1, 0, 0, {}, no_randomness);
+        CHECK(relation.has_value());
+        CHECK(relation->rational_factors.empty() && relation->algebraic_factors.empty());
+        CHECK(relation->rational_large_prime.size() == 1);
+        CHECK(relation->algebraic_large_prime.size() == 1);
+        const auto& rational = relation->rational_large_prime.front();
+        const auto& algebraic = relation->algebraic_large_prime.front();
+        CHECK(rational.p == prime && rational.e == 4);
+        CHECK(algebraic.p == prime && algebraic.r == 1 && algebraic.e == 4);
+        CHECK(core::pow(core::Integer(rational.p), rational.e) == input);
+        CHECK(core::pow(core::Integer(algebraic.p), algebraic.e) == input);
+        CHECK(verifier.stats().full_relations == 1);
+
+        CofactorizerConfig disabled;
+        disabled.allow_1lp = false;
+        Cofactorizer rejecting(ctx, fb, disabled);
+        CHECK(!rejecting.verify(1, 1).has_value());
+    }
+    std::cout << "  Nested prime-power classification: PASSED" << std::endl;
+}
+
 void test_wide_signed_algebraic_norm() {
     using core::Integer;
     constexpr int64_t base = (int64_t{1} << 24) + 1; // 97 * 257 * 673
@@ -1228,6 +1329,7 @@ int main() {
 
     test_primality();
     test_small_composite_classification();
+    test_nested_prime_power_classification();
     test_small_primality_oracle();
     test_wide_signed_algebraic_norm();
     test_full_factor_base_valuations();
