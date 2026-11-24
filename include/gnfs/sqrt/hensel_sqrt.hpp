@@ -1501,8 +1501,7 @@ private:
                 factor[0] = a; // mpz_set_si direct
                 if (d == 1) {
                     b_value = b;
-                    mpz_addmul(factor[0].get_mpz(), b_value.get_mpz(),
-                               linear_constant.get_mpz());
+                    mpz_addmul(factor[0].get_mpz(), b_value.get_mpz(), linear_constant.get_mpz());
                 }
                 factor[0] %= modulus;
                 if (factor[0].is_negative())

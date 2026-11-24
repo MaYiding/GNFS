@@ -26,17 +26,16 @@ resolve_changed_base() {
     git -C "$project_root" merge-base HEAD "$origin_main"
 }
 
-# Emit all committed and working-tree paths that can affect a changed-mode
-# selection. The caller may pass an already-resolved base to avoid resolving
-# it twice and to make an unavailable base visible to the caller.
+# Emit NUL-terminated paths. Disabling rename detection gives both the old
+# and new names, which can belong to different modules or build targets.
 collect_changed_files() {
     local project_root="$1"
     local base_ref="${2:-}"
 
     if [[ -n "$base_ref" ]]; then
-        git -C "$project_root" diff --name-only "$base_ref" HEAD
+        git -C "$project_root" diff --no-renames --name-only -z "$base_ref" HEAD
     fi
-    git -C "$project_root" diff --name-only HEAD
-    git -C "$project_root" diff --name-only --cached
-    git -C "$project_root" ls-files --others --exclude-standard
+    git -C "$project_root" diff --no-renames --name-only -z HEAD
+    git -C "$project_root" diff --no-renames --name-only -z --cached
+    git -C "$project_root" ls-files -z --others --exclude-standard
 }
