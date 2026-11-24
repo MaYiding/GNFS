@@ -715,20 +715,14 @@ for name in ['test.sh', 'lib/changed_files.zsh', 'test-catalog/windows-unavailab
 # results directly and exercises the real selection, aggregation, and reports.
 (fixture / 'scripts/lib/process_tree_timeout.zsh').write_text(
     'run_with_timeout() {\n    shift\n    RUN_OUTPUT=""\n    "$@"\n}\n')
-runner = (project / 'scripts/test.sh').read_text()
 optional_targets = (project / 'scripts/test-catalog/windows-unavailable.txt').read_text().split()
 # Exercise the real aggregation logic with small synthetic catalogs.
 (fixture / 'scripts/test-catalog/smoke.txt').write_text('test_integer\ntest_fb_checkpoint\n')
 factor_base_tests = ['test_factor_base', 'test_fb_checkpoint', 'test_fb_roots_parallel']
 sieve_tests = ['test_sieve_basic', *optional_targets]
-fixture_modules = ('MODULE_TESTS=(\n'
-                   f'    factor_base "{" ".join(factor_base_tests)}"\n'
-                   f'    sieve "{" ".join(sieve_tests)}"\n)')
-fixture_runner, replacements = re.subn(r'(?ms)^MODULE_TESTS=\(\n.*?^\)', fixture_modules,
-                                       runner, count=1)
-if replacements != 1:
-    raise SystemExit('required-binary fixture could not install its module catalog')
-(fixture / 'scripts/test.sh').write_text(fixture_runner)
+(fixture / 'scripts/test-catalog/modules.txt').write_text(
+    f'factor_base|{" ".join(factor_base_tests)}|sieve\n'
+    f'sieve|{" ".join(sieve_tests)}|\n')
 (fixture / 'src/factor_base').mkdir(parents=True)
 source = fixture / 'src/factor_base/builder.cpp'
 source.write_text('// baseline\n')
@@ -765,6 +759,8 @@ def invoke(options, *, missing=(), host='Linux', win32='0', exit_77=(), exit_cod
     build = cache / str(case_id)
     build.mkdir()
     (build / 'CMakeCache.txt').write_text('CMAKE_BUILD_TYPE:STRING=Debug\nGNFS_BUILD_TESTS:BOOL=OFF\n')
+    # The CMake stand-in has no test executable owning src/factor_base/builder.cpp.
+    (build / 'gnfs-test-sources.txt').write_text('')
     if win32 is not None:
         (build / 'gnfs-test-platform.txt').write_text('WIN32=' + win32 + '\n')
     if stale_report:

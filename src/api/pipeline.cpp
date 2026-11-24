@@ -40,6 +40,7 @@
 #include <gnfs/util/process_memory.hpp>
 #include <gnfs/util/safe_math.hpp>
 #include <gnfs/util/temp_path.hpp>
+#include <gnfs/util/utf8_path.hpp>
 
 #include <algorithm>
 #include <array>
@@ -144,7 +145,7 @@ public:
             throw std::runtime_error("linalg scratch matrix already exists");
         }
         writing_matrix_ = true;
-        return linalg::save_sparse_as_mmap(matrix, matrix_.string());
+        return linalg::save_sparse_as_mmap(matrix, util::path_to_utf8(matrix_));
     }
 
     [[nodiscard]] const std::filesystem::path& matrix_path() const noexcept {
@@ -3686,9 +3687,8 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
             std::string mmap_log = std::string("[linalg-mmap] policy=") +
                                    (policy == linalg::MmapPolicy::On ? "on" : "auto") +
                                    " nnz=" + std::to_string(sge_nnz);
-            const auto mmap_path = scratch.matrix_path().string();
             if (!scratch_error) {
-                mmap_log += " path=" + mmap_path;
+                mmap_log += " path=" + util::path_to_utf8(scratch.matrix_path());
             }
             emit_log(LogLevel::Info, Phase::LinearAlgebra, mmap_log);
             std::fprintf(stderr, "%s\n", mmap_log.c_str());
