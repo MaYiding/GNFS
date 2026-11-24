@@ -498,6 +498,205 @@ void test_config_resource_boundaries() {
     malformed_context.sigma_pool = {6};
     expect_invalid_argument([&] { (void)ECM::factor_with_batch(composite, malformed_context); });
 }
+
+[[nodiscard]] ECM::BatchContext minimal_literal_batch_context() {
+    ECM::BatchContext context;
+    context.B1 = 2;
+    context.B2 = 2;
+    context.primes_cache = {2};
+    context.prime_powers = {2};
+    context.sigma_pool = {6};
+    return context;
+}
+
+void check_invalid_batch_context_before_early_returns(const ECM::BatchContext& context) {
+    for (const Integer& n :
+         std::array<Integer, 5>{Integer(15), Integer(-1), Integer(0), Integer(1), Integer(17)}) {
+        expect_invalid_argument([&] { (void)ECM::factor_with_batch(n, context); });
+        expect_invalid_argument(
+            [&] { (void)ECM::factor_batch(std::span<const Integer>(&n, 1), context); });
+    }
+    expect_invalid_argument([&] { (void)ECM::factor_batch(std::span<const Integer>{}, context); });
+}
+
+void test_handcrafted_batch_parameter_validation() {
+    const Integer n(15);
+    const ECM::BatchContext valid = minimal_literal_batch_context();
+    // sigma=6 gives Suyama denominator 9 modulo 15, hence gcd(9,15)=3.
+    const auto baseline = ECM::factor_with_batch(n, valid);
+    check_valid_factor(n, baseline);
+    CHECK(*baseline == Integer(3));
+
+    // The first valid curve already finds 3. Validation must still inspect
+    // the tail before executing that curve, including in Release builds.
+    for (const std::uint64_t sigma : std::array<std::uint64_t, 3>{0, 1, 5}) {
+        ECM::BatchContext invalid = valid;
+        invalid.sigma_pool = {sigma};
+        check_invalid_batch_context_before_early_returns(invalid);
+        invalid.sigma_pool = {6, sigma};
+        check_invalid_batch_context_before_early_returns(invalid);
+    }
+    for (const std::uint32_t degree :
+         std::array<std::uint32_t, 5>{3, 4, 7, 31, std::numeric_limits<std::uint32_t>::max()}) {
+        ECM::BatchContext invalid = valid;
+        invalid.brent_suyama_degree = degree;
+        check_invalid_batch_context_before_early_returns(invalid);
+    }
+    ECM::BatchContext oversized = valid;
+    oversized.B1 = 100'000'001ULL;
+    check_invalid_batch_context_before_early_returns(oversized);
+    oversized = valid;
+    oversized.B2 = 5'000'000'001ULL;
+    check_invalid_batch_context_before_early_returns(oversized);
+
+    // Structural empty/mismatched-array fallbacks must not hide bad parameters.
+    ECM::BatchContext empty_invalid;
+    empty_invalid.brent_suyama_degree = 3;
+    check_invalid_batch_context_before_early_returns(empty_invalid);
+    ECM::BatchContext mismatched_invalid = valid;
+    mismatched_invalid.prime_powers.clear();
+    mismatched_invalid.sigma_pool = {6, 5};
+    check_invalid_batch_context_before_early_returns(mismatched_invalid);
+}
+
+void test_supported_degrees_and_wide_batch_sigmas() {
+    const Integer n(15);
+    ECM::DeterministicCurveSchedule schedule;
+    schedule.sigmas = {6};
+    const ECM::DeterministicCurveSchedule empty_schedule;
+    for (const std::uint32_t degree : std::array<std::uint32_t, 6>{0, 1, 2, 6, 12, 30}) {
+        ECM::Config config = make_config(1, degree);
+        config.B1 = 2;
+        config.B2 = 2;
+        const auto prepared = ECM::prepare_batch(config, schedule);
+        CHECK(prepared.brent_suyama_degree == degree);
+        CHECK(prepared.primes_cache == std::vector<std::uint64_t>{2});
+        CHECK(prepared.prime_powers == std::vector<std::uint64_t>{2});
+        CHECK(prepared.sigma_pool == std::vector<std::uint64_t>{6});
+        const auto legacy = ECM::prepare_batch(config, std::uint64_t{1});
+        CHECK(legacy.brent_suyama_degree == degree);
+        CHECK(legacy.sigma_pool.size() == 1);
+
+        ECM::BatchContext literal = minimal_literal_batch_context();
+        literal.brent_suyama_degree = degree;
+        const auto from_context = ECM::factor_with_batch(n, literal);
+        const auto direct = ECM::factor(n, config, schedule);
+        const auto quick = ECM::quick_factor(n, schedule, degree);
+        const auto batch = ECM::factor_batch(std::span<const Integer>(&n, 1), literal);
+        CHECK(batch.size() == 1);
+        for (const auto* factor : std::array<const std::optional<Integer>*, 4>{
+                 &from_context, &direct, &quick, &batch[0]}) {
+            check_valid_factor(n, *factor);
+            CHECK(**factor == Integer(3));
+        }
+        CHECK(!ECM::factor(n, config, empty_schedule).has_value());
+        CHECK(!ECM::quick_factor(n, empty_schedule, degree).has_value());
+    }
+
+    // Public BatchContext accepts the full uint64_t sigma domain above five.
+    // The deterministic schedule's upper bound must not leak into this API.
+    for (const std::uint64_t sigma :
+         std::array<std::uint64_t, 2>{1'000'006, std::numeric_limits<std::uint64_t>::max()}) {
+        ECM::BatchContext context = minimal_literal_batch_context();
+        context.sigma_pool = {6, sigma};
+        const auto prefix_factor = ECM::factor_with_batch(n, context);
+        check_valid_factor(n, prefix_factor);
+        CHECK(*prefix_factor == Integer(3));
+        const auto batch = ECM::factor_batch(std::span<const Integer>(&n, 1), context);
+        CHECK(batch.size() == 1);
+        check_valid_factor(n, batch[0]);
+        CHECK(*batch[0] == Integer(3));
+
+        // Actually execute the wide curve as well. A legal curve need not find
+        // a factor, but any returned value must be a positive proper divisor.
+        context.sigma_pool = {sigma};
+        const auto factor = ECM::factor_with_batch(n, context);
+        if (factor) {
+            CHECK(factor->compare(Integer(1)) > 0);
+            CHECK(factor->compare(n) < 0);
+            check_valid_factor(n, factor);
+        }
+        CHECK(ECM::factor_batch(std::span<const Integer>{}, context).empty());
+    }
+}
+
+void test_legal_empty_and_mismatched_batch_contexts() {
+    ECM::BatchContext mismatched = minimal_literal_batch_context();
+    mismatched.prime_powers.clear();
+    ECM::BatchContext empty_schedule = minimal_literal_batch_context();
+    empty_schedule.sigma_pool.clear();
+    const std::array<ECM::BatchContext, 3> contexts{ECM::BatchContext{}, mismatched,
+                                                    empty_schedule};
+    const std::array<Integer, 5> inputs{Integer(15), Integer(-1), Integer(0), Integer(1),
+                                        Integer(17)};
+    for (const auto& context : contexts) {
+        for (const auto& n : inputs) {
+            CHECK(!ECM::factor_with_batch(n, context).has_value());
+        }
+        const auto results = ECM::factor_batch(std::span<const Integer>(inputs), context);
+        CHECK(results.size() == inputs.size());
+        for (const auto& result : results) {
+            CHECK(!result.has_value());
+        }
+        CHECK(ECM::factor_batch(std::span<const Integer>{}, context).empty());
+    }
+}
+
+void test_explicit_degree_validation_before_early_returns() {
+    ECM::DeterministicCurveSchedule schedule;
+    schedule.sigmas = {6};
+    const std::array<ECM::DeterministicCurveSchedule, 2> schedules{
+        schedule, ECM::DeterministicCurveSchedule{}};
+    const std::array<Integer, 5> inputs{Integer(15), Integer(-1), Integer(0), Integer(1),
+                                        Integer(17)};
+    for (const std::uint32_t degree :
+         std::array<std::uint32_t, 5>{3, 4, 7, 31, std::numeric_limits<std::uint32_t>::max()}) {
+        ECM::Config config = make_config(1, degree);
+        config.B1 = 2;
+        config.B2 = 2;
+        for (const auto& selected : schedules) {
+            expect_invalid_argument([&] { (void)ECM::prepare_batch(config, selected); });
+            for (const auto& n : inputs) {
+                expect_invalid_argument([&] { (void)ECM::factor(n, config, selected); });
+                expect_invalid_argument([&] { (void)ECM::quick_factor(n, selected, degree); });
+            }
+        }
+        expect_invalid_argument([&] { (void)ECM::prepare_batch(config, std::uint64_t{1}); });
+        config.num_curves = 0;
+        expect_invalid_argument([&] { (void)ECM::prepare_batch(config, std::uint64_t{1}); });
+    }
+}
+
+void test_ambient_degree_validation_after_environment_override() {
+    ECM::Config invalid = make_config(0, 3);
+    invalid.B1 = 2;
+    invalid.B2 = 2;
+    const Integer n(15);
+    ScopedEnvironmentVariable disabled("GNFS_ECM_BRENT_SUYAMA", "0");
+    ScopedEnvironmentVariable ambient_degree("GNFS_ECM_BS_DEGREE", "2");
+
+    // Ambient factor preserves its n-only early returns before configuration
+    // processing, unlike the explicit APIs' strict parameter validation.
+    for (const Integer& early :
+         std::array<Integer, 4>{Integer(-1), Integer(0), Integer(1), Integer(17)}) {
+        CHECK(!ECM::factor(early, invalid).has_value());
+    }
+    expect_invalid_argument([&] { (void)ECM::factor(n, invalid); });
+    {
+        ScopedEnvironmentVariable unset("GNFS_ECM_BRENT_SUYAMA", nullptr);
+        expect_invalid_argument([&] { (void)ECM::factor(n, invalid); });
+    }
+
+    // A valid override, or the existing degree-12 fallback for invalid ENV,
+    // repairs the caller's degree before validation. Zero curves avoid RNG
+    // outcomes affecting this contract test.
+    ScopedEnvironmentVariable enabled("GNFS_ECM_BRENT_SUYAMA", "1");
+    for (const char* degree : std::array<const char*, 2>{"2", "3"}) {
+        ScopedEnvironmentVariable overridden_degree("GNFS_ECM_BS_DEGREE", degree);
+        CHECK(!ECM::factor(n, invalid).has_value());
+    }
+}
+
 template <class Function> void run_test(std::string_view name, Function&& function) {
     std::cout << "  " << name << "... " << std::flush;
     std::forward<Function>(function)();
@@ -528,6 +727,16 @@ int main() {
         run_test("numeric boundaries/nonpositive inputs",
                  test_numeric_boundaries_and_nonpositive_inputs);
         run_test("configuration resource boundaries", test_config_resource_boundaries);
+        run_test("handcrafted batch parameter validation",
+                 test_handcrafted_batch_parameter_validation);
+        run_test("supported degrees and wide batch sigmas",
+                 test_supported_degrees_and_wide_batch_sigmas);
+        run_test("legal empty/mismatched batch contexts",
+                 test_legal_empty_and_mismatched_batch_contexts);
+        run_test("explicit degree validation before early returns",
+                 test_explicit_degree_validation_before_early_returns);
+        run_test("ambient degree validation after ENV",
+                 test_ambient_degree_validation_after_environment_override);
         std::cout << "=== Deterministic ECM Curve Schedule Tests PASSED ===\n";
         return 0;
     } catch (const std::exception& error) {
