@@ -25,6 +25,7 @@
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/process_memory.hpp>
 #include <gnfs/util/temp_path.hpp>
+#include <gnfs/util/utf8_path.hpp>
 
 #include <algorithm>
 #include <array>
@@ -4590,7 +4591,7 @@ bool test_mmap_solve_preserves_existing_scratch_entries() {
         if (entry.message.starts_with("[linalg-mmap] policy=on")) {
             const auto offset = entry.message.find(" path=");
             if (offset != std::string::npos) {
-                reported_path = entry.message.substr(offset + 6);
+                reported_path = gnfs::util::path_from_utf8(entry.message.substr(offset + 6));
                 if (occupy_path) {
                     write_test_file(reported_path.string(), "callback file");
                 }
