@@ -250,10 +250,12 @@ final class GNFSWorkbenchUITests: XCTestCase {
         NSPredicate(format: "value CONTAINS 'Console scrolling fixture'")
       ).firstMatch.waitForExistence(timeout: 8))
     console.scroll(byDeltaX: 0, deltaY: 300)
+    // Reading the toggle asks the app for its accessibility state, which can take
+    // seconds on a busy runner. Both waits below allow for that delay.
     let paused = XCTNSPredicateExpectation(
       predicate: NSPredicate { _, _ in String(describing: following.value ?? "") == "0" },
       object: following)
-    XCTAssertEqual(XCTWaiter.wait(for: [paused], timeout: 3), .completed)
+    XCTAssertEqual(XCTWaiter.wait(for: [paused], timeout: 10), .completed)
     XCTAssertTrue(app.buttons["jumpToLatestLogsButton"].isHittable)
     disclosure.click()
     disclosure.click()
@@ -262,7 +264,7 @@ final class GNFSWorkbenchUITests: XCTestCase {
     let resumed = XCTNSPredicateExpectation(
       predicate: NSPredicate { _, _ in String(describing: following.value ?? "") == "1" },
       object: following)
-    XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 3), .completed)
+    XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 10), .completed)
     app.buttons["cancelRunButton"].click()
     XCTAssertTrue(app.staticTexts["任务已取消"].waitForExistence(timeout: 4))
   }
