@@ -56,7 +56,7 @@ jobs:
             cxx_compiler: clang++
             test_labels: 'instant|fast'
             ctest_parallel: 2
-            timeout_minutes: 45
+            timeout_minutes: 80
             experimental: false
           # ── Linux ARM64 native (free for public repos on github-hosted) ──
           # See https://github.blog/changelog/2025-01-16-linux-arm64-hosted-runners-now-available-for-free-in-public-repositories/
@@ -199,6 +199,14 @@ jobs:
           --parallel "${{ matrix.ctest_parallel }}" \
           --timeout 300 \
           --no-tests=error
+
+    - name: Flake hunt (validation branch only, do not merge)
+      if: runner.os == 'macOS' && matrix.build_type == 'Release'
+      working-directory: build
+      run: |
+        ctest --output-on-failure --no-tests=error --timeout 120 --parallel 2 \
+          --repeat until-fail:250 \
+          -R '^(DistributedSieveWaveStoreWorkerLauncher|DistributedSieveWorkerCoordinator)$'
 
     - name: Run macOS worker cleanup tail
       if: >-
