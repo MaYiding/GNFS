@@ -9,6 +9,12 @@ of the contract and reports one validated `GNFS_SIQS_LIVE_CAPTURE_V1` record.
 It does not authorize production 2LP collection. Persistent JSON and raw-corpus
 artifacts remain a later slice.
 
+The recorded 50-, 70-, and 90-digit table and the 64-A cycle-density table
+predate the Gray-code sieve-root correction. They remain historical evidence;
+they do not describe the corrected live corpus. The
+[current V4 boundary](#evidence-after-the-sieve-root-correction) is recorded
+separately without changing capture budgets.
+
 The first implementation must answer three questions:
 
 1. Which full, one-large-prime (1LP), and candidate 2LP relations occur under
@@ -579,9 +585,10 @@ four wall-time fields, and the six current/peak RSS measurements. Those dynamic
 fields remain format-checked. Every other CONFIG, PREFIX, and SUMMARY field must
 match across the one-, two-, and four-worker fresh processes.
 
-The reproduced fixed profile completed all 2048 logical slots without capacity
-truncation. It first observed graph cycles at 16 A and cycles containing an
-accepted 2LP source at 64 A:
+Before the sieve-root correction, the fixed profile completed all 2048 logical
+slots without capacity truncation. It first observed graph cycles at 16 A and
+cycles containing an accepted 2LP source at 64 A. The following counts are
+historical; corrected V2 measurements are recorded separately below:
 
 | A Prefix | Captured Relations | Graph Edges | Graph Cycles | 2LP-Bearing Cycles | Selected Rows |
 |---:|---:|---:|---:|---:|---:|
@@ -599,21 +606,86 @@ accepted duplicate A values. Its checked worst-case logical bounds are 65536
 relations and 128MiB of relation payload, while the reproduced corpus retained
 4398 relations and did not hit either per-slot limit.
 
-The profile records `promotion=false solver_attempted=false`. These results are
-cycle-density and materialization evidence, not a production promotion or
-matrix-solver claim. In particular, 397 selected rows are well below the
-50-digit target shape of 1701 rows (1601 factor-base columns plus 100 excess
-rows). The next scale experiment should extend the same serial A plan to a
-bounded 256-A prefix before any collector or `factor()` integration is
-considered. That experiment still cannot replace the 70- and 90-digit gates or
-the existing bounded sparse-backend admission and verification evidence.
+The profile records `promotion=false solver_attempted=false`. The historical
+397 selected rows were below the 50-digit target of 1701 rows (1601 factor-base
+columns plus 100 excess rows). Those results motivated the bounded 256-A
+follow-up. The corrected V2 capture is recorded below; the current 256-A proof
+gate remains pending. The old cycle-density and materialization results do not
+establish current matrix-solver acceptance or replace the 70- and 90-digit
+gates.
 
-## Current Fixed-Plan Evidence
+## Replay Selected 256-A Rows
 
-The following evidence was reproduced on 2026-07-23 with one, two, and four
-actual capture workers. All three worker records in each band had identical
-plan, slot-state, raw-corpus, source, pre-trim, and selected-row digests. Every
-slot completed without hitting its relation or payload cap.
+The fixed 50-digit V3 scale profile can export its selected matrix for a
+fresh-process replay. Use a new snapshot name for each capture.
+
+```bash
+./scripts/test.sh profile-siqs-256a 2 --snapshot example
+./scripts/test.sh profile-siqs-256a --replay example
+```
+
+The runner validates the usual six capture records and the scale gate before
+publishing `siqs-256a-example.bin` under its build directory. Publication creates
+a hard link to the validated file, so the build filesystem must support hard links.
+If any file, directory, or symlink already occupies the destination name at
+publication, the capture fails and preserves that entry. The snapshot holds
+up to 4MiB and uses the V1 canonical post-merge row wire. Its header binds
+the fixed profile, both moduli, the ordered factor base, the trim policy, and
+the frozen plan, raw corpus, source, pretrim, and selected-row fingerprints.
+Each frame stores its row origin, a little-endian 32-bit payload length, and
+one complete row wire record. Frame order carries the selected row ordinal.
+
+Replay checks the header against the current V3 fixture, validates each row
+modulo the sieved modulus, and recomputes the selected-row fingerprint. It
+then runs the dense and sparse selectors, verifies every returned dependency,
+and checks extracted factors against the original modulus. This fixture falls
+within the sparse selector's bounded exact solver. The snapshot covers the
+selected matrix and its source IDs. Rebuilding the sieve or discarded rows
+requires the original capture.
+
+The manual regressions check damaged snapshots, capture failures, and concurrent
+publication at an occupied name.
+
+```bash
+python3 tests/test_siqs_256a_row_replay.py build/test_siqs_256a_scale_profile build/siqs-256a-example.bin
+python3 tests/test_siqs_256a_snapshot_publication.py build
+```
+
+## Evidence After the Sieve-Root Correction
+
+Current Release V1 probes completed the 50-, 70-, and 90-digit plans with one,
+two, and four actual workers. Each run completed eight, four, and four slots
+respectively, with `status=valid` and `solver_attempted=false`. All nine records
+passed the original validator with empty stderr, and capture identity matched
+across worker counts within each band.
+
+The corrected V2 64-A profile passed the original validator and cross-worker
+identity comparison with one, two, and four workers. It captured 19148 raw
+relations, produced 2878 cycles including 125 with 2LP edges, and selected
+1701 rows. It retains `solver_attempted=false`.
+
+An independent GMP oracle verified the sieve roots in all 8192 planned V4
+polynomial slots. Actual capture under the unchanged budgets stopped with
+`global_relation_limit` after 112 A families and 3584 slots. It generated
+33399 relations and admitted 32768. Adapter, graph, assembly, and proof
+processing were not attempted. The final V3 and V4 records passed their original
+validators and cross-worker identity checks with one, two, and four workers,
+while retaining `global_relation_limit`; scale and proof acceptance remained
+false. Full-plan root verification therefore does not imply full-plan capture
+or a completed factor proof.
+
+The earlier 256-A result with 1701 selected rows and a frozen factor pair across
+one, two, and four workers predates this correction. It remains a historical
+result; the current
+[256-A promotion gate](siqs-shadow-matrix-scaling.md#promotion-gates) is pending.
+
+## Historical Fixed-Plan Evidence
+
+The following evidence was reproduced on 2026-07-23, before the sieve-root
+correction, with one, two, and four actual capture workers. All three worker
+records in each band had identical plan, slot-state, raw-corpus, source,
+pre-trim, and selected-row digests. Every slot completed without hitting its
+relation or payload cap.
 
 | Band | Plan Digest Low:High | Raw Full / 1LP / 2LP | Accepted 2LP / Rejected | Graph Cycles | Selected Rows |
 |---:|---:|---:|---:|---:|---:|
@@ -623,9 +695,10 @@ slot completed without hitting its relation or payload cap.
 
 All three rejected 50-digit candidates were typed
 `invalid_two_large_prime_split`. No band produced a large-prime graph cycle.
-The records therefore validate bounded collection, typed normalization,
-conservation, and worker-count independence, but they do not satisfy the 2LP
-promotion gate or freeze an assembly/elimination parallel threshold.
+The records validated bounded collection, typed normalization, conservation,
+and worker-count independence at that revision. They do not establish those
+results for the corrected corpus, satisfy the 2LP promotion gate, or freeze an
+assembly/elimination parallel threshold.
 
 Logical limits are frozen in the versioned fixture and emitted in every line.
 A future JSON artifact will become the source of truth for persisted runs.

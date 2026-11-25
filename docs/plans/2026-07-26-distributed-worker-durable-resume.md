@@ -938,6 +938,42 @@ performance caches must be reset, made context-local, or mechanically proven
 semantic-neutral. Hot/cold cache and different scheduling tests use the same
 serialized-relation oracle.
 
+### Algebraic Root Order at Pipeline Integration
+
+V1 requires algebraic `(p, r)` keys in strictly increasing lexicographic
+order. The local builder visits primes in ascending order, but its
+Cantor-Zassenhaus traversal can emit distinct roots of one prime in either
+order. A serial build for `N = 143`, `f(x) = x² − 1`, `m = 1`, and both
+factor-base bounds set to 100 produced `(67, 66)` followed by `(67, 1)`.
+The V1 validator, encoder, decoder, and worker rehydration each returned
+`noncanonical_order` at the second entry. All four accepted a control copy
+with sorted roots. The positive [worker test fixture](../../tests/test_distributed_sieve_worker_writer_authority.cpp)
+constructs its live base in the same order as its work identity.
+
+A relation stores algebraic factors by index, the seeded worker uses the
+special-Q index, and the bound-work adapter compares each entry with the live
+factor base. Sorting the work identity at serialization would make a worker
+interpret existing indices against a different base. Keep V1 validation and
+resume tied to the original ordered entries and executable identity.
+
+Before connecting a durable worker to an existing Pipeline factor base, add a
+versioned work identity that preserves the supplied order within each prime.
+Give the new format a distinct work digest domain and identify it in the work
+package so an older worker rejects the package before executing a chunk.
+Use the new version for fresh waves and keep a resumed wave on its recorded
+version. The new validator should retain prime order and the sieve-prefix
+partition and reject duplicate roots anywhere in one prime group. Bound
+scratch space by the group size and turn allocation failure into
+`resource_exhausted` across the `noexcept` interface.
+
+Acceptance requires the real builder, encoder, decoder, and worker to agree
+on each original index. Check a reversed pair of distinct roots, a repeated
+root separated by another root, and two valid permutations with distinct
+work digests. Bind the decoded identity to the original live base and
+compare the special-Q index and relation factor indices across a durable
+restart. Include V1 golden bytes and digest, V1 recovery, and an older worker
+reading a new package in the compatibility tests.
+
 ## State Classification
 
 | Classification | Evidence | Action |
@@ -2484,6 +2520,17 @@ identity decoder. Integrity-unbound sequence counts therefore cannot trigger
 destination allocation. Dedicated tests freeze both digest goldens and all
 header offsets, cover every exact truncation and partial short-write boundary,
 and distinguish outer-integrity rejection from bound body validation.
+
+V1 requires strictly increasing algebraic `(p, r)` keys. For `N = 65`,
+`f(x) = x² + 1`, and `m = 8`, a builder produced `(73, 46)` and `(73, 27)`
+at indices 13 and 14. Sorting those entries assigns a different ideal to the
+same worker interval `[13, 14)`. The proposed V2 work identity would preserve
+each column ordinal in the work digest and use separate V2 work and package
+hash domains. Launch and recovery would check the package version and work
+digest against the manifest, and the worker would bind every restored entry
+to its original column before executing the chunk. Existing waves would retain
+their recorded V1 version and golden bytes and digests.
+[Worker regression](../../tests/test_distributed_sieve_worker_execution.cpp)
 
 ### M2i Anonymous Work-Package File Capability Status
 

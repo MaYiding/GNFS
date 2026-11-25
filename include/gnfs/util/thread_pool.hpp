@@ -2,17 +2,22 @@
 
 #include "gnfs/util/cpu_intrin.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -165,6 +170,7 @@ public:
 
         std::vector<std::future<void>> futures;
         futures.reserve(num_threads);
+        FutureLaunchGuard launch_guard(futures);
 
         Iter chunk_begin = begin;
         for (size_t i = 0; i < num_threads && chunk_begin != end; ++i) {
@@ -181,6 +187,7 @@ public:
             chunk_begin = chunk_end;
         }
 
+        launch_guard.release();
         wait_for_futures(futures);
     }
 
@@ -199,6 +206,7 @@ public:
 
         std::vector<std::future<void>> futures;
         futures.reserve(num_threads);
+        FutureLaunchGuard launch_guard(futures);
 
         size_t chunk_start = start;
         for (size_t i = 0; i < num_threads && chunk_start < end; ++i) {
@@ -215,6 +223,7 @@ public:
             chunk_start = chunk_end;
         }
 
+        launch_guard.release();
         wait_for_futures(futures);
     }
 
@@ -237,6 +246,7 @@ public:
         size_t num_threads = workers_.size();
         std::vector<std::future<void>> futures;
         futures.reserve(num_threads);
+        FutureLaunchGuard launch_guard(futures);
 
         for (size_t t = 0; t < num_threads; ++t) {
             futures.push_back(submit([&next_idx, end, grain, &func]() {
@@ -266,9 +276,8 @@ public:
             }));
         }
 
-        for (auto& f : futures) {
-            f.get();
-        }
+        launch_guard.release();
+        wait_for_futures(futures);
     }
 
     /// 等待所有任务完成
@@ -289,6 +298,37 @@ public:
     }
 
 private:
+    // A later partition or submission may throw after earlier tasks have been
+    // accepted. Drain those tasks before references to the callback or local
+    // work cursor can become dangling, preserving the original launch error.
+    class FutureLaunchGuard {
+    public:
+        explicit FutureLaunchGuard(std::vector<std::future<void>>& futures) noexcept
+            : futures_(futures) {}
+        FutureLaunchGuard(const FutureLaunchGuard&) = delete;
+        FutureLaunchGuard& operator=(const FutureLaunchGuard&) = delete;
+
+        ~FutureLaunchGuard() noexcept {
+            if (active_) {
+                for (auto& future : futures_) {
+                    try {
+                        future.get();
+                    } catch (...) {
+                        // Callback failures must not replace a launch failure.
+                    }
+                }
+            }
+        }
+
+        void release() noexcept {
+            active_ = false;
+        }
+
+    private:
+        std::vector<std::future<void>>& futures_;
+        bool active_ = true;
+    };
+
     // Drain every task before rethrowing so a callback cannot outlive this
     // call when one of the parallel chunks fails.
     static void wait_for_futures(std::vector<std::future<void>>& futures) {

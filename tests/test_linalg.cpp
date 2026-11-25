@@ -1,16 +1,24 @@
 // test_linalg.cpp - Test linear algebra components
 
 #include "support/test_check.hpp"
+#include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/core/relation.hpp>
+#include <gnfs/core/types.hpp>
+#include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/gauss.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/relation_source.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
+#include <gnfs/relation/filter.hpp>
+#include <gnfs/sqrt/number_field.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -81,6 +89,71 @@ void test_sparse_row() {
     GNFS_TEST_CHECK(!row.test(7));
 
     std::cout << "  SparseRow: PASSED" << std::endl;
+}
+
+void test_sparse_row_constructor_parity() {
+    std::cout << "Testing SparseRow constructor GF(2) parity..." << std::endl;
+
+    constexpr size_t columns = 8;
+    const std::vector<SparseRow::IndexList> inputs{
+        {3, 3}, {}, {5, 1, 3, 1, 3, 3, 5}, {7, 7, 0, 7, 0, 2, 2, 2}, {0, 0, 0, 7, 7, 7}};
+    const auto check_row = [](const SparseRow& row, const std::vector<bool>& dense) {
+        SparseRow::IndexList expected_indices;
+        for (size_t column = 0; column < dense.size(); ++column) {
+            GNFS_TEST_CHECK(row.test(static_cast<uint32_t>(column)) == dense[column]);
+            if (dense[column])
+                expected_indices.push_back(static_cast<uint32_t>(column));
+        }
+        GNFS_TEST_CHECK(row.indices() == expected_indices);
+        GNFS_TEST_CHECK(row.weight() == expected_indices.size());
+        GNFS_TEST_CHECK(row.empty() == expected_indices.empty());
+        GNFS_TEST_CHECK(row.first_nonzero() ==
+                        (expected_indices.empty() ? UINT32_MAX : expected_indices.front()));
+        GNFS_TEST_CHECK(row.last_nonzero() ==
+                        (expected_indices.empty() ? UINT32_MAX : expected_indices.back()));
+    };
+
+    for (const auto& input : inputs) {
+        // Independent dense oracle: each occurrence toggles its GF(2) bit.
+        std::vector<bool> dense(columns, false);
+        for (uint32_t column : input)
+            dense[column] = !dense[column];
+        SparseRow row(input);
+        check_row(row, dense);
+
+        SparseMatrix matrix(1, columns);
+        matrix.row(0) = row;
+        const auto transposed = matrix.transpose();
+        for (size_t column = 0; column < columns; ++column) {
+            std::vector<bool> basis(columns, false);
+            basis[column] = true;
+            GNFS_TEST_CHECK(matrix.multiply(basis)[0] == dense[column]);
+            GNFS_TEST_CHECK(transposed.test(column, 0) == dense[column]);
+        }
+
+        row.clear(3);
+        dense[3] = false;
+        check_row(row, dense);
+        row.flip(1);
+        dense[1] = !dense[1];
+        check_row(row, dense);
+
+        const SparseRow::IndexList rhs_indices{0, 1, 1, 5, 5, 5};
+        const SparseRow rhs(rhs_indices);
+        row.xor_with(rhs);
+        for (uint32_t column : rhs_indices)
+            dense[column] = !dense[column];
+        check_row(row, dense);
+
+        row.set(0);
+        row.set(0);
+        dense[0] = true;
+        check_row(row, dense);
+        row.xor_with(row);
+        check_row(row, std::vector<bool>(columns, false));
+    }
+
+    std::cout << "  SparseRow constructor parity: PASSED" << std::endl;
 }
 
 // Test SparseRow XOR
@@ -422,6 +495,71 @@ void test_gaussian_larger() {
     std::cout << "  Gaussian (larger): PASSED" << std::endl;
 }
 
+// Regression: free columns must be unique when elimination continues after
+// the last pivot while dependent rows are still available.
+void test_gaussian_free_columns_unique() {
+    std::cout << "Testing Gaussian free-column uniqueness..." << std::endl;
+
+    // Three rows, one independent row, and four columns.  The duplicate row
+    // becomes zero after the first pivot, leaving columns 1..3 free while
+    // pivot_row is still below num_rows and exercising the old duplicate path.
+    SparseMatrix matrix(3, 4);
+    matrix.set(0, 0);
+    matrix.set(0, 3);
+    matrix.set(1, 0);
+    matrix.set(1, 3);
+
+    GaussianConfig config;
+    config.compute_null_space = true;
+    GaussianEliminator eliminator(config);
+    const auto result = eliminator.eliminate(matrix);
+
+    GNFS_TEST_CHECK(result.rank == 1);
+    GNFS_TEST_CHECK(result.free_cols == std::vector<size_t>({1, 2, 3}));
+    GNFS_TEST_CHECK(result.null_space.size() == 3);
+    GNFS_TEST_CHECK(result.null_space[0].test(1));
+    GNFS_TEST_CHECK(result.null_space[1].test(2));
+    GNFS_TEST_CHECK(result.null_space[2].test(3));
+    GNFS_TEST_CHECK(!result.null_space[0].test(2));
+    GNFS_TEST_CHECK(!result.null_space[0].test(3));
+
+    std::cout << "  Gaussian free-column uniqueness: PASSED" << std::endl;
+}
+
+// A zero-row matrix has no right-kernel constraints, whereas a zero-column
+// matrix has no right-kernel coordinates. These are different empty shapes.
+void test_gaussian_zero_dimensions() {
+    for (size_t budget : {size_t{0}, size_t{1}, size_t{3}, size_t{8}}) {
+        GaussianConfig config;
+        config.max_null_vectors = budget;
+        SparseMatrix matrix(0, 3);
+        const auto result = GaussianEliminator(config).eliminate(matrix);
+        GNFS_TEST_CHECK(result.rank == 0);
+        GNFS_TEST_CHECK(result.pivot_cols.empty());
+        GNFS_TEST_CHECK(result.free_cols == std::vector<size_t>({0, 1, 2}));
+        GNFS_TEST_CHECK(result.null_space.size() == std::min(budget, size_t{3}));
+        for (size_t i = 0; i < result.null_space.size(); ++i) {
+            GNFS_TEST_CHECK(result.null_space[i].size() == 3);
+            for (size_t col = 0; col < 3; ++col) {
+                GNFS_TEST_CHECK(result.null_space[i].test(col) == (i == col));
+            }
+        }
+    }
+    SparseMatrix no_columns(3, 0);
+    const auto result = GaussianEliminator().eliminate(no_columns);
+    GNFS_TEST_CHECK(result.rank == 0);
+    GNFS_TEST_CHECK(result.free_cols.empty());
+    GNFS_TEST_CHECK(result.null_space.empty());
+
+    GaussianConfig config;
+    config.compute_null_space = false;
+    SparseMatrix no_rows(0, 3);
+    const auto rank_only = GaussianEliminator(config).eliminate(no_rows);
+    GNFS_TEST_CHECK(rank_only.free_cols.size() == 3);
+    GNFS_TEST_CHECK(rank_only.null_space.empty());
+    std::cout << "  Gaussian zero dimensions: PASSED" << std::endl;
+}
+
 // Test matrix builder with relations
 void test_matrix_builder() {
     std::cout << "Testing MatrixBuilder..." << std::endl;
@@ -466,6 +604,100 @@ void test_matrix_builder() {
     std::cout << "  MatrixBuilder: PASSED" << std::endl;
 }
 
+void check_class_group_square_dependency(const core::PolynomialContext& ctx,
+                                         core::ABPair first_pair, core::ABPair second_pair,
+                                         const core::Integer& rational_root,
+                                         core::ABPair algebraic_root) {
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 191;
+    auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    auto first = cofactorizer.verify(first_pair.a, first_pair.b);
+    auto second = cofactorizer.verify(second_pair.a, second_pair.b);
+    GNFS_TEST_CHECK(first && first->is_full() && second && second->is_full());
+    const std::vector<core::Relation> relations{*first, *second};
+
+    GNFS_TEST_CHECK(ctx.rational_value(first->a, first->b) *
+                        ctx.rational_value(second->a, second->b) ==
+                    rational_root * rational_root);
+    gnfs::sqrt::NumberField field(ctx);
+    const auto root = field.from_ab(algebraic_root.a, algebraic_root.b);
+    const auto product =
+        field.multiply(field.from_ab(first->a, first->b), field.from_ab(second->a, second->b));
+    GNFS_TEST_CHECK(product.coefficients() == field.multiply(root, root).coefficients());
+    const auto evaluated_root = field.evaluate_at_m(root);
+    const auto factor = core::gcd(rational_root + evaluated_root, ctx.n());
+    GNFS_TEST_CHECK(factor > core::Integer(1) && factor < ctx.n());
+    GNFS_TEST_CHECK(factor * core::gcd(rational_root - evaluated_root, ctx.n()) == ctx.n());
+
+    MatrixBuilderConfig config;
+    config.include_class_group = true;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    auto vector = builder.build_with_qc(relations, fb, ctx);
+    auto streaming = builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+    for (const auto* result : {&vector, &streaming}) {
+        GNFS_TEST_CHECK(result->matrix.row(0).indices() == result->matrix.row(1).indices());
+    }
+}
+
+void test_class_group_preserves_square_dependencies() {
+    using core::Integer;
+    core::PolynomialContext first(Integer(323), {Integer(-10), Integer(11), Integer(1)},
+                                  Integer(31));
+    check_class_group_square_dependency(first, {-197, 88}, {33, 43}, Integer(1950), {73, 51});
+
+    core::PolynomialContext second(Integer(183), {Integer(20), Integer(0), Integer(1)},
+                                   Integer(23));
+    check_class_group_square_dependency(second, {-45, 101}, {75, 29}, Integer(1184), {55, 57});
+
+    core::PolynomialContext third(Integer(779), {Integer(50), Integer(0), Integer(1)}, Integer(27));
+    check_class_group_square_dependency(third, {25, 1}, {-5, 1}, Integer(8), {5, 2});
+
+    // At the index prime 3 the two field primes share the polynomial root 0.
+    // Using v_3(a) gives opposite parities for these factors of (27 - 2*alpha)^2.
+    core::PolynomialContext split(Integer(2227), {Integer(162), Integer(-24), Integer(1)},
+                                  Integer(59));
+    check_class_group_square_dependency(split, {27, 1}, {9, 1}, Integer(40), {27, 2});
+}
+
+void test_certified_class_group_column_on_merged_relations() {
+    using core::Integer;
+    core::PolynomialContext ctx(Integer(57), {Integer(54), Integer(11), Integer(1)}, Integer(4));
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 191;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    std::vector<core::Relation> rows;
+    // The discriminant is -95. The unique prime over 5 has valuations 0, 1, 1
+    // on these elements, whose norms are respectively 26, 80 and 530.
+    for (const auto a : {-4, 2, 17}) {
+        auto rel = cofactorizer.verify(a, 1);
+        GNFS_TEST_CHECK(rel && rel->is_full());
+        rows.push_back(*rel);
+    }
+    rows.push_back(relation::PartialRelationMerger::merge_two(rows[0], rows[1]));
+    rows.push_back(relation::PartialRelationMerger::merge_two(rows[2], rows[3]));
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    config.include_class_group = true;
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(rows, fb, ctx);
+    const auto streaming = builder.build_with_qc_streaming(VectorRelationSource(rows), fb, ctx);
+    for (const auto* result : {&vector, &streaming}) {
+        GNFS_TEST_CHECK(result->mapping.num_class_group_columns == 1);
+        const auto column = static_cast<uint32_t>(result->mapping.class_group_start());
+        GNFS_TEST_CHECK(!result->matrix.row(0).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(1).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(2).test(column));
+        GNFS_TEST_CHECK(result->matrix.row(3).test(column));
+        GNFS_TEST_CHECK(!result->matrix.row(4).test(column));
+    }
+}
+
 // Regression: sign-column evaluation must preserve uint64_t b on LLP64.
 void test_matrix_builder_sign_wide_b() {
     std::cout << "Testing MatrixBuilder sign column with wide b..." << std::endl;
@@ -493,6 +725,43 @@ void test_matrix_builder_sign_wide_b() {
     GNFS_TEST_CHECK(result.matrix.row(1).test(static_cast<uint32_t>(result.mapping.sign_column)));
 
     std::cout << "  Wide b sign column: PASSED" << std::endl;
+}
+
+void test_ramified_index_square_dependency() {
+    using core::Integer;
+    core::PolynomialContext ctx(Integer(299), {Integer(-27), Integer(0), Integer(1)}, Integer(25));
+    factor_base::FactorBaseBuilder::Options bounds;
+    bounds.rational_bound = bounds.algebraic_bound = 31;
+    const auto fb = factor_base::FactorBaseBuilder::build(ctx, bounds);
+    cofactor::Cofactorizer cofactorizer(ctx, fb);
+    const core::ABPair left{0, 1}, right{36, 13};
+    const auto first = cofactorizer.verify(left.a, left.b);
+    const auto second = cofactorizer.verify(right.a, right.b);
+    GNFS_TEST_CHECK(first && first->is_full() && second && second->is_full());
+    const std::vector<core::Relation> relations{*first, *second};
+
+    // (-alpha)(36-13*alpha) = (18-alpha)^2, and (-25)(-289) = 85^2.
+    gnfs::sqrt::NumberField field(ctx);
+    const auto root = field.from_ab(18, 1);
+    const auto product =
+        field.multiply(field.from_ab(left.a, left.b), field.from_ab(right.a, right.b));
+    GNFS_TEST_CHECK(product.coefficients() == field.multiply(root, root).coefficients());
+    const Integer rational_root(85);
+    GNFS_TEST_CHECK(ctx.rational_value(left.a, left.b) * ctx.rational_value(right.a, right.b) ==
+                    rational_root * rational_root);
+    GNFS_TEST_CHECK(core::gcd(rational_root + field.evaluate_at_m(root), ctx.n()) == Integer(13));
+    GNFS_TEST_CHECK(core::gcd(rational_root - field.evaluate_at_m(root), ctx.n()) == Integer(23));
+
+    MatrixBuilderConfig config;
+    config.include_class_group = true;
+    config.include_qc_columns = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(relations, fb, ctx);
+    const auto streaming =
+        builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+    GNFS_TEST_CHECK(vector.matrix.row(0).indices() == vector.matrix.row(1).indices());
+    GNFS_TEST_CHECK(streaming.matrix.row(0).indices() == streaming.matrix.row(1).indices());
 }
 
 // Test dependency finding
@@ -1057,6 +1326,144 @@ void test_schirokauer_overflow_guards() {
     std::cout << "  Schirokauer overflow and parameter guards: PASSED" << std::endl;
 }
 
+GFPolyOps::Poly schirokauer_test_residues(const std::vector<core::Integer>& coefficients,
+                                          uint64_t modulus) {
+    const core::Integer integer_modulus(modulus);
+    GFPolyOps::Poly residues;
+    residues.reserve(coefficients.size());
+    for (const auto& coefficient : coefficients) {
+        core::Integer residue = coefficient % integer_modulus;
+        if (residue.is_negative())
+            residue += integer_modulus;
+        residues.push_back(residue.to_uint64());
+    }
+    return residues;
+}
+
+void check_schirokauer_lift_product(const std::vector<GFPolyOps::Poly>& factors,
+                                    const std::vector<core::Integer>& coefficients,
+                                    uint64_t modulus) {
+    using core::Integer;
+    // Reconstruct over arbitrary-precision integers, independently of the
+    // native modular multiply and accumulation used by the lift.
+    std::vector<Integer> product{Integer(1)};
+    for (const auto& factor : factors) {
+        GNFS_TEST_CHECK(!factor.empty());
+        GNFS_TEST_CHECK(factor.back() == 1);
+        for (const uint64_t coefficient : factor)
+            GNFS_TEST_CHECK(coefficient < modulus);
+        std::vector<Integer> next(product.size() + factor.size() - 1);
+        for (std::size_t i = 0; i < product.size(); ++i) {
+            for (std::size_t j = 0; j < factor.size(); ++j)
+                next[i + j] += product[i] * Integer(factor[j]);
+        }
+        product.swap(next);
+    }
+    GNFS_TEST_CHECK(product.size() == coefficients.size());
+    GNFS_TEST_CHECK(schirokauer_test_residues(product, modulus) ==
+                    schirokauer_test_residues(coefficients, modulus));
+}
+
+void test_schirokauer_lift_residues() {
+    std::cout << "Testing canonical Schirokauer Hensel lift residues..." << std::endl;
+    using core::Integer;
+    struct LiftCase {
+        uint32_t ell;
+        uint32_t exponent;
+        uint64_t modulus;
+    };
+    const LiftCase cases[] = {{2, 1, 2}, {2, 8, 256}, {2, 62, UINT64_C(4611686018427387904)},
+                              {5, 1, 5}, {5, 4, 625}, {5, 27, UINT64_C(7450580596923828125)}};
+    const std::vector<Integer> coefficients{Integer(2), Integer(-3), Integer(1)};
+    for (const auto& test : cases) {
+        // f=(x-1)(x-2); the coprime factors have unique monic lifts.
+        // For exponent=1 this also checks the no-lift boundary.
+        const GFPolyOps::Poly g0{test.ell - 1, 1};
+        const GFPolyOps::Poly h0{test.ell - 2, 1};
+        const GFPolyOps::Poly t{test.ell - 1}; // h0^{-1} modulo g0
+        auto g = g0;
+        auto h = h0;
+        GFPolyOps::hensel_lift_pair(schirokauer_test_residues(coefficients, test.modulus), g, h, g0,
+                                    h0, t, test.ell, test.exponent);
+        GNFS_TEST_CHECK(g == GFPolyOps::Poly({test.modulus - 1, 1}));
+        GNFS_TEST_CHECK(h == GFPolyOps::Poly({test.modulus - 2, 1}));
+        check_schirokauer_lift_product({g, h}, coefficients, test.modulus);
+    }
+
+    // Two irreducible, coprime quadratics over F_5. Multiple products
+    // contribute to each coefficient, exercising modular accumulation as
+    // well as normalization when the lift modulus is close to INT64_MAX.
+    constexpr uint64_t modulus = UINT64_C(7450580596923828125);
+    const std::vector<Integer> quartic{Integer(8), Integer(16), Integer(2), Integer(-6),
+                                       Integer(1)};
+    const GFPolyOps::Poly g0{3, 3, 1}, h0{1, 1, 1}, t{1, 3};
+    auto g = g0;
+    auto h = h0;
+    GFPolyOps::hensel_lift_pair(schirokauer_test_residues(quartic, modulus), g, h, g0, h0, t, 5,
+                                27);
+    GNFS_TEST_CHECK(g == GFPolyOps::Poly({modulus - 2, modulus - 2, 1}));
+    GNFS_TEST_CHECK(h == GFPolyOps::Poly({modulus - 4, modulus - 4, 1}));
+    check_schirokauer_lift_product({g, h}, quartic, modulus);
+    std::cout << "  Canonical Schirokauer Hensel lift residues: PASSED" << std::endl;
+}
+
+void test_schirokauer_wide_public_map() {
+    std::cout << "Testing public Schirokauer maps with wide lift moduli..." << std::endl;
+    using core::Integer;
+    using core::PolynomialContext;
+
+    // Irreducible over Q (discriminant 21), but split with distinct roots
+    // 1 and 2 modulo 5. This tests the public map without adding odd-prime
+    // columns to a GF(2) matrix. The context satisfies f(6)=15.
+    const std::vector<Integer> coefficients{Integer(-3), Integer(-3), Integer(1)};
+    const PolynomialContext ctx(Integer(15), coefficients, Integer(6));
+    GNFS_TEST_CHECK(ctx.verify());
+    for (const uint32_t exponent : {1u, 4u, 27u}) {
+        const Integer integer_modulus = core::pow(Integer(5), exponent);
+        const uint64_t modulus = integer_modulus.to_uint64();
+        SchirokaurConfig config;
+        config.primes = {5};
+        config.exponent_k = exponent;
+        const SchirokaurMap smap(ctx, config);
+        GNFS_TEST_CHECK(smap.prime_info_.size() == 1);
+        const auto& info = smap.prime_info_.front();
+        GNFS_TEST_CHECK(info.ell_k == modulus);
+        GNFS_TEST_CHECK(info.is_split && info.factors.size() == 2);
+        const auto maps = smap.compute(3, 1);
+        GNFS_TEST_CHECK(maps.size() == 1 && maps[0].size() == 2);
+        std::vector<GFPolyOps::Poly> factors;
+        bool seen_root_one = false;
+        bool seen_root_two = false;
+        for (std::size_t i = 0; i < info.factors.size(); ++i) {
+            const auto& factor = info.factors[i];
+            GNFS_TEST_CHECK(factor.degree == 1 && factor.f_mod[1] == 1);
+            // Independently lifted exact roots modulo 5^27; reduction gives
+            // their unique roots at every lower precision used here.
+            uint64_t expected_constant;
+            if (factor.f_mod[0] % 5 == 4) {
+                GNFS_TEST_CHECK(!seen_root_one);
+                seen_root_one = true;
+                expected_constant = UINT64_C(2123718585086259604) % modulus;
+            } else {
+                GNFS_TEST_CHECK(factor.f_mod[0] % 5 == 3 && !seen_root_two);
+                seen_root_two = true;
+                expected_constant = UINT64_C(5326862011837568518) % modulus;
+            }
+            GNFS_TEST_CHECK(factor.f_mod[0] == expected_constant);
+            factors.push_back({factor.f_mod[0], factor.f_mod[1]});
+            const Integer root = integer_modulus - Integer(expected_constant);
+            const Integer gamma = Integer(3) - root;
+            const Integer residue = core::pow(gamma, 4) % integer_modulus;
+            const Integer expected_map = ((residue - Integer(1)) / Integer(5)) % Integer(5);
+            GNFS_TEST_CHECK(maps[0][i] < 5);
+            GNFS_TEST_CHECK(maps[0][i] == expected_map.to_uint64());
+        }
+        GNFS_TEST_CHECK(seen_root_one && seen_root_two);
+        check_schirokauer_lift_product(factors, coefficients, modulus);
+    }
+    std::cout << "  Public Schirokauer maps with wide lift moduli: PASSED" << std::endl;
+}
+
 // Regression test: parallel Block Lanczos produces same results as Gaussian
 // for a medium-sized matrix (verifies parallelization correctness)
 void test_parallel_block_lanczos_correctness() {
@@ -1563,6 +1970,105 @@ void test_sge_alternating_cascade() {
     std::cout << "  PASSED" << std::endl;
 }
 
+void test_zero_column_dependencies() {
+    BlockLanczos solver;
+    GNFS_TEST_CHECK(solver.find_dependencies(SparseMatrix(0, 0)).empty());
+    GNFS_TEST_CHECK(solver.find_dependencies(SparseMatrix(0, 3)).empty());
+    const SparseMatrix matrix(70, 0);
+    for (size_t budget : {size_t{0}, size_t{1}, size_t{3}, size_t{80}}) {
+        const auto dependencies = solver.find_dependencies(matrix, budget);
+        GNFS_TEST_CHECK(dependencies.size() == std::min(budget, size_t{64}));
+        for (size_t i = 0; i < dependencies.size(); ++i) {
+            GNFS_TEST_CHECK(dependencies[i].size() == matrix.num_rows());
+            for (size_t row = 0; row < matrix.num_rows(); ++row) {
+                GNFS_TEST_CHECK(dependencies[i][row] == (i == row));
+            }
+        }
+    }
+    std::cout << "  Zero-column left kernel: PASSED" << std::endl;
+}
+
+void test_sge_zero_column_dependencies() {
+    const auto verify = [](const SparseMatrix& matrix, size_t expected_rows) {
+        const auto reduced = SGE::preprocess(matrix);
+        GNFS_TEST_CHECK(reduced.original_rows == matrix.num_rows());
+        GNFS_TEST_CHECK(reduced.original_cols == matrix.num_cols());
+        GNFS_TEST_CHECK(reduced.reduced_matrix.num_rows() == expected_rows);
+        GNFS_TEST_CHECK(reduced.reduced_matrix.num_cols() == 0);
+        GNFS_TEST_CHECK(reduced.row_composition.size() == expected_rows);
+        BlockLanczos solver;
+        for (size_t budget : {size_t{0}, size_t{1}, size_t{2}, size_t{10}}) {
+            const auto dependencies = solver.find_dependencies(reduced.reduced_matrix, budget);
+            GNFS_TEST_CHECK(dependencies.size() == std::min(expected_rows, budget));
+            for (const auto& dependency : reduced.expand_dependencies(dependencies)) {
+                GNFS_TEST_CHECK(dependency.size() == matrix.num_rows());
+                GNFS_TEST_CHECK(std::any_of(dependency.begin(), dependency.end(),
+                                            [](bool bit) { return bit; }));
+                for (size_t col = 0; col < matrix.num_cols(); ++col) {
+                    bool parity = false;
+                    for (size_t row = 0; row < matrix.num_rows(); ++row) {
+                        parity ^= dependency[row] && matrix.test(row, col);
+                    }
+                    GNFS_TEST_CHECK(!parity);
+                }
+            }
+        }
+
+        // Enumerate the original kernel independently and compare it with the
+        // full span of the expanded basis, including the zero vector.
+        std::vector<size_t> kernel;
+        for (size_t mask = 0; mask < (size_t{1} << matrix.num_rows()); ++mask) {
+            bool valid = true;
+            for (size_t col = 0; col < matrix.num_cols(); ++col) {
+                bool parity = false;
+                for (size_t row = 0; row < matrix.num_rows(); ++row) {
+                    parity ^= ((mask >> row) & 1U) && matrix.test(row, col);
+                }
+                valid = valid && !parity;
+            }
+            if (valid)
+                kernel.push_back(mask);
+        }
+        std::vector<size_t> span{0};
+        for (const auto& dependency :
+             reduced.expand_dependencies(solver.find_dependencies(reduced.reduced_matrix))) {
+            size_t mask = 0;
+            for (size_t row = 0; row < matrix.num_rows(); ++row) {
+                if (dependency[row])
+                    mask |= size_t{1} << row;
+            }
+            const size_t old_size = span.size();
+            for (size_t i = 0; i < old_size; ++i)
+                span.push_back(span[i] ^ mask);
+        }
+        std::sort(span.begin(), span.end());
+        GNFS_TEST_CHECK(span == kernel);
+    };
+
+    SparseMatrix pair(2, 1);
+    pair.set(0, 0);
+    pair.set(1, 0);
+    verify(pair, 1);
+
+    SparseMatrix pairs(4, 2);
+    pairs.set(0, 0);
+    pairs.set(1, 0);
+    pairs.set(2, 1);
+    pairs.set(3, 1);
+    verify(pairs, 2);
+
+    SparseMatrix cycle(3, 3);
+    cycle.set(0, 0);
+    cycle.set(0, 1);
+    cycle.set(1, 1);
+    cycle.set(1, 2);
+    cycle.set(2, 0);
+    cycle.set(2, 2);
+    verify(cycle, 1);
+    verify(SparseMatrix(3, 0), 3);
+    std::cout << "  SGE zero-column dependency expansion: PASSED" << std::endl;
+}
+
 void test_sge_edge_cases() {
     std::cout << "Testing SGE edge cases..." << std::endl;
 
@@ -1601,7 +2107,10 @@ int main() {
     std::cout << "=== Linear Algebra Tests ===" << std::endl;
     std::cout << std::endl;
 
+    test_sge_zero_column_dependencies();
+    test_zero_column_dependencies();
     test_sparse_row();
+    test_sparse_row_constructor_parity();
     test_sparse_row_xor();
     test_sparse_matrix();
     test_sparse_matrix_bounds();
@@ -1613,11 +2122,16 @@ int main() {
     test_bitvector_contract();
     test_gaussian_simple();
     test_gaussian_larger();
+    test_gaussian_free_columns_unique();
+    test_gaussian_zero_dimensions();
     test_matrix_builder();
     test_matrix_builder_sign_wide_b();
+    test_class_group_preserves_square_dependencies();
+    test_certified_class_group_column_on_merged_relations();
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();
+    test_ramified_index_square_dependency();
     test_find_dependencies();
     test_thin_matrix_dependencies();
     test_verify_dependency();
@@ -1628,6 +2142,8 @@ int main() {
     test_schirokauer_squarefree_reducible();
     test_gf_poly_factorization_determinism();
     test_schirokauer_overflow_guards();
+    test_schirokauer_lift_residues();
+    test_schirokauer_wide_public_map();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();

@@ -28,10 +28,12 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <ios>
@@ -1164,6 +1166,7 @@ public:
     enum class Action : uint8_t {
         fail_before_confirm,
         remove_and_report_durable,
+        remove_and_change_parent_metadata,
     };
 
     TestConfirmationOps(std::size_t target_call, Action action) noexcept
@@ -1182,10 +1185,31 @@ public:
         if (confirm_calls_ != target_call_) {
             return durable::confirm_durable_at(parent_handle, leaf);
         }
-        if (action_ == Action::remove_and_report_durable) {
-            if (::unlinkat(static_cast<int>(parent_handle), leaf.c_str(), 0) != 0) {
+        if (action_ == Action::remove_and_report_durable ||
+            action_ == Action::remove_and_change_parent_metadata) {
+            const int parent_fd = static_cast<int>(parent_handle);
+            struct stat parent_before {};
+            if (action_ == Action::remove_and_change_parent_metadata &&
+                ::fstat(parent_fd, &parent_before) != 0) {
                 return {durable::PublishStatus::open_failed,
                         std::error_code(errno, std::generic_category()), 0};
+            }
+            if (::unlinkat(parent_fd, leaf.c_str(), 0) != 0) {
+                return {durable::PublishStatus::open_failed,
+                        std::error_code(errno, std::generic_category()), 0};
+            }
+            if (action_ == Action::remove_and_change_parent_metadata) {
+                // Unlink need not change directory size, link count, or coarse
+                // timestamps. Give the namespace-generation check an explicit
+                // mtime change instead of depending on the filesystem clock.
+                const timespec times[2] = {
+                    {.tv_sec = 0, .tv_nsec = UTIME_OMIT},
+                    {.tv_sec = parent_before.st_mtime == 1 ? 2 : 1, .tv_nsec = 0},
+                };
+                if (::futimens(parent_fd, times) != 0) {
+                    return {durable::PublishStatus::open_failed,
+                            std::error_code(errno, std::generic_category()), 0};
+                }
             }
             return {durable::PublishStatus::durable, {}, 0};
         }
@@ -1677,12 +1701,17 @@ private:
 class TempStore final {
 public:
     TempStore() {
-        // Darwin's per-user temporary root has trusted ancestors; Linux /tmp
-        // does not. Project runners and CTest use a trusted working directory
-        // on non-Darwin POSIX hosts.
 #if defined(__APPLE__)
-        const auto temporary_root = std::filesystem::temp_directory_path();
+        // A TMPDIR below a home directory with an extended ACL cannot host a
+        // trusted store, even when the new directory itself has mode 0700.
+        std::array<char, PATH_MAX> directory{};
+        const auto size = ::confstr(_CS_DARWIN_USER_TEMP_DIR, directory.data(), directory.size());
+        if (size <= 1 || size > directory.size()) {
+            throw std::runtime_error("could not resolve Darwin's per-user temporary directory");
+        }
+        const std::filesystem::path temporary_root(directory.data());
 #else
+        // The Linux fixture needs a trusted working directory because /tmp is world-writable.
         const auto temporary_root = std::filesystem::current_path();
 #endif
         std::string pattern = (temporary_root / ".gnfs-rss-journal-store-XXXXXX").string();
@@ -3916,10 +3945,11 @@ void test_committed_prefix_durability_precedes_next_authority() {
         CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
     }
 
-    {
+    for (const auto action : {TestConfirmationOps::Action::remove_and_change_parent_metadata,
+                              TestConfirmationOps::Action::remove_and_report_durable}) {
         TempStore fixture;
         write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
-        TestConfirmationOps ops(3, TestConfirmationOps::Action::remove_and_report_durable);
+        TestConfirmationOps ops(3, action);
         auto deployment = make_deployment(fixture.trusted_base());
         deployment.publication_ops = &ops;
         const auto policy = make_policy();
@@ -3929,13 +3959,41 @@ void test_committed_prefix_durability_precedes_next_authority() {
 
         auto begin = std::move(*session).begin_next_slot();
         CHECK(!static_cast<bool>(begin));
-        CHECK(ops.confirm_calls() == 3);
-        CHECK(begin.diagnostic().error == StoreError::snapshot_changed);
-        CHECK(begin.diagnostic().object == StoreObject::artifact_root);
         CHECK(begin.diagnostic().publication_status == durable::PublishStatus::durable);
+        const auto removed_leaf = artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stdout);
+        CHECK(!std::filesystem::exists(fixture.artifact_leaf(removed_leaf.view())));
         const auto next_start = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(3);
         CHECK(next_start.has_value());
         CHECK(!std::filesystem::exists(fixture.store_leaf(next_start->view())));
+        if (action == TestConfirmationOps::Action::remove_and_change_parent_metadata) {
+            if (ops.confirm_calls() != 3 ||
+                begin.diagnostic().error != StoreError::snapshot_changed ||
+                begin.diagnostic().object != StoreObject::artifact_root) {
+                std::cerr << "artifact metadata change confirmation count=" << ops.confirm_calls()
+                          << " error="
+                          << siqs_shadow_proof_rss_campaign_journal_store_error_name(
+                                 begin.diagnostic().error)
+                          << " object="
+                          << siqs_shadow_proof_rss_campaign_journal_store_object_name(
+                                 begin.diagnostic().object)
+                          << " native=" << begin.diagnostic().native_error.value() << '\n';
+            }
+            CHECK(ops.confirm_calls() == 3);
+            CHECK(begin.diagnostic().error == StoreError::snapshot_changed);
+            CHECK(begin.diagnostic().object == StoreObject::artifact_root);
+        } else if (begin.diagnostic().error == StoreError::snapshot_changed) {
+            CHECK(begin.diagnostic().object == StoreObject::artifact_root);
+        } else {
+            // With unchanged directory metadata, the final full snapshot must
+            // still reject the missing committed artifact before publication.
+            CHECK(begin.diagnostic().error == StoreError::artifact_consistency_invalid);
+            CHECK(begin.diagnostic().object == StoreObject::artifact);
+            CHECK(begin.diagnostic().artifact_consistency.error ==
+                  SIQSShadowProofRssCampaignArtifactConsistencyError::committed_artifact_missing);
+            CHECK(begin.diagnostic().artifact_consistency.slot_number == 1);
+            CHECK(begin.diagnostic().artifact_consistency.kind ==
+                  SIQSShadowProofRssArtifactKind::probe_stdout);
+        }
     }
 
     {
@@ -5345,6 +5403,86 @@ void test_artifact_root_identity_and_generation_are_revalidated() {
     }
 }
 
+bool rejected_before_artifact_publication(
+    std::string_view scenario, bool succeeded,
+    const SIQSShadowProofRssCampaignJournalStoreDiagnostic& diagnostic, bool taint_exists,
+    bool new_artifact_exists) {
+    if (!succeeded && diagnostic.error == StoreError::snapshot_changed &&
+        diagnostic.object == StoreObject::artifact_root && !taint_exists && !new_artifact_exists &&
+        !diagnostic.last_durable_publication_object.has_value()) {
+        return true;
+    }
+    std::cerr << scenario << " error="
+              << siqs_shadow_proof_rss_campaign_journal_store_error_name(diagnostic.error)
+              << " object="
+              << siqs_shadow_proof_rss_campaign_journal_store_object_name(diagnostic.object)
+              << " publication_status="
+              << (diagnostic.publication_status.has_value()
+                      ? std::to_string(static_cast<unsigned>(*diagnostic.publication_status))
+                      : "none")
+              << " taint_exists=" << taint_exists << " new_artifact_exists=" << new_artifact_exists
+              << '\n';
+    return false;
+}
+
+void test_active_slot_rejects_changed_committed_artifact_before_writing() {
+    constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
+    constexpr std::string_view stderr_bytes;
+    constexpr std::string_view joined_bytes = "synthetic-joined\n";
+    bool all_rejected = true;
+    for (const bool publish_artifacts : {false, true}) {
+        TempStore fixture;
+        write_committed_off_slots(fixture, 1, stdout_bytes, stderr_bytes, joined_bytes);
+        auto session = take_successful_session(open_fixture(fixture));
+        CHECK(session.has_value());
+        auto begin = std::move(*session).begin_next_slot();
+        CHECK(begin);
+        auto active = std::move(begin).take_active_slot();
+        CHECK(active.has_value());
+
+        // Overwrite one existing byte without changing the artifact directory or file length.
+        const auto original_stdout = artifact_leaf(1, SIQSShadowProofRssArtifactKind::probe_stdout);
+        std::fstream output(fixture.artifact_leaf(original_stdout.view()),
+                            std::ios::binary | std::ios::in | std::ios::out);
+        output.put('S');
+        output.close();
+        CHECK(output);
+
+        SIQSShadowProofRssCampaignJournalStoreDiagnostic diagnostic;
+        bool succeeded;
+        if (publish_artifacts) {
+            const auto publication = store_detail::SessionFactory::publish_artifact_batch(
+                *active, stdout_bytes, stderr_bytes, joined_bytes);
+            succeeded = static_cast<bool>(publication);
+            diagnostic = publication.diagnostic;
+        } else {
+            const auto taint = std::move(*active).taint();
+            succeeded = static_cast<bool>(taint);
+            diagnostic = taint.diagnostic();
+        }
+
+        const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(4);
+        CHECK(taint_leaf.has_value());
+        const bool taint_exists = std::filesystem::exists(fixture.store_leaf(taint_leaf->view()));
+        bool new_artifact_exists = false;
+        for (const auto kind : {SIQSShadowProofRssArtifactKind::probe_stdout,
+                                SIQSShadowProofRssArtifactKind::probe_stderr,
+                                SIQSShadowProofRssArtifactKind::joined_gate_sample}) {
+            const auto leaf = artifact_leaf(2, kind);
+            new_artifact_exists |= std::filesystem::exists(fixture.artifact_leaf(leaf.view()));
+        }
+        if (!rejected_before_artifact_publication(
+                publish_artifacts ? "changed committed artifact before batch"
+                                  : "changed committed artifact before taint",
+                succeeded, diagnostic, taint_exists, new_artifact_exists)) {
+            all_rejected = false;
+        }
+        CHECK(bytes_as_string(fixture.read_artifact_leaf(original_stdout.view())) ==
+              "Synthetic-stdout\n");
+    }
+    CHECK(all_rejected);
+}
+
 void test_active_slot_actions_revalidate_authority_before_publication() {
     constexpr std::string_view stdout_bytes = "synthetic-stdout\n";
     constexpr std::string_view stderr_bytes;
@@ -5389,12 +5527,12 @@ void test_active_slot_actions_revalidate_authority_before_publication() {
         fixture.write_artifact_leaf("unexpected.rssa", "sentinel");
 
         const auto taint = std::move(*active).taint();
-        CHECK(!static_cast<bool>(taint));
-        CHECK(taint.diagnostic().error == StoreError::snapshot_changed);
-        CHECK(taint.diagnostic().object == StoreObject::artifact_root);
         const auto taint_leaf = make_siqs_shadow_proof_rss_campaign_journal_record_leaf(2);
         CHECK(taint_leaf.has_value());
-        CHECK(!std::filesystem::exists(fixture.store_leaf(taint_leaf->view())));
+        const bool taint_exists = std::filesystem::exists(fixture.store_leaf(taint_leaf->view()));
+        CHECK(rejected_before_artifact_publication("unexpected artifact before taint",
+                                                   static_cast<bool>(taint), taint.diagnostic(),
+                                                   taint_exists, false));
     }
     {
         TempStore fixture;
@@ -6537,6 +6675,7 @@ int main(int argc, char** argv) {
         test_begin_crash_recovers_only_through_pending_taint(executable);
         test_artifact_root_is_required_and_private();
         test_artifact_root_identity_and_generation_are_revalidated();
+        test_active_slot_rejects_changed_committed_artifact_before_writing();
         test_active_slot_actions_revalidate_authority_before_publication();
         test_private_artifact_batch_publisher_preserves_closed_commit_boundary(executable);
         test_artifact_batch_validates_mode_and_bounds_before_publication();

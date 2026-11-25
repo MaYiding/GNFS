@@ -52,6 +52,10 @@ result or error (exactly one terminal event)
 Argument, configuration, and input validation can fail before execution starts.
 Those failures emit one `error` event without a preceding `started` event.
 
+If standard output reports a write or flush error, the command exits
+unsuccessfully and writes a diagnostic to standard error. A truncated stream
+can end with an incomplete line or a missing terminal event.
+
 The CLI serializes callback writes so concurrent progress and log callbacks never
 interleave bytes from separate events. The sequence does not promise a fixed
 number of progress events or a fixed ratio between progress and log events.
@@ -70,12 +74,23 @@ whether recursive complete factorization was requested.
 ### `progress`
 
 ```json
-{"schema_version":1,"type":"progress","phase":"sieve","phase_progress":0.5,"elapsed_s":1.25,"message":"collecting relations","relations_found":500,"relations_target":1000,"special_q_done":20,"matrix_rows":0,"matrix_cols":0,"dependency_index":0,"dependencies_total":0}
+{"schema_version":1,"type":"progress","phase":"sieve","phase_progress":0.5,"elapsed_s":1.25,"message":"collecting relations","relations_found":500,"relations_target":1000,"special_q_done":20,"matrix_rows":0,"matrix_cols":0,"dependency_index":-1,"dependencies_total":0,"method":"gnfs","algorithm":"gnfs","current_number":"360","attempt_index":1,"effective_parameters":{"degree":3,"rational_bound":2000,"algebraic_bound":2000,"large_prime_bound":100000,"sieve_width":64,"sieve_height":40,"max_special_q":1000}}
 ```
 
 `phase_progress` lies between zero and one when the phase has a bounded estimate.
 It is `null` when progress is indeterminate. Counters that do not apply to the
-current phase remain zero.
+current phase remain zero, and `dependency_index` is `-1` while no dependency is
+being tried.
+
+`method` is the method family that owns the step (`auto`, `trial`, `rho`, `siqs`,
+or `gnfs`). `algorithm` names the step that runs, such as `primality`, `trial`,
+`siqs`, or `gnfs`. `current_number` is the composite that the step operates on.
+`attempt_index` is the one-based position of the current split inside a complete
+factorization, or zero outside a numbered split. `effective_parameters` lists the
+GNFS parameters that the pipeline applied, or is `null` until the GNFS pipeline
+starts. The last progress event of a GNFS split has phase `done` and
+`phase_progress` 1 when the split finds factors. It has phase `extract` and
+`phase_progress` `null` when the dependency search finds none.
 
 ### `log`
 
@@ -95,6 +110,21 @@ diagnostics from lower-level components can still appear on standard error.
 The nested result contains the same fields as `FactorResult::to_json()`, including
 method evidence, timings, sieve statistics, matrix statistics, and factors. The
 short example omits those additional fields for readability.
+
+- `timings.non_gnfs_s` measures the preliminary checks and the non-GNFS
+  algorithms.
+- `stats.executed_algorithm` names the algorithm that produced the split, or the
+  last one attempted, and `stats.algorithms_executed` lists every algorithm that
+  ran. A complete factorization over several algorithms reports `mixed`.
+- `stats.gnfs_parameters_applied` is true once the GNFS pipeline starts, and
+  `stats.sieve_width`, `stats.sieve_height`, and `stats.max_special_q` then hold
+  the applied values.
+- `stats.siqs_relations`, `stats.siqs_polynomials`, and `stats.siqs_workers` are
+  `null` when SIQS returned no statistics.
+- `stats.candidates_statistics_complete` is false when distributed workers do not
+  report candidates.
+- `attempts` holds one entry per composite split of a complete factorization and
+  is empty for a single split.
 
 `factorization_complete` means the returned list multiplies to the original
 input and contains no remainder classified as composite. `factors_prime` means

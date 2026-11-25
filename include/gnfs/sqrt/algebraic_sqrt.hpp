@@ -239,23 +239,16 @@ private:
 
         CouveignesSqrt couveignes(cfg);
 
-        // ── v19: 预先判定 gcd(f'(m), N) 决定走哪条路径 ──
-        // gcd == 1: 标准 f'(α)² 路径 (Thomé), inv(f'(m)) 还原 sqrt(S)(m) mod N
-        // gcd > 1 && < N: lucky factor! 跳过 f'(α)² 修正走老路径返回 sqrt(∏)(m)
-        //   (caller 用 gcd(rat - alg, N) 仍能找到 N 的因子;另外, gcd 自身就是
-        //   一个因子,我们额外通过 result.value 暴露)。
-        // gcd == N: f'(m) ≡ 0 mod N — 极少见,直接失败让 caller fallback。
+        // The derivative correction can be undone only when f'(m) is a unit.
+        // Otherwise try the original product, including when f'(m) is zero
+        // modulo N. Couveignes still verifies every candidate against that
+        // product; result.value contains a square root, never the derivative gcd.
         const Integer& N = nf.n();
         Integer f_prime_m = compute_f_derivative_at_m(nf);
         Integer gcd_fpm;
         mpz_gcd(gcd_fpm.get_mpz(), f_prime_m.get_mpz(), N.get_mpz());
 
-        if (gcd_fpm.compare(N) == 0) {
-            result.error = "Couveignes: f'(m) ≡ 0 mod N";
-            return result;
-        }
-
-        bool apply_correction = gcd_fpm.is_one();
+        const bool apply_correction = gcd_fpm.is_one();
 
         auto sqrt_opt = couveignes.compute(ab_pairs, nf, apply_correction);
 

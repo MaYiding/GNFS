@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 
 CONTRACT_PATH = Path(__file__).with_name("windows-ucrt64-runtime.json")
+BUILD_PACKAGES_PATH = Path(__file__).with_name("windows-ucrt64-build.json")
 EXPECTED_INSTALL_PACKAGES = (
     "mingw-w64-ucrt-x86_64-gcc",
     "mingw-w64-ucrt-x86_64-gcc-libs",
@@ -108,7 +109,7 @@ def _safe_basename(value: Any, suffix: str, label: str) -> str:
         not isinstance(value, str)
         or PurePosixPath(value).name != value
         or not value.endswith(suffix)
-        or not re.fullmatch(r"[A-Za-z0-9._+-]+", value)
+        or not re.fullmatch(r"[A-Za-z0-9._+~-]+", value)
     ):
         raise WindowsRuntimeContractError(f"{label} is invalid")
     return value
@@ -355,11 +356,88 @@ def load_contract(path: Path = CONTRACT_PATH) -> WindowsRuntimeContract:
     )
 
 
+def load_build_packages(path: Path = BUILD_PACKAGES_PATH) -> tuple[InstallPackage, ...]:
+    """Load the complete build-tool closure without changing the runtime pins."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise WindowsRuntimeContractError(f"unable to load {path.name}: {error}") from error
+    root = _require_keys(raw, {"schema_version", "packages"}, "Windows build package lock")
+    if root["schema_version"] != 1 or not isinstance(root["packages"], list):
+        raise WindowsRuntimeContractError("Windows build package lock identity is invalid")
+    packages = []
+    for index, value in enumerate(root["packages"]):
+        record = _require_keys(
+            value, {"archive", "name", "sha256", "url", "version"}, f"build package {index}"
+        )
+        name, version, digest = record["name"], record["version"], record["sha256"]
+        if (
+            not isinstance(name, str)
+            or not name.startswith("mingw-w64-ucrt-x86_64-")
+            or not PACKAGE_PATTERN.fullmatch(name)
+            or not isinstance(version, str)
+            or not VERSION_PATTERN.fullmatch(version)
+        ):
+            raise WindowsRuntimeContractError(f"build package {index} identity is invalid")
+        archive = _safe_basename(record["archive"], ".pkg.tar.zst", f"archive for {name}")
+        if archive != f"{name}-{version}-any.pkg.tar.zst":
+            raise WindowsRuntimeContractError(f"binary archive identity diverged for {name}")
+        if not isinstance(digest, str) or not SHA256_PATTERN.fullmatch(digest):
+            raise WindowsRuntimeContractError(f"binary archive digest is invalid for {name}")
+        packages.append(
+            InstallPackage(
+                archive=archive,
+                name=name,
+                sha256=digest,
+                url=_validate_url(record["url"], "/mingw/ucrt64", archive),
+                version=version,
+            )
+        )
+    names = tuple(package.name for package in packages)
+    if names != tuple(sorted(set(names))):
+        raise WindowsRuntimeContractError("build packages must be unique and sorted")
+    by_name = {package.name: package for package in packages}
+    for tool in ("cmake", "gcc", "ninja", "python"):
+        if f"mingw-w64-ucrt-x86_64-{tool}" not in by_name:
+            raise WindowsRuntimeContractError(f"build package lock omits {tool}")
+    for package in load_contract().install_packages:
+        if by_name.get(package.name) != package:
+            raise WindowsRuntimeContractError(
+                f"build package lock changed the runtime pin for {package.name}"
+            )
+    return tuple(packages)
+
+
 def self_test() -> None:
     contract = load_contract()
     if len(contract.install_packages) != 5 or len(contract.source_archives) != 3:
         raise WindowsRuntimeContractError("checked-in runtime contract has unexpected cardinality")
     with tempfile.TemporaryDirectory(prefix="gnfs-windows-runtime-contract-") as directory:
+        load_build_packages()
+        build_raw = json.loads(BUILD_PACKAGES_PATH.read_text(encoding="utf-8"))
+        for mutation in ("duplicate", "missing tool", "changed runtime", "foreign URL"):
+            changed = json.loads(json.dumps(build_raw))
+            if mutation == "duplicate":
+                changed["packages"].append(changed["packages"][0])
+            elif mutation == "missing tool":
+                changed["packages"] = [
+                    entry for entry in changed["packages"]
+                    if entry["name"] != "mingw-w64-ucrt-x86_64-cmake"
+                ]
+            elif mutation == "changed runtime":
+                for entry in changed["packages"]:
+                    if entry["name"] == "mingw-w64-ucrt-x86_64-gmp":
+                        entry["sha256"] = "0" * 64
+            else:
+                changed["packages"][0]["url"] = "https://invalid.example/package.pkg.tar.zst"
+            fixture = Path(directory) / "build.json"
+            fixture.write_text(json.dumps(changed), encoding="utf-8")
+            try:
+                load_build_packages(fixture)
+            except WindowsRuntimeContractError:
+                pass
+            else:
+                raise WindowsRuntimeContractError(f"build lock accepted {mutation}")
         raw = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
         mutations = []
         unknown_source = json.loads(json.dumps(raw))

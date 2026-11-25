@@ -1,3 +1,4 @@
+#include <gnfs/core/sieve_limits.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/polynomial/base_m.hpp>
 #include <gnfs/sieve/distributed_sieve_protocol.hpp>
@@ -1457,40 +1458,36 @@ void test_bound_work_enforces_lattice_sieve_region_bounds() {
         CHECK(low.sieve_region.size() == 2);
     }
 
-    // Exercise the widest/tallest representable product without allocating
-    // it. On a platform whose vector limit is smaller, the same identity must
-    // instead fail closed at bind time.
-    constexpr std::int64_t maximum_height = std::numeric_limits<std::int32_t>::max();
-    constexpr std::int64_t centered_j_min = -(maximum_height / 2) - 1;
-    constexpr std::int64_t centered_j_max = centered_j_min + maximum_height - 1;
-    auto maximum_area_identity = make_runtime_identity(frozen);
-    maximum_area_identity.region = {-16'384, 16'383, centered_j_min, centered_j_max};
-    CHECK(sieve::validate_distributed_sieve_work_identity(maximum_area_identity));
-
-    constexpr std::uintmax_t maximum_region_area =
-        std::uintmax_t{32'768} * static_cast<std::uintmax_t>(maximum_height);
-    const auto maximum_vector_area =
-        static_cast<std::uintmax_t>(std::vector<std::uint16_t>{}.max_size());
-    if (maximum_region_area <= maximum_vector_area &&
-        maximum_region_area <=
-            static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max())) {
+    // The worker preflight must use the same cell cap as LatticeSieve before
+    // any runtime object or launch-side effect is created. Select the largest
+    // whole-row region allowed by all platform limits, then cross it by one
+    // row. On the supported 64-bit and 32-bit targets this reaches the shared
+    // 512 Mi-cell cap exactly.
+    constexpr std::uintmax_t region_width = 32'768;
+    const auto vector_limit = static_cast<std::uintmax_t>(std::vector<std::uint16_t>{}.max_size());
+    const auto size_limit = static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max());
+    const auto materialization_limit =
+        std::min({static_cast<std::uintmax_t>(gnfs::core::SIEVE_MAX_REGION_CELLS), vector_limit,
+                  size_limit});
+    if (materialization_limit >= region_width) {
+        const auto maximum_height = materialization_limit / region_width;
+        const auto j_min = -static_cast<std::int64_t>(maximum_height / 2U);
+        const auto j_max = j_min + static_cast<std::int64_t>(maximum_height) - 1;
+        auto maximum_safe_identity = make_runtime_identity(frozen);
+        maximum_safe_identity.region = {-16'384, 16'383, j_min, j_max};
+        CHECK(sieve::validate_distributed_sieve_work_identity(maximum_safe_identity));
         const auto bound =
-            bind_work_checked(maximum_area_identity, frozen, polynomial, factor_base);
-        CHECK(static_cast<std::uintmax_t>(bound.sieve_region.i_width()) *
-                  static_cast<std::uintmax_t>(bound.sieve_region.j_height()) ==
-              maximum_region_area);
-    } else {
-        expect_work_binding_rejected(maximum_area_identity, frozen, polynomial, factor_base);
-    }
+            bind_work_checked(maximum_safe_identity, frozen, polynomial, factor_base);
+        const auto bound_area = static_cast<std::uintmax_t>(bound.sieve_region.size());
+        CHECK(bound_area <= materialization_limit);
+        CHECK(bound_area <= static_cast<std::uintmax_t>(gnfs::core::SIEVE_MAX_REGION_CELLS));
 
-    // Where the platform allocation bound is reachable inside the region
-    // dimension limits, cross it by exactly one row and require rejection.
-    const std::uintmax_t first_oversized_height = maximum_vector_area / 32'768U + 1U;
-    if (first_oversized_height <=
-        static_cast<std::uintmax_t>(std::numeric_limits<std::int32_t>::max())) {
-        const auto j_min = -static_cast<std::int64_t>(first_oversized_height / 2U);
-        const auto j_max = j_min + static_cast<std::int64_t>(first_oversized_height) - 1;
-        expect_region_rejected({-16'384, 16'383, j_min, j_max});
+        const auto oversized_height = maximum_height + 1U;
+        if (oversized_height <=
+            static_cast<std::uintmax_t>(std::numeric_limits<std::int32_t>::max())) {
+            const auto oversized_j_max = j_min + static_cast<std::int64_t>(oversized_height) - 1;
+            expect_region_rejected({-16'384, 16'383, j_min, oversized_j_max});
+        }
     }
 }
 

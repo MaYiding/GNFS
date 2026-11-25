@@ -450,8 +450,11 @@ def parse_route_record(line: str) -> dict[str, str]:
         require(current_supported and peak_supported, "supported RSS backend omitted values")
         phase_currents = [int(fields[key]) for key in CURRENT_RSS_FIELDS[1:]]
         phase_peaks = [int(fields[key]) for key in PEAK_RSS_FIELDS[1:]]
-        require(all(current <= peak for current, peak in zip(phase_currents, phase_peaks)),
-                "phase current RSS exceeds lifetime peak")
+        # Linux statm uses approximate RSS accounting and is read separately
+        # from getrusage. Preserve both observations without ordering them.
+        if fields["process_rss_backend"] != "linux_getrusage":
+            require(all(current <= peak for current, peak in zip(phase_currents, phase_peaks)),
+                    "phase current RSS exceeds lifetime peak")
         require(phase_peaks == sorted(phase_peaks), "lifetime peak RSS regressed")
     return fields
 
@@ -2390,6 +2393,30 @@ def self_test(arguments: argparse.Namespace) -> int:
     legacy = prepare_campaign_fixture(arguments.legacy_record, "legacy")
     structured_fields = parse_route_record(structured)
     legacy_fields = parse_route_record(legacy)
+    linux_rss = dict(structured_fields)
+    linux_rss["process_rss_backend"] = "linux_getrusage"
+    for key in CURRENT_RSS_FIELDS + CANDIDATE_RSS_FIELDS:
+        linux_rss[key] = "2000"
+    for key in PEAK_RSS_FIELDS:
+        linux_rss[key] = "1000"
+
+    def rss_record(**changes: str) -> str:
+        fields = {**linux_rss, **changes}
+        return RECORD_PREFIX + " " + " ".join(f"{key}={fields[key]}" for key in ROUTE_FIELDS)
+
+    require(parse_route_record(rss_record()) == linux_rss,
+            "Linux RSS observations were changed")
+    for backend in ("darwin_getrusage", "windows_psapi"):
+        expect_rejected(lambda: parse_route_record(rss_record(process_rss_backend=backend)),
+                        f"{backend} current RSS above peak")
+    for changes, description in (
+        ({"rss_after_polynomial_peak_bytes": "999"}, "Linux lifetime peak regression"),
+        ({"process_current_rss_bytes": "1999"}, "Linux terminal current RSS mismatch"),
+        ({"process_peak_rss_bytes": "999"}, "Linux terminal peak RSS mismatch"),
+        ({"rss_after_sieve_current_bytes": "na"}, "Linux partial RSS linkage"),
+        ({"process_peak_rss_supported": "false"}, "Linux RSS support mismatch"),
+    ):
+        expect_rejected(lambda: parse_route_record(rss_record(**changes)), description)
     validate_route_contract(structured_fields, "structured", 4, "auto")
     validate_route_contract(legacy_fields, "legacy", 4, "auto")
     require(int(structured_fields["structured_emitted_rows"]) >

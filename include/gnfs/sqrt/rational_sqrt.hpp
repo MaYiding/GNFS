@@ -5,10 +5,12 @@
 #include "../factor_base/factor_base.hpp"
 #include "../linalg/sparse_matrix.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace gnfs::sqrt {
@@ -56,7 +58,7 @@ struct RationalSqrtResult {
 
 /// 有理平方根配置
 struct RationalSqrtConfig {
-    bool verify = true; // 是否验证结果
+    bool verify = true; // 是否校验平方同余；符号和指数奇偶性始终检查
 };
 
 /// RationalSqrt - 计算有理侧的平方根
@@ -137,6 +139,14 @@ public:
             }
         }
 
+        // A rational square cannot be negative. Negating its putative root
+        // does not change the square, so accepting sqrt(|product|) would
+        // violate the signed relation-product contract even modulo N.
+        if (has_negative) {
+            result.error = "Rational sqrt: signed relation product is negative";
+            return result;
+        }
+
         // 检查所有指数是否为偶数
         for (const auto& [idx, exp] : fb_exponents) {
             if (exp % 2 != 0) {
@@ -190,17 +200,8 @@ public:
             sqrt_value %= n;
         }
 
-        // 如果有奇数个负数，平方根是负的
-        // 在模算术中，-x ≡ n - x
-        if (has_negative) {
-            sqrt_value = n - sqrt_value;
-        }
-
-        // 验证: X² mod N == ∏|a_i - b_i·m| mod N
-        // 注意: FB/LP 因子分解的是绝对值 |a - b·m|，所以 X² = ∏|a_i - b_i·m|。
-        // 而 ∏(a_i - b_i·m) = (-1)^k × ∏|a_i - b_i·m|（k = 负因子个数）。
-        // 当 k 为奇数时 product mod N = N - |product| mod N ≠ X²。
-        // 因此比较时需要使用绝对值乘积，或者在 k 为奇数时翻转 product。
+        // Verify the original signed product. Its sign is already positive,
+        // so the factorization of absolute values reconstructs the same value.
         if (config_.verify) {
             // v22: squared 直接 assign; verify_ab buffers hoisted
             Integer squared;
@@ -227,15 +228,6 @@ public:
                 multiply_ab(rel.a, rel.b);
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
                     multiply_ab(ea, eb);
-                }
-            }
-
-            // 当负因子个数为奇数时，product = N - |product|
-            // X² = |product|，所以需要翻转 product 再比较
-            if (has_negative) {
-                product = n - product;
-                if (product.compare(n) == 0) {
-                    product = int64_t(0);
                 }
             }
 

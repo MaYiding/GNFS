@@ -4,7 +4,6 @@
 #include "support/test_check.hpp"
 
 #include <bit>
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -87,16 +86,16 @@ void test_roundtrip_small() {
     orig.save(path);
     auto loaded = PolyCheckpoint::load(path);
 
-    assert(loaded.n == orig.n);
-    assert(loaded.m == orig.m);
-    assert(loaded.degree == orig.degree);
-    assert(loaded.f_coeffs.size() == 4);
-    assert(loaded.f_coeffs[0] == Integer(static_cast<int64_t>(-5)));
-    assert(loaded.f_coeffs[1] == Integer(static_cast<int64_t>(7)));
-    assert(loaded.f_coeffs[2] == Integer(static_cast<int64_t>(2)));
-    assert(loaded.f_coeffs[3] == Integer(static_cast<int64_t>(11)));
-    assert(loaded.skewness == orig.skewness);
-    assert(loaded.murphy_e == orig.murphy_e);
+    GNFS_TEST_CHECK(loaded.n == orig.n);
+    GNFS_TEST_CHECK(loaded.m == orig.m);
+    GNFS_TEST_CHECK(loaded.degree == orig.degree);
+    GNFS_TEST_CHECK(loaded.f_coeffs.size() == 4);
+    GNFS_TEST_CHECK(loaded.f_coeffs[0] == Integer(static_cast<int64_t>(-5)));
+    GNFS_TEST_CHECK(loaded.f_coeffs[1] == Integer(static_cast<int64_t>(7)));
+    GNFS_TEST_CHECK(loaded.f_coeffs[2] == Integer(static_cast<int64_t>(2)));
+    GNFS_TEST_CHECK(loaded.f_coeffs[3] == Integer(static_cast<int64_t>(11)));
+    GNFS_TEST_CHECK(loaded.skewness == orig.skewness);
+    GNFS_TEST_CHECK(loaded.murphy_e == orig.murphy_e);
     std::cout << "  Small roundtrip: PASS" << std::endl;
 }
 
@@ -120,14 +119,14 @@ void test_roundtrip_large() {
     orig.save(path);
     auto loaded = PolyCheckpoint::load(path);
 
-    assert(loaded.n == orig.n);
-    assert(loaded.m == orig.m);
-    assert(loaded.degree == 5);
-    assert(loaded.f_coeffs.size() == 6);
+    GNFS_TEST_CHECK(loaded.n == orig.n);
+    GNFS_TEST_CHECK(loaded.m == orig.m);
+    GNFS_TEST_CHECK(loaded.degree == 5);
+    GNFS_TEST_CHECK(loaded.f_coeffs.size() == 6);
     for (size_t i = 0; i < 6; ++i) {
-        assert(loaded.f_coeffs[i] == orig.f_coeffs[i]);
+        GNFS_TEST_CHECK(loaded.f_coeffs[i] == orig.f_coeffs[i]);
     }
-    assert(loaded.skewness == orig.skewness);
+    GNFS_TEST_CHECK(loaded.skewness == orig.skewness);
     std::cout << "  Large roundtrip: PASS" << std::endl;
 }
 
@@ -151,11 +150,11 @@ void test_negative_coefficients() {
     orig.save(path);
     auto loaded = PolyCheckpoint::load(path);
 
-    assert(loaded.f_coeffs[0].is_zero());
-    assert(loaded.f_coeffs[1] == Integer("123456789012345"));
-    assert(loaded.f_coeffs[2] == Integer("-987654321098765"));
-    assert(loaded.f_coeffs[3] == Integer(static_cast<int64_t>(-1)));
-    assert(loaded.f_coeffs[4] == Integer(static_cast<int64_t>(1)));
+    GNFS_TEST_CHECK(loaded.f_coeffs[0].is_zero());
+    GNFS_TEST_CHECK(loaded.f_coeffs[1] == Integer("123456789012345"));
+    GNFS_TEST_CHECK(loaded.f_coeffs[2] == Integer("-987654321098765"));
+    GNFS_TEST_CHECK(loaded.f_coeffs[3] == Integer(static_cast<int64_t>(-1)));
+    GNFS_TEST_CHECK(loaded.f_coeffs[4] == Integer(static_cast<int64_t>(1)));
     std::cout << "  Negative + zero coefficients: PASS" << std::endl;
 }
 
@@ -179,12 +178,12 @@ void test_context_roundtrip() {
     auto loaded_ck = PolyCheckpoint::load(path);
     PolynomialContext rebuilt = loaded_ck.to_context();
 
-    assert(rebuilt.n() == orig_ctx.n());
-    assert(rebuilt.m() == orig_ctx.m());
-    assert(rebuilt.degree() == orig_ctx.degree());
-    assert(rebuilt.skewness() == orig_ctx.skewness());
+    GNFS_TEST_CHECK(rebuilt.n() == orig_ctx.n());
+    GNFS_TEST_CHECK(rebuilt.m() == orig_ctx.m());
+    GNFS_TEST_CHECK(rebuilt.degree() == orig_ctx.degree());
+    GNFS_TEST_CHECK(rebuilt.skewness() == orig_ctx.skewness());
     for (uint32_t i = 0; i <= orig_ctx.degree(); ++i) {
-        assert(rebuilt.coeff(i) == orig_ctx.coeff(i));
+        GNFS_TEST_CHECK(rebuilt.coeff(i) == orig_ctx.coeff(i));
     }
     std::cout << "  Context roundtrip: PASS" << std::endl;
 }
@@ -205,7 +204,7 @@ void test_load_for_validates_n() {
 
     // Correct N → ok
     auto ck = PolyCheckpoint::load_for(path, Integer("999999999999"));
-    assert(ck.n == Integer("999999999999"));
+    GNFS_TEST_CHECK(ck.n == Integer("999999999999"));
 
     // Wrong N → throws
     bool threw = false;
@@ -214,7 +213,7 @@ void test_load_for_validates_n() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  load_for N validation: PASS" << std::endl;
 }
 
@@ -223,7 +222,7 @@ void test_exists_and_valid() {
     auto path = tmp_ckpt_path("valid");
     CkptCleanup c{path};
 
-    assert(!PolyCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(!PolyCheckpoint::exists_and_valid(path));
 
     PolyCheckpoint ck;
     ck.n = Integer("17");
@@ -233,7 +232,7 @@ void test_exists_and_valid() {
     ck.f_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
     ck.save(path);
 
-    assert(PolyCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(PolyCheckpoint::exists_and_valid(path));
     std::cout << "  exists_and_valid: PASS" << std::endl;
 }
 
@@ -293,14 +292,14 @@ void test_incomplete_magic_rejected() {
         // Truncate intentionally (mid-save crash simulation)
     }
 
-    assert(!PolyCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(!PolyCheckpoint::exists_and_valid(path));
     bool threw = false;
     try {
         (void)PolyCheckpoint::load(path);
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  INCOMPLETE rejected: PASS" << std::endl;
 }
 
@@ -320,7 +319,7 @@ void test_version_mismatch_rejected() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  Version mismatch: PASS" << std::endl;
 }
 
@@ -354,7 +353,7 @@ void test_corrupt_coeff_count_rejected() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  Corrupt coeff_count: PASS" << std::endl;
 }
 
@@ -368,9 +367,9 @@ void test_remove() {
     ck.f_coeffs.emplace_back(Integer(static_cast<int64_t>(0)));
     ck.f_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
     ck.save(path);
-    assert(PolyCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(PolyCheckpoint::exists_and_valid(path));
     PolyCheckpoint::remove(path);
-    assert(!PolyCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(!PolyCheckpoint::exists_and_valid(path));
     std::cout << "  Remove: PASS" << std::endl;
 }
 
@@ -382,8 +381,8 @@ void test_load_nonexistent() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
-    assert(!PolyCheckpoint::exists_and_valid(
+    GNFS_TEST_CHECK(threw);
+    GNFS_TEST_CHECK(!PolyCheckpoint::exists_and_valid(
         gnfs::util::temp_path("nonexistent_xyz_gnfs_poly_xx_99999")));
     std::cout << "  Nonexistent: PASS" << std::endl;
 }
@@ -445,21 +444,85 @@ void test_allow_incomplete_force() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
 
     // Force load succeeds
     auto ck = PolyCheckpoint::load(path, /*allow_incomplete=*/true);
-    assert(ck.n == Integer(static_cast<int64_t>(7)));
-    assert(ck.m == Integer(static_cast<int64_t>(3)));
-    assert(ck.degree == 1);
-    assert(ck.f_coeffs.size() == 2);
-    assert(ck.f_coeffs[0] == Integer(static_cast<int64_t>(-2)));
-    assert(ck.f_coeffs[1] == Integer(static_cast<int64_t>(1)));
+    GNFS_TEST_CHECK(ck.n == Integer(static_cast<int64_t>(7)));
+    GNFS_TEST_CHECK(ck.m == Integer(static_cast<int64_t>(3)));
+    GNFS_TEST_CHECK(ck.degree == 1);
+    GNFS_TEST_CHECK(ck.f_coeffs.size() == 2);
+    GNFS_TEST_CHECK(ck.f_coeffs[0] == Integer(static_cast<int64_t>(-2)));
+    GNFS_TEST_CHECK(ck.f_coeffs[1] == Integer(static_cast<int64_t>(1)));
     std::cout << "  Force-load INCOMPLETE: PASS" << std::endl;
+}
+
+void test_integer_length_preflight() {
+    std::cout << "Testing corrupt integer lengths..." << std::endl;
+    const auto path = tmp_ckpt_path("integer_length");
+    CkptCleanup c{path};
+
+    // Exercise N, m, and a coefficient without allocating the declared 64 MiB body.
+    for (int field = 0; field < 3; ++field) {
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            write_u64_le(out, PolyCheckpoint::MAGIC);
+            write_u64_le(out, PolyCheckpoint::VERSION);
+            if (field > 0) {
+                write_u32_le(out, 0);
+                write_u32_le(out, 0);
+            }
+            if (field > 1) {
+                write_u32_le(out, 0);
+                write_u32_le(out, 0);
+                write_u32_le(out, 0);
+                write_u32_le(out, 1);
+            }
+            write_u32_le(out, 1);
+            write_u32_le(out, 64U * 1024U * 1024U);
+        }
+        bool rejected_before_allocation = false;
+        try {
+            (void)PolyCheckpoint::load(path);
+        } catch (const std::runtime_error& e) {
+            rejected_before_allocation =
+                std::string(e.what()).find("declared body exceeds remaining file") !=
+                std::string::npos;
+        }
+        GNFS_TEST_CHECK(rejected_before_allocation);
+    }
+
+    PolyCheckpoint original;
+    original.m = Integer("-12345678901234567890");
+    original.f_coeffs.emplace_back(Integer("98765432109876543210"));
+    original.f_coeffs.emplace_back(Integer(static_cast<int64_t>(0)));
+    original.save(path);
+    auto valid = PolyCheckpoint::load(path);
+    GNFS_TEST_CHECK(valid.n.is_zero());
+    GNFS_TEST_CHECK(valid.m == original.m);
+    GNFS_TEST_CHECK(valid.f_coeffs.size() == 2);
+    GNFS_TEST_CHECK(valid.f_coeffs[0] == original.f_coeffs[0]);
+    GNFS_TEST_CHECK(valid.f_coeffs[1].is_zero());
+    {
+        std::fstream out(path, std::ios::binary | std::ios::in | std::ios::out);
+        out.seekp(20); // N byte count; the writer emitted zero for zero N.
+        const char byte = 1;
+        out.write(&byte, 1);
+    }
+    bool rejected_zero = false;
+    try {
+        (void)PolyCheckpoint::load(path);
+    } catch (const std::runtime_error& e) {
+        rejected_zero =
+            std::string(e.what()).find("zero integer has non-zero byte count") != std::string::npos;
+    }
+    GNFS_TEST_CHECK(rejected_zero);
+    std::cout << "  Corrupt integer lengths: PASS" << std::endl;
 }
 
 int main() {
     std::cout << "===== PolyCheckpoint Tests =====" << std::endl;
+    test_integer_length_preflight();
     test_roundtrip_small();
     test_roundtrip_large();
     test_negative_coefficients();

@@ -293,6 +293,25 @@ exactly `libgmp-10.dll`, `libstdc++-6.dll`, `libgcc_s_seh-1.dll`, and
 `libwinpthread-1.dll`, owned by three packages. Any missing or additional DLL,
 package, version, digest, or source mapping fails closed.
 
+`scripts/windows-ucrt64-build.json` separately freezes CMake, Ninja, Python,
+and the compiler's complete UCRT64 dependency closure. The MSYS2 action installs
+only MSYS Python before the pinned transaction. Installing rolling UCRT64 tools
+first can introduce split GCC runtime packages that conflict with the frozen
+`gcc-libs` package. The installer rejects a prepopulated UCRT64 package set,
+verifies every archive digest, and runs one `pacman -U` transaction with no sync
+repositories. A missing dependency therefore fails instead of selecting an
+unpinned package. It then verifies the exact installed package set and versions
+before publishing evidence, and repeats this verification before bundling.
+
+The build-tool versions originate from the successful Windows release-readiness
+run on 2026-09-10. Additional compiler dependencies use archives published before
+that run. Their `.PKGINFO` dependencies and providers form a closed package set.
+The existing compiler, runtime DLL digests, ownership, and corresponding-source
+pins remain authoritative in `scripts/windows-ucrt64-runtime.json`; the build
+lock cannot override them. Refreshing the build lock requires archive metadata
+inspection and the complete Windows release-readiness job, including the
+isolated executable probe and archive validation.
+
 Windows dependency discovery captures and checks the `ldd` exit status,
 rejects unresolved or non-UCRT64 non-system paths, and records the owning
 package, binary package digest, DLL digest, and corresponding source archive.

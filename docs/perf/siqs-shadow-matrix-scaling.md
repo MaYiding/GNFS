@@ -9,6 +9,13 @@ deterministic dense solver and the bounded direct sparse solver in
 two-large-prime (2LP) yield or authorize automatic promotion of explicit
 `prefer`.
 
+Live-capture tables, 64-A cycle counts, 256-A factor evidence, and earlier
+production-overlap samples predate the Gray-code sieve-root correction. They
+remain historical results and do not validate the corrected live corpus. The
+[current V4 capture boundary](siqs-live-sieve-capture.md#evidence-after-the-sieve-root-correction)
+stops before graph, assembly, and proof processing. Constructed-corpus solver
+measurements are separate from this live-sieve evidence.
+
 `include/gnfs/siqs/shadow_proof_runner.hpp` provides a production-facing
 read-only facade. Explicit `observe` and `prefer` invoke it after sieve worker
 join and before the legacy merge. Every observe terminal and every prefer
@@ -1097,16 +1104,19 @@ remain pending.
   certificate and restricted exact small-matrix fallback.
 - [x] Transactional per-polynomial relation/payload capture limit before dense
   relation allocation, with typed stop reasons and default-path parity tests.
-- [x] Fixed-plan live-sieve capture across the 50-, 70-, and 90-digit bands,
-  with a stable A planner, per-slot state digests, and actual one-, two-, and
-  four-worker fresh-process identity checks. The first corpus has zero graph
-  cycles. A separate fixed 64-A, 2048-slot 50-digit profile now produces 57
-  valid cycle rows, including five cycles with accepted 2LP edges, but only 397
-  selected rows. It therefore provides live cycle-density evidence without
-  freezing the parallel threshold or satisfying the production row-excess
-  gate.
-- [x] Bounded 256-A, 50-digit assembly with 1701 selected rows and a frozen
-  proof-gated factor result across one, two, and four workers.
+- [x] Revalidated fixed-plan 50-, 70-, and 90-digit live capture after the
+  sieve-root correction. All nine V1 records across one, two, and four actual
+  workers pass the original validator with empty stderr, and capture identity
+  matches across worker counts within each band. The
+  [earlier fixed-plan table](siqs-live-sieve-capture.md#historical-fixed-plan-evidence)
+  and [64-A cycle profile](siqs-live-sieve-capture.md#implemented-multi-a-cycle-density-profile)
+  remain historical; the latter produced 57 cycles, including five with 2LP
+  edges, and 397 selected rows before the correction.
+- [ ] Revalidate bounded 256-A, 50-digit assembly and proof across one, two,
+  and four workers. The pre-correction 1701-row factor result is historical.
+  Current V4 capture reaches `global_relation_limit` before downstream
+  processing; see the
+  [current capture boundary](siqs-live-sieve-capture.md#evidence-after-the-sieve-root-correction).
 - [x] Read-only typed proof facade with relation, payload, graph, row, matrix,
   dependency, and factor boundaries.
 - [x] Strict opt-in observe seam in `factor()` with default workers set to 1,
