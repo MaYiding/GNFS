@@ -783,6 +783,10 @@ void run_capture_slot(const SIQSPoly& polynomial, const Integer& sieved_modulus,
         return "resource_limit";
     case SIQSShadowMatrixStatus::unsupported_backend:
         return "unsupported_backend";
+    case SIQSShadowMatrixStatus::no_dependencies:
+        return "no_dependencies";
+    case SIQSShadowMatrixStatus::solver_failure:
+        return "solver_failure";
     }
     return "unknown";
 }

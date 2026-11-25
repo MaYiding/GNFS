@@ -114,14 +114,11 @@ jobs:
         run: echo "epoch=$(git show -s --format=%ct HEAD)" >> "${GITHUB_OUTPUT}"
 
       - name: Install minimal MSYS2 build shell
-        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: UCRT64
           update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-python
+          install: python
 
       - name: Install digest-pinned compiler and runtime packages
         shell: msys2 {0}
@@ -139,12 +136,13 @@ jobs:
             -DGNFS_ENABLE_NTL=OFF \
             -DGNFS_ENABLE_NATIVE_ARCH=OFF
           cmake --build build-process-supervisor --parallel \
-            --target gnfs_test_process_supervisor
+            --target gnfs_test_process_supervisor test_trial_wheel
           ctest --test-dir build-process-supervisor \
             --output-on-failure \
             --no-tests=error \
             -C Release \
-            -R '^ProcessSupervisor$'
+            --verbose \
+            -R '^(ProcessSupervisor|TrialWheel)$'
 
       - name: Build and install Windows release tree
         shell: msys2 {0}

@@ -5,7 +5,8 @@
 //
 //   * ENV parsing handles unset / "0" / "1" / "4" / "garbage" / "" /
 //     "12abc" / leading whitespace / "10000" correctly; clamping at
-//     hardware_concurrency() * 2.
+//     hardware_concurrency() * 2, including oversized positive values and
+//     same-magnitude negative values with whitespace/sign/prefix compatibility.
 //   * Sequential (N=1, default) and parallel (N>=2) paths produce per-index
 //     bit-identical results for the same (a_values, b_values) input. The
 //     dispatcher is a pure parallel wrapper around `mpz_mul`.
@@ -28,12 +29,16 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/util/mpz_mul_parallel.hpp>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <gmp.h>
+#include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -162,6 +167,55 @@ void test_env_clamp() {
     }
     apply_env(nullptr);
     std::cout << " PASS (cap=" << cap << ")\n";
+}
+
+// Oversized positive settings must saturate at the documented hardware cap,
+// while a leading minus sign always selects the sequential fallback.
+void test_env_wide_values_and_prefix_compatibility() {
+    std::cout << "Test: wide ENV values and prefix compatibility..." << std::flush;
+    const unsigned int hw = std::thread::hardware_concurrency();
+    const unsigned long long hardware_cap =
+        static_cast<unsigned long long>(hw == 0 ? 4 : hw) * 2ULL;
+    const int expected_cap = static_cast<int>(
+        std::min(hardware_cap, static_cast<unsigned long long>(std::numeric_limits<int>::max())));
+
+    // This oracle uses the documented hardware limit, not the production parser.
+    // A two-element batch resolves to two workers for any saturated positive
+    // setting, including one-core and unknown-hardware hosts.
+    const auto check_setting = [](const std::string& value, int expected_threads,
+                                  int expected_for_two) {
+        apply_env(value.c_str());
+        const int actual_threads = mpz_mul_batch_threads();
+        const int actual_for_two = resolve_mpz_mul_batch_threads(2);
+        if (actual_threads != expected_threads || actual_for_two != expected_for_two) {
+            std::cerr << "\n  ENV '" << value << "': threads=" << actual_threads << " (expected "
+                      << expected_threads << "), batch=2 resolves to " << actual_for_two
+                      << " (expected " << expected_for_two << ")\n";
+        }
+        GNFS_TEST_CHECK(actual_threads == expected_threads);
+        GNFS_TEST_CHECK(actual_for_two == expected_for_two);
+    };
+
+    const std::string int_max_plus_one =
+        std::to_string(static_cast<unsigned long long>(std::numeric_limits<int>::max()) + 1ULL);
+    const std::string unsigned_long_long_max =
+        std::to_string(std::numeric_limits<unsigned long long>::max());
+    const std::array<std::string, 3> magnitudes{int_max_plus_one, unsigned_long_long_max,
+                                                unsigned_long_long_max + "0"};
+    for (const auto& digits : magnitudes) {
+        check_setting(digits, expected_cap, 2);
+        check_setting(" \t+" + digits + "suffix", expected_cap, 2);
+        check_setting("-" + digits, 1, 1);
+        check_setting(" \t-" + digits + "suffix", 1, 1);
+    }
+
+    // Preserve each existing numeric-prefix feature below the clamp as well.
+    for (const char* value : {"2suffix", " \t2", "+2", " \n\t+2suffix"}) {
+        check_setting(value, 2, 2);
+    }
+
+    apply_env(nullptr);
+    std::cout << " PASS (hardware cap=" << expected_cap << ")\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -732,6 +786,7 @@ int main() {
     test_env_zero_to_one();
     test_env_four();
     test_env_clamp();
+    test_env_wide_values_and_prefix_compatibility();
     test_env_non_numeric();
     test_empty_inputs();
     test_single_pair_n1();

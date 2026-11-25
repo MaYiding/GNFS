@@ -5,7 +5,10 @@
 #include "../factor_base/factor_base.hpp"
 #include "wheel235.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace gnfs::cofactor {
@@ -14,12 +17,32 @@ using core::Integer;
 using core::PrimePower;
 using factor_base::FactorBase;
 
+#if defined(__SIZEOF_INT128__)
+namespace detail {
+// GMP limbs and unsigned long need not be 64 bits (for example on LLP64).
+// Import/export fixed-width words instead of assuming either representation.
+// Callers ensure that the nonnegative input fits in 127 bits.
+[[nodiscard]] inline __uint128_t trial_u128_from_integer(const Integer& value) {
+    std::array<uint64_t, 2> words{};
+    mpz_export(words.data(), nullptr, -1, sizeof(uint64_t), 0, 0, value.get_mpz());
+    return (static_cast<__uint128_t>(words[1]) << 64) | words[0];
+}
+
+inline void trial_integer_from_u128(Integer& out, __uint128_t value) {
+    const std::array<uint64_t, 2> words{static_cast<uint64_t>(value),
+                                        static_cast<uint64_t>(value >> 64)};
+    mpz_import(out.get_mpz(), words.size(), -1, sizeof(uint64_t), 0, 0, words.data());
+}
+} // namespace detail
+#endif
+
 /// 试除结果
 struct TrialDivisionResult {
-    std::vector<uint32_t> factor_indices;   // 因子基中的索引
-    std::vector<uint8_t> exponents;         // 对应的指数
-    Integer cofactor;                        // 剩余的未分解部分
-    bool is_smooth = false;                  // cofactor == 1?
+    // A valuation above UINT8_MAX uses consecutive entries for the same column.
+    std::vector<uint32_t> factor_indices; // 因子基中的索引
+    std::vector<uint8_t> exponents;       // 对应的指数
+    Integer cofactor;                     // 剩余的未分解部分
+    bool is_smooth = false;               // cofactor == 1?
 
     /// 是否完全分解
     [[nodiscard]] bool fully_factored() const noexcept {
@@ -48,57 +71,64 @@ public:
         // Reserve: typical relation has 8-15 distinct rat FB factors.
         result.factor_indices.reserve(16);
         result.exponents.reserve(16);
-        if (value.is_negative()) value.negate();
+        if (value.is_negative())
+            value.negate();
 
         if (value.is_zero()) {
             result.is_smooth = true;
-            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
+            result.cofactor = int64_t(1); // mpz_set_si on default-init buffer
             return result;
         }
 
         // uint128 快路径: |a - b*m| often fits 65-127 bits for 40-65 digit N
 #if defined(__SIZEOF_INT128__)
         if (value.bit_length() <= 127) {
-            // Zero-alloc limb access (same pattern as divide_algebraic line 182)
-            uint64_t lo = mpz_getlimbn(value.get_mpz(), 0);
-            uint64_t hi = mpz_getlimbn(value.get_mpz(), 1);
-            __uint128_t v128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+            // Export into two fixed-width words without relying on GMP limb width.
+            __uint128_t v128 = detail::trial_u128_from_integer(value);
 
             const auto& rationals = fb_.rational();
             // Wheel-2-3-5 fast prefix: strip 2/3/5 in O(1)+small-loop instead
             // of the per-prime % cost. Only fires when FB starts at 2,3,5 in
             // that order (the standard layout for any real factor base).
             uint32_t start = 0;
-            if (rationals.size() >= 3 &&
-                rationals[0].p == 2 && rationals[1].p == 3 && rationals[2].p == 5) {
+            if (rationals.size() >= 3 && rationals[0].p == 2 && rationals[1].p == 3 &&
+                rationals[2].p == 5) {
                 uint8_t e2 = 0, e3 = 0, e5 = 0;
                 v128 = wheel::strip_235(v128, e2, e3, e5);
-                if (e2 > 0) { result.factor_indices.push_back(0); result.exponents.push_back(e2); }
-                if (e3 > 0) { result.factor_indices.push_back(1); result.exponents.push_back(e3); }
-                if (e5 > 0) { result.factor_indices.push_back(2); result.exponents.push_back(e5); }
+                if (e2 > 0) {
+                    result.factor_indices.push_back(0);
+                    result.exponents.push_back(e2);
+                }
+                if (e3 > 0) {
+                    result.factor_indices.push_back(1);
+                    result.exponents.push_back(e3);
+                }
+                if (e5 > 0) {
+                    result.factor_indices.push_back(2);
+                    result.exponents.push_back(e5);
+                }
                 start = 3;
             }
             for (uint32_t idx = start; idx < rationals.size() && v128 > 1; ++idx) {
                 uint32_t p = rationals[idx].p;
-                if (v128 % p != 0) continue;
+                if (v128 % p != 0)
+                    continue;
                 uint8_t exp = 0;
-                do { v128 /= p; ++exp; } while (v128 % p == 0 && exp < 255);
+                do {
+                    v128 /= p;
+                    ++exp;
+                } while (v128 % p == 0 && exp < 255);
                 result.factor_indices.push_back(idx);
                 result.exponents.push_back(exp);
             }
 
             if (v128 == 1) {
                 result.is_smooth = true;
-                result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
+                result.cofactor = int64_t(1); // mpz_set_si on default-init buffer
             } else if (v128 <= UINT64_MAX) {
                 result.cofactor = static_cast<uint64_t>(v128);
             } else {
-                // u128 → Integer: write hi limb, shift, add lo (zero tmp alloc)
-                uint64_t rhi = static_cast<uint64_t>(v128 >> 64);
-                uint64_t rlo = static_cast<uint64_t>(v128);
-                mpz_set_ui(result.cofactor.get_mpz(), rhi);
-                mpz_mul_2exp(result.cofactor.get_mpz(), result.cofactor.get_mpz(), 64);
-                mpz_add_ui(result.cofactor.get_mpz(), result.cofactor.get_mpz(), rlo);
+                detail::trial_integer_from_u128(result.cofactor, v128);
             }
             return result;
         }
@@ -108,11 +138,7 @@ public:
         const auto& rationals = fb_.rational();
         for (uint32_t idx = 0; idx < rationals.size(); ++idx) {
             uint32_t p = rationals[idx].p;
-            uint8_t exp = 0;
-            while (divisible_by(value, p) && exp < 255) {
-                divide_exact(value, p);
-                ++exp;
-            }
+            const uint8_t exp = divide_gmp_prime(value, p, idx, result);
             if (exp > 0) {
                 result.factor_indices.push_back(idx);
                 result.exponents.push_back(exp);
@@ -125,9 +151,10 @@ public:
             if (value.fits_uint64()) {
                 auto tail = divide_rational_u64_from(value.to_uint64(), idx + 1);
                 result.factor_indices.insert(result.factor_indices.end(),
-                    tail.factor_indices.begin(), tail.factor_indices.end());
-                result.exponents.insert(result.exponents.end(),
-                    tail.exponents.begin(), tail.exponents.end());
+                                             tail.factor_indices.begin(),
+                                             tail.factor_indices.end());
+                result.exponents.insert(result.exponents.end(), tail.exponents.begin(),
+                                        tail.exponents.end());
                 result.cofactor = std::move(tail.cofactor);
                 result.is_smooth = tail.is_smooth;
                 return result;
@@ -149,12 +176,18 @@ public:
     /// 对代数侧范数进行试除
     /// @param norm 代数侧范数 |N(a, b)|
     /// @param a, b 用于确定哪个根 r 整除
-    /// @param max_entries 最大遍历条目数 (0 = all)。传 sieve_algebraic_count()
-    ///   可跳过 SQ 范围条目，让 classify_cofactor 处理它们。
+    /// @param max_entries 最大遍历条目数 (0 = all, for legacy callers)
     /// @return 试除结果
-    [[nodiscard]] TrialDivisionResult divide_algebraic(
-            Integer norm, int64_t a, uint64_t b, size_t max_entries = 0) const {
+    [[nodiscard]] TrialDivisionResult divide_algebraic(Integer norm, int64_t a, uint64_t b,
+                                                       size_t max_entries = 0) const {
+        const size_t limit = max_entries == 0 ? fb_.algebraic_count() : max_entries;
+        return divide_algebraic_prefix(std::move(norm), a, b, limit);
+    }
 
+    /// Divide by exactly the available entries in the requested prefix. A
+    /// limit of zero is an empty prefix, including for a special-Q-only base.
+    [[nodiscard]] TrialDivisionResult divide_algebraic_prefix(Integer norm, int64_t a, uint64_t b,
+                                                              size_t prefix_size) const {
         TrialDivisionResult result;
         // Reserve: typical relation has 8-15 distinct alg FB factors.
         result.factor_indices.reserve(16);
@@ -167,14 +200,13 @@ public:
 
         if (norm.is_zero()) {
             result.is_smooth = true;
-            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
+            result.cofactor = int64_t(1); // mpz_set_si on default-init buffer
             return result;
         }
 
         // 对每个代数因子基素理想进行试除
         const auto& algebraics = fb_.algebraic();
-        size_t alg_limit = (max_entries > 0 && max_entries < algebraics.size())
-                         ? max_entries : algebraics.size();
+        const size_t alg_limit = prefix_size < algebraics.size() ? prefix_size : algebraics.size();
 
         // Three-tier fast path: uint64 → uint128 → GMP
         bool use_u64 = norm.fits_uint64();
@@ -184,12 +216,7 @@ public:
         __uint128_t norm_u128 = 0;
         if (!use_u64 && norm.bit_length() <= 127) {
             use_u128 = true;
-            // mpz_getlimbn(_, 0/1) reads limbs directly (zero alloc on LP64
-            // where mp_limb_t == uint64_t). Non-negative norm guaranteed by
-            // compute_algebraic_norm.
-            uint64_t lo = mpz_getlimbn(norm.get_mpz(), 0);
-            uint64_t hi = mpz_getlimbn(norm.get_mpz(), 1);
-            norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+            norm_u128 = detail::trial_u128_from_integer(norm);
         }
 #endif
 
@@ -200,13 +227,16 @@ public:
             // Fast pre-check: skip primes that don't divide the norm.
             // Three-tier: uint64 % p, uint128 % p, or GMP mpz_divisible_ui_p.
             if (use_u64) {
-                if (norm_u64 % p != 0) continue;
+                if (norm_u64 % p != 0)
+                    continue;
 #if defined(__SIZEOF_INT128__)
             } else if (use_u128) {
-                if (norm_u128 % p != 0) continue;
+                if (norm_u128 % p != 0)
+                    continue;
 #endif
             } else {
-                if (mpz_divisible_ui_p(norm.get_mpz(), p) == 0) continue;
+                if (mpz_divisible_ui_p(norm.get_mpz(), p) == 0)
+                    continue;
             }
 
             // 检查 P | (a - bα):
@@ -217,10 +247,13 @@ public:
                 uint64_t b_mod = b % p64;
                 uint64_t br_mod = (b_mod * static_cast<uint64_t>(r)) % p64;
                 int64_t a_mod = a % static_cast<int64_t>(p);
-                if (a_mod < 0) a_mod += p;
-                if (static_cast<uint64_t>(a_mod) != br_mod) continue;
+                if (a_mod < 0)
+                    a_mod += p;
+                if (static_cast<uint64_t>(a_mod) != br_mod)
+                    continue;
             } else {
-                if (b % p != 0) continue;
+                if (b % p != 0)
+                    continue;
             }
 
             // 试除 — uint64 / uint128 / GMP 快路径
@@ -244,10 +277,7 @@ public:
                 }
 #endif
             } else {
-                while (divisible_by(norm, p) && exp < 255) {
-                    divide_exact(norm, p);
-                    ++exp;
-                }
+                exp = divide_gmp_prime(norm, p, idx, result);
                 // Check for upgrade to uint128 or uint64
                 if (norm.fits_uint64()) {
                     use_u64 = true;
@@ -255,10 +285,7 @@ public:
 #if defined(__SIZEOF_INT128__)
                 } else if (norm.bit_length() <= 127) {
                     use_u128 = true;
-                    // Zero-alloc limb access (same pattern as line 182 init path)
-                    uint64_t lo = mpz_getlimbn(norm.get_mpz(), 0);
-                    uint64_t hi = mpz_getlimbn(norm.get_mpz(), 1);
-                    norm_u128 = (static_cast<__uint128_t>(hi) << 64) | lo;
+                    norm_u128 = detail::trial_u128_from_integer(norm);
 #endif
                 }
             }
@@ -293,21 +320,18 @@ public:
 
         if (use_u64) {
             result.cofactor = norm_u64;
-            if (norm_u64 == 1) result.is_smooth = true;
+            if (norm_u64 == 1)
+                result.is_smooth = true;
 #if defined(__SIZEOF_INT128__)
         } else if (use_u128) {
             // Convert uint128 back to Integer
             if (norm_u128 <= UINT64_MAX) {
                 result.cofactor = static_cast<uint64_t>(norm_u128);
             } else {
-                uint64_t hi = static_cast<uint64_t>(norm_u128 >> 64);
-                uint64_t lo = static_cast<uint64_t>(norm_u128);
-                mpz_ptr cof = result.cofactor.get_mpz();
-                mpz_set_ui(cof, hi);
-                mpz_mul_2exp(cof, cof, 64);
-                mpz_add_ui(cof, cof, lo);
+                detail::trial_integer_from_u128(result.cofactor, norm_u128);
             }
-            if (norm_u128 == 1) result.is_smooth = true;
+            if (norm_u128 == 1)
+                result.is_smooth = true;
 #endif
         } else {
             result.cofactor = std::move(norm);
@@ -322,8 +346,11 @@ public:
     /// 快速检查是否可能光滑（不完全分解，只检查小素数）
     /// @param value 要检查的值
     /// @param limit 检查的素数数量限制
-    /// @return 剩余的 cofactor
+    /// @return 剩余的 cofactor，输入为零时返回零
     [[nodiscard]] Integer quick_divide(Integer value, size_t limit = 100) const {
+        if (value.is_zero()) {
+            return value;
+        }
         if (value.is_negative()) {
             value.negate();
         }
@@ -369,9 +396,31 @@ private:
         }
     }
 
+    // Emit full exponent chunks here and let the caller append the last chunk.
+    static uint8_t divide_gmp_prime(Integer& value, uint32_t p, uint32_t idx,
+                                    TrialDivisionResult& result) {
+        uint8_t exponent = 0;
+        while (exponent < UINT8_MAX && divisible_by(value, p)) {
+            divide_exact(value, p);
+            ++exponent;
+        }
+        if (exponent == UINT8_MAX && p >= 2 && mpz_divisible_ui_p(value.get_mpz(), p)) {
+            const Integer prime(p);
+            mp_bitcnt_t remaining = mpz_remove(value.get_mpz(), value.get_mpz(), prime.get_mpz());
+            while (remaining > 0) {
+                result.factor_indices.push_back(idx);
+                result.exponents.push_back(exponent);
+                exponent = static_cast<uint8_t>(std::min<mp_bitcnt_t>(remaining, UINT8_MAX));
+                remaining -= exponent;
+            }
+        }
+        return exponent;
+    }
+
     /// 纯 uint64 有理试除（从指定 FB 索引开始）
     /// 零 GMP 分配——整个流程在原生 uint64 算术内完成
-    [[nodiscard]] TrialDivisionResult divide_rational_u64_from(uint64_t value, uint32_t start_idx) const {
+    [[nodiscard]] TrialDivisionResult divide_rational_u64_from(uint64_t value,
+                                                               uint32_t start_idx) const {
         TrialDivisionResult result;
         // Reserve: typical relation has 8-15 distinct rat FB factors.
         result.factor_indices.reserve(16);
@@ -379,7 +428,7 @@ private:
 
         if (value == 0) {
             result.is_smooth = true;
-            result.cofactor = int64_t(1);  // mpz_set_si on default-init buffer
+            result.cofactor = int64_t(1); // mpz_set_si on default-init buffer
             return result;
         }
 
@@ -388,13 +437,22 @@ private:
         // Wheel-2-3-5 fast prefix: only safe to apply when entering at index 0
         // and the FB really begins with 2,3,5 in that order.
         uint32_t idx_start = start_idx;
-        if (start_idx == 0 && rationals.size() >= 3 &&
-            rationals[0].p == 2 && rationals[1].p == 3 && rationals[2].p == 5) {
+        if (start_idx == 0 && rationals.size() >= 3 && rationals[0].p == 2 && rationals[1].p == 3 &&
+            rationals[2].p == 5) {
             uint8_t e2 = 0, e3 = 0, e5 = 0;
             value = wheel::strip_235(value, e2, e3, e5);
-            if (e2 > 0) { result.factor_indices.push_back(0); result.exponents.push_back(e2); }
-            if (e3 > 0) { result.factor_indices.push_back(1); result.exponents.push_back(e3); }
-            if (e5 > 0) { result.factor_indices.push_back(2); result.exponents.push_back(e5); }
+            if (e2 > 0) {
+                result.factor_indices.push_back(0);
+                result.exponents.push_back(e2);
+            }
+            if (e3 > 0) {
+                result.factor_indices.push_back(1);
+                result.exponents.push_back(e3);
+            }
+            if (e5 > 0) {
+                result.factor_indices.push_back(2);
+                result.exponents.push_back(e5);
+            }
             idx_start = 3;
 
             // Re-check early termination opportunities after wheel.
@@ -443,14 +501,14 @@ private:
             }
             // p² 早停: cofactor < p² 且 cofactor > rational_bound
             // cofactor 是素数且不在 FB 中 → 安全退出
-            if (value > fb_.params().rational_bound &&
-                value < static_cast<uint64_t>(p) * p) {
+            if (value > fb_.params().rational_bound && value < static_cast<uint64_t>(p) * p) {
                 break;
             }
         }
 
         result.cofactor = value;
-        if (value == 1) result.is_smooth = true;
+        if (value == 1)
+            result.is_smooth = true;
         return result;
     }
 };

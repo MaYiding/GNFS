@@ -66,26 +66,19 @@ ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
 
 ## Batch Trial Division (GNFS_COFACTOR_BATCH_SIZE)
 
-**ENV `GNFS_COFACTOR_BATCH_SIZE=N`**（默认 `1`，即关闭批量路径）：
-为 batch trial-division caller 提供每批候选数量。`N < 2` 时保持单候选路径；`N` 在
-`[2, 4096]` 时启用对应批大小；更大的可表示整数钳制为 `4096`。
+批量试除 API `batch_trial_divide(cofactors, prime_bound)` 处理调用方传入的整批余因子，批大小由 `cofactors.size()` 决定。当前 `gnfs` CLI 的余因子试除仍使用单候选路径。
+
+`batch_trial_size_from_env()` 可供调用方读取建议批大小。它解析完整十进制整数，允许首尾空白。未设置、空值、负数、数值小于 2、含多余字符或超出 `unsigned long` 范围时返回 `1`。合法值在 `[2, 4096]` 时原样返回，更大的可表示整数返回 `4096`。
+
+分布式筛法还把此变量作为执行策略 V1 的保守字段，纳入工作身份校验。该字段沿用协议自身的解析规则。例如，`-1` 在执行策略中记录为 `4096`，在上述批大小函数中返回 `1`。
+
+可用项目测试入口验证这些行为。基准程序通过切分输入指定批大小。
 
 ```bash
-unset GNFS_COFACTOR_BATCH_SIZE             # 默认 1，关闭批量路径
-GNFS_COFACTOR_BATCH_SIZE=8 ./gnfs <N>      # 启用 8 个候选一批
-GNFS_COFACTOR_BATCH_SIZE=999999 ./gnfs <N>  # 钳制为 4096
+./scripts/test.sh run test_batch_trial                         # 批量试除和批大小解析
+./scripts/test.sh run test_distributed_sieve_execution_policy  # V1 策略字段
+./scripts/test.sh run test_cofactor_batch_bench                # 固定批大小的本地基准
 ```
-
-解析器要求整个值是十进制整数（允许首尾空白）。空值、非数字、负值、`0`、`1`、
-尾随非空白字符，以及 `strtoul` 溢出均 fail-closed 为 `1`。例如，`2junk` 不会
-意外启用批量路径。该行为避免部署配置中的拼写错误改变内存占用和吞吐策略。
-
-**实现与验证**：
-
-- `include/gnfs/cofactor/batch_trial.hpp` 中的 `batch_trial_size_from_env()` 使用
-  `errno` 检查溢出，并验证解析终点；
-- `tests/test_batch_trial.cpp` 覆盖尾随字符、首尾空白、负值、溢出和上限钳制；
-- 默认值和解析结果不改变未设置 ENV 时的既有行为。
 
 ---
 
@@ -261,114 +254,64 @@ wire-in 调用, 是 future-infrastructure. 调用方在自身 cofactor stage sco
 
 ## ECM B1 prime-power expansion cache (GNFS_ECM_B1_CACHE_SIZE)
 
-**ENV `GNFS_ECM_B1_CACHE_SIZE=N`** (2026-05-22 实施, W13 T3, range [0, 32], default 0):
-ECM Stage 1 内部需要计算 `k = lcm(1, 2, ..., B1) = ∏ p^⌊log_p B1⌋ for primes p ≤ B1`
-来跑 `k * Q` scalar multiplication. 真实 caller (`ECM::stage1`, `try_curve_with_pk`)
-通常 iterate prime power `p^e` 一条一条 (per-prime Lucas chain) 而非
-materialize 整个 `k`. 当 multiple curves 共享 same B1 (典型 `EcmCurvePool::
-prepare_batch` 批量 ECM), 每条 curve 重新跑 sieve + per-prime max-exponent
-loop 是浪费. helper 提供 opt-in thread-safe insert-only cache, key = B1,
-value = `std::vector<uint64_t>` 按升序素数排列的 prime-power 序列.
+`GNFS_ECM_B1_CACHE_SIZE` 控制素数幂缓存的共享实例容量，默认值为 `0`，上限为 `32`。
+这个 helper 尚未接入生产 ECM 路径；设置变量不会自动改变分解算法。
 
-```bash
-unset GNFS_ECM_B1_CACHE_SIZE              # default 0 (disabled, 零开销)
-GNFS_ECM_B1_CACHE_SIZE=0    ./gnfs <N>    # 同 default
-GNFS_ECM_B1_CACHE_SIZE=4    ./gnfs <N>    # 容量 4 (典型 ECM B1 set {1e4, 1e5, 1e6, 1e7})
-GNFS_ECM_B1_CACHE_SIZE=32   ./gnfs <N>    # 上限
-GNFS_ECM_B1_CACHE_SIZE=33   ./gnfs <N>    # clamp 到 32
+对于每个素数 $p\leq B1$，`compute_b1_prime_powers(B1)` 计算满足
+$p^e\leq B1$ 的最大素数幂，并按素数 $p$ 的升序返回序列。
+它可用于 ECM Stage 1 的逐项点乘，无需构造完整的 `lcm(1,...,B1)`。
+`B1=0/1` 返回空序列，`B1=20` 返回 `[16, 9, 5, 7, 11, 13, 17, 19]`。
+筛法的时间复杂度为 $O(B1\log\log B1)$。`B1>100000000` 抛出
+`std::invalid_argument`，限制筛数组分配。
+
+**Helper API**（`include/gnfs/cofactor/ecm_prime_cache.hpp`）：
+
+- `EcmB1PrimeCache(capacity)` 创建具有固定条目容量的缓存。
+- `get_or_compute(B1)` 按值返回 `std::shared_ptr<const std::vector<uint64_t>>`。
+  命中时共享缓存对象；未命中且有容量时插入新对象；缓存已满时返回独立对象，不插入或淘汰已有条目。
+- 返回的 handle 始终非空，`B1=0/1` 的 handle 持有空 vector。
+  对象不可修改；相同 `B1` 在所有路径上产生逐元素一致的序列。
+- `size()` 读取缓存持有的条目数，`capacity()` 读取容量。
+  `clear()` 清空条目，调用方已持有的结果仍然有效。
+- `ecm_b1_cache_size()` 首次解析环境变量，后续复用解析值。
+  `ecm_b1_cache_enabled()` 等价于容量大于零。
+- `shared_ecm_b1_cache()` 返回函数内静态共享实例，其容量在首次调用时固定。
+  `ecm_b1_cache_reset_env_cache_for_testing()` 仅供测试重新解析变量。
+
+调用方必须保留 handle，直到读取结束：
+
+```cpp
+const auto powers = shared_ecm_b1_cache().get_or_compute(B1);
+for (uint64_t pe : *powers) {
+    point_multiply_in_place(Q, pe, n);
+}
 ```
 
-**Helper API** (`include/gnfs/cofactor/ecm_prime_cache.hpp`):
-- `compute_b1_prime_powers(B1)` — pure deterministic function, 返回升序素数
-  prime power 序列. B1=0/1 返回 empty; B1=20 返回 [16, 9, 5, 7, 11, 13, 17, 19]
-  (primes 2/3/5/7/11/13/17/19, 各自 max exp s.t. p^e ≤ 20). 不依赖 cache,
-  适用于一次性计算或 cache disabled 场景.
-- `EcmB1PrimeCache(capacity)` — mutex-protected insert-only map<B1, vector>.
-  `get_or_compute(B1)`: 命中返回 cached vector ref (lifetime 与 cache 一致);
-  未命中且未满 insert 后返回 ref; 未命中且满则计算后写入单 slot overflow buffer,
-  返回 overflow ref (下次满 miss 时被覆盖, reference invalidation 文档化).
-- `EcmB1PrimeCache::size() / capacity() / clear()` — 测试 / debug helper.
-  `clear()` 释放所有 cached vectors 并 invalidate 之前返回的所有 references.
-- `ecm_b1_cache_size()` — cached `std::once_flag` + `std::atomic<int>` ENV
-  reader, 解析 `GNFS_ECM_B1_CACHE_SIZE`. 0 = disabled.
-- `ecm_b1_cache_enabled()` — `ecm_b1_cache_size() > 0` 等价 predicate.
-- `shared_ecm_b1_cache()` — process-singleton 访问器 (function-local static,
-  与 W5 T5 `survival_stats()` / W12 T5 `cofactor_timing_stats()` 同 idiom).
-  容量在首次调用时由 `ecm_b1_cache_size()` 决定, 进程 lifetime 固定.
-- `ecm_b1_cache_reset_env_cache_for_testing()` — 测试专用 re-resolve ENV.
+不要保存 `*cache.get_or_compute(B1)` 所产生的引用，或在 C++20 的 range-for
+中直接解引用临时 handle。缓存未保存该结果时，临时 handle 销毁后引用会悬垂。
+已保存的 handle 可以跨越后续查询、`clear()`，甚至缓存对象的析构继续使用。
+缓存对象本身仍须在成员函数调用期间存活。
 
-**算法 (Eratosthenes 素数筛 + 最大 exponent loop)**:
-- `sieve_primes_up_to(B1)`: 标准 Eratosthenes 筛, O(B1 log log B1).
-  Hard cap B1 ≤ 100_000_000 防止 runaway allocation (典型 ECM B1 上限 ~1e7).
-- `prime_power_at_most(p, B1)`: `p^e = max k s.t. p^k ≤ B1`. 用安全 `acc > B1 / p`
-  检查避免 uint64_t 溢出.
+**并发与容量**：
 
-**ENV parsing 规则** (严格, std::stoi 风格):
-- unset / "" / "0" / 负数 / leading 非数字 ("garbage" / "abc123") → 0
-- leading 空白 (" 4" / "\t8") → 0 (主动 reject 与 W12 T1 linalg_progress 一致)
-- "1".."32" → as-is
-- "33"+ / "999999" → 32 (clamp)
-- "12abc" → 12 (std::stoi 接受前缀, 文档化但 caller 应传 clean 值)
+- 查询、计算和 `clear()` 使用同一个互斥锁，保持串行调度。
+  读取已获得的只读结果不依赖缓存锁。
+- 容量仅限制缓存持有的条目数，不限制调用方仍持有的结果数量或总内存。
+  最后一个所有者释放后，对应序列才被回收。
+- 容量为零时，每次查询都返回独立结果；缓存已满时也不再使用共享的溢出缓冲区。
+- 缓存命中不复制素数幂序列，但需要共享所有权的引用计数操作。
+  微测量只能描述 helper 的查询成本，不能证明生产分解的收益。
 
-**Bit-for-bit guarantee**: `compute_b1_prime_powers(B1)` 是 deterministic
-pure function of B1. 同一 B1 多次 call 输出 byte-identical. Cache hit 路径
-返回 ref 与 cache miss 路径返回 vector 在 element-wise 完全一致. 单元
-测试 `tests/test_ecm_prime_cache.cpp` 强制覆盖 (17 个 test, B1=0/1/2/3/10/
-20/100 prime count 与 literal sequence + cache hit/miss 行为 + thread safety
-4 thread × 100 lookup).
+**环境变量解析**：
 
-**ROI 与定位**:
-- 主要 ROI: 多条 ECM curve 共享 B1 时 amortise prime sieve + exponent loop.
-  perf-info 实测 B1=10000 hit ~10ns vs miss ~30-50µs (~3000-5000x), Eratosthenes
-  + per-prime exponent loop 是 measurable wall-time. 典型 ECM batch (10-100
-  curves, B1=1e6) 共享 cache 整体节省 ~10ms-1s.
-- helper 当前 standalone (主路径 `ECM::stage1` / `try_curve_with_pk` 未
-  wire-in), 是 future-infrastructure. wire-in 时调用方:
-  ```cpp
-  if (ecm_b1_cache_enabled()) {
-      const auto& powers = shared_ecm_b1_cache().get_or_compute(B1);
-      for (uint64_t pe : powers) {
-          point_multiply_in_place(Q, pe, n);
-      }
-  } else {
-      // 原 per-curve sieve + exp loop
-  }
-  ```
-- 与 W10 T3 `GNFS_ECM_SIGMA_POOL_SIZE` / W8 T1 `GNFS_ECM_STAGE2_PARALLEL` /
-  W9 T1 `GNFS_ECM_STAGE1_PARALLEL_THREADS` 完全 orthogonal — sigma pool 缓存
-  PRNG 输出, prime cache 缓存 prime power 列表, stage parallel 跑多 curve.
-  三者可同时启用.
+- 未设置、空串、零、负数或无法解析数字的输入返回 `0`。
+- 开头为空格、制表符、换行符或回车符的输入返回 `0`。
+- 十进制值 `1` 至 `32` 原样返回；更大值或整数转换溢出时返回 `32`。
+- 保留 `strtoull` 的数字前缀解析，例如 `12abc` 返回 `12`；调用方应使用完整整数。
 
-**Thread safety**:
-- `EcmB1PrimeCache::get_or_compute` 用内部 `std::mutex`, 多 thread 并发 lookup
-  serialise on mutex 但 hit 路径快 (hash lookup + ref return).
-- value 用 `std::unique_ptr<std::vector<uint64_t>>` 间接存储, 即使 underlying
-  `std::unordered_map` rehash 也保持 cached vector 地址稳定 (返回 ref 不失效).
-- `shared_ecm_b1_cache()` function-local static 保证 C++11 thread-safe 一次性
-  初始化, ODR-safe 跨 TU.
-- 4 thread × 100 lookup 强制测试通过.
-
-**Overflow 语义** (cache 满 + 新 B1 miss):
-- 设计选择: 不 insert (保持 capacity 严格约束), 但仍需返回 ref. 解决方案:
-  cache 持有单 slot `std::vector<uint64_t> overflow_`, 满时 miss 把计算结果
-  move 到 overflow 返回 ref. 下次满 miss 时 overflow 被覆盖, 之前返回的
-  overflow ref 失效 (文档化 hazard).
-- Cached entries (in-map) 的 ref 永远稳定到 `clear()` 调用为止.
-- 典型生产 caller 不会 hit overflow path (B1 working set ~4-8 个, capacity
-  4-32 充足); overflow 是 corner case 安全网而非主流路径.
-
-**集成点** (W13 T3, 2026-05-22):
-- `include/gnfs/cofactor/ecm_prime_cache.hpp` — 295 行 header-only helper,
-  pure compute + thread-safe cache + ENV gate + process singleton
-- `tests/test_ecm_prime_cache.cpp` — 17 个测试 (6 ENV 解析 / 5 compute
-  correctness 含 literal sequence / 6 cache 行为 + thread safety + perf info)
-- `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
-  cofactor 模块
-
-**Default OFF (N=0)**: ENV unset → `ecm_b1_cache_size() == 0` →
-`ecm_b1_cache_enabled() == false`. 调用方主路径完全不变, helper-only
-future-infra. 仅 caller 显式 wire-in + 用户 explicit
-`GNFS_ECM_B1_CACHE_SIZE=N>=1` 时启用.
+`tests/test_ecm_prime_cache.cpp` 使用 Release 中仍有效的检查，覆盖序列字面值、
+缓存命中与满载、容量零、并发查询、结果跨越清空及析构后的生命周期，以及异常恢复。
+测试注册和运行方式以 `CMakeLists.txt`、`scripts/test.sh list` 为准。
 
 ---
 
@@ -399,8 +342,10 @@ GNFS_COFACTOR_RESULT_CACHE_SIZE=9999999 ./gnfs <N> # clamp 到 1M
   命中: `splice` 到 list front (MRU promote), 返回 value-copy. 未命中:
   `std::nullopt`. Disabled cache 总是返回 nullopt.
 - `void put(cofactor, B, lp_bound, result)` — 存在 key 时更新 value + 提升
-  MRU. 新 key + 未满: `push_front` + insert. 新 key + 已满: evict
-  `list.back()` (LRU), 然后 `push_front`. Disabled cache 是 no-op.
+  MRU. 新 key 先以事务方式建立 `list` 节点和 `unordered_map` 索引；任一
+  分配失败都会回滚新节点并保留旧缓存。已满时仅在新索引成功后淘汰
+  `list.back()`（LRU），因此不会因插入异常丢失旧条目。Disabled cache 是
+  no-op.
 - `size() / capacity() / clear()` — 测试 / debug helper.
 - `cofactor_result_cache_size()` — cached `std::once_flag` + `std::size_t`
   ENV reader.
@@ -431,7 +376,8 @@ GNFS_COFACTOR_RESULT_CACHE_SIZE=9999999 ./gnfs <N> # clamp 到 1M
 
 **Bit-for-bit guarantee**: `put(K, V)` 后 `get(K)` 返回 V 的 byte-identical
 copy (`type`, `factor1`, `factor2`, `factor3`, `power` 字段). 单元测试
-`test_cofactor_result_cache` 19 个测试强制覆盖.
+`test_cofactor_result_cache` 覆盖 19 个基础场景，以及 256 次满容量淘汰后的
+索引一致性和 `clear()` 重用回归场景。
 
 **ROI 与定位**:
 - 主要 ROI: cofactor pipeline 重复查询时跳过整个 trial/SQUFOF/Brent/Pollard/
@@ -466,10 +412,11 @@ copy (`type`, `factor1`, `factor2`, `factor3`, `power` 字段). 单元测试
 **集成点** (W14 T3, 2026-05-23):
 - `include/gnfs/cofactor/result_cache.hpp` — 350+ 行 header-only, textbook
   LRU + 三字段 key + splitmix64 hash + ENV gate + process singleton
-- `tests/test_cofactor_result_cache.cpp` — 19 个测试 (9 ENV 解析 + capacity=0
+- `tests/test_cofactor_result_cache.cpp` — 20 个测试 (9 ENV 解析 + capacity=0
   disabled / put-get 5 种 CofactorClass / LRU eviction / LRU promotion /
   clear+reuse / 同 cofactor 不同 (B, lp) 独立 / 重复 put 更新+提升 /
-  accessor / shared singleton / 4 thread x 100 mixed / 16 key hash sweep)
+  accessor / 256 次满容量淘汰与 clear/reuse / shared singleton /
+  4 thread x 100 mixed / 16 key hash sweep)
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   cofactor 模块
 

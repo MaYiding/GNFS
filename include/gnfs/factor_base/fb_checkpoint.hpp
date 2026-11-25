@@ -222,10 +222,19 @@ struct FbCheckpoint {
         }
 
         out.seekp(0);
+        if (!out) {
+            throw std::runtime_error("FbCheckpoint::save: cannot seek to completion marker");
+        }
         magic = MAGIC;
         write_u64(out, magic);
         out.flush();
+        if (!out) {
+            throw std::runtime_error("FbCheckpoint::save: completion marker write failed");
+        }
         out.close();
+        if (!out) {
+            throw std::runtime_error("FbCheckpoint::save: close failed");
+        }
     }
 
     static FbCheckpoint load(const std::string& path, bool allow_incomplete = false) {
@@ -279,6 +288,10 @@ struct FbCheckpoint {
             if (!rational_keys.insert(rp.p).second) {
                 throw std::runtime_error("FbCheckpoint::load: duplicate rational-prime value");
             }
+            if (!ck.rational.empty() && rp.p < ck.rational.back().p) {
+                throw std::runtime_error(
+                    "FbCheckpoint::load: rational primes are not strictly increasing");
+            }
             ck.rational.push_back(rp);
         }
 
@@ -314,6 +327,10 @@ struct FbCheckpoint {
             const uint64_t key = (static_cast<uint64_t>(ap.p) << 32) | ap.r;
             if (!algebraic_keys.insert(key).second) {
                 throw std::runtime_error("FbCheckpoint::load: duplicate algebraic-prime key");
+            }
+            if (!ck.algebraic.empty() && ap.p < ck.algebraic.back().p) {
+                throw std::runtime_error(
+                    "FbCheckpoint::load: algebraic primes are not nondecreasing");
             }
             ck.algebraic.push_back(ap);
         }

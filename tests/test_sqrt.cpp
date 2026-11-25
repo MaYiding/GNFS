@@ -4,15 +4,20 @@
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/sqrt/couveignes.hpp>
+#include <gnfs/sqrt/hensel_sqrt.hpp>
 #include <gnfs/sqrt/modular_poly.hpp>
 #include <gnfs/sqrt/number_field.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace gnfs;
@@ -175,19 +180,25 @@ void test_rational_sqrt_uint64_b_portability() {
     const Integer m(1);
     const uint64_t b = uint64_t{1} << 34;
 
-    // |a - b*m| = 2^34 = 2^17 squared, with an even rational factor
-    // exponent so this is a valid one-row square-root dependency.
+    // Each factor is -2^34. Two selected copies make a positive square
+    // with even sign parity as well as even rational prime exponents.
     Relation relation(0, b);
     relation.rational_factors.assign(34, 0);
-    std::vector<Relation> relations = {relation};
-    BitVector dependency(1);
+    std::vector<Relation> relations = {relation, relation};
+    BitVector dependency(2);
     dependency.set(0);
+    dependency.set(1);
 
     const auto result = RationalSqrt{}.compute(dependency, relations, fb, n, m);
     GNFS_TEST_CHECK(result.success);
 
-    Integer expected = n - Integer(uint64_t{1} << 17);
+    const Integer expected = Integer(b) % n;
     GNFS_TEST_CHECK(result.value == expected);
+    GNFS_TEST_CHECK((result.value * result.value) % n == (Integer(b) * Integer(b)) % n);
+
+    // One selected factor has even prime exponents but negative sign parity.
+    dependency.clear(1);
+    GNFS_TEST_CHECK(!RationalSqrt{}.compute(dependency, relations, fb, n, m).success);
 
     std::cout << "  RationalSqrt preserved full-width b in sign/verify paths: PASSED" << std::endl;
 }
@@ -365,6 +376,70 @@ void test_rational_sqrt_simple() {
     std::cout << "  RationalSqrt (simple): PASSED" << std::endl;
 }
 
+void test_rational_sqrt_signed_product() {
+    std::cout << "Testing RationalSqrt signed products..." << std::endl;
+    FactorBase fb;
+    fb.add_rational(2, 1);
+    const Integer n(101);
+    const Integer m(5);
+
+    auto check = [&](const std::vector<Relation>& relations, const BitVector& dependency,
+                     bool expected_success) {
+        Integer product(1);
+        for (size_t i = 0; i < relations.size(); ++i) {
+            if (!dependency.test(i))
+                continue;
+            const auto& relation = relations[i];
+            product *= Integer(relation.a) - Integer(relation.b) * m;
+            for (const auto& [a, b] : relation.extra_ab_pairs)
+                product *= Integer(a) - Integer(b) * m;
+        }
+        GNFS_TEST_CHECK(product.is_negative() == !expected_success);
+        mpz_mod(product.get_mpz(), product.get_mpz(), n.get_mpz());
+        for (const bool verify : {true, false}) {
+            RationalSqrtConfig config;
+            config.verify = verify;
+            const auto result = RationalSqrt(config).compute(dependency, relations, fb, n, m);
+            GNFS_TEST_CHECK(result.success == expected_success);
+            if (expected_success) {
+                GNFS_TEST_CHECK((result.value * result.value) % n == product);
+            } else {
+                GNFS_TEST_CHECK(result.error.find("negative") != std::string::npos);
+            }
+        }
+    };
+    Relation positive(9, 1); // 9-5=4
+    positive.rational_factors = {0, 0};
+    Relation negative(1, 1); // 1-5=-4
+    negative.rational_factors = {0, 0};
+    BitVector single(1);
+    single.set(0);
+    check({positive}, single, true);
+    check({negative}, single, false);
+
+    BitVector both(2);
+    both.set(0);
+    both.set(1);
+    check({negative, negative}, both, true);
+    check({positive, negative}, both, false);
+
+    // Only selected rows contribute to the sign and the product.
+    BitVector first(2);
+    first.set(0);
+    check({positive, negative}, first, true);
+
+    Relation merged(9, 1);
+    merged.extra_ab_pairs = {{1, 1}};
+    merged.rational_factors = {0, 0, 0, 0};
+    check({merged}, single, false); // positive primary, negative constituent
+    merged.a = 1;
+    merged.extra_ab_pairs = {{9, 1}};
+    check({merged}, single, false); // negative primary, positive constituent
+    merged.extra_ab_pairs = {{1, 1}};
+    check({merged}, single, true); // two negatives in one merged relation
+    std::cout << "  RationalSqrt signed products: PASSED" << std::endl;
+}
+
 // Regression for RationalSqrt::compute_from_exponents on Windows LLP64.
 // mpz_powm_ui accepts unsigned long (32 bits there), while the public API
 // accepts uint64_t exponents.  Use a value whose half exponent exceeds 32 bits
@@ -430,6 +505,105 @@ void test_sqrt_dependency_dimension_guard() {
 }
 
 // Test factor extraction
+void test_hensel_prime_selection() {
+    std::cout << "Testing Hensel prime selection..." << std::endl;
+    auto check_square = [](const NumberField& nf,
+                           const std::vector<std::pair<int64_t, uint64_t>>& pairs,
+                           const HenselSqrt::Config& config) {
+        Integer product(1);
+        for (const auto& [a, b] : pairs) {
+            product *= Integer(a) - Integer(b) * nf.m();
+            mpz_mod(product.get_mpz(), product.get_mpz(), nf.n().get_mpz());
+        }
+        HenselSqrt solver(config);
+        const auto root = solver.compute(pairs, nf);
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK((*root * *root) % nf.n() == product);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+        return solver.last_inert_prime();
+    };
+    const NumberField nf(
+        PolynomialContext(Integer(407), {Integer(1), Integer(1), Integer(2)}, Integer(14)));
+    const std::vector<std::pair<int64_t, uint64_t>> square{{1, 1}, {1, 1}};
+
+    // Invalid hints include a ramified prime (7) and a prime at which f splits (1009).
+    const uint64_t u32_max = std::numeric_limits<uint32_t>::max();
+    const uint64_t u64_max = std::numeric_limits<uint64_t>::max();
+    for (const uint64_t cached : {uint64_t(1), uint64_t(2), uint64_t(4), uint64_t(7), uint64_t(9),
+                                  uint64_t(15), uint64_t(1009), u32_max, u32_max + 1, u64_max}) {
+        HenselSqrt::Config config;
+        config.cached_inert_prime = cached;
+        const uint64_t chosen = check_square(nf, square, config);
+        GNFS_TEST_CHECK(chosen > 2 && chosen <= u32_max);
+        GNFS_TEST_CHECK(chosen != cached);
+    }
+    HenselSqrt::Config valid_cache;
+    valid_cache.cached_inert_prime = 3;
+    GNFS_TEST_CHECK(check_square(nf, square, valid_cache) == 3);
+
+    // f remains irreducible modulo 2, but Newton lifting cannot invert 2*S there.
+    const NumberField monic(
+        PolynomialContext(Integer(91), {Integer(1), Integer(1), Integer(1)}, Integer(9)));
+    for (const uint64_t start : {uint64_t(0), uint64_t(1), uint64_t(2)}) {
+        HenselSqrt::Config config;
+        config.prime_start = start;
+        GNFS_TEST_CHECK(check_square(monic, square, config) > 2);
+        // The hybrid search must also exclude characteristic two.
+        check_square(monic, std::vector<std::pair<int64_t, uint64_t>>(100, {1, 1}), config);
+    }
+
+    // A valid inert prime can still divide this dependency's product.
+    HenselSqrt::Config vanishing_cache;
+    vanishing_cache.cached_inert_prime = 3;
+    GNFS_TEST_CHECK(check_square(nf, {{3, 0}, {3, 0}}, vanishing_cache) != 3);
+    GNFS_TEST_CHECK(check_square(nf, {{1013, 0}, {1013, 0}}, {}) > 1013);
+    // Two consecutive inert primes divide the factors; the third can recover them.
+    constexpr int64_t two_primes = 1013 * 1019;
+    GNFS_TEST_CHECK(check_square(monic, {{two_primes, 0}, {two_primes, 0}}, {}) > 1019);
+
+    // A zero relation is unusable at every prime and must exhaust a finite budget.
+    HenselSqrt zero_solver;
+    GNFS_TEST_CHECK(!zero_solver.compute({{0, 0}, {0, 0}}, nf).has_value());
+    GNFS_TEST_CHECK(zero_solver.last_inert_prime() == 0);
+    GNFS_TEST_CHECK(!zero_solver.was_crt_sign_exhausted());
+
+    // Preserve the uint32_t lifting limit and uint64_t next-prime overflow guard.
+    HenselSqrt::Config largest_prime;
+    largest_prime.prime_start = u32_max - 5;
+    GNFS_TEST_CHECK(check_square(nf, square, largest_prime) == u32_max - 4);
+    for (const uint64_t start : {u32_max, u32_max + 1, u64_max}) {
+        HenselSqrt::Config config;
+        config.prime_start = start;
+        config.cached_inert_prime = u64_max;
+        HenselSqrt solver(config);
+        GNFS_TEST_CHECK(!solver.compute(square, nf).has_value());
+        GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    }
+    std::cout << "  Hensel prime selection: PASSED" << std::endl;
+}
+
+void test_algebraic_sqrt_cached_prime_context() {
+    std::cout << "Testing algebraic square root cache across contexts..." << std::endl;
+    const PolynomialContext first(Integer(407), {Integer(1), Integer(1), Integer(2)}, Integer(14));
+    // The first context caches 1013. It divides the second polynomial's leading
+    // coefficient, so reusing it without validating this context throws.
+    const PolynomialContext second(Integer(4055), {Integer(1), Integer(1), Integer(1013)},
+                                   Integer(2));
+    const std::vector<Relation> relations{Relation(1, 1), Relation(1, 1)};
+    BitVector dependency(2);
+    dependency.set(0);
+    dependency.set(1);
+    AlgebraicSqrt solver;
+    const auto first_root = solver.compute(dependency, relations, first);
+    GNFS_TEST_CHECK(first_root.success);
+    GNFS_TEST_CHECK((first_root.value * first_root.value) % first.n() == Integer(169));
+    const auto second_root = solver.compute(dependency, relations, second);
+    GNFS_TEST_CHECK(second_root.success);
+    GNFS_TEST_CHECK((second_root.value * second_root.value) % second.n() == Integer(1));
+    std::cout << "  Algebraic square root cache across contexts: PASSED" << std::endl;
+}
+
 void test_factor_extraction() {
     std::cout << "Testing factor extraction..." << std::endl;
 
@@ -899,6 +1073,123 @@ void test_couveignes_gray_code_invariants() {
               << std::endl;
 }
 
+void test_couveignes_zero_element() {
+    std::cout << "Testing Couveignes zero element..." << std::endl;
+
+    // f(8) = 65, so evaluation is a valid map to Z/65Z.
+    PolynomialContext ctx(Integer(65), {Integer(1), Integer(0), Integer(1)}, Integer(8));
+    NumberField nf(ctx);
+    CouveignesSqrtConfig config;
+    config.num_primes = 4;
+    config.prime_start = 100;
+    config.max_prime_checks = 1000;
+    CouveignesSqrt solver(config);
+
+    // Populate metrics first, then require exact zero to reset the search state.
+    GNFS_TEST_CHECK(solver.compute_from_element(nf.one(), nf).has_value());
+    GNFS_TEST_CHECK(solver.last_metrics().primes_used > 0);
+    auto check_zero = [&](CouveignesSqrt& current, const NumberFieldElement& zero) {
+        const auto root = current.compute_from_element(zero, nf);
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK(root->is_zero());
+        const auto& metrics = current.last_metrics();
+        GNFS_TEST_CHECK(metrics.found_sqrt);
+        GNFS_TEST_CHECK(metrics.primes_checked == 0);
+        GNFS_TEST_CHECK(metrics.primes_used == 0);
+        GNFS_TEST_CHECK(metrics.sign_patterns_tried == 0);
+        GNFS_TEST_CHECK(metrics.full_verifications == 0);
+        GNFS_TEST_CHECK(metrics.character_primes_used == 0);
+        GNFS_TEST_CHECK(metrics.character_filter_rejects == 0);
+    };
+    check_zero(solver, nf.zero());
+    check_zero(solver, NumberFieldElement{});
+
+    // sqrt(0) needs no candidate primes, unlike a nonzero element.
+    config.max_prime_checks = 0;
+    CouveignesSqrt no_search(config);
+    check_zero(no_search, NumberFieldElement(Integer(0)));
+    GNFS_TEST_CHECK(!no_search.compute_from_element(nf.one(), nf).has_value());
+    GNFS_TEST_CHECK(!no_search.last_metrics().found_sqrt);
+
+    const auto public_result = AlgebraicSqrt{}.compute_from_product(nf.zero(), nf);
+    GNFS_TEST_CHECK(public_result.success);
+    GNFS_TEST_CHECK(public_result.value.is_zero());
+
+    // The generic element API does not relax the relation-input contract.
+    GNFS_TEST_CHECK(!solver.compute({}, nf).has_value());
+    GNFS_TEST_CHECK(!solver.compute({{0, 0}}, nf).has_value());
+    GNFS_TEST_CHECK(!solver.last_metrics().found_sqrt);
+    std::cout << "  Couveignes zero element: PASSED" << std::endl;
+}
+
+void test_algebraic_sqrt_nonunit_derivative() {
+    std::cout << "Testing algebraic sqrt with a nonunit derivative..." << std::endl;
+    const Integer n(15);
+    // With delta = alpha - 4, delta^2 = -15. The four distinct factors have
+    // product (-16)*(-64) = 1024 = 32^2, while their rational product is 49.
+    PolynomialContext ctx(n, {Integer(31), Integer(-8), Integer(1)}, Integer(4));
+    NumberField nf(ctx);
+    GNFS_TEST_CHECK((ctx.evaluate(ctx.m()) % n).is_zero());
+    GNFS_TEST_CHECK((Integer(2) * ctx.m() - Integer(8)).is_zero());
+    const std::vector<std::pair<int64_t, uint64_t>> pairs = {{5, 1}, {3, 1}, {11, 1}, {-3, 1}};
+    std::vector<Relation> relations;
+    BitVector dependency(pairs.size());
+    Integer product(1);
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        const auto [a, b] = pairs[i];
+        const Integer value = Integer(a) - Integer(b) * ctx.m();
+        Integer value_gcd;
+        mpz_gcd(value_gcd.get_mpz(), value.get_mpz(), n.get_mpz());
+        GNFS_TEST_CHECK(value_gcd.is_one());
+        product *= value;
+        relations.emplace_back(a, b);
+        relations.back().algebraic_factors.assign(i < 2 ? 4 : 6, 0);
+        dependency.set(i);
+    }
+    GNFS_TEST_CHECK(product == Integer(49));
+    GNFS_TEST_CHECK(verify_algebraic_ideal_powers(dependency, relations));
+    const auto direct = CouveignesSqrt{}.compute(pairs, nf, false);
+    GNFS_TEST_CHECK(direct.has_value());
+    const Integer direct_value = nf.evaluate_at_m_mod_n(*direct);
+    GNFS_TEST_CHECK((direct_value * direct_value) % n == product % n);
+
+    const auto result = AlgebraicSqrt{}.compute(dependency, relations, ctx);
+    GNFS_TEST_CHECK(result.success);
+    GNFS_TEST_CHECK((result.value * result.value) % n == product % n);
+
+    // A proper nonunit gcd is not a square root: f'(1) = 3, but the
+    // repeated relation has rational product 1, whereas 3^2 != 1 mod 15.
+    PolynomialContext proper_ctx(n, {Integer(13), Integer(1), Integer(1)}, Integer(1));
+    GNFS_TEST_CHECK((proper_ctx.evaluate(proper_ctx.m()) % n).is_zero());
+    Relation repeated(2, 1);
+    repeated.algebraic_factors = {0}; // Each norm is 19.
+    BitVector both(2);
+    both.set(0);
+    both.set(1);
+    const auto proper_result = AlgebraicSqrt{}.compute(both, {repeated, repeated}, proper_ctx);
+    GNFS_TEST_CHECK(proper_result.success);
+    GNFS_TEST_CHECK((proper_result.value * proper_result.value) % n == Integer(1));
+
+    // Constant 2 has a square root in every inert quadratic residue field,
+    // but none modulo 3, so final CRT verification must reject it modulo 15.
+    // Even norm exponents deliberately pass the ideal-parity precheck.
+    Relation nonsquare(2, 0);
+    nonsquare.algebraic_factors = {0, 0};
+    BitVector single(1);
+    single.set(0);
+    GNFS_TEST_CHECK(verify_algebraic_ideal_powers(single, {nonsquare}));
+    CouveignesSqrt direct_nonsquare;
+    GNFS_TEST_CHECK(!direct_nonsquare.compute({{2, 0}}, nf, false).has_value());
+    GNFS_TEST_CHECK(direct_nonsquare.last_metrics().full_verifications > 0);
+    for (const bool verify : {true, false}) {
+        AlgebraicSqrtConfig config;
+        config.verify = verify;
+        const auto rejected = AlgebraicSqrt(config).compute(single, {nonsquare}, ctx);
+        GNFS_TEST_CHECK(!rejected.success);
+    }
+    std::cout << "  Algebraic sqrt nonunit derivative: PASSED" << std::endl;
+}
+
 // Test: compute_from_element() still works correctly for normal num_primes
 void test_couveignes_compute_from_element_normal() {
     std::cout << "Testing Couveignes compute_from_element (normal case)..." << std::endl;
@@ -1035,6 +1326,538 @@ void test_sqrt_even_degree_extension() {
     std::cout << "  ALL even-degree sqrt tests PASSED" << std::endl;
 }
 
+namespace {
+
+using SmallPolynomial = std::vector<uint64_t>;
+
+// Independent dense arithmetic for the small monic fixtures below (p <= 5).
+// This oracle does not use ModularPoly multiplication, division, or powers.
+SmallPolynomial small_remainder(SmallPolynomial dividend, const SmallPolynomial& divisor,
+                                uint64_t p) {
+    GNFS_TEST_CHECK(!divisor.empty() && divisor.back() == 1);
+    while (!dividend.empty() && dividend.back() == 0) {
+        dividend.pop_back();
+    }
+    while (dividend.size() >= divisor.size()) {
+        const size_t offset = dividend.size() - divisor.size();
+        const uint64_t lead = dividend.back();
+        for (size_t index = 0; index < divisor.size(); ++index) {
+            auto& coefficient = dividend[offset + index];
+            coefficient = (coefficient + p - lead * divisor[index] % p) % p;
+        }
+        while (!dividend.empty() && dividend.back() == 0) {
+            dividend.pop_back();
+        }
+    }
+    return dividend;
+}
+
+SmallPolynomial small_product(const SmallPolynomial& left, const SmallPolynomial& right,
+                              const SmallPolynomial& modulus, uint64_t p) {
+    if (left.empty() || right.empty()) {
+        return {};
+    }
+    SmallPolynomial result(left.size() + right.size() - 1, 0);
+    for (size_t i = 0; i < left.size(); ++i) {
+        for (size_t j = 0; j < right.size(); ++j) {
+            result[i + j] = (result[i + j] + left[i] * right[j]) % p;
+        }
+    }
+    return small_remainder(std::move(result), modulus, p);
+}
+
+SmallPolynomial small_decode(uint64_t code, size_t degree, uint64_t p) {
+    SmallPolynomial coefficients(degree);
+    for (auto& coefficient : coefficients) {
+        coefficient = code % p;
+        code /= p;
+    }
+    return coefficients;
+}
+
+uint64_t small_encode(const SmallPolynomial& coefficients, uint64_t p) {
+    uint64_t code = 0;
+    for (auto it = coefficients.rbegin(); it != coefficients.rend(); ++it) {
+        GNFS_TEST_CHECK(*it < p);
+        code = code * p + *it;
+    }
+    return code;
+}
+
+bool small_is_irreducible(const SmallPolynomial& polynomial, uint64_t p) {
+    // Any proper factorization has a monic factor of degree <= d/2.
+    uint64_t count = 1;
+    for (size_t degree = 1; degree <= (polynomial.size() - 1) / 2; ++degree) {
+        count *= p;
+        for (uint64_t code = 0; code < count; ++code) {
+            auto divisor = small_decode(code, degree, p);
+            divisor.push_back(1);
+            if (small_remainder(polynomial, divisor, p).empty()) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+void test_sqrt_complete_extension_search() {
+    std::cout << "Testing complete extension-field square root search..." << std::endl;
+    struct Field {
+        uint64_t p;
+        SmallPolynomial modulus;
+    };
+    const std::vector<Field> fields{
+        {3, {1, 0, 0, 0, 2, 0, 1}}, // x^6 + 2*x^4 + 1
+        {3, {1, 0, 1}},             // x^2 + 1
+        {5, {2, 0, 1}},             // x^2 + 2
+        {3, {1, 2, 0, 1}},          // x^3 + 2*x + 1
+        {2, {1, 1, 0, 1}},          // x^3 + x + 1
+    };
+    for (const auto& field : fields) {
+        const size_t degree = field.modulus.size() - 1;
+        GNFS_TEST_CHECK(small_is_irreducible(field.modulus, field.p));
+        uint64_t count = 1;
+        for (size_t index = 0; index < degree; ++index) {
+            count *= field.p;
+        }
+
+        // Enumerating every square gives an oracle independent of Euler's
+        // criterion and the production non-square search.
+        std::vector<bool> squares(static_cast<size_t>(count), false);
+        for (uint64_t code = 0; code < count; ++code) {
+            const auto element = small_decode(code, degree, field.p);
+            const auto square = small_product(element, element, field.modulus, field.p);
+            squares[static_cast<size_t>(small_encode(square, field.p))] = true;
+        }
+        const auto expected_squares = field.p == 2 ? count : (count + 1) / 2;
+        GNFS_TEST_CHECK(static_cast<uint64_t>(std::count(squares.begin(), squares.end(), true)) ==
+                        expected_squares);
+
+        if (field.p == 3 && degree == 6) {
+            // All x+c candidates are squares, but x^2+x+2 is a non-square.
+            for (uint64_t constant = 0; constant < field.p; ++constant) {
+                GNFS_TEST_CHECK(squares[static_cast<size_t>(constant + field.p)]);
+            }
+            GNFS_TEST_CHECK(!squares[14]);
+            const auto known_square = small_product({0, 1}, {0, 1}, field.modulus, field.p);
+            GNFS_TEST_CHECK(known_square == SmallPolynomial({0, 0, 1}));
+            const auto root =
+                ModularPoly::sqrt_tonelli_shanks(ModularPoly(known_square), field.modulus, field.p);
+            GNFS_TEST_CHECK(!root.is_zero() && "sqrt(x^2) must find a root in F_(3^6)");
+        }
+
+        for (uint64_t code = 0; code < count; ++code) {
+            const ModularPoly element(small_decode(code, degree, field.p));
+            const bool expected = squares[static_cast<size_t>(code)];
+            GNFS_TEST_CHECK(ModularPoly::is_square(element, field.modulus, field.p) == expected);
+            const auto root = ModularPoly::sqrt_tonelli_shanks(element, field.modulus, field.p);
+            if (!expected) {
+                GNFS_TEST_CHECK(root.is_zero());
+                continue;
+            }
+            GNFS_TEST_CHECK(root.degree() < static_cast<int>(degree));
+            const auto square =
+                small_product(root.coefficients(), root.coefficients(), field.modulus, field.p);
+            GNFS_TEST_CHECK(small_encode(square, field.p) == code);
+        }
+        std::cout << "  F_(" << field.p << '^' << degree << "): " << count << " elements verified"
+                  << std::endl;
+    }
+}
+
+namespace {
+
+SmallPolynomial equivalent_representative(const SmallPolynomial& element,
+                                          const SmallPolynomial& modulus,
+                                          const SmallPolynomial& multiplier, uint64_t p) {
+    // Construct a+k*f with exact GMP arithmetic, including coefficients and
+    // products above UINT64_MAX. Only the final residues become uint64_t.
+    std::vector<Integer> coefficients(
+        std::max(element.size(), modulus.size() + multiplier.size() - 1));
+    for (size_t i = 0; i < element.size(); ++i) {
+        coefficients[i] = element[i];
+    }
+    for (size_t i = 0; i < modulus.size(); ++i) {
+        for (size_t j = 0; j < multiplier.size(); ++j) {
+            coefficients[i + j] += Integer(modulus[i]) * Integer(multiplier[j]);
+        }
+    }
+    const Integer prime(p);
+    SmallPolynomial result(coefficients.size());
+    for (size_t i = 0; i < coefficients.size(); ++i) {
+        mpz_fdiv_r(coefficients[i].get_mpz(), coefficients[i].get_mpz(), prime.get_mpz());
+        result[i] = coefficients[i].to_uint64();
+    }
+    return result;
+}
+
+} // namespace
+
+void test_modular_sqrt_quotient_representatives() {
+    std::cout << "Testing square roots of equivalent quotient representatives..." << std::endl;
+    struct PrimeCase {
+        uint64_t p;
+        uint64_t nonsquare;
+    };
+    const std::vector<PrimeCase> primes{
+        {UINT64_C(4294967311), 3}, {UINT64_C(18446744073709551557), 2}, {3, 2}, {2, 0}};
+    const std::vector<SmallPolynomial> multipliers{{1}, {0, 1}, {2, 1, 2}};
+    for (const auto& field : primes) {
+        const Integer prime(field.p);
+        GNFS_TEST_CHECK(mpz_probab_prime_p(prime.get_mpz(), 20) != 0);
+        const SmallPolynomial modulus{field.p - 1, 1}; // x-1: evaluate at x=1.
+        std::vector<uint64_t> classes{0, 1};
+        if (field.p != 2) {
+            const Integer nonsquare(field.nonsquare);
+            GNFS_TEST_CHECK(mpz_legendre(nonsquare.get_mpz(), prime.get_mpz()) == -1);
+            classes.push_back(4 % field.p);
+            classes.push_back(field.nonsquare);
+        }
+        for (uint64_t value : classes) {
+            const Integer expected_value(value);
+            const bool square = field.p == 2 || value == 0 ||
+                                mpz_legendre(expected_value.get_mpz(), prime.get_mpz()) == 1;
+            const ModularPoly canonical(value);
+            const auto canonical_root =
+                ModularPoly::sqrt_tonelli_shanks(canonical, modulus, field.p);
+            for (const auto& multiplier : multipliers) {
+                const auto coefficients =
+                    equivalent_representative({value}, modulus, multiplier, field.p);
+                Integer at_one;
+                for (uint64_t coefficient : coefficients) {
+                    at_one += Integer(coefficient);
+                }
+                mpz_fdiv_r(at_one.get_mpz(), at_one.get_mpz(), prime.get_mpz());
+                GNFS_TEST_CHECK(at_one.compare(expected_value) == 0);
+
+                const ModularPoly representative(coefficients);
+                GNFS_TEST_CHECK(ModularPoly::is_square(representative, modulus, field.p) == square);
+                const auto root =
+                    ModularPoly::sqrt_tonelli_shanks(representative, modulus, field.p);
+                GNFS_TEST_CHECK(root.coefficients() == canonical_root.coefficients());
+                GNFS_TEST_CHECK(root.degree() < 1);
+                if (square) {
+                    const Integer coefficient(root.coeff(0));
+                    Integer squared = coefficient * coefficient;
+                    mpz_fdiv_r(squared.get_mpz(), squared.get_mpz(), prime.get_mpz());
+                    GNFS_TEST_CHECK(squared.compare(expected_value) == 0);
+                } else {
+                    GNFS_TEST_CHECK(root.is_zero());
+                }
+            }
+        }
+    }
+
+    // Nonlinear quotient: square all nine elements independently using the
+    // small-field convolution oracle instead of production reduction/powers.
+    const SmallPolynomial modulus{1, 0, 1};
+    std::vector<bool> squares(9, false);
+    for (uint64_t code = 0; code < 9; ++code) {
+        const auto element = small_decode(code, 2, 3);
+        squares[static_cast<size_t>(small_encode(small_product(element, element, modulus, 3), 3))] =
+            true;
+    }
+    const std::vector<SmallPolynomial> classes{{}, {1}, {0, 2}, {1, 1}};
+    for (const auto& element : classes) {
+        const bool square = squares[static_cast<size_t>(small_encode(element, 3))];
+        const auto canonical_root =
+            ModularPoly::sqrt_tonelli_shanks(ModularPoly(element), modulus, 3);
+        for (const auto& multiplier : multipliers) {
+            const auto coefficients = equivalent_representative(element, modulus, multiplier, 3);
+            GNFS_TEST_CHECK(small_remainder(coefficients, modulus, 3) == element);
+            const ModularPoly representative(coefficients);
+            GNFS_TEST_CHECK(ModularPoly::is_square(representative, modulus, 3) == square);
+            const auto root = ModularPoly::sqrt_tonelli_shanks(representative, modulus, 3);
+            GNFS_TEST_CHECK(root.coefficients() == canonical_root.coefficients());
+            if (square) {
+                GNFS_TEST_CHECK(
+                    small_product(root.coefficients(), root.coefficients(), modulus, 3) == element);
+            } else {
+                GNFS_TEST_CHECK(root.is_zero());
+            }
+        }
+    }
+    std::cout << "  Quotient representative invariance: PASSED" << std::endl;
+}
+
+void test_hensel_linear_product() {
+    std::cout << "Testing Hensel products in degree-one fields..." << std::endl;
+    const Integer n(55);
+    for (const int64_t sign : {int64_t(1), int64_t(-1)}) {
+        const NumberField nf(PolynomialContext(n, {Integer(sign), Integer(3 * sign)}, Integer(18)));
+        auto check_square = [&](size_t count, uint64_t b) {
+            const std::vector<std::pair<int64_t, uint64_t>> pairs(count, {1, b});
+            const Integer factor = Integer(1) - Integer(b) * nf.m();
+            Integer expected_product(1);
+            for (size_t i = 0; i < count; ++i) {
+                expected_product *= factor;
+                mpz_mod(expected_product.get_mpz(), expected_product.get_mpz(), n.get_mpz());
+            }
+            HenselSqrt solver;
+            const auto root = solver.compute(pairs, nf);
+            GNFS_TEST_CHECK(root.has_value());
+            GNFS_TEST_CHECK((*root * *root) % n == expected_product);
+            GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+        };
+        // alpha=-1/3, so beta*f'(alpha)=+/-4 has integral coefficients.
+        check_square(2, 1);
+        // (1-3*alpha)=2, giving integral beta*f'(alpha)=+/-3*2^50.
+        // One hundred relations also exercise the multi-prime CRT path.
+        check_square(100, 3);
+    }
+    std::cout << "  Hensel products in degree-one fields: PASSED" << std::endl;
+}
+
+void test_hensel_wide_precision() {
+    std::cout << "Testing Hensel recovery with wide coefficients..." << std::endl;
+    const Integer n(10403); // 101 * 103
+    auto check_square = [&](const NumberField& nf,
+                            const std::vector<std::pair<int64_t, uint64_t>>& pairs) {
+        Integer derivative = nf.coeff(2) * nf.m();
+        derivative *= int64_t(2);
+        derivative += nf.coeff(1);
+        Integer derivative_gcd;
+        mpz_gcd(derivative_gcd.get_mpz(), derivative.get_mpz(), n.get_mpz());
+        GNFS_TEST_CHECK(derivative_gcd == Integer(1));
+
+        Integer expected_product(1);
+        for (const auto& [a, b] : pairs) {
+            const Integer factor = Integer(a) - Integer(b) * nf.m();
+            expected_product *= factor;
+            mpz_mod(expected_product.get_mpz(), expected_product.get_mpz(), n.get_mpz());
+        }
+        HenselSqrt solver;
+        const auto root = solver.compute(pairs, nf);
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK((*root * *root) % n == expected_product);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    };
+
+    for (const unsigned long bits : {64UL, 512UL, 2048UL, 8192UL}) {
+        Integer magnitude(1);
+        mpz_mul_2exp(magnitude.get_mpz(), magnitude.get_mpz(), bits);
+        magnitude += int64_t(1);
+        for (const int sign : {1, -1}) {
+            Integer leading = magnitude;
+            if (sign < 0)
+                leading.negate();
+            Integer constant = n - Integer(2);
+            mpz_submul_ui(constant.get_mpz(), leading.get_mpz(), 4);
+            // f(2) = N. For beta = a-b*alpha, beta*f'(alpha) has integral
+            // coefficients even though f is non-monic.
+            const NumberField nf(PolynomialContext(n, {constant, Integer(1), leading}, Integer(2)));
+            check_square(nf, {{1, 1}, {1, 1}});
+            check_square(nf, {{0, 1}, {0, 1}});
+            check_square(nf, {{2, 0}, {2, 0}});
+            // Trigger the multi-prime CRT path with an integral constant beta.
+            check_square(nf, std::vector<std::pair<int64_t, uint64_t>>(120, {2, 0}));
+        }
+    }
+
+    // A monic polynomial whose evaluation point and constant coefficient
+    // cannot be converted to finite doubles still needs finite precision.
+    Integer m(1);
+    mpz_mul_2exp(m.get_mpz(), m.get_mpz(), 1200);
+    const Integer constant = n - m * m - m;
+    const NumberField nf(PolynomialContext(n, {constant, Integer(1), Integer(1)}, m));
+    check_square(nf, {{1, 1}, {1, 1}});
+    check_square(nf, {{0, 1}, {0, 1}});
+    check_square(nf, {{2, 0}, {2, 0}});
+    std::cout << "  Hensel recovery with wide coefficients: PASSED" << std::endl;
+}
+
+void test_hensel_denominator_recovery() {
+    std::cout << "Testing Hensel recovery with rational coefficients..." << std::endl;
+    auto check_repeated_square = [](const NumberField& nf, std::pair<int64_t, uint64_t> relation,
+                                    size_t count, bool append_unit, int64_t expected_root_value) {
+        GNFS_TEST_CHECK(count % 2 == 0);
+        const Integer& n = nf.n();
+        Integer polynomial_value(0);
+        Integer derivative_value(0);
+        for (uint32_t i = nf.degree(); i > 0; --i) {
+            polynomial_value = polynomial_value * nf.m() + nf.coeff(i);
+            derivative_value *= nf.m();
+            mpz_addmul_ui(derivative_value.get_mpz(), nf.coeff(i).get_mpz(), i);
+        }
+        polynomial_value = polynomial_value * nf.m() + nf.coeff(0);
+        GNFS_TEST_CHECK((polynomial_value % n).is_zero());
+        Integer gcd;
+        mpz_gcd(gcd.get_mpz(), derivative_value.get_mpz(), n.get_mpz());
+        GNFS_TEST_CHECK(gcd == Integer(1));
+
+        const auto [a, b] = relation;
+        const Integer factor = Integer(a) - Integer(b) * nf.m();
+        mpz_gcd(gcd.get_mpz(), factor.get_mpz(), n.get_mpz());
+        GNFS_TEST_CHECK(gcd == Integer(1));
+        Integer expected_root(1);
+        for (size_t i = 0; i < count / 2; ++i) {
+            expected_root *= factor;
+            mpz_mod(expected_root.get_mpz(), expected_root.get_mpz(), n.get_mpz());
+        }
+        GNFS_TEST_CHECK(expected_root == Integer(expected_root_value));
+
+        std::vector<std::pair<int64_t, uint64_t>> pairs(count, relation);
+        if (append_unit)
+            pairs.emplace_back(1, 0);
+        Integer expected_product(1);
+        for (const auto& [pair_a, pair_b] : pairs) {
+            expected_product *= Integer(pair_a) - Integer(pair_b) * nf.m();
+            mpz_mod(expected_product.get_mpz(), expected_product.get_mpz(), n.get_mpz());
+        }
+        GNFS_TEST_CHECK((expected_root * expected_root) % n == expected_product);
+        HenselSqrt solver;
+        const auto root = solver.compute(pairs, nf);
+        if (!root) {
+            std::cerr << "Hensel fixture failed: degree=" << nf.degree()
+                      << " leading=" << nf.coeff(nf.degree()).to_string() << " n=" << n.to_string()
+                      << " relations=" << pairs.size() << '\n';
+        }
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK((*root * *root) % n == expected_product);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    };
+
+    // For f=2*x^2+x+1 and beta=(1-alpha)^2, beta*f'(alpha)
+    // has coefficients (11/2, 9/2), so integral reconstruction alone fails.
+    const Integer n(407); // 11 * 37
+    const NumberField quadratic(
+        PolynomialContext(n, {Integer(1), Integer(1), Integer(2)}, Integer(14)));
+    for (const bool append_unit : {false, true}) {
+        check_repeated_square(quadratic, {1, 1}, 4, append_unit, 169);
+        // One hundred relations select CRT; an extra unit makes the count odd.
+        check_repeated_square(quadratic, {1, 1}, 100, append_unit, 210);
+    }
+
+    // The extra factor 2-10*alpha=[2*(1-alpha)]^2 makes the number of
+    // nonconstant factors odd as well, with root 2*(1-alpha)^(count/2+1).
+    for (const size_t count : {size_t(4), size_t(100)}) {
+        std::vector<std::pair<int64_t, uint64_t>> pairs(count, {1, 1});
+        pairs.emplace_back(2, 10);
+        Integer expected_root(2);
+        for (size_t i = 0; i < count / 2 + 1; ++i) {
+            expected_root *= int64_t(-13);
+            mpz_mod(expected_root.get_mpz(), expected_root.get_mpz(), n.get_mpz());
+        }
+        Integer expected_product(1);
+        for (const auto& [a, b] : pairs) {
+            expected_product *= Integer(a) - Integer(b) * quadratic.m();
+            mpz_mod(expected_product.get_mpz(), expected_product.get_mpz(), n.get_mpz());
+        }
+        GNFS_TEST_CHECK((expected_root * expected_root) % n == expected_product);
+        HenselSqrt solver;
+        const auto root = solver.compute(pairs, quadratic);
+        GNFS_TEST_CHECK(root.has_value());
+        GNFS_TEST_CHECK((*root * *root) % n == expected_product);
+        GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    }
+
+    // Negating the entire defining polynomial preserves the number field.
+    const NumberField negative(
+        PolynomialContext(n, {Integer(-1), Integer(-1), Integer(-2)}, Integer(14)));
+    check_repeated_square(negative, {1, 1}, 4, false, 169);
+    check_repeated_square(negative, {1, 1}, 100, false, 210);
+
+    // Degree one needs no denominator for two relations, but needs one for four.
+    const NumberField linear(PolynomialContext(Integer(55), {Integer(1), Integer(3)}, Integer(18)));
+    check_repeated_square(linear, {2, 0}, 4, false, 4);
+    check_repeated_square(linear, {1, 1}, 2, false, 38);
+    check_repeated_square(linear, {1, 1}, 4, false, 14);
+
+    // Here beta=(1-alpha)^4 gives beta*f'(alpha)=(21/2,-23/2,7).
+    const NumberField cubic(PolynomialContext(
+        Integer(133), {Integer(1), Integer(1), Integer(0), Integer(2)}, Integer(4)));
+    check_repeated_square(cubic, {1, 1}, 8, false, 81);
+    check_repeated_square(cubic, {1, 1}, 8, true, 81);
+
+    Integer magnitude(1);
+    mpz_mul_2exp(magnitude.get_mpz(), magnitude.get_mpz(), 64);
+    magnitude += int64_t(1);
+    for (const int sign : {1, -1}) {
+        Integer leading = magnitude;
+        if (sign < 0)
+            leading.negate();
+        Integer constant = n - Integer(14);
+        mpz_submul_ui(constant.get_mpz(), leading.get_mpz(), 196);
+        const NumberField wide(PolynomialContext(n, {constant, Integer(1), leading}, Integer(14)));
+        check_repeated_square(wide, {1, 1}, 4, false, 169);
+    }
+
+    // A nonunit leading coefficient must retain the unscaled recovery path
+    // when beta*f'(alpha) already has integral coefficients.
+    const NumberField nonunit(
+        PolynomialContext(Integer(15), {Integer(1), Integer(1), Integer(3)}, Integer(2)));
+    check_repeated_square(nonunit, {2, 0}, 4, false, 4);
+    check_repeated_square(nonunit, {1, 1}, 2, false, 14);
+    check_repeated_square(nonunit, {1, 1}, 100, false, 1);
+    std::cout << "  Hensel recovery with rational coefficients: PASSED" << std::endl;
+}
+
+void test_hensel_recovery_failure_contract() {
+    std::cout << "Testing Hensel recovery failure contract..." << std::endl;
+    const std::vector<Integer> coefficients{Integer(1), Integer(1), Integer(2)};
+    const NumberField nf(PolynomialContext(Integer(407), coefficients, Integer(14)));
+    HenselSqrt solver;
+    GNFS_TEST_CHECK(solver.compute({{1, 1}, {1, 1}}, nf).has_value());
+    GNFS_TEST_CHECK(solver.last_inert_prime() != 0);
+
+    // f'(12)=49 shares the factor 7 with N=301. A gcd is not a square root.
+    const NumberField nonunit_derivative(
+        PolynomialContext(Integer(301), coefficients, Integer(12)));
+    const auto rejected = solver.compute({{1, 1}, {1, 1}, {1, 1}, {1, 1}}, nonunit_derivative);
+    GNFS_TEST_CHECK(!rejected.has_value());
+    GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+
+    GNFS_TEST_CHECK(solver.compute({{1, 1}, {1, 1}}, nf).has_value());
+    GNFS_TEST_CHECK(solver.last_inert_prime() != 0);
+    const auto empty_root = solver.compute({}, nf);
+    GNFS_TEST_CHECK(empty_root.has_value());
+    GNFS_TEST_CHECK(*empty_root == Integer(1));
+    GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+
+    // Rational 2 is a square in every inert F_p^2, but not modulo 37.
+    // All CRT sign combinations must fail, setting the exhaustion flag.
+    std::vector<std::pair<int64_t, uint64_t>> invalid_crt_pairs(100, {1, 0});
+    invalid_crt_pairs.back() = {2, 0};
+    GNFS_TEST_CHECK(!solver.compute(invalid_crt_pairs, nf).has_value());
+    GNFS_TEST_CHECK(solver.was_crt_sign_exhausted());
+    GNFS_TEST_CHECK(!solver.compute({{1, 1}, {1, 1}}, nonunit_derivative).has_value());
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+
+    GNFS_TEST_CHECK(!solver.compute(invalid_crt_pairs, nf).has_value());
+    GNFS_TEST_CHECK(solver.was_crt_sign_exhausted());
+    const auto empty_after_crt = solver.compute({}, nf);
+    GNFS_TEST_CHECK(empty_after_crt.has_value());
+    GNFS_TEST_CHECK(*empty_after_crt == Integer(1));
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    GNFS_TEST_CHECK(solver.last_inert_prime() == 0);
+
+    // Norm(1-alpha)=2 is not a rational square. Its image 394 mod 407
+    // is also a nonsquare modulo 37, so no valid modular root may be returned.
+    HenselSqrt::Config config;
+    config.cached_inert_prime = 3;
+    HenselSqrt nonsquare_solver(config);
+    const auto nonsquare = nonsquare_solver.compute({{1, 1}}, nf);
+    GNFS_TEST_CHECK(!nonsquare.has_value());
+    GNFS_TEST_CHECK(!nonsquare_solver.was_crt_sign_exhausted());
+
+    // An unscaled nonunit-leading fallback cannot prove integral recovery.
+    // Here the product is 2 mod 15, so no method may accept a root or expose
+    // its CRT exhaustion as a supported-domain failure.
+    const NumberField nonunit_leading(
+        PolynomialContext(Integer(15), {Integer(1), Integer(1), Integer(3)}, Integer(2)));
+    auto invalid_nonunit_pairs = invalid_crt_pairs;
+    invalid_nonunit_pairs[0] = {1, 1};
+    invalid_nonunit_pairs[1] = {1, 1};
+    GNFS_TEST_CHECK(!solver.compute(invalid_nonunit_pairs, nonunit_leading).has_value());
+    GNFS_TEST_CHECK(!solver.was_crt_sign_exhausted());
+    std::cout << "  Hensel recovery failure contract: PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "=== Square Root Tests ===" << std::endl;
     std::cout << std::endl;
@@ -1049,8 +1872,11 @@ int main() {
     test_rational_sqrt_uint64_b_portability();
     test_evaluate_at_m();
     test_rational_sqrt_simple();
+    test_rational_sqrt_signed_product();
     test_rational_sqrt_large_exponent_portability();
     test_sqrt_dependency_dimension_guard();
+    test_hensel_prime_selection();
+    test_algebraic_sqrt_cached_prime_context();
     test_factor_extraction();
     test_norm_linear();
     test_is_irreducible();
@@ -1060,9 +1886,17 @@ int main() {
     test_non_monic_number_field_multiply_contract();
     test_characteristic_2_sqrt();
     test_sqrt_even_degree_extension();
+    test_sqrt_complete_extension_search();
+    test_modular_sqrt_quotient_representatives();
     test_couveignes_compute_from_element_terminates();
     test_couveignes_compute_from_element_normal();
+    test_couveignes_zero_element();
+    test_algebraic_sqrt_nonunit_derivative();
     test_couveignes_gray_code_invariants();
+    test_hensel_linear_product();
+    test_hensel_wide_precision();
+    test_hensel_denominator_recovery();
+    test_hensel_recovery_failure_contract();
 
     std::cout << std::endl;
     std::cout << "=== All Square Root Tests PASSED ===" << std::endl;

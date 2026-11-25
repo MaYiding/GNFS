@@ -159,6 +159,9 @@ enum class S {
     HELP_OPT_METHOD,  // --method CLI help
     REPL_HELP_METHOD, // REPL method help
 
+    ERR_WRITE_FILE,
+    ERR_WRITE_STDOUT,
+
     _COUNT // sentinel
 };
 
@@ -331,6 +334,11 @@ inline const Entry& get(S key) {
          "  --method METHOD     Factorization method (auto/trial/rho/siqs/gnfs)"},
         {"  method <\xe6\x96\xb9\xe6\xb3\x95>  \xe8\xae\xbe\xe7\xbd\xae\xe5\x88\x86\xe8\xa7\xa3\xe6\x96\xb9\xe6\xb3\x95 (auto/trial/rho/siqs/gnfs)",
          "  method <m>      Set method (auto/trial/rho/siqs/gnfs)"},
+
+        {"\xe6\x97\xa0\xe6\xb3\x95\xe5\x86\x99\xe5\x85\xa5\xe8\xbe\x93\xe5\x87\xba\xe6\x96\x87\xe4\xbb\xb6:",
+         "Cannot write output file:"},
+        {"\xe6\x97\xa0\xe6\xb3\x95\xe5\x86\x99\xe5\x85\xa5\xe6\xa0\x87\xe5\x87\x86\xe8\xbe\x93\xe5\x87\xba\xe3\x80\x82",
+         "Cannot write to standard output."},
     };
     static_assert(sizeof(table) / sizeof(table[0]) == static_cast<size_t>(S::_COUNT),
                   "i18n string table size mismatch");

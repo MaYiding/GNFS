@@ -52,6 +52,10 @@ result or error (exactly one terminal event)
 Argument, configuration, and input validation can fail before execution starts.
 Those failures emit one `error` event without a preceding `started` event.
 
+If standard output reports a write or flush error, the command exits
+unsuccessfully and writes a diagnostic to standard error. A truncated stream
+can end with an incomplete line or a missing terminal event.
+
 The CLI serializes callback writes so concurrent progress and log callbacks never
 interleave bytes from separate events. The sequence does not promise a fixed
 number of progress events or a fixed ratio between progress and log events.

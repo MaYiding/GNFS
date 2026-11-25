@@ -198,6 +198,31 @@ class BlockWiedemann {
 public:
     BlockWiedemann() = default;
 
+    /// Maximum number of deterministic seeded attempts accepted by the
+    /// resource-aware view boundary.  Keeping this finite prevents a caller
+    /// supplied retry count from turning a bounded solve into an open-ended
+    /// workload.
+    static constexpr uint32_t kMaxSeededRetryCount = 32;
+    /// Hard upper bound for an explicitly requested seeded worker pool. Zero
+    /// remains the platform default for compatibility; resource-aware callers
+    /// should resolve it before admission and pass the resulting value.
+    static constexpr uint32_t kMaxSeededPoolThreads = 256;
+
+    /// Explicit runtime policy for the resource-aware seeded view boundary.
+    /// Every field is a value, rather than an environment lookup: callers can
+    /// therefore make the worker count and optional storage/accelerator paths
+    /// part of their admission proof.  `use_krylov_compression` requires
+    /// `use_krylov_mmap`.
+    struct SeededPolicy {
+        uint32_t pool_threads = 0;
+        bool use_krylov_mmap = false;
+        bool use_krylov_compression = false;
+        bool allow_metal = false;
+
+        [[nodiscard]] friend constexpr bool operator==(const SeededPolicy&,
+                                                       const SeededPolicy&) = default;
+    };
+
     /// Find dependencies (left null space vectors) in the matrix.
     /// Same API as BlockLanczos::find_dependencies for drop-in replacement.
     /// Returns vectors v such that v^T * M = 0 over GF(2).
@@ -238,6 +263,39 @@ public:
                                                           size_t max_deps = 64);
     std::vector<std::vector<bool>> find_dependencies_view(const MmapCSRMatrix& matrix,
                                                           size_t max_deps = 64);
+
+    /// Seeded, single-stream view boundary for callers that need reproducible
+    /// retry policy.  `seed` is the first deterministic base seed and
+    /// `retry_count` is the total number of attempts (not an unbounded loop).
+    /// `pool_threads == 0` preserves the normal ThreadPool hardware-concurrency
+    /// default; resource-aware callers should pass an explicit bounded value.
+    /// Unlike the environment-driven dispatcher above, this entry point never
+    /// consults GNFS_BW_KRYLOV_STREAMS and only uses the supplied seed stride.
+    /// Results are an independent subset of the verified candidates; retries
+    /// continue until that basis reaches `max_deps` or the finite attempt
+    /// budget is exhausted.
+    /// It accepts an owning CSR view so callers can build storage directly from
+    /// their canonical rows without a SparseMatrix copy.
+    std::vector<std::vector<bool>> find_dependencies_view_seeded(const CSRMatrix& matrix,
+                                                                 size_t max_deps, uint64_t seed,
+                                                                 uint32_t retry_count,
+                                                                 uint32_t pool_threads = 0);
+    std::vector<std::vector<bool>> find_dependencies_view_seeded(const MmapCSRMatrix& matrix,
+                                                                 size_t max_deps, uint64_t seed,
+                                                                 uint32_t retry_count,
+                                                                 uint32_t pool_threads = 0);
+
+    /// Fully explicit seeded boundary.  This overload never reads
+    /// GNFS_BW_KRYLOV_STREAMS, GNFS_BW_KRYLOV_MMAP, GNFS_BW_KRYLOV_COMPRESS, or
+    /// GNFS_METAL_SPMV.  Optional paths are selected solely by `policy`.
+    std::vector<std::vector<bool>> find_dependencies_view_seeded(const CSRMatrix& matrix,
+                                                                 size_t max_deps, uint64_t seed,
+                                                                 uint32_t retry_count,
+                                                                 const SeededPolicy& policy);
+    std::vector<std::vector<bool>> find_dependencies_view_seeded(const MmapCSRMatrix& matrix,
+                                                                 size_t max_deps, uint64_t seed,
+                                                                 uint32_t retry_count,
+                                                                 const SeededPolicy& policy);
 
     /// Coppersmith's Block Berlekamp-Massey algorithm (public for unit testing).
     /// Input: sequence of L matrices A_0, A_1, ..., A_{L-1} (each 64×64 over GF(2))
@@ -312,5 +370,7 @@ private:
                                                             const BlockVector& Y_initial,
                                                             size_t max_deps);
 };
+
+using BlockWiedemannSeededPolicy = BlockWiedemann::SeededPolicy;
 
 } // namespace gnfs::linalg

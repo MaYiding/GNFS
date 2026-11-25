@@ -12,6 +12,8 @@
 //   * Different (B, lp) under same cofactor = independent cache slots
 //   * Repeated put on same key updates value + promotes MRU
 //   * size() and capacity() accessors
+//   * Repeated full-cache evictions preserve consistency, then clear/reuse
+//   * Allocation failures preserve entries, values, and LRU order
 //   * shared_cofactor_result_cache singleton: multiple calls return same
 //     instance (address comparison)
 //   * Thread safety: 4 threads × 100 mixed get/put, no crash, no data
@@ -26,16 +28,86 @@
 #endif
 
 #include "gnfs/cofactor/result_cache.hpp"
+#include "support/test_check.hpp"
 
 #include <atomic>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <new>
 #include <random>
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace {
+
+// Arm only around single-threaded put() calls. A failed allocation disables
+// the probe before throwing, so unwinding and test expectations can allocate.
+thread_local bool allocation_probe_enabled = false;
+thread_local bool allocation_failure_triggered = false;
+thread_local size_t allocation_count = 0;
+thread_local size_t failing_allocation = std::numeric_limits<size_t>::max();
+
+void* allocate_for_cache_test(size_t size) {
+    if (allocation_probe_enabled && allocation_count++ == failing_allocation) {
+        allocation_probe_enabled = false;
+        allocation_failure_triggered = true;
+        throw std::bad_alloc{};
+    }
+    if (void* pointer = std::malloc(size == 0 ? 1 : size))
+        return pointer;
+    throw std::bad_alloc{};
+}
+
+class ScopedAllocationProbe {
+public:
+    explicit ScopedAllocationProbe(size_t ordinal = std::numeric_limits<size_t>::max()) noexcept {
+        allocation_count = 0;
+        allocation_failure_triggered = false;
+        failing_allocation = ordinal;
+        allocation_probe_enabled = true;
+    }
+    ~ScopedAllocationProbe() {
+        allocation_probe_enabled = false;
+    }
+    ScopedAllocationProbe(const ScopedAllocationProbe&) = delete;
+    ScopedAllocationProbe& operator=(const ScopedAllocationProbe&) = delete;
+};
+
+} // namespace
+
+// Preserve the replacement symbols under Release LTO. No allocator or test
+// seam is added to the production cache.
+#if defined(__GNUC__) || defined(__clang__)
+#define GNFS_TEST_ALLOCATION_REPLACEMENT __attribute__((used))
+#else
+#define GNFS_TEST_ALLOCATION_REPLACEMENT
+#endif
+
+GNFS_TEST_ALLOCATION_REPLACEMENT void* operator new(size_t size) {
+    return allocate_for_cache_test(size);
+}
+GNFS_TEST_ALLOCATION_REPLACEMENT void* operator new[](size_t size) {
+    return allocate_for_cache_test(size);
+}
+GNFS_TEST_ALLOCATION_REPLACEMENT void operator delete(void* pointer) noexcept {
+    std::free(pointer);
+}
+GNFS_TEST_ALLOCATION_REPLACEMENT void operator delete[](void* pointer) noexcept {
+    std::free(pointer);
+}
+GNFS_TEST_ALLOCATION_REPLACEMENT void operator delete(void* pointer, size_t) noexcept {
+    std::free(pointer);
+}
+GNFS_TEST_ALLOCATION_REPLACEMENT void operator delete[](void* pointer, size_t) noexcept {
+    std::free(pointer);
+}
+
+#undef GNFS_TEST_ALLOCATION_REPLACEMENT
 
 using namespace gnfs::cofactor;
 
@@ -57,6 +129,106 @@ static bool classifications_equal(const CofactorClassification& a,
     return a.type == b.type && a.factor1 == b.factor1 && a.factor2 == b.factor2 &&
            a.factor3 == b.factor3 && a.power == b.power;
 }
+
+namespace {
+
+CofactorClassification allocation_test_value(uint64_t key) {
+    return make_classification(CofactorClass::ThreeLP, key, key + 10, key + 20,
+                               static_cast<uint8_t>(key + 1));
+}
+
+void seed_allocation_test_cache(CofactorResultCache& cache, size_t initial_size) {
+    for (size_t key = 1; key <= initial_size; ++key)
+        cache.put(key, 100, 1000, allocation_test_value(key));
+}
+
+void check_cached_allocation_test_value(CofactorResultCache& cache, uint64_t key) {
+    const auto value = cache.get(key, 100, 1000);
+    GNFS_TEST_CHECK(value.has_value());
+    GNFS_TEST_CHECK(classifications_equal(*value, allocation_test_value(key)));
+}
+
+void check_allocation_insertion_failure(size_t initial_size, size_t ordinal, bool check_order) {
+    CofactorResultCache cache(2);
+    seed_allocation_test_cache(cache, initial_size);
+    const auto new_value = allocation_test_value(3);
+    bool threw = false;
+    {
+        ScopedAllocationProbe probe(ordinal);
+        try {
+            cache.put(3, 100, 1000, new_value);
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+    }
+    GNFS_TEST_CHECK(threw && allocation_failure_triggered);
+    GNFS_TEST_CHECK(cache.size() == initial_size);
+    GNFS_TEST_CHECK(!cache.get(3, 100, 1000).has_value());
+
+    if (check_order) {
+        // Do not read existing keys before this insertion: get() promotes
+        // them and could conceal a failure that incorrectly changed LRU order.
+        // With two old entries, inserting 3 must evict 1 and preserve 2.
+        const uint64_t last_key = 5 - initial_size;
+        for (uint64_t key = 3; key <= last_key; ++key)
+            cache.put(key, 100, 1000, allocation_test_value(key));
+        GNFS_TEST_CHECK(cache.size() == 2);
+        for (uint64_t key = 1; key + 1 < last_key; ++key)
+            GNFS_TEST_CHECK(!cache.get(key, 100, 1000).has_value());
+        check_cached_allocation_test_value(cache, last_key - 1);
+        check_cached_allocation_test_value(cache, last_key);
+    } else {
+        for (size_t key = 1; key <= initial_size; ++key)
+            check_cached_allocation_test_value(cache, key);
+    }
+
+    cache.clear();
+    GNFS_TEST_CHECK(cache.size() == 0);
+    for (uint64_t key = 1; key <= 5; ++key)
+        GNFS_TEST_CHECK(!cache.get(key, 100, 1000).has_value());
+    cache.put(9, 100, 1000, allocation_test_value(9));
+    GNFS_TEST_CHECK(cache.size() == 1);
+    check_cached_allocation_test_value(cache, 9);
+}
+
+void test_allocation_failures_preserve_transaction() {
+    std::cout << "Testing allocation failures preserve cache transactions..." << std::endl;
+    using Allocator = void* (*)(size_t);
+    Allocator volatile allocator = &::operator new;
+    bool self_check_threw = false;
+    {
+        ScopedAllocationProbe probe(0);
+        try {
+            void* pointer = allocator(1);
+            ::operator delete(pointer);
+        } catch (const std::bad_alloc&) {
+            self_check_threw = true;
+        }
+    }
+    GNFS_TEST_CHECK(self_check_threw && allocation_failure_triggered);
+
+    for (size_t initial_size = 0; initial_size <= 2; ++initial_size) {
+        CofactorResultCache measured_cache(2);
+        seed_allocation_test_cache(measured_cache, initial_size);
+        const auto new_value = allocation_test_value(3);
+        {
+            ScopedAllocationProbe probe;
+            measured_cache.put(3, 100, 1000, new_value);
+        }
+        const size_t count = allocation_count;
+        // Require evidence for both the list node and map-index insertion,
+        // and bound the number of fault cases for every standard library.
+        GNFS_TEST_CHECK(count >= 2 && count <= 8);
+        for (size_t ordinal = 0; ordinal < count; ++ordinal) {
+            check_allocation_insertion_failure(initial_size, ordinal, false);
+            check_allocation_insertion_failure(initial_size, ordinal, true);
+        }
+        std::cout << "  initial size " << initial_size << ": " << count
+                  << " allocation sites preserve values and LRU order" << std::endl;
+    }
+}
+
+} // namespace
 
 // ────────────────────────────────────────────────────────────────────
 // ENV parsing tests (6 cases)
@@ -419,6 +591,47 @@ static void test_size_capacity_accessors() {
     std::cout << "  capacity bound enforced: PASS" << std::endl;
 }
 
+// --------------------------------------------------------------------
+// Repeated full-cache insertions preserve the map/list relationship.
+// --------------------------------------------------------------------
+
+static void test_repeated_evictions_preserve_consistency() {
+    std::cout << "Testing repeated full-cache evictions and reuse..." << std::endl;
+    CofactorResultCache cache(2);
+
+    for (uint64_t key = 0; key < 256; ++key) {
+        cache.put(key, 100, 1000, make_classification(CofactorClass::Prime, key, key + 1, key + 2));
+        GNFS_TEST_CHECK(cache.size() == (key == 0 ? 1U : 2U));
+
+        auto newest = cache.get(key, 100, 1000);
+        GNFS_TEST_CHECK(newest.has_value());
+        GNFS_TEST_CHECK(newest->factor1 == key);
+
+        if (key > 0) {
+            auto previous = cache.get(key - 1, 100, 1000);
+            GNFS_TEST_CHECK(previous.has_value());
+            GNFS_TEST_CHECK(previous->factor1 == key - 1);
+            // Restore the expected MRU -> LRU order (key, key - 1) after the
+            // validation reads so the next insertion exercises the same path.
+            newest = cache.get(key, 100, 1000);
+            GNFS_TEST_CHECK(newest.has_value());
+        }
+
+        if (key > 1) {
+            auto evicted = cache.get(key - 2, 100, 1000);
+            GNFS_TEST_CHECK(!evicted.has_value());
+        }
+    }
+
+    cache.clear();
+    GNFS_TEST_CHECK(cache.size() == 0);
+    cache.put(900, 100, 1000, make_classification(CofactorClass::Smooth));
+    GNFS_TEST_CHECK(cache.size() == 1);
+    GNFS_TEST_CHECK(cache.get(900, 100, 1000).has_value());
+
+    std::cout << "  256 full-cache evictions + clear/reuse: PASS" << std::endl;
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Process-singleton: multiple calls return same instance
 // ────────────────────────────────────────────────────────────────────
@@ -450,7 +663,9 @@ static void test_shared_singleton_same_instance() {
 
 static void test_thread_safety_4x100_mixed() {
     std::cout << "Testing thread safety 4 threads x 100 mixed get/put..." << std::endl;
-    CofactorResultCache cache(500);
+    // Keep the capacity below the key range so concurrent puts exercise the
+    // full-cache insertion and eviction path as well as ordinary lookups.
+    CofactorResultCache cache(32);
 
     constexpr int kThreads = 4;
     constexpr int kIters = 100;
@@ -492,6 +707,7 @@ static void test_thread_safety_4x100_mixed() {
     const int total_get_ops = hits.load() + misses.load();
     assert(total_get_ops >= 0);
     assert(total_get_ops <= kThreads * kIters);
+    GNFS_TEST_CHECK(cache.size() <= 32);
 
     std::cout << "  4 threads x 100 ops: PASS (hits=" << hits.load() << ", misses=" << misses.load()
               << ", no crash)" << std::endl;
@@ -572,6 +788,7 @@ int main() {
     test_env_reset_hook_re_resolves();
 
     // Cache behavior
+    test_allocation_failures_preserve_transaction();
     test_disabled_cache_get_put_noop();
     test_put_get_basic_roundtrip();
     test_lru_eviction_capacity_3_insert_4();
@@ -580,6 +797,7 @@ int main() {
     test_same_cofactor_different_B_lp_independent();
     test_repeated_put_updates_and_promotes();
     test_size_capacity_accessors();
+    test_repeated_evictions_preserve_consistency();
     test_shared_singleton_same_instance();
     test_thread_safety_4x100_mixed();
     test_16_key_mixed_hash_sweep();

@@ -1,11 +1,19 @@
 // Unit tests for PolynomialContext — evaluate, norms, verify, edge cases
 #include "gnfs/core/polynomial_context.hpp"
+#include "gnfs/util/joining_thread.hpp"
 #include "support/test_check.hpp"
 
+#include <array>
 #include <cassert>
+#include <cstdint>
+#include <gmp.h>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <thread>
+#include <utility>
+#include <vector>
 
 using namespace gnfs::core;
 
@@ -22,6 +30,42 @@ static PolynomialContext make_cubic_131() {
 static PolynomialContext make_cubic_24() {
     std::vector<Integer> c = {Integer(-6LL), Integer(1LL), Integer(-3LL), Integer(2LL)};
     return PolynomialContext(Integer(24LL), std::move(c), Integer(3LL));
+}
+
+// Independent monomial-sum oracle: no Horner recurrence or Integer scalar
+// multiplication. Import full-width magnitudes so LLP64 cannot narrow a or b.
+static Integer direct_norm_oracle(const PolynomialContext& ctx, int64_t a, uint64_t b) {
+    const uint64_t magnitude_a =
+        a >= 0 ? static_cast<uint64_t>(a) : static_cast<uint64_t>(-(a + 1)) + 1;
+    Integer a_value, b_value, a_power, b_power, term, result;
+    mpz_import(a_value.get_mpz(), 1, 1, sizeof(magnitude_a), 0, 0, &magnitude_a);
+    if (a < 0)
+        mpz_neg(a_value.get_mpz(), a_value.get_mpz());
+    mpz_import(b_value.get_mpz(), 1, 1, sizeof(b), 0, 0, &b);
+    for (uint32_t i = 0; i <= ctx.degree(); ++i) {
+        mpz_pow_ui(a_power.get_mpz(), a_value.get_mpz(), static_cast<unsigned long>(i));
+        mpz_pow_ui(b_power.get_mpz(), b_value.get_mpz(),
+                   static_cast<unsigned long>(ctx.degree() - i));
+        mpz_mul(term.get_mpz(), a_power.get_mpz(), b_power.get_mpz());
+        mpz_mul(term.get_mpz(), term.get_mpz(), ctx.coeff(i).get_mpz());
+        mpz_add(result.get_mpz(), result.get_mpz(), term.get_mpz());
+    }
+    return result;
+}
+
+static PolynomialContext make_norm_oracle_context(uint32_t degree) {
+    std::vector<Integer> coefficients;
+    for (uint32_t i = 0; i <= degree; ++i) {
+        const int64_t magnitude = static_cast<int64_t>(i) + 2;
+        coefficients.emplace_back(i % 2 == 0 ? magnitude : -magnitude);
+    }
+    coefficients.front() = Integer("1267650600228229401496703205379"); // 2^100 + 3
+    coefficients.back() = Integer("-1208925819614629174706183");       // -(2^80 + 7)
+    Integer n;
+    for (const auto& coefficient : coefficients)
+        mpz_add(n.get_mpz(), n.get_mpz(), coefficient.get_mpz());
+    mpz_abs(n.get_mpz(), n.get_mpz()); // f(1) is a nonzero multiple of n.
+    return PolynomialContext(std::move(n), std::move(coefficients), Integer(1));
 }
 
 // ─── tests ───────────────────────────────────────────────────
@@ -135,14 +179,77 @@ void test_algebraic_norm() {
     // For b=1: N(a - α) = f(a) = a^3 + a + 1
     // a=2, b=1: N = f(2) = 8+2+1 = 11
     auto norm = ctx.algebraic_norm(2, 1);
-    assert(norm == Integer(11LL));
+    GNFS_TEST_CHECK(norm == Integer(11LL));
     // a=1, b=1: N = f(1) = 3
     norm = ctx.algebraic_norm(1, 1);
-    assert(norm == Integer(3LL));
+    GNFS_TEST_CHECK(norm == Integer(3LL));
     // a=0, b=1: N = f(0) = 1
     norm = ctx.algebraic_norm(0, 1);
-    assert(norm == Integer(1LL));
+    GNFS_TEST_CHECK(norm == Integer(1LL));
     std::cout << "  PASS" << std::endl;
+}
+
+void test_algebraic_norm_direct_gmp_oracle() {
+    std::cout << "Testing algebraic_norm against direct GMP powers..." << std::endl;
+    const std::array<int64_t, 5> a_values{std::numeric_limits<int64_t>::min(), -7, 0, 11,
+                                          std::numeric_limits<int64_t>::max()};
+    const std::array<uint64_t, 4> b_values{0, 1, uint64_t{1} << 32,
+                                           std::numeric_limits<uint64_t>::max()};
+    for (const uint32_t degree : {0u, 1u, 3u, 8u, 9u}) {
+        const auto ctx = make_norm_oracle_context(degree);
+        GNFS_TEST_CHECK(ctx.degree() == degree);
+        GNFS_TEST_CHECK(ctx.verify());
+        for (const int64_t a : a_values) {
+            for (const uint64_t b : b_values)
+                GNFS_TEST_CHECK(ctx.algebraic_norm(a, b) == direct_norm_oracle(ctx, a, b));
+        }
+    }
+
+    // Effective degree can be smaller than the retained coefficient vector.
+    const PolynomialContext constant(Integer(5), {Integer(5), Integer(0), Integer(0), Integer(0)},
+                                     Integer(0));
+    GNFS_TEST_CHECK(constant.degree() == 0);
+    GNFS_TEST_CHECK(constant.algebraic_norm(a_values.front(), b_values.back()) == Integer(5));
+    GNFS_TEST_CHECK(constant.algebraic_norm(0, 0) == Integer(5));
+    const PolynomialContext zero(Integer(11), {Integer(0)}, Integer(1));
+    GNFS_TEST_CHECK(zero.algebraic_norm(a_values.front(), b_values.back()) == Integer(0));
+
+    // (a-2b)(a+3b) = -66; this also detects an accidental b sign change.
+    const PolynomialContext factored(
+        Integer(17), {Integer(-6), Integer(1), Integer(1), Integer(0), Integer(0)}, Integer(2));
+    GNFS_TEST_CHECK(factored.degree() == 2);
+    GNFS_TEST_CHECK(factored.algebraic_norm(7, 5) == Integer(-66));
+    std::cout << "  Direct GMP norm oracle: PASS" << std::endl;
+}
+
+void test_algebraic_norm_owned_results_and_threads() {
+    std::cout << "Testing algebraic_norm result ownership and thread isolation..." << std::endl;
+    const auto cubic = make_cubic_131();
+    const auto degree_nine = make_norm_oracle_context(9);
+    const auto exercise = [](const PolynomialContext& ctx, const PolynomialContext& other,
+                             int64_t a, uint64_t b) {
+        const Integer expected = direct_norm_oracle(ctx, a, b);
+        const Integer other_expected = direct_norm_oracle(other, 7, 1);
+        Integer retained = ctx.algebraic_norm(a, b);
+        for (unsigned round = 0; round < 16; ++round) {
+            GNFS_TEST_CHECK(other.algebraic_norm(7, 1) == other_expected);
+            GNFS_TEST_CHECK(ctx.algebraic_norm(a, b) == expected);
+            GNFS_TEST_CHECK(retained == expected);
+            std::this_thread::yield();
+        }
+        mpz_add_ui(retained.get_mpz(), retained.get_mpz(), 1);
+        GNFS_TEST_CHECK(ctx.algebraic_norm(a, b) == expected);
+    };
+    {
+        gnfs::util::JoiningThread first([&] {
+            exercise(cubic, degree_nine, std::numeric_limits<int64_t>::min(),
+                     std::numeric_limits<uint64_t>::max());
+        });
+        gnfs::util::JoiningThread second([&] {
+            exercise(degree_nine, cubic, std::numeric_limits<int64_t>::max(), uint64_t{1} << 32);
+        });
+    }
+    std::cout << "  Owned norm results and thread isolation: PASS" << std::endl;
 }
 
 void test_clone_is_independent() {
@@ -169,6 +276,26 @@ void test_trailing_zero_removal() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_default_context_evaluation() {
+    const PolynomialContext empty;
+    GNFS_TEST_CHECK(empty.coefficients().empty());
+    GNFS_TEST_CHECK(empty.evaluate(Integer(3)).is_zero());
+    GNFS_TEST_CHECK(empty.leading_coeff().is_zero());
+    GNFS_TEST_CHECK(empty.algebraic_norm(3, 2).is_zero());
+    GNFS_TEST_CHECK(empty.algebraic_norm(-3, 0).is_zero());
+
+    const PolynomialContext constant(Integer(7), {Integer(-5)}, Integer(0));
+    GNFS_TEST_CHECK(constant.leading_coeff() == Integer(-5));
+    GNFS_TEST_CHECK(constant.algebraic_norm(3, 2) == Integer(-5));
+#if defined(__SIZEOF_INT128__)
+    const auto [norm, ok] = empty.algebraic_norm_i128(3, 2);
+    GNFS_TEST_CHECK(ok && norm == 0);
+    GNFS_TEST_CHECK(!empty.algebraic_norm_i128(-3, 0).second);
+    const auto [constant_norm, constant_ok] = constant.algebraic_norm_i128(3, 2);
+    GNFS_TEST_CHECK(constant_ok && constant_norm == -5);
+#endif
+}
+
 void test_empty_poly_throws() {
     std::cout << "Testing empty polynomial throws..." << std::endl;
     bool threw = false;
@@ -178,7 +305,7 @@ void test_empty_poly_throws() {
     } catch (const std::invalid_argument&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -232,6 +359,104 @@ void test_uint64_portability_and_overflow_boundaries() {
     std::cout << "  uint64_t and modular overflow boundaries: PASS" << std::endl;
 }
 
+void test_rational_value_against_integer_oracle() {
+    std::cout << "Testing rational value against Integer oracle..." << std::endl;
+    const int64_t min_a = std::numeric_limits<int64_t>::min();
+    const int64_t max_a = std::numeric_limits<int64_t>::max();
+    const uint64_t max_b = std::numeric_limits<uint64_t>::max();
+    for (const char* m_text : {"-18446744073709551616", "-2", "0", "1", "18446744073709551615",
+                               "18446744073709551616"}) {
+        const Integer m(m_text);
+        std::vector<Integer> coeffs = {Integer(1)};
+        PolynomialContext ctx(Integer(3), std::move(coeffs), Integer(m));
+        for (const int64_t a : {min_a, int64_t{-1}, int64_t{0}, int64_t{1}, max_a}) {
+            for (const uint64_t b : {uint64_t{0}, uint64_t{1}, uint64_t{2}, max_b}) {
+                const Integer signed_expected = Integer(a) - Integer(b) * m;
+                GNFS_TEST_CHECK(ctx.rational_value(a, b) == signed_expected);
+                Integer magnitude = signed_expected;
+                magnitude.abs();
+                const auto [value, fits] = ctx.rational_value_abs_u64(a, b);
+                if (m.fits_uint64()) {
+                    GNFS_TEST_CHECK(fits == magnitude.fits_uint64());
+                }
+                if (fits) {
+                    GNFS_TEST_CHECK(magnitude.fits_uint64());
+                    GNFS_TEST_CHECK(Integer(value) == magnitude);
+                } else {
+                    GNFS_TEST_CHECK(value == 0);
+                }
+            }
+        }
+    }
+    std::cout << "  Rational value oracle: PASS" << std::endl;
+}
+
+void test_i128_norm_does_not_compute_unused_power() {
+#if defined(__SIZEOF_INT128__)
+    std::cout << "Testing i128 norm power boundary..." << std::endl;
+    for (const uint32_t degree : {2u, 4u, 6u}) {
+        std::vector<Integer> coeffs;
+        for (uint32_t i = 0; i <= degree; ++i) {
+            coeffs.emplace_back(1);
+        }
+        PolynomialContext ctx(Integer(degree + 1), std::move(coeffs), Integer(1));
+        const int exponent = degree == 2 ? 43 : degree == 4 ? 27 : 20;
+        const int64_t wide_a = int64_t{1} << exponent;
+        for (const int64_t a : {-wide_a, int64_t{-7}, int64_t{0}, int64_t{7}, wide_a}) {
+            const auto [norm, accepted] = ctx.algebraic_norm_i128(a, 1);
+            GNFS_TEST_CHECK(accepted);
+            GNFS_TEST_CHECK(norm >= 0);
+            const auto bits = static_cast<__uint128_t>(norm);
+            Integer actual(static_cast<uint64_t>(bits >> 64));
+            mpz_mul_2exp(actual.get_mpz(), actual.get_mpz(), 64);
+            actual += static_cast<uint64_t>(bits);
+            GNFS_TEST_CHECK(actual == ctx.algebraic_norm(a, 1));
+        }
+        const auto [unused, accepted] =
+            ctx.algebraic_norm_i128(std::numeric_limits<int64_t>::max(), 1);
+        (void)unused;
+        GNFS_TEST_CHECK(!accepted);
+    }
+    std::cout << "  i128 norm power boundary: PASS" << std::endl;
+#endif
+}
+
+void test_i128_norm_against_integer_oracle() {
+#if defined(__SIZEOF_INT128__)
+    std::cout << "Testing i128 norm against Integer oracle..." << std::endl;
+    for (uint32_t degree = 0; degree <= 8; ++degree) {
+        std::vector<Integer> coeffs;
+        for (uint32_t i = 0; i <= degree; ++i) {
+            coeffs.emplace_back(i % 2 == 0 ? -3 : 2);
+        }
+        PolynomialContext ctx(Integer(11), std::move(coeffs), Integer(1));
+        for (int64_t a = -3; a <= 3; ++a) {
+            for (uint64_t b = 0; b <= 4; ++b) {
+                const auto [norm, accepted] = ctx.algebraic_norm_i128(a, b);
+                GNFS_TEST_CHECK(accepted == (b != 0));
+                if (!accepted) {
+                    continue;
+                }
+                const bool negative = norm < 0;
+                const __uint128_t magnitude = negative ? static_cast<__uint128_t>(-(norm + 1)) + 1
+                                                       : static_cast<__uint128_t>(norm);
+                Integer actual(static_cast<uint64_t>(magnitude >> 64));
+                mpz_mul_2exp(actual.get_mpz(), actual.get_mpz(), 64);
+                actual += static_cast<uint64_t>(magnitude);
+                if (negative) {
+                    actual.negate();
+                }
+                GNFS_TEST_CHECK(actual == ctx.algebraic_norm(a, b));
+            }
+        }
+    }
+    std::vector<Integer> wide_coeffs = {Integer(1), Integer("9223372036854775808")};
+    PolynomialContext wide(Integer(11), std::move(wide_coeffs), Integer(1));
+    GNFS_TEST_CHECK(!wide.algebraic_norm_i128(1, 1).second);
+    std::cout << "  i128 norm oracle: PASS" << std::endl;
+#endif
+}
+
 int main() {
     std::cout << "=== PolynomialContext Unit Tests ===" << std::endl;
 
@@ -244,11 +469,17 @@ int main() {
     test_verify();
     test_rational_value();
     test_algebraic_norm();
+    test_algebraic_norm_direct_gmp_oracle();
+    test_algebraic_norm_owned_results_and_threads();
     test_clone_is_independent();
     test_trailing_zero_removal();
+    test_default_context_evaluation();
     test_empty_poly_throws();
     test_n_digits();
     test_uint64_portability_and_overflow_boundaries();
+    test_i128_norm_does_not_compute_unused_power();
+    test_rational_value_against_integer_oracle();
+    test_i128_norm_against_integer_oracle();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

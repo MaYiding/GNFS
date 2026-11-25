@@ -2,10 +2,16 @@
 #include "gnfs/polynomial/int_polynomial.hpp"
 #include "support/test_check.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 using namespace gnfs::polynomial;
 using gnfs::core::Integer;
@@ -238,6 +244,36 @@ void test_roots_mod_p_rejects_non_prime_moduli() {
     std::cout << "  PASS" << std::endl;
 }
 
+void test_roots_mod_p_degree_reduction() {
+    std::cout << "Testing roots after reduction of the leading coefficients..." << std::endl;
+
+    // Cover both root-finding algorithms and primes near the uint32_t limit.
+    for (const uint32_t p : {997U, 1009U, 65537U, 4294967291U}) {
+        const int64_t multiple = static_cast<int64_t>(p);
+        const auto check_roots = [p](const IntPolynomial& f, std::vector<uint32_t> expected) {
+            auto roots = f.roots_mod_p(p);
+            std::sort(roots.begin(), roots.end());
+            GNFS_TEST_CHECK(roots == expected);
+            for (const uint32_t root : roots) {
+                // Exact integer evaluation supplies an independent oracle.
+                const Integer value = f.evaluate(Integer(root));
+                GNFS_TEST_CHECK(mpz_divisible_ui_p(value.get_mpz(), p) != 0);
+            }
+        };
+
+        // Modulo p, these become x-1, (x-1)(x-2), x(x-3), and (x-1)^2.
+        check_roots(make_poly({-1, 1, multiple}), {1});
+        check_roots(make_poly({2, -3, 1, multiple, -multiple}), {1, 2});
+        check_roots(make_poly({0, -3, 1, -multiple, multiple}), {0, 3});
+        check_roots(make_poly({1, -2, 1, multiple}), {1});
+
+        // A nonzero constant after reduction still has no roots.
+        check_roots(make_poly({1, multiple, -multiple}), {});
+    }
+
+    std::cout << "  PASS" << std::endl;
+}
+
 void test_addition() {
     std::cout << "Testing addition..." << std::endl;
 
@@ -301,6 +337,44 @@ void test_scalar_multiply() {
     GNFS_TEST_CHECK(c[0].to_int64() == -1);
     GNFS_TEST_CHECK(c[1].to_int64() == 2);
     GNFS_TEST_CHECK(c[2].to_int64() == -3);
+
+    std::cout << "  PASS" << std::endl;
+}
+
+void test_scalar_multiply_coefficient_alias() {
+    std::cout << "Testing coefficient-aliased scalar multiplication..." << std::endl;
+
+    // Each coefficient can supply the scalar, including a negative, zero, or
+    // multi-limb value. Use exact coefficient products as an independent oracle.
+    std::vector<Integer> coefficients{Integer(2), Integer(-3), Integer(0),
+                                      Integer("18446744073709551617"), Integer(5)};
+    const IntPolynomial original(std::move(coefficients));
+    for (size_t scalar_index = 0; scalar_index < original.coefficients().size(); ++scalar_index) {
+        auto actual = original.clone();
+        const Integer scalar = original[scalar_index];
+        actual *= actual[scalar_index];
+
+        const auto& result = actual;
+        for (size_t i = 0; i < original.coefficients().size(); ++i) {
+            GNFS_TEST_CHECK(result[i].compare(original[i] * scalar) == 0);
+        }
+        GNFS_TEST_CHECK(actual.is_zero() == scalar.is_zero());
+        GNFS_TEST_CHECK(actual.degree() == (scalar.is_zero() ? 0 : original.degree()));
+    }
+
+    // A single coefficient aliases both the polynomial and its scalar.
+    IntPolynomial constant(-7);
+    constant *= constant[0];
+    GNFS_TEST_CHECK(constant[0].to_int64() == 49);
+
+    // A separate scalar must remain unchanged after the operation.
+    auto external = original.clone();
+    const Integer scalar(-11);
+    external *= scalar;
+    GNFS_TEST_CHECK(scalar.to_int64() == -11);
+    for (size_t i = 0; i < original.coefficients().size(); ++i) {
+        GNFS_TEST_CHECK(external[i].compare(original[i] * scalar) == 0);
+    }
 
     std::cout << "  PASS" << std::endl;
 }
@@ -585,9 +659,11 @@ int main() {
     test_evaluate_mod();
     test_roots_mod_p();
     test_roots_mod_p_rejects_non_prime_moduli();
+    test_roots_mod_p_degree_reduction();
     test_addition();
     test_subtraction();
     test_scalar_multiply();
+    test_scalar_multiply_coefficient_alias();
     test_polynomial_multiply();
     test_derivative();
     test_translate();

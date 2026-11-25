@@ -45,6 +45,61 @@ Longest measured enabled tests:
 
 Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Windows, and high CTest parallelism can change runtime by an order of magnitude.
 
+`HarnessHooks` aggregates isolated hook and runner CLI contracts, including
+fresh interpreter, fixture, and reporting processes. It retains the `instant`
+label so the existing Debug, sanitizer, coverage, and platform lanes still
+execute every contract. CTest allows 60 seconds for the aggregate so the shell
+and Python processes can finish when other tests share the runner.
+
+### Local Change Selection
+
+The local `scripts/test.sh gate --quick` builds the binaries in
+`scripts/test-catalog/smoke.txt` and the
+process supervisor used by their timeout wrapper and CTest contract. The full
+local `gate` also builds and runs `test_regression_gate`. CMake builds the
+dependencies of the selected targets. `--no-build` uses existing binaries.
+
+`scripts/test.sh changed --deep` adds mapped module dependencies and the API
+contract to applicable change selections. It also selects `test_siqs_e2e` once
+when a changed path maps directly to the `siqs` module, including
+`tests/test_siqs_e2e.cpp`. Reaching SIQS only through another module's dependency
+list does not select this E2E test. Ordinary `changed` and `smoke` keep their
+existing selection.
+
+The runner resolves the changed paths before building the selected module tests,
+their CTest companions and any applicable E2E or 50-digit contract. It also
+compiles default test executables whose CMake source list contains a directly
+changed file. Both names of a renamed file participate in selection. When a
+directly changed source belongs to an executable marked `EXCLUDE_FROM_ALL`,
+the runner requests the native default build so the generator decides whether
+another target requires it. Test execution follows the usual module or smoke
+selection. Clean trees and unmapped paths use the smoke build target.
+`--no-build` uses the binaries
+already present in the selected build directory. The runner and CMake share the
+module test lists and one-level dependency map in
+`scripts/test-catalog/modules.txt` (`module|tests|downstream modules`).
+
+`module` builds the selected CMake module groups and the process supervisor.
+Only `--slow` adds the module's slow binaries. CMake handles each group's
+platform exclusions and CTest companions. The runner refreshes configuration
+before filtering any additional Windows-unavailable binaries; only generated
+`WIN32=1` metadata permits their exclusion. Repeated module requests retain
+their test execution and report entries while build targets are deduplicated.
+`watch module` and `watch changed` build the current selection directly, without
+a preceding default build. Configuration or build failures stop that iteration
+before tests execute.
+
+The `changed` mode and its `diff` alias accept only one optional `--deep` mode
+argument. Unsupported or repeated arguments fail before CMake configuration.
+`--slow` belongs to `module`; passing it to `changed` is an error.
+
+The SIQS E2E includes a native attempt with a 600-second budget; its runner and
+CTest timeout remains 700 seconds to accommodate the other cases and setup.
+Use `scripts/test.sh run test_siqs_e2e` or `scripts/test.sh module siqs --slow`
+for an explicit selection. Local `changed --deep` does not enable every slow,
+heavy, benchmark, or stress test. The Linux Release deep gate uses the separate
+CI label selection described below.
+
 ### Release-active correctness checks
 
 Release builds define `NDEBUG`, so the standard `assert()` macro is not a
@@ -52,6 +107,9 @@ correctness oracle in CI. New or modified correctness tests must use a check
 that remains active in Release builds. The first migrated mathematical chain is
 `Integer`, `IntPolynomial`, `LinearAlgebra`, and `SquareRoot`; these tests use
 `GNFS_TEST_CHECK` from `tests/support/test_check.hpp` in every build type.
+`IntegerScratchPool` also uses this check without undefining `NDEBUG`. It
+verifies that warmed GMP limb storage survives a zero reset before refill,
+alongside arithmetic parity and handle ownership.
 The `HalfGCD`, `PolyKaratsuba`, `DivremSubquadratic`, `PolyNTT`, and
 `PolySquare` arithmetic contracts also keep their exact parity, dispatch,
 boundary, and environment-parsing checks active in Release builds.
@@ -69,6 +127,10 @@ be valid and preserves bit-for-bit results across memory, mmap, and mmap+zip
 storage. Its trace assertions prove that neither on-disk route fell back to the
 scalar solver and that compressed scratch data was reopened, copied, and
 removed.
+The `LinearAlgebra` contract keeps Schirokauer Hensel lifts active in Release
+at small and large accepted moduli, including `2^62` and `5^27`. Exact Integer
+convolution checks the lifted factors independently, and public-map tests cover
+odd-prime configurations separately from the GF(2) matrix prime policy.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,
@@ -96,6 +158,10 @@ scoped ownership, and stopwatch restart checks active in Release builds; its
 `noexcept` contract remains compile-time checked.
 The `MpzPowmParallel` instant contract keeps invalid environment-value fallback
 and empty-batch return-path checks active in Release builds.
+The `MpzInvertParallel` instant contract keeps environment parsing, inverse
+values, success flags, and zero-modulus rejection active in Release builds.
+An empty batch leaves outputs unchanged even with a zero modulus; a nonempty
+batch rejects zero before output resizing or dispatch.
 The `MpzModParallel` instant contract keeps invalid environment-value fallback,
 empty-batch return paths, resolver boundaries, and known modular residues active
 in Release builds.
@@ -105,6 +171,21 @@ Release builds.
 The `MpzMulParallel` instant contract keeps invalid environment-value fallback,
 empty-batch and resolver boundaries, and fixed small-value product checks active
 in Release builds.
+The `FactorBaseSieveLaunchFailure` fast contract sweeps main-thread allocation
+failures in the segmented prime sieve and checks same-process retry results
+against the sequential sieve. It retains Release-active checks and exercises
+partial worker startup when the host supplies multiple workers. A single-worker
+host still tests allocation failure recovery but cannot prove the partial-startup
+case. This resource-sensitive test is excluded from smoke; allocation injection
+does not claim direct coverage of operating-system thread-creation errors.
+
+The `HenselProductWorkerFailure` fast contract reaches inner product workers
+through the public square-root API with outer prime parallelism disabled. It
+injects one worker allocation failure, requires propagation to the caller, and
+checks a same-instance retry against a known square modulo 65. Its checks stay
+active in Release. A single-worker host verifies the healthy arithmetic result
+but cannot exercise the worker failure. The `JoiningThread` contract separately
+covers indexed launch failures in the reused joined-worker primitive.
 The `SieveIntegration` fast contract keeps polynomial selection and context
 verification, non-empty special-Q and candidate flow, candidate lattice and
 coprimality invariants, relation classification, and degenerate-region
@@ -241,7 +322,9 @@ and native-architecture tuning disabled; that tree builds only
 This separately proves the ordinary child transport on the published glibc
 2.31 floor without changing the release artifact closure. Its Windows 2022 job
 installs the digest-pinned UCRT64
-compiler and runtime packages, configures the build with
+compiler, build tools, and their complete package dependency closure. A clean
+UCRT64 package set and a repository-free `pacman -U` transaction prevent rolling
+bootstrap packages from replacing the runtime pins. It configures the build with
 `GNFS_ENABLE_NTL=OFF`, derives the four-DLL closure with `ldd`, launches the
 packaged CLI with `/ucrt64/bin` removed from `PATH`, creates the deterministic
 ZIP, and validates its package, license, DLL, and corresponding-source
@@ -290,6 +373,33 @@ The runner uses a dedicated `build-tsan-relation` Debug directory, disables nati
 The binaries run serially with a default 120-second timeout per binary. An explicit `--timeout` overrides that default. The Linux CI job has a separate 20-minute outer timeout, so configuration or compilation cannot leave the lane unbounded.
 
 The runner supports Linux and macOS. On any other host it prints an explicit unsupported message, records the lane as skipped, and exits successfully. On Linux or macOS, CMake requires a Clang or GNU toolchain that can compile and link the ThreadSanitizer runtime; configuration fails instead of silently executing uninstrumented binaries when that contract is not met. `--no-build` likewise refuses a cache unless it records `GNFS_ENABLE_TSAN=ON`.
+
+## SIQS Shadow Matrix Gate
+
+Run the bounded SIQS shadow correctness and benchmark-schema gate with:
+
+```bash
+./scripts/test.sh gate-siqs-shadow
+```
+
+The mode always uses one Release/NDEBUG build for the current tree and rejects
+`--no-build`, non-Release `-t`, and automatic `--retry`. It then runs the
+cross-size constructed corpus, the explicit-prefer legacy-fallback route, a
+50-digit-shaped public solve with workers `1,2,4`, and a crossover-shaped
+kernel comparison with workers `1,4`. The solve case uses 1,601 factor-base
+entries and 1,701 rows. The kernel case uses 4,000 entries and 4,100 rows.
+Each case uses an odd weight of 20, zero warmups, one repetition, and a
+parallel threshold of zero. The configuration record and every result must
+report those parameters. The runner also checks the complete set of requested
+workers and implementations, ordered timing statistics, and a shared result
+digest within each case.
+
+The gate does not promote the shadow route, enable 2LP collection, or assert a
+wall-time budget. It emits one closed
+`GNFS_SIQS_SHADOW_MATRIX_GATE_V1` summary with `promotion=false`; timing values
+remain diagnostic evidence. The mode is intentionally a script-level gate,
+not a CTest entry, because the benchmark executable is Release-only and its
+measurements must come from the same build as the correctness checks.
 
 ## Resource Measurement Lanes
 
@@ -1431,3 +1541,11 @@ When adding or changing tests:
 - For candidate, structured-relation, or SIQS shadow concurrency changes, run
   `./scripts/test.sh tsan-relation` on a supported toolchain.
 - Re-run at least `./scripts/test.sh list`, `ctest --show-only=json-v1`, and the affected local test subset.
+
+## Protected Build Boundary
+
+The distributed-sieve receipt checker preserves the committed build commands that can change protected target sources, dependencies, compiler settings, include search, or generated code. It excludes independent test executables with literal `tests/*.cpp` sources, private links to project libraries or `Threads::Threads`, and ordinary CTest registration. Protected sources and targets, duplicate target or test names, dynamic source paths, and changes to shared build settings remain checked. The test-platform marker is accepted only when its content directly encodes the actual CMake `WIN32` condition. Literal overrides and other generated files remain checked because the runner consumes this marker when deciding which binaries are required.
+
+Adding an ordinary independent test does not require updating the checker. More complex build changes still require reviewing the retained command boundary and the existing target dependency and compiler provenance checks. The boundary digest is derived from the previously accepted build after the same projection; it is not regenerated from each proposed change.
+
+Runner catalog checks count each required binary in its actual binary, module, timeout, tier, and path-mapping declarations. Platform-support metadata may reference the same binary without registering it again. Duplicate declarations, appends, element overrides, and unexpected smoke registration remain failures.
