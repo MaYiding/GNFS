@@ -200,6 +200,14 @@ jobs:
           --timeout 300 \
           --no-tests=error
 
+    - name: Flake hunt (diagnostic branch only, do not merge)
+      if: runner.os == 'macOS' && matrix.build_type == 'Release'
+      working-directory: build
+      run: |
+        ctest --output-on-failure --no-tests=error --timeout 120 \
+          --repeat until-fail:150 \
+          -R '^(DistributedSieveWaveStoreWorkerLauncher|DistributedSieveWorkerCoordinator)$'
+
     - name: Run macOS worker cleanup tail
       if: >-
         ${{
