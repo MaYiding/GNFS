@@ -4,20 +4,64 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
 namespace gnfs::relation {
 
-/// Resource limits for deterministic incidence construction.
+/// Logical metadata cardinality used by the optional incidence preflight.
+///
+/// These are element counts, not byte or RSS estimates. The total counts the
+/// corpus row slots, row-support entries, final bucket slots, and bucket
+/// adjacency entries that the vector-backed incidence construction must retain.
+/// Callers can use the upper-bound helper when row supports have not yet been
+/// read; a conservative bound treats every row as carrying the maximum
+/// persistence-allowed LP support and every support entry as a distinct key.
+struct StructuredIncidenceMetadataEstimate final {
+    size_t row_slots = 0;
+    size_t row_support_entries = 0;
+    size_t bucket_slots = 0;
+    size_t bucket_adjacency_entries = 0;
+    size_t total_entries = 0;
+
+    [[nodiscard]] bool
+    operator==(const StructuredIncidenceMetadataEstimate&) const noexcept = default;
+};
+
+/// Compute a checked metadata estimate from known support cardinalities.
+///
+/// `unique_lp_keys` must not exceed `row_support_entries`, and zero support
+/// entries must have zero unique keys. Arithmetic overflow is reported as a
+/// typed `StructuredReductionError(ResourceLimit)` failure; malformed
+/// cardinalities are reported as `StructuredReductionError(InvalidInput)`.
+[[nodiscard]] StructuredIncidenceMetadataEstimate
+estimate_structured_incidence_metadata(size_t row_count, size_t row_support_entries,
+                                       size_t unique_lp_keys);
+
+/// Compute a checked conservative estimate before source rows are read.
+///
+/// Every row is assumed to have at most `max_row_support_entries` effective LP
+/// keys, and every such key is assumed distinct. This is intentionally a
+/// logical upper bound rather than a prediction of the eventual bucket count.
+[[nodiscard]] StructuredIncidenceMetadataEstimate
+estimate_structured_incidence_metadata_upper_bound(size_t row_count,
+                                                   size_t max_row_support_entries);
+
+/// Optional resource limits for deterministic incidence construction.
 ///
 /// `max_rows_per_shard` bounds every temporary ordered-parallel work set. The
 /// accumulating distinct-key index, final row supports, and bucket adjacency
 /// still scale with the corpus and remain owned by the returned result. This
-/// is a bounded-shard construction contract, not an OOC memory bound.
+/// is a bounded-shard construction contract, not an OOC memory bound. When
+/// `max_metadata_entries` is set, the checked logical estimate must be no
+/// greater than that value before worker construction begins. Source-backed
+/// builders use the persistence upper bound before reading rows; builders that
+/// receive pre-extracted supports use the tighter support-entry upper bound.
 struct StructuredIncidenceBuildOptions final {
     size_t max_rows_per_shard = 4096;
     uint32_t worker_count = 1;
+    std::optional<size_t> max_metadata_entries = std::nullopt;
 
     [[nodiscard]] bool operator==(const StructuredIncidenceBuildOptions&) const noexcept = default;
 };
@@ -34,6 +78,13 @@ struct StructuredIncidenceBuildStats final {
 
     [[nodiscard]] bool operator==(const StructuredIncidenceBuildStats&) const noexcept = default;
 };
+
+/// Reject an estimate that exceeds the configured optional cap.
+///
+/// A cap rejection or checked arithmetic overflow is a `StructuredReductionError`
+/// with code `ResourceLimit`.
+void preflight_structured_incidence_metadata(const StructuredIncidenceMetadataEstimate& estimate,
+                                             const StructuredIncidenceBuildOptions& options);
 
 struct StructuredIncidenceBucket final {
     LargePrimeKey key;
@@ -140,9 +191,10 @@ build_structured_incidence_shards(const SourceCorpus& corpus,
 /// valid large-prime keys and must not exceed twice
 /// `core::Relation::MAX_SERIALIZED_LARGE_PRIMES`. The function validates that
 /// contract before launching worker shards, consumes the row-support vector,
-/// and never reads a relation source. Its payload and execution statistics
-/// match the source-backed builder for the same generation, supports, and
-/// options.
+/// and never reads a relation source. With a metadata cap, admission uses the
+/// support-entry upper bound because the supports are already available. Once
+/// admitted, its payload and execution statistics match the source-backed
+/// builder for the same generation, supports, and options.
 [[nodiscard]] StructuredIncidenceBuildResult
 build_structured_incidence_from_row_supports(uint64_t generation,
                                              std::vector<std::vector<LargePrimeKey>> row_lp_keys,

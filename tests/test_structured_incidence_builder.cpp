@@ -22,13 +22,17 @@ using gnfs::core::Relation;
 using gnfs::relation::build_structured_incidence_from_row_supports;
 using gnfs::relation::build_structured_incidence_shards;
 using gnfs::relation::corpus_digest;
+using gnfs::relation::estimate_structured_incidence_metadata;
+using gnfs::relation::estimate_structured_incidence_metadata_upper_bound;
 using gnfs::relation::LargePrimeKey;
 using gnfs::relation::odd_large_prime_keys;
+using gnfs::relation::preflight_structured_incidence_metadata;
 using gnfs::relation::SequentialStructuredReducer;
 using gnfs::relation::SourceCorpus;
 using gnfs::relation::StructuredIncidenceBucket;
 using gnfs::relation::StructuredIncidenceBuildOptions;
 using gnfs::relation::StructuredIncidenceBuildResult;
+using gnfs::relation::StructuredIncidenceMetadataEstimate;
 using gnfs::relation::StructuredReductionBudget;
 using gnfs::relation::StructuredReductionError;
 using gnfs::relation::StructuredReductionErrorCode;
@@ -200,6 +204,168 @@ void check_matches_expected(const StructuredIncidenceBuildResult& actual,
     CHECK(actual.row_lp_keys() == expected.row_lp_keys);
     CHECK(actual.buckets() == expected.buckets);
     CHECK(actual.stats().total_incidence_entries == expected.total_incidence_entries);
+}
+
+void test_metadata_preflight_is_checked_and_typed() {
+    const StructuredIncidenceMetadataEstimate estimate =
+        estimate_structured_incidence_metadata(2, 2, 1);
+    CHECK(estimate.row_slots == 2);
+    CHECK(estimate.row_support_entries == 2);
+    CHECK(estimate.bucket_slots == 1);
+    CHECK(estimate.bucket_adjacency_entries == 2);
+    CHECK(estimate.total_entries == 7);
+    CHECK(estimate == estimate_structured_incidence_metadata(2, 2, 1));
+
+    const auto upper_bound = estimate_structured_incidence_metadata_upper_bound(2, 2);
+    CHECK(upper_bound == estimate_structured_incidence_metadata(2, 4, 4));
+
+    StructuredIncidenceBuildOptions options{4, 2};
+    options.max_metadata_entries = estimate.total_entries;
+    preflight_structured_incidence_metadata(estimate, options);
+
+    options.max_metadata_entries = estimate.total_entries - 1;
+    bool resource_limited = false;
+    try {
+        preflight_structured_incidence_metadata(estimate, options);
+    } catch (const StructuredReductionError& error) {
+        resource_limited = error.code() == StructuredReductionErrorCode::ResourceLimit;
+    }
+    CHECK(resource_limited);
+
+    bool invalid_cardinality = false;
+    try {
+        (void)estimate_structured_incidence_metadata(1, 0, 1);
+    } catch (const StructuredReductionError& error) {
+        invalid_cardinality = error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(invalid_cardinality);
+
+    bool nonzero_support_with_no_bucket_rejected = false;
+    try {
+        (void)estimate_structured_incidence_metadata(2, 1, 0);
+    } catch (const StructuredReductionError& error) {
+        nonzero_support_with_no_bucket_rejected =
+            error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(nonzero_support_with_no_bucket_rejected);
+
+    bool empty_rows_with_support_rejected = false;
+    try {
+        (void)estimate_structured_incidence_metadata(0, 1, 1);
+    } catch (const StructuredReductionError& error) {
+        empty_rows_with_support_rejected =
+            error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(empty_rows_with_support_rejected);
+
+    bool estimate_overflow = false;
+    try {
+        (void)estimate_structured_incidence_metadata(std::numeric_limits<size_t>::max(), 1, 1);
+    } catch (const StructuredReductionError& error) {
+        estimate_overflow = error.code() == StructuredReductionErrorCode::ResourceLimit;
+    }
+    CHECK(estimate_overflow);
+
+    auto inconsistent = estimate;
+    inconsistent.total_entries += 1;
+    bool inconsistent_rejected = false;
+    try {
+        preflight_structured_incidence_metadata(inconsistent, options);
+    } catch (const StructuredReductionError& error) {
+        inconsistent_rejected = error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(inconsistent_rejected);
+
+    auto impossible_buckets = estimate;
+    impossible_buckets.bucket_slots = impossible_buckets.bucket_adjacency_entries + 1;
+    impossible_buckets.total_entries =
+        impossible_buckets.row_slots + impossible_buckets.row_support_entries +
+        impossible_buckets.bucket_slots + impossible_buckets.bucket_adjacency_entries;
+    bool impossible_buckets_rejected = false;
+    try {
+        preflight_structured_incidence_metadata(impossible_buckets, options);
+    } catch (const StructuredReductionError& error) {
+        impossible_buckets_rejected = error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(impossible_buckets_rejected);
+
+    auto mismatched_adjacency = estimate;
+    mismatched_adjacency.bucket_adjacency_entries += 1;
+    mismatched_adjacency.total_entries =
+        mismatched_adjacency.row_slots + mismatched_adjacency.row_support_entries +
+        mismatched_adjacency.bucket_slots + mismatched_adjacency.bucket_adjacency_entries;
+    bool mismatched_adjacency_rejected = false;
+    try {
+        preflight_structured_incidence_metadata(mismatched_adjacency, options);
+    } catch (const StructuredReductionError& error) {
+        mismatched_adjacency_rejected = error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(mismatched_adjacency_rejected);
+
+    auto support_without_bucket = estimate;
+    support_without_bucket.bucket_slots = 0;
+    support_without_bucket.total_entries = support_without_bucket.row_slots +
+                                           support_without_bucket.row_support_entries +
+                                           support_without_bucket.bucket_adjacency_entries;
+    bool support_without_bucket_rejected = false;
+    try {
+        preflight_structured_incidence_metadata(support_without_bucket, options);
+    } catch (const StructuredReductionError& error) {
+        support_without_bucket_rejected =
+            error.code() == StructuredReductionErrorCode::InvalidInput;
+    }
+    CHECK(support_without_bucket_rejected);
+}
+
+void test_metadata_cap_rejects_before_incidence_workers() {
+    const LargePrimeKey key = rational_key(101);
+    std::vector<std::vector<LargePrimeKey>> supports{{key}, {key}};
+    StructuredIncidenceBuildOptions options{1, 4};
+    const auto estimate = estimate_structured_incidence_metadata(2, 2, 2);
+    options.max_metadata_entries = estimate.total_entries;
+    const auto accepted = build_structured_incidence_from_row_supports(51'020, supports, options);
+    CHECK(accepted.row_count() == 2);
+
+    options.max_metadata_entries = estimate.total_entries - 1;
+    bool resource_limited = false;
+    try {
+        (void)build_structured_incidence_from_row_supports(
+            51'021, std::vector<std::vector<LargePrimeKey>>{{key}, {key}}, options);
+    } catch (const StructuredReductionError& error) {
+        resource_limited = error.code() == StructuredReductionErrorCode::ResourceLimit;
+    }
+    CHECK(resource_limited);
+
+    // Pre-extracted supports can use their tighter support-entry upper bound.
+    // The source-backed route must use the persistence bound before reading
+    // rows, so the same small cap is rejected there.
+    SourceCorpus equivalent_corpus(51'021, {make_relation(7, {key}), make_relation(8, {key})});
+    StructuredIncidenceBuildOptions source_equivalent_options{1, 4};
+    source_equivalent_options.max_metadata_entries = estimate.total_entries;
+    bool source_route_rejected = false;
+    try {
+        (void)build_structured_incidence_shards(equivalent_corpus, source_equivalent_options);
+    } catch (const StructuredReductionError& error) {
+        source_route_rejected = error.code() == StructuredReductionErrorCode::ResourceLimit;
+    }
+    CHECK(source_route_rejected);
+
+    StructuredIncidenceBuildOptions empty_options{1, 1};
+    empty_options.max_metadata_entries = 0;
+    const auto empty = build_structured_incidence_from_row_supports(51'022, {}, empty_options);
+    CHECK(empty.row_count() == 0);
+    CHECK(empty.buckets().empty());
+
+    SourceCorpus corpus(51'023, {make_relation(7, {key})});
+    StructuredIncidenceBuildOptions source_options{1, 2};
+    source_options.max_metadata_entries = 96;
+    bool source_resource_limited = false;
+    try {
+        (void)build_structured_incidence_shards(corpus, source_options);
+    } catch (const StructuredReductionError& error) {
+        source_resource_limited = error.code() == StructuredReductionErrorCode::ResourceLimit;
+    }
+    CHECK(source_resource_limited);
 }
 
 void test_invalid_options_fail_before_construction() {
@@ -639,6 +805,10 @@ template <typename Action> void run_test(std::string_view name, Action&& action)
 } // namespace
 
 int main() {
+    run_test("metadata preflight is checked and typed",
+             test_metadata_preflight_is_checked_and_typed);
+    run_test("metadata cap rejects before incidence workers",
+             test_metadata_cap_rejects_before_incidence_workers);
     run_test("invalid options", test_invalid_options_fail_before_construction);
     run_test("empty corpus", test_empty_corpus_has_no_shards);
     run_test("hand-built parity and full-width keys", test_hand_built_parity_and_full_width_keys);

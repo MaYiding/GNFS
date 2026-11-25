@@ -517,6 +517,18 @@ public:
             snapshot.corpus.storage_kind() == RelationStorageKind::FinalizedOOC;
         validate_structured_input_storage(config, snapshot.corpus, structured_ooc_input);
 
+        if (config.strategy == ReductionStrategy::Structured &&
+            config.structured->incidence.max_metadata_entries.has_value()) {
+            constexpr size_t max_row_support_entries =
+                static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+            // Reserve no output artifacts until the checked worst-case
+            // incidence metadata bound has admitted this snapshot.
+            preflight_structured_incidence_metadata(
+                estimate_structured_incidence_metadata_upper_bound(snapshot.size(),
+                                                                   max_row_support_entries),
+                config.structured->incidence);
+        }
+
         std::optional<RelationSink> structured_sink;
         if (config.strategy == ReductionStrategy::Structured &&
             !config.structured->output_ooc_base_path.empty()) {
@@ -674,6 +686,16 @@ public:
         validate_structured_path_pair(structured, true, true);
 
         const size_t input_relations = static_cast<size_t>(source.count());
+        constexpr size_t max_row_support_entries =
+            static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+        if (structured.incidence.max_metadata_entries.has_value()) {
+            // Reject the conservative metadata bound before the indexed-source
+            // scan can allocate a working corpus or read its first relation.
+            preflight_structured_incidence_metadata(
+                estimate_structured_incidence_metadata_upper_bound(input_relations,
+                                                                   max_row_support_entries),
+                structured.incidence);
+        }
         PreparedStructuredOOCInput prepared = prepare_structured_indexed_input(
             generation, source, input_relations, structured.deduplicated_ooc_base_path);
 
@@ -785,6 +807,18 @@ private:
         }
 
         auto structured = freeze_direct_borrowed_structured_config(*config.structured);
+        const size_t input_relations = static_cast<size_t>(source.count());
+        constexpr size_t max_row_support_entries =
+            static_cast<size_t>(core::Relation::MAX_SERIALIZED_LARGE_PRIMES) * 2;
+        if (structured.incidence.max_metadata_entries.has_value()) {
+            // The direct route has not read a source row yet. Reject a configured
+            // metadata cap from the checked worst-case cardinality before creating
+            // row supports, fingerprints, AB membership state, or an output sink.
+            preflight_structured_incidence_metadata(
+                estimate_structured_incidence_metadata_upper_bound(input_relations,
+                                                                   max_row_support_entries),
+                structured.incidence);
+        }
         if constexpr (Observe) {
             telemetry->enter_stage(StructuredTelemetryFailureStage::OutputReservation);
         }
@@ -792,7 +826,6 @@ private:
         structured_sink.emplace(RelationSink::out_of_core(
             generation, structured.output_ooc_base_path, structured.output_ooc_cleanup));
 
-        const size_t input_relations = static_cast<size_t>(source.count());
         if constexpr (Observe) {
             telemetry->set_source_rows(input_relations);
             telemetry->enter_stage(StructuredTelemetryFailureStage::InitialScan);

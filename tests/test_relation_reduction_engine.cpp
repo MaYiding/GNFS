@@ -1644,6 +1644,11 @@ void test_structured_direct_borrowed_contract_and_unique_capability() {
 
     auto valid = structured_config(2, 3);
     valid.structured->output_ooc_base_path = output.base;
+    auto metadata_capped = valid;
+    metadata_capped.structured->incidence.max_metadata_entries = 97 * input.size() - 1;
+    CHECK(throws_structured_error(StructuredReductionErrorCode::ResourceLimit,
+                                  [&] { (void)invoke(generation, metadata_capped); }));
+    CHECK(private_sink_absent(output.base));
     CHECK(throws_invalid_argument([&] { (void)invoke(0, valid); }));
 
     CHECK(throws_invalid_argument([&] { (void)invoke(generation, RelationReductionConfig{}); }));
@@ -2048,6 +2053,47 @@ void test_structured_borrowed_source_contract_rejects_invalid_routes() {
     CHECK(private_sink_absent(output.base));
 }
 
+void test_structured_borrowed_metadata_cap_rejects_before_source_read() {
+    constexpr uint64_t generation = 719;
+    const auto input = make_shared_primary_corpus();
+    BorrowedVectorRelationSource source(input);
+    OOCArtifacts working(unique_ooc_base("borrowed_metadata_cap_work"));
+    OOCArtifacts output(unique_ooc_base("borrowed_metadata_cap_output"));
+
+    auto config = structured_config(2, 3);
+    config.structured->deduplicated_ooc_base_path = working.base;
+    config.structured->output_ooc_base_path = output.base;
+    // Six rows * (1 row slot + 32 support + 32 conservative buckets + 32
+    // adjacency entries) is the checked worst-case upper bound.
+    config.structured->incidence.max_metadata_entries = 97 * input.size() - 1;
+
+    CHECK(throws_structured_error(StructuredReductionErrorCode::ResourceLimit, [&] {
+        (void)RelationReductionEngine::reduce_borrowed_structured(generation, source, config);
+    }));
+    CHECK(source.count_calls() == 1);
+    CHECK(source.read_calls() == 0);
+    CHECK(private_sink_absent(working.base));
+    CHECK(private_sink_absent(output.base));
+}
+
+void test_structured_owned_metadata_cap_rejects_before_output_reservation() {
+    constexpr uint64_t generation = 720;
+    const auto input = make_shared_primary_corpus();
+    OOCArtifacts output(unique_ooc_base("owned_metadata_cap_output"));
+
+    auto config = structured_config(2, 3);
+    config.structured->output_ooc_base_path = output.base;
+    config.structured->incidence.max_metadata_entries = 97 * input.size() - 1;
+
+    RawRelationSnapshot snapshot(generation, input);
+    CHECK(throws_structured_error(StructuredReductionErrorCode::ResourceLimit, [&] {
+        (void)RelationReductionEngine::reduce(std::move(snapshot), config);
+    }));
+    CHECK(snapshot.corpus.valid());
+    CHECK(snapshot.size() == input.size());
+    CHECK(private_sink_absent(output.base));
+}
+
 void test_structured_borrowed_prepared_token_drop_cleans_working_corpus() {
     constexpr uint64_t generation = 718;
     const auto input = make_shared_primary_corpus();
@@ -2273,6 +2319,8 @@ int main() {
     test_structured_direct_borrowed_detects_post_scan_payload_drift();
     test_structured_direct_borrowed_resume_failure_cleans_finalized_output();
     test_structured_borrowed_source_contract_rejects_invalid_routes();
+    test_structured_borrowed_metadata_cap_rejects_before_source_read();
+    test_structured_owned_metadata_cap_rejects_before_output_reservation();
     test_structured_borrowed_prepared_token_drop_cleans_working_corpus();
     test_structured_borrowed_source_read_failure_rolls_back();
     test_structured_borrowed_output_failure_rolls_back_working_corpus();
