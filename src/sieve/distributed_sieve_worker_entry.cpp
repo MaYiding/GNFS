@@ -568,6 +568,27 @@ struct NamedBytesResult final {
     }
 }
 
+// DIAGNOSTIC BRANCH ONLY: show which directory fields moved between two stats.
+void report_moved_directory_fields(const char* where, const struct stat& before,
+                                   const struct stat& after) noexcept {
+    std::fprintf(stderr,
+                 "directory stability failed in %s: dev=%llu/%llu ino=%llu/%llu uid=%u/%u "
+                 "gid=%u/%u mode=%o/%o nlink=%llu/%llu size=%lld/%lld mtime=%lld.%09ld/%lld.%09ld "
+                 "ctime=%lld.%09ld/%lld.%09ld\n",
+                 where, static_cast<unsigned long long>(before.st_dev),
+                 static_cast<unsigned long long>(after.st_dev),
+                 static_cast<unsigned long long>(before.st_ino),
+                 static_cast<unsigned long long>(after.st_ino), before.st_uid, after.st_uid,
+                 before.st_gid, after.st_gid, before.st_mode, after.st_mode,
+                 static_cast<unsigned long long>(before.st_nlink),
+                 static_cast<unsigned long long>(after.st_nlink),
+                 static_cast<long long>(before.st_size), static_cast<long long>(after.st_size),
+                 static_cast<long long>(before.st_mtimespec.tv_sec), before.st_mtimespec.tv_nsec,
+                 static_cast<long long>(after.st_mtimespec.tv_sec), after.st_mtimespec.tv_nsec,
+                 static_cast<long long>(before.st_ctimespec.tv_sec), before.st_ctimespec.tv_nsec,
+                 static_cast<long long>(after.st_ctimespec.tv_sec), after.st_ctimespec.tv_nsec);
+}
+
 [[nodiscard]] Diagnostic validate_root(int descriptor, const NativeIdentityV1& expected) noexcept {
     constexpr Phase phase = Phase::root_validation;
     if (const auto policy =
@@ -592,6 +613,7 @@ struct NamedBytesResult final {
     }
     if (!valid_root_metadata(after) || !stable_metadata(before, after) ||
         native_identity(after) != expected) {
+        report_moved_directory_fields("validate_root", before, after); // DIAGNOSTIC ONLY
         return namespace_failure(phase, Status::namespace_invalid);
     }
     return {};
@@ -764,6 +786,7 @@ strict_absolute_path_components(std::string_view absolute_path) {
         !valid_parent_metadata(parent_held_after) ||
         !stable_metadata(parent_held_before, parent_held_after) ||
         !stable_metadata(parent_held_after, parent_named)) {
+        report_moved_directory_fields("root_binding.parent", parent_held_before, parent_named); // DIAGNOSTIC ONLY
         return namespace_failure(phase, Status::namespace_invalid);
     }
 
@@ -808,6 +831,7 @@ strict_absolute_path_components(std::string_view absolute_path) {
         native_identity(root_named) != expected_identity ||
         native_identity(root_reopened) != expected_identity ||
         native_identity(retained_after) != expected_identity) {
+        report_moved_directory_fields("root_binding.root", retained_before, retained_after); // DIAGNOSTIC ONLY
         return namespace_failure(phase, Status::namespace_invalid);
     }
 
