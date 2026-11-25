@@ -342,6 +342,39 @@ enum class EventKind {
     return description;
 }
 
+// One "kind size" entry per line, so a failing window shows where the cut landed.
+[[nodiscard]] std::string describe_lines(const std::vector<std::string>& lines) {
+    if (lines.empty())
+        return "no lines";
+    std::string description;
+    for (const auto& line : lines) {
+        std::string_view kind = "invalid";
+        switch (classify_event(line)) {
+        case EventKind::started:
+            kind = "started";
+            break;
+        case EventKind::progress:
+            kind = "progress";
+            break;
+        case EventKind::log:
+            kind = "log";
+            break;
+        case EventKind::result:
+            kind = "result";
+            break;
+        case EventKind::error:
+            kind = "error";
+            break;
+        case EventKind::invalid:
+            break;
+        }
+        if (!description.empty())
+            description.append(", ");
+        description.append(kind).append(" ").append(std::to_string(line.size()));
+    }
+    return description;
+}
+
 [[nodiscard]] std::vector<std::string> child_environment() {
     std::vector<std::string> environment;
     const char* path = std::getenv("PATH");
@@ -683,10 +716,11 @@ void test_stdout_failure(const std::filesystem::path& executable,
         // from a complete run and ends inside the result event.
         std::size_t writable_bytes = limited_stdout_bytes;
         std::vector<std::string> helper_arguments{"--with-limited-stdout", path.string()};
+        std::vector<std::string> complete_lines;
         if (std::string_view(format) == "--event-stream") {
             const auto complete =
                 run_cli(executable, {"--lang", "en", "--quiet", "--event-stream", "360"});
-            const auto complete_lines = split_lines(complete.stdout_bytes);
+            complete_lines = split_lines(complete.stdout_bytes);
             const bool complete_ok = complete.succeeded() && complete_lines.size() >= 2 &&
                                      classify_event(complete_lines.back()) == EventKind::result;
             CHECK_CONTEXT(complete_ok, "complete event stream: " + describe(complete));
@@ -716,10 +750,14 @@ void test_stdout_failure(const std::filesystem::path& executable,
         CHECK_CONTEXT(bytes.size() == writable_bytes && bytes.front() == '{', context);
         if (std::string_view(format) == "--event-stream") {
             const auto lines = split_lines(bytes);
+            // The cut ends the last line, so a complete line there means that it
+            // missed the result event.
+            const auto window = "complete: " + describe_lines(complete_lines) + "; window " +
+                                std::to_string(writable_bytes) + " bytes: " + describe_lines(lines);
             CHECK_CONTEXT(!lines.empty() && classify_event(lines.front()) == EventKind::started &&
                               classify_event(lines.back()) == EventKind::result &&
                               !JsonSyntax(lines.back()).parse_object_document(),
-                          context);
+                          context + "; " + window);
         }
     }
 }
