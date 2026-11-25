@@ -238,6 +238,11 @@ execute_distributed_sieve_worker_entry_v1(Entry&& entry) noexcept {
             std::move(entry));
     diagnostic.writer_status = adopted.diagnostic.status;
     if (!adopted || !adopted.writer.has_value()) {
+        // DIAGNOSTIC BRANCH ONLY: name the writer phase for the job log.
+        std::fprintf(stderr, "writer adoption failed: writer phase=%u status=%u native_error=%d\n",
+                     static_cast<unsigned>(adopted.diagnostic.phase),
+                     static_cast<unsigned>(adopted.diagnostic.status),
+                     adopted.diagnostic.native_error);
         diagnostic.status = DistributedSieveWorkerExecutionStatusV1::writer_unavailable;
         diagnostic.native_error = adopted.diagnostic.native_error;
         diagnostic.artifacts_may_remain =

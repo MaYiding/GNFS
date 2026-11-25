@@ -717,6 +717,14 @@ mint_distributed_sieve_worker_writer_v1(OOCInheritedP8WriterMintV1&& mint) noexc
                         DistributedSieveWorkerWriterStatusV1::private_lease_invalid, EPROTO),
         };
     } catch (...) {
+        // DIAGNOSTIC BRANCH ONLY: name the exception for the job log.
+        try {
+            throw;
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "writer mint raised std::exception: %s\n", error.what());
+        } catch (...) {
+            std::fprintf(stderr, "writer mint raised a non-std exception\n");
+        }
         return {
             .writer = std::nullopt,
             .diagnostic = failure(DistributedSieveWorkerWriterPhaseV1::writer_creation,

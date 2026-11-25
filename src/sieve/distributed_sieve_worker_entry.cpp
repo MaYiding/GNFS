@@ -11,6 +11,8 @@
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
+#include <cstdio>
+#include <exception>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -1919,6 +1921,14 @@ DistributedSieveWorkerWriterAdoptionResultV1 consume_distributed_sieve_worker_wr
         };
     } catch (...) {
         state->invalidated.store(true, std::memory_order_release);
+        // DIAGNOSTIC BRANCH ONLY: name the exception for the job log.
+        try {
+            throw;
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "writer consume raised std::exception: %s\n", error.what());
+        } catch (...) {
+            std::fprintf(stderr, "writer consume raised a non-std exception\n");
+        }
         return {
             .writer = std::nullopt,
             .diagnostic =
