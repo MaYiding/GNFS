@@ -646,9 +646,6 @@ void test_configured_output(const std::filesystem::path& executable,
 
 #ifndef _WIN32
 constexpr std::size_t limited_stdout_bytes = 1024;
-// Bytes of the result event that a sized window leaves writable. They cover the
-// event type, so the truncated line still classifies as a result.
-constexpr std::size_t result_event_prefix_bytes = 64;
 
 bool redirect_to_limited_stdout(const char* path, std::size_t writable_bytes) {
     // Leave room for the coverage runtime to write its ordinary profile files.
@@ -725,8 +722,12 @@ void test_stdout_failure(const std::filesystem::path& executable,
                                      classify_event(complete_lines.back()) == EventKind::result;
             CHECK_CONTEXT(complete_ok, "complete event stream: " + describe(complete));
             if (complete_ok) {
-                writable_bytes = complete.stdout_bytes.size() - complete_lines.back().size() - 1 +
-                                 result_event_prefix_bytes;
+                // The window ends in the middle of the result event. Half of that
+                // event absorbs timing digits whose printed length differs between
+                // the two runs, and it still truncates the line.
+                const std::size_t result_event_bytes = complete_lines.back().size() + 1;
+                writable_bytes =
+                    complete.stdout_bytes.size() - result_event_bytes + result_event_bytes / 2;
                 helper_arguments = {"--with-limited-stdout-bytes", path.string(),
                                     std::to_string(writable_bytes)};
             }
