@@ -1114,13 +1114,11 @@ struct NamespaceInventoryResult final {
         try {
             scanned_leaves.emplace(scanned_position, std::string(leaf));
         } catch (const std::bad_alloc&) {
-            return {std::nullopt,
-                    diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
-                               std::make_error_code(std::errc::not_enough_memory))};
+            return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                             std::make_error_code(std::errc::not_enough_memory))};
         } catch (...) {
-            return {std::nullopt,
-                    diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
-                               std::make_error_code(std::errc::io_error))};
+            return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                             std::make_error_code(std::errc::io_error))};
         }
         if (leaf == LOCK_LEAF) {
             if (inventory.lock) {
@@ -2373,13 +2371,11 @@ inspect_private_lease_directory_handle(int directory_fd,
         try {
             scanned_leaves.emplace(scanned_position, std::string(child));
         } catch (const std::bad_alloc&) {
-            return {std::nullopt,
-                    diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
-                               std::make_error_code(std::errc::not_enough_memory))};
+            return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                             std::make_error_code(std::errc::not_enough_memory))};
         } catch (...) {
-            return {std::nullopt,
-                    diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
-                               std::make_error_code(std::errc::io_error))};
+            return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                             std::make_error_code(std::errc::io_error))};
         }
         if (child == DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF && !inventory.owner) {
             inventory.owner = true;
