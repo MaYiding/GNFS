@@ -901,12 +901,31 @@ static_assert(std::is_trivially_copyable_v<WorkerLaunchFakeChildReport>);
 }
 
 [[nodiscard]] int run_worker_coordinator_real_child() noexcept {
+    // The coordinator only reports the exit code, so a failing child names its
+    // failing step on the standard error that it inherits.
     auto adopted = worker_entry_detail::adopt_distributed_sieve_worker_entry_v1();
     if (!adopted || !adopted.entry.has_value()) {
+        const auto& failed = adopted.diagnostic;
+        std::fprintf(stderr,
+                     "worker coordinator real child: adopt failed phase=%u status=%u "
+                     "native_error=%d protocol=%u\n",
+                     static_cast<unsigned>(failed.phase), static_cast<unsigned>(failed.status),
+                     failed.native_error, static_cast<unsigned>(failed.protocol_status.error));
         return 221;
     }
     const auto executed = worker_execution_detail::execute_distributed_sieve_worker_entry_v1(
         std::move(*adopted.entry));
+    if (!executed) {
+        const auto& failed = executed.diagnostic;
+        std::fprintf(stderr,
+                     "worker coordinator real child: execution failed phase=%u status=%u "
+                     "native_error=%d protocol=%u entry=%u writer=%u chunk=%u\n",
+                     static_cast<unsigned>(failed.phase), static_cast<unsigned>(failed.status),
+                     failed.native_error, static_cast<unsigned>(failed.protocol_status.error),
+                     static_cast<unsigned>(failed.entry_status),
+                     static_cast<unsigned>(failed.writer_status),
+                     static_cast<unsigned>(failed.chunk_status));
+    }
     return executed ? 0 : 222;
 }
 
