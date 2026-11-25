@@ -5685,8 +5685,8 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS = {
         "470d0973f63d32e9af3a85a485ba14b2c2eba9e516190d32a86a0ca37aa57a26",
     ),
     ("tests/test_api.cpp", "TEST"): (
-        80,
-        "98d888c4fdf3e852bc390ab2b295a2af81082c84a1c955c0d90d50636ea25d4f",
+        83,
+        "72fefbfc33ba01b2c9d1285b5e4b058e4f4e63294e545af61e4a709d493bb49a",
     ),
     ("tests/test_full_resume.cpp", "RUN_TEST"): (
         6,

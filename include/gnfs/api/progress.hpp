@@ -3,8 +3,10 @@
 #include "i18n.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <string>
 
 namespace gnfs::api {
@@ -163,12 +165,28 @@ inline const char* phase_tag(Phase p) {
     return "?";
 }
 
+/// Resolved GNFS parameters. Present only after the GNFS pipeline actually starts.
+struct EffectiveGNFSParameters {
+    uint32_t degree = 0;
+    uint32_t rational_bound = 0;
+    uint32_t algebraic_bound = 0;
+    uint64_t large_prime_bound = 0;
+    uint64_t sieve_width = 0;
+    uint64_t sieve_height = 0;
+    uint64_t max_special_q = 0;
+};
+
 /// Progress information passed to callbacks
 struct ProgressInfo {
     Phase phase;
     double phase_progress = -1.0; // 0.0-1.0 when estimable, -1 = indeterminate
     double elapsed_s = 0.0;       // seconds since factorization start
     std::string message;          // human-readable status
+    FactorizationMethod method = FactorizationMethod::Auto;
+    std::string algorithm;      // actual operation, not the requested route
+    std::string current_number; // current composite remainder
+    size_t attempt_index = 0;   // one-based inside complete factorization
+    std::optional<EffectiveGNFSParameters> effective_parameters;
 
     // Phase-specific counters
     size_t relations_found = 0;  // sieving: total relations so far

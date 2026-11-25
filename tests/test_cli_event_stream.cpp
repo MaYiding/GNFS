@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -341,6 +342,39 @@ enum class EventKind {
     return description;
 }
 
+// One "kind size" entry per line, so a failing window shows where the cut landed.
+[[nodiscard]] std::string describe_lines(const std::vector<std::string>& lines) {
+    if (lines.empty())
+        return "no lines";
+    std::string description;
+    for (const auto& line : lines) {
+        std::string_view kind = "invalid";
+        switch (classify_event(line)) {
+        case EventKind::started:
+            kind = "started";
+            break;
+        case EventKind::progress:
+            kind = "progress";
+            break;
+        case EventKind::log:
+            kind = "log";
+            break;
+        case EventKind::result:
+            kind = "result";
+            break;
+        case EventKind::error:
+            kind = "error";
+            break;
+        case EventKind::invalid:
+            break;
+        }
+        if (!description.empty())
+            description.append(", ");
+        description.append(kind).append(" ").append(std::to_string(line.size()));
+    }
+    return description;
+}
+
 [[nodiscard]] std::vector<std::string> child_environment() {
     std::vector<std::string> environment;
     const char* path = std::getenv("PATH");
@@ -488,7 +522,16 @@ void test_success_cases(const std::filesystem::path& executable) {
         CHECK_CONTEXT(prime.lines.front().find("\"method\":\"trial\"") != std::string::npos,
                       "prime 127 started method");
     }
-    check_terminal_contains(prime, "\"method\":\"trial\"", "prime 127 result method");
+    check_terminal_contains(prime, "\"method\":\"auto\"", "prime 127 result method");
+    check_terminal_contains(prime, "\"executed_algorithm\":\"primality\"",
+                            "prime 127 actual algorithm");
+    check_terminal_contains(prime, "\"gnfs_parameters_applied\":false", "prime no GNFS parameters");
+    const auto mixed =
+        validate_protocol(executable, {"--event-stream", "--complete", "2000072000198"}, 0,
+                          EventKind::result, true, "mixed trial rho");
+    check_terminal_contains(mixed, "\"executed_algorithm\":\"mixed\"", "mixed algorithm summary");
+    check_terminal_contains(mixed, "\"attempts\":[{", "individual split telemetry");
+    check_terminal_contains(mixed, "\"factors\":[\"2\",\"1000003\",\"1000033\"]", "mixed factors");
 
     const auto hexadecimal =
         validate_protocol(executable, {"0x168", "--complete", "--event-stream"}, 0,
@@ -665,9 +708,34 @@ void test_stdout_failure(const std::filesystem::path& executable,
         CHECK_CONTEXT(run.stderr_bytes.ends_with("Cannot write to standard output.\n"), context);
     }
     for (const auto format : {"--json", "--event-stream"}) {
-        const auto run =
-            run_cli(test_executable, {"--with-limited-stdout", path.string(), executable.string(),
-                                      "--lang", "en", "--quiet", format, "360"});
+        // The JSON output is one long line, so a fixed window cuts it. The event
+        // stream also reports the progress of the fast path, so its window comes
+        // from a complete run and ends inside the result event.
+        std::size_t writable_bytes = limited_stdout_bytes;
+        std::vector<std::string> helper_arguments{"--with-limited-stdout", path.string()};
+        std::vector<std::string> complete_lines;
+        if (std::string_view(format) == "--event-stream") {
+            const auto complete =
+                run_cli(executable, {"--lang", "en", "--quiet", "--event-stream", "360"});
+            complete_lines = split_lines(complete.stdout_bytes);
+            const bool complete_ok = complete.succeeded() && complete_lines.size() >= 2 &&
+                                     classify_event(complete_lines.back()) == EventKind::result;
+            CHECK_CONTEXT(complete_ok, "complete event stream: " + describe(complete));
+            if (complete_ok) {
+                // The window ends in the middle of the result event. Half of that
+                // event absorbs timing digits whose printed length differs between
+                // the two runs, and it still truncates the line.
+                const std::size_t result_event_bytes = complete_lines.back().size() + 1;
+                writable_bytes =
+                    complete.stdout_bytes.size() - result_event_bytes + result_event_bytes / 2;
+                helper_arguments = {"--with-limited-stdout-bytes", path.string(),
+                                    std::to_string(writable_bytes)};
+            }
+        }
+        auto arguments = helper_arguments;
+        arguments.insert(arguments.end(),
+                         {executable.string(), "--lang", "en", "--quiet", format, "360"});
+        const auto run = run_cli(test_executable, std::move(arguments));
         const auto context = std::string(format) + ": " + describe(run);
         CHECK_CONTEXT(run.error == BoundedChildProcessError::normal_nonzero &&
                           run.termination.exit_code == 1,
@@ -677,16 +745,20 @@ void test_stdout_failure(const std::filesystem::path& executable,
                           std::vector<std::string>{"Cannot write to standard output."},
                       context);
         std::ifstream output(path, std::ios::binary);
-        output.seekg(-static_cast<std::streamoff>(limited_stdout_bytes), std::ios::end);
+        output.seekg(-static_cast<std::streamoff>(writable_bytes), std::ios::end);
         const std::string bytes((std::istreambuf_iterator<char>(output)), {});
         // A leading zero would mean the read included the sparse hole.
-        CHECK_CONTEXT(bytes.size() == limited_stdout_bytes && bytes.front() == '{', context);
+        CHECK_CONTEXT(bytes.size() == writable_bytes && bytes.front() == '{', context);
         if (std::string_view(format) == "--event-stream") {
             const auto lines = split_lines(bytes);
+            // The cut ends the last line, so a complete line there means that it
+            // missed the result event.
+            const auto window = "complete: " + describe_lines(complete_lines) + "; window " +
+                                std::to_string(writable_bytes) + " bytes: " + describe_lines(lines);
             CHECK_CONTEXT(!lines.empty() && classify_event(lines.front()) == EventKind::started &&
                               classify_event(lines.back()) == EventKind::result &&
                               !JsonSyntax(lines.back()).parse_object_document(),
-                          context);
+                          context + "; " + window);
         }
     }
 }
@@ -785,6 +857,19 @@ void test_incompatible_options(const std::filesystem::path& executable,
 
 int main(int argc, char* argv[]) {
 #ifndef _WIN32
+    if (argc >= 5 && std::string_view(argv[1]) == "--with-limited-stdout-bytes") {
+        // --with-limited-stdout-bytes <path> <writable-bytes> <executable> [args...]
+        std::size_t writable_bytes = 0;
+        const std::string_view digits(argv[3]);
+        const auto parsed =
+            std::from_chars(digits.data(), digits.data() + digits.size(), writable_bytes);
+        if (digits.empty() || parsed.ec != std::errc{} ||
+            parsed.ptr != digits.data() + digits.size() || writable_bytes == 0 ||
+            !redirect_to_limited_stdout(argv[2], writable_bytes))
+            return 2;
+        ::execv(argv[4], argv + 4);
+        return 2;
+    }
     if (argc >= 4 && (std::string_view(argv[1]) == "--with-limited-stdout" ||
                       std::string_view(argv[1]) == "--with-full-stdout-live-stdin")) {
         const auto capacity =

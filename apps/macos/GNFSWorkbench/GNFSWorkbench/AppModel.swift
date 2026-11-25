@@ -22,8 +22,8 @@ final class AppModel {
   var history: [RunRecord] = []
   var selectedRunID: UUID?
   var isParametersPresented = false
-  var isHistoryPresented = false
-  var areLogsExpanded = true
+  var isHistoryPresented = true
+  var areLogsExpanded = false
   var alertMessage: String?
   var toastMessage: String?
   private(set) var isRunTaskActive = false
@@ -45,7 +45,8 @@ final class AppModel {
     let isDemo =
       ProcessInfo.processInfo.arguments.contains("--ui-testing")
       || ProcessInfo.processInfo.arguments.contains("--design-preview")
-    self.runner = runner ?? (isDemo ? DemoGNFSRunner() : ProcessGNFSRunner())
+    let usesRealEngine = ProcessInfo.processInfo.arguments.contains("--ui-testing-real-engine")
+    self.runner = runner ?? (isDemo && !usesRealEngine ? DemoGNFSRunner() : ProcessGNFSRunner())
 
     if let store {
       self.store = store
@@ -96,9 +97,31 @@ final class AppModel {
       && !isRunTaskActive && !isHistoryMutationActive
   }
 
+  var canEdit: Bool {
+    historyRestorationState == .ready && !isRunTaskActive && !isHistoryMutationActive && !isRunning
+  }
+
+  func retryHistoryRestoration() async {
+    guard historyRestorationState == .failed, !isRunTaskActive else { return }
+    historyRestorationState = .loading
+    alertMessage = nil
+    let task = Task { [weak self] in await self?.restoreHistory() ?? false }
+    restorationTask = task
+    _ = await task.value
+  }
+
+  func runOrRepeat() async {
+    if displayedRun != nil { await useConfigurationFromDisplayedRun() }
+    await startRun()
+  }
+
   func startRun() async {
     guard await waitForHistoryRestoration() else { return }
     guard !isRunTaskActive, !isHistoryMutationActive else { return }
+    if let message = inputValidationMessage {
+      alertMessage = message
+      return
+    }
     guard
       case .valid(let normalized) = IntegerInputValidator.validate(
         draftConfiguration.number
@@ -214,7 +237,6 @@ final class AppModel {
   func selectHistory(_ id: UUID) {
     guard historyRestorationState == .ready else { return }
     selectedRunID = id
-    isHistoryPresented = false
   }
 
   func removeHistory(_ offsets: IndexSet) async {
@@ -329,7 +351,9 @@ final class AppModel {
 
   private func restoreHistory() async -> Bool {
     do {
-      let restored = try await store.load()
+      let loaded = try await store.load()
+      var seen: Set<UUID> = []
+      let restored = loaded.filter { seen.insert($0.id).inserted }
       guard activeRun == nil else { return false }
       history = restored
       selectedRunID = restored.first?.id
@@ -380,14 +404,32 @@ final class AppModel {
         markFailed("结果事件缺少结果数据。")
         return
       }
+      guard let input = activeRun?.configuration.number,
+        DecimalBigUInt.decimalValue(input) == DecimalBigUInt.decimalValue(result.number),
+        DecimalBigUInt.decimalValue(result.number) != nil
+      else {
+        markFailed("结果整数与本次输入不一致；结果未被接受。")
+        return
+      }
       activeRun?.selectedMethod = result.method
       activeRun?.methodReason = result.methodReason
       activeRun?.result = result
       activeRun?.completedAt = Date()
-      activeRun?.phase = .done
-      activeRun?.phaseProgress = 1
       activeRun?.elapsed = result.timings.total
+      activeRun?.activeAlgorithm = result.statistics.executedAlgorithm
+      activeRun?.attemptIndex = result.attempts.map { UInt64($0.count) }
+      activeRun?.currentNumber = result.number
+      activeRun?.resolvedParameters =
+        result.attempts?.last?.statistics.effectiveParameters
+        ?? result.statistics.effectiveParameters
+      activeRun?.relationsFound = result.statistics.relationsFound
+      activeRun?.relationsTarget = 0
+      activeRun?.specialQDone = result.statistics.specialQProcessed
+      activeRun?.matrixRows = result.statistics.matrixRows
+      activeRun?.matrixCols = result.statistics.matrixCols
       if result.success && result.isVerified {
+        activeRun?.phase = .done
+        activeRun?.phaseProgress = 1
         activeRun?.status = .succeeded
       } else if result.success {
         activeRun?.status = .failed
@@ -407,38 +449,61 @@ final class AppModel {
   }
 
   private func consumeProgress(_ event: CLIEvent) {
-    if let phase = event.phase { activeRun?.phase = phase }
-    activeRun?.phaseProgress = event.phaseProgress
-    if let elapsed = event.elapsed { activeRun?.elapsed = elapsed }
-    if let relations = event.relationsFound { activeRun?.relationsFound = relations }
-    if let target = event.relationsTarget { activeRun?.relationsTarget = target }
-    if let specialQ = event.specialQDone { activeRun?.specialQDone = specialQ }
-    if let rows = event.matrixRows { activeRun?.matrixRows = rows }
-    if let columns = event.matrixCols { activeRun?.matrixCols = columns }
-
-    guard let elapsed = event.elapsed,
-      let relations = event.relationsFound,
-      relations > 0
-    else { return }
-
-    let previous = activeRun?.samples.last
-    guard previous == nil || elapsed - (previous?.elapsed ?? 0) >= 0.15 else { return }
-    let deltaTime = max(elapsed - (previous?.elapsed ?? 0), 0.001)
-    let deltaRelations =
-      relations >= (previous?.relations ?? 0)
-      ? relations - (previous?.relations ?? 0)
-      : 0
-    let instantRate = Double(deltaRelations) / deltaTime
-    let smoothedRate = previous.map { $0.rate * 0.55 + instantRate * 0.45 } ?? instantRate
-    activeRun?.samples.append(
-      ProgressSample(
-        elapsed: elapsed,
-        relations: relations,
-        rate: smoothedRate
-      ))
-    if let count = activeRun?.samples.count, count > 240 {
-      activeRun?.samples.removeFirst(count - 240)
+    guard var run = activeRun else { return }
+    let newAttempt = event.attemptIndex.map { $0 != run.attemptIndex && $0 > 0 } ?? false
+    if newAttempt {
+      run.relationsFound = 0
+      run.relationsTarget = 0
+      run.specialQDone = 0
+      run.matrixRows = 0
+      run.matrixCols = 0
+      run.samples = []
+      run.rateBaseline = nil
+      run.resolvedParameters = nil
+      run.dependenciesTried = nil
+      run.dependenciesTotal = nil
     }
+    let enteringSieve = event.phase == .sieving && (run.phase != .sieving || newAttempt)
+    if let index = event.attemptIndex { run.attemptIndex = index }
+    if let number = event.currentNumber, !number.isEmpty { run.currentNumber = number }
+    if let algorithm = event.algorithm, !algorithm.isEmpty { run.activeAlgorithm = algorithm }
+    if let method = event.method { run.selectedMethod = method }
+    if let parameters = event.effectiveParameters { run.resolvedParameters = parameters }
+    if event.phase != .done {
+      if let phase = event.phase { run.phase = phase }
+      run.phaseProgress = event.phaseProgress
+    }
+    if let elapsed = event.elapsed, elapsed.isFinite { run.elapsed = max(run.elapsed, elapsed) }
+    if event.phase == .sieving {
+      if let relations = event.relationsFound { run.relationsFound = relations }
+      if let target = event.relationsTarget { run.relationsTarget = target }
+      if let specialQ = event.specialQDone { run.specialQDone = specialQ }
+      if let elapsed = event.elapsed, elapsed.isFinite, let relations = event.relationsFound {
+        let previous = run.rateBaseline
+        if enteringSieve || previous == nil || relations < (previous?.relations ?? 0) {
+          if relations < (previous?.relations ?? 0) { run.samples = [] }
+          run.rateBaseline = ProgressSample(elapsed: elapsed, relations: relations, rate: 0)
+        } else if let previous, elapsed - previous.elapsed >= 0.15 {
+          let instant = Double(relations - previous.relations) / (elapsed - previous.elapsed)
+          let smoothed = run.samples.last.map { $0.rate * 0.55 + instant * 0.45 } ?? instant
+          let sample = ProgressSample(elapsed: elapsed, relations: relations, rate: smoothed)
+          run.samples.append(sample)
+          run.rateBaseline = sample
+          if run.samples.count > 240 { run.samples.removeFirst(run.samples.count - 240) }
+        }
+      }
+    }
+    if event.phase == .squareRoot || event.phase == .extraction {
+      if let tried = event.dependencyIndex { run.dependenciesTried = tried }
+      if let total = event.dependenciesTotal, total > 0 || event.phase == .squareRoot {
+        run.dependenciesTotal = total
+      }
+    }
+    if event.phase == .linearAlgebra {
+      if let rows = event.matrixRows { run.matrixRows = rows }
+      if let columns = event.matrixCols { run.matrixCols = columns }
+    }
+    activeRun = run
   }
 
   private func finishIfNeeded() {
@@ -454,6 +519,8 @@ final class AppModel {
   }
 
   private func markCancelled() {
+    let terminalElapsed = activeRun?.elapsed(at: Date()) ?? 0
+    activeRun?.elapsed = terminalElapsed
     activeRun?.status = .cancelled
     activeRun?.completedAt = Date()
     activeRun?.errorMessage = "任务已由用户取消。"
@@ -461,6 +528,8 @@ final class AppModel {
   }
 
   private func markFailed(_ message: String) {
+    let terminalElapsed = activeRun?.elapsed(at: Date()) ?? 0
+    activeRun?.elapsed = terminalElapsed
     activeRun?.status = .failed
     activeRun?.completedAt = Date()
     activeRun?.errorMessage = message

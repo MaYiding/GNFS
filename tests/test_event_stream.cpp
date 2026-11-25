@@ -58,12 +58,23 @@ void test_progress_and_log_events() {
     progress.relations_found = 31'582'944;
     progress.relations_target = 64'000'000;
     progress.special_q_done = 12'547'831;
+    progress.method = FactorizationMethod::GNFS;
+    progress.algorithm = "gnfs";
+    progress.current_number = "143";
+    progress.attempt_index = 2;
+    progress.effective_parameters = EffectiveGNFSParameters{3, 5, 7, 101, 17, 8, 100};
 
     const auto progress_json = event_stream::progress_event(progress);
     check(progress_json.find("\"phase\":\"sieve\"") != std::string::npos, "progress phase");
     check(progress_json.find("\"relations_target\":64000000") != std::string::npos,
           "progress target");
     check(progress_json.find('\n') == std::string::npos, "progress event is one line");
+    check(progress_json.find("\"attempt_index\":2") != std::string::npos,
+          "progress attempt identity");
+    check(progress_json.find("\"sieve_width\":17") != std::string::npos,
+          "progress effective odd width");
+    check(progress_json.find("\"algorithm\":\"gnfs\"") != std::string::npos,
+          "actual executed algorithm");
 
     progress.phase_progress = -1.0;
     check(event_stream::progress_event(progress).find("\"phase_progress\":null") !=
@@ -141,6 +152,16 @@ void test_invalid_enum_values_rejected() {
     } catch (const std::invalid_argument&) {
         progress_rejected = true;
     }
+
+    progress.phase = Phase::Sieving;
+    progress.method = invalid_method;
+    bool progress_method_rejected = false;
+    try {
+        (void)event_stream::progress_event(progress);
+    } catch (const std::invalid_argument&) {
+        progress_method_rejected = true;
+    }
+    check(progress_method_rejected, "progress event rejects invalid method");
 
     LogEntry invalid_level{static_cast<LogLevel>(255), Phase::Filtering, 0.0, "invalid"};
     bool level_rejected = false;

@@ -1,6 +1,27 @@
 import Foundation
 
 enum DecimalBigUInt {
+  /// Canonical decimal representation for comparing CLI results with decimal or hexadecimal input.
+  static func decimalValue(_ input: String) -> String? {
+    guard case .valid(let value) = IntegerInputValidator.validate(input) else { return nil }
+    guard value.hasPrefix("0x") else { return value }
+    var digits = [0]
+    for character in value.dropFirst(2) {
+      guard let nibble = character.hexDigitValue else { return nil }
+      var carry = nibble
+      for index in digits.indices {
+        let next = digits[index] * 16 + carry
+        digits[index] = next % 10
+        carry = next / 10
+      }
+      while carry > 0 {
+        digits.append(carry % 10)
+        carry /= 10
+      }
+    }
+    return digits.reversed().map(String.init).joined()
+  }
+
   private static func isASCIIDigit(_ character: Character) -> Bool {
     character >= "0" && character <= "9"
   }

@@ -1088,6 +1088,7 @@ struct NamespaceInventoryResult final {
     UniqueDirectory directory(raw_directory);
 
     NamespaceInventory inventory;
+    std::vector<std::string> scanned_leaves;
     errno = 0;
     for (;;) {
         dirent* entry = ::readdir(raw_directory);
@@ -1101,6 +1102,23 @@ struct NamespaceInventoryResult final {
         const std::string_view leaf(entry->d_name);
         if (leaf == "." || leaf == "..") {
             continue;
+        }
+        // readdir can report one entry again when another process changes the
+        // directory during this scan. A directory holds one entry per name, so a
+        // repeated name is the same entry and must not count as a conflict.
+        const auto scanned_position =
+            std::lower_bound(scanned_leaves.begin(), scanned_leaves.end(), leaf);
+        if (scanned_position != scanned_leaves.end() && *scanned_position == leaf) {
+            continue;
+        }
+        try {
+            scanned_leaves.emplace(scanned_position, std::string(leaf));
+        } catch (const std::bad_alloc&) {
+            return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                             std::make_error_code(std::errc::not_enough_memory))};
+        } catch (...) {
+            return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                             std::make_error_code(std::errc::io_error))};
         }
         if (leaf == LOCK_LEAF) {
             if (inventory.lock) {
@@ -2122,6 +2140,7 @@ inspect_private_lease_directory_at(int root_fd, const std::string& leaf,
     }
     UniqueDirectory scan(raw_directory);
     PrivateLeaseDirectoryInventory inventory;
+    std::vector<std::string> scanned_leaves;
     errno = 0;
     for (;;) {
         dirent* entry = ::readdir(raw_directory);
@@ -2137,6 +2156,29 @@ inspect_private_lease_directory_at(int root_fd, const std::string& leaf,
         const std::string_view child(entry->d_name);
         if (child == "." || child == "..") {
             continue;
+        }
+        // readdir can report one entry again when another process changes the
+        // directory during this scan. A directory holds one entry per name, so a
+        // repeated name is the same entry and must not count as a conflict.
+        const auto scanned_position =
+            std::lower_bound(scanned_leaves.begin(), scanned_leaves.end(), child);
+        if (scanned_position != scanned_leaves.end() && *scanned_position == child) {
+            continue;
+        }
+        try {
+            scanned_leaves.emplace(scanned_position, std::string(child));
+        } catch (const std::bad_alloc&) {
+            return {{},
+                    std::nullopt,
+                    std::nullopt,
+                    diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                               std::make_error_code(std::errc::not_enough_memory))};
+        } catch (...) {
+            return {{},
+                    std::nullopt,
+                    std::nullopt,
+                    diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                               std::make_error_code(std::errc::io_error))};
         }
         if (child == DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF && !inventory.owner) {
             inventory.owner = true;
@@ -2303,6 +2345,7 @@ inspect_private_lease_directory_handle(int directory_fd,
     }
     UniqueDirectory scan(raw_directory);
     PrivateLeaseDirectoryInventory inventory;
+    std::vector<std::string> scanned_leaves;
     errno = 0;
     for (;;) {
         dirent* entry = ::readdir(raw_directory);
@@ -2316,6 +2359,23 @@ inspect_private_lease_directory_handle(int directory_fd,
         const std::string_view child(entry->d_name);
         if (child == "." || child == "..") {
             continue;
+        }
+        // readdir can report one entry again when another process changes the
+        // directory during this scan. A directory holds one entry per name, so a
+        // repeated name is the same entry and must not count as a conflict.
+        const auto scanned_position =
+            std::lower_bound(scanned_leaves.begin(), scanned_leaves.end(), child);
+        if (scanned_position != scanned_leaves.end() && *scanned_position == child) {
+            continue;
+        }
+        try {
+            scanned_leaves.emplace(scanned_position, std::string(child));
+        } catch (const std::bad_alloc&) {
+            return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::resource_exhausted,
+                                             std::make_error_code(std::errc::not_enough_memory))};
+        } catch (...) {
+            return {std::nullopt, diagnostic(DistributedSieveWaveStoreStatus::unexpected_failure,
+                                             std::make_error_code(std::errc::io_error))};
         }
         if (child == DISTRIBUTED_SIEVE_PRIVATE_LEASE_OWNER_LEAF && !inventory.owner) {
             inventory.owner = true;
