@@ -27,12 +27,17 @@ struct CLIEvent: Decodable, Sendable {
   let specialQDone: UInt64?
   let matrixRows: UInt64?
   let matrixCols: UInt64?
-  let dependencyIndex: Int?
-  let dependenciesTotal: Int?
+  private let dependencyIndexValue: DependencyIndex?
+  var dependencyIndex: UInt64? { dependencyIndexValue?.value }
+  let dependenciesTotal: UInt64?
   let level: String?
   let timestamp: Double?
   let result: FactorizationResult?
   let code: String?
+  let algorithm: String?
+  let currentNumber: String?
+  let attemptIndex: UInt64?
+  let effectiveParameters: EffectiveGNFSParameters?
 
   enum CodingKeys: String, CodingKey {
     case schemaVersion = "schema_version"
@@ -53,11 +58,30 @@ struct CLIEvent: Decodable, Sendable {
     case specialQDone = "special_q_done"
     case matrixRows = "matrix_rows"
     case matrixCols = "matrix_cols"
-    case dependencyIndex = "dependency_index"
+    case dependencyIndexValue = "dependency_index"
     case dependenciesTotal = "dependencies_total"
     case level
     case timestamp = "timestamp_s"
     case result
     case code
+    case algorithm
+    case currentNumber = "current_number"
+    case attemptIndex = "attempt_index"
+    case effectiveParameters = "effective_parameters"
+  }
+}
+
+private struct DependencyIndex: Decodable, Sendable {
+  let value: UInt64?
+  init(from decoder: any Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    if let count = try? container.decode(UInt64.self) {
+      value = count
+    } else if try container.decode(Int64.self) == -1 {
+      value = nil
+    } else {
+      throw DecodingError.dataCorruptedError(
+        in: container, debugDescription: "Invalid dependency count")
+    }
   }
 }

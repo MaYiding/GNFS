@@ -82,6 +82,7 @@ enum class SieveStopReason : uint8_t {
 
 /// Per-phase timing breakdown
 struct PhaseTimings {
+    double non_gnfs_s = 0.0; // measured prechecks and non-GNFS algorithms
     double poly_s = 0.0;
     double fb_s = 0.0;
     double sieve_s = 0.0;
@@ -99,6 +100,16 @@ struct FactorStats {
     // Method selection
     FactorizationMethod method_used = FactorizationMethod::Auto;
     std::string method_reason; // why this method was chosen
+    std::string executed_algorithm;
+    std::vector<std::string> algorithms_executed;
+    bool gnfs_parameters_applied = false;
+    uint64_t sieve_width = 0;
+    uint64_t sieve_height = 0;
+    uint64_t max_special_q = 0;
+    bool siqs_statistics_complete = true; // false when SIQS returned no result statistics
+    size_t siqs_relations = 0;            // rows retained after SIQS merge/trim
+    size_t siqs_polynomials = 0;
+    size_t siqs_workers = 0;
 
     // Input
     size_t n_bits = 0;
@@ -131,6 +142,7 @@ struct FactorStats {
     std::optional<uint64_t> candidate_batch_after_generation_current_rss_bytes;
     std::optional<uint64_t> candidate_batch_after_cofactor_current_rss_bytes;
     std::optional<uint64_t> candidate_batch_after_release_current_rss_bytes;
+    bool candidates_statistics_complete = true; // distributed workers do not report candidates
     size_t candidates_total = 0;
     size_t relations_found = 0;
     size_t full_relations = 0;
@@ -165,6 +177,7 @@ struct FactorResult {
     Integer n;                           // original input
     std::vector<Integer> factors;        // found factors (sorted ascending)
     FactorStats stats;
+    std::vector<FactorResult> attempts; // individual composite splits; empty on a single split
 
     /// Format as human-readable text
     [[nodiscard]] std::string to_text() const {
@@ -214,6 +227,7 @@ struct FactorResult {
 
         // Timings
         os << "  \"timings\": {\n";
+        os << "    \"non_gnfs_s\": " << json::number(stats.timings.non_gnfs_s) << ",\n";
         os << "    \"total_s\": " << json::number(stats.timings.total_s) << ",\n";
         os << "    \"poly_s\": " << json::number(stats.timings.poly_s) << ",\n";
         os << "    \"fb_s\": " << json::number(stats.timings.fb_s) << ",\n";
@@ -230,6 +244,28 @@ struct FactorResult {
 
         // Stats
         os << "  \"stats\": {\n";
+        os << "    \"executed_algorithm\": " << json::quote(stats.executed_algorithm) << ",\n";
+        os << "    \"algorithms_executed\": [";
+        for (size_t i = 0; i < stats.algorithms_executed.size(); ++i) {
+            if (i)
+                os << ",";
+            os << json::quote(stats.algorithms_executed[i]);
+        }
+        os << "],\n";
+        os << "    \"gnfs_parameters_applied\": "
+           << (stats.gnfs_parameters_applied ? "true" : "false") << ",\n";
+        os << "    \"sieve_width\": " << stats.sieve_width << ",\n";
+        os << "    \"sieve_height\": " << stats.sieve_height << ",\n";
+        os << "    \"max_special_q\": " << stats.max_special_q << ",\n";
+        os << "    \"siqs_relations\": "
+           << (stats.siqs_statistics_complete ? std::to_string(stats.siqs_relations) : "null")
+           << ",\n";
+        os << "    \"siqs_polynomials\": "
+           << (stats.siqs_statistics_complete ? std::to_string(stats.siqs_polynomials) : "null")
+           << ",\n";
+        os << "    \"siqs_workers\": "
+           << (stats.siqs_statistics_complete ? std::to_string(stats.siqs_workers) : "null")
+           << ",\n";
         os << "    \"degree\": " << stats.degree << ",\n";
         os << "    \"rational_bound\": " << stats.rational_bound << ",\n";
         os << "    \"algebraic_bound\": " << stats.algebraic_bound << ",\n";
@@ -281,6 +317,8 @@ struct FactorResult {
             os << "null";
         }
         os << ",\n";
+        os << "    \"candidates_statistics_complete\": "
+           << (stats.candidates_statistics_complete ? "true" : "false") << ",\n";
         os << "    \"candidates_total\": " << stats.candidates_total << ",\n";
         os << "    \"relations_found\": " << stats.relations_found << ",\n";
         os << "    \"full_relations\": " << stats.full_relations << ",\n";
@@ -295,8 +333,15 @@ struct FactorResult {
         os << "    \"matrix_excess\": " << stats.matrix_excess << ",\n";
         os << "    \"dependencies_found\": " << stats.dependencies_found << ",\n";
         os << "    \"dependencies_tried\": " << stats.dependencies_tried << "\n";
-        os << "  }\n";
-        os << "}\n";
+        os << "  },\n";
+        os << "  \"attempts\": [";
+        for (size_t i = 0; i < attempts.size(); ++i) {
+            if (i)
+                os << ",";
+            os << attempts[i].to_json();
+        }
+        os << "]\n}";
+
         return os.str();
     }
 
@@ -410,7 +455,10 @@ struct FactorResult {
         } else {
             os << "n/a\n";
         }
-        os << "  Candidates tested: " << stats.candidates_total << "\n";
+        os << "  Candidates tested: "
+           << (stats.candidates_statistics_complete ? std::to_string(stats.candidates_total)
+                                                    : "n/a")
+           << "\n";
         os << "  Relations found: " << stats.relations_found << "\n";
         os << "    Full: " << stats.full_relations << "\n";
         os << "    Partial (1LP): " << stats.partial_1lp << "\n";

@@ -6,41 +6,65 @@ import XCTest
 
 @MainActor
 final class OffscreenRenderingTests: XCTestCase {
-  func testLiveDashboardRendersOffscreenAtDesignViewport() throws {
+  func testLegacySuccessRequiresVerifiedFactorsAndMatchingInput() async throws {
+    let model = try await makeCompletedModel()
+    var run = try XCTUnwrap(model.activeRun)
+    let validResult = try XCTUnwrap(run.result)
+    XCTAssertTrue(run.hasVerifiedResult)
+    var legacy = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(validResult)) as? [String: Any])
+    legacy.removeValue(forKey: "factorization_complete")
+    legacy.removeValue(forKey: "factors_prime")
+    run.result = try JSONDecoder().decode(
+      FactorizationResult.self, from: JSONSerialization.data(withJSONObject: legacy))
+    XCTAssertFalse(run.hasVerifiedResult)
+    XCTAssertTrue(run.needsResultVerification)
+    install(run, in: model)
+    try render(model, name: "15-unverified-legacy-result", size: CGSize(width: 900, height: 640))
+    run.result = nil
+    XCTAssertTrue(run.needsResultVerification)
+    run.result = validResult
+    run.configuration.number = "361"
+    XCTAssertTrue(run.needsResultVerification)
+    run.configuration.number = "0x168"
+    XCTAssertTrue(run.hasVerifiedResult)
+  }
+
+  func testLiveDashboardRendersOffscreenAtDesignViewport() async throws {
     try render(
-      makeLiveModel(),
+      await makeLiveModel(),
       name: "01-live-dashboard-design-viewport",
       size: CGSize(width: 1_487, height: 1_058)
     )
   }
 
-  func testReadyStateRendersOffscreenAtDefaultWindowSize() throws {
+  func testReadyStateRendersOffscreenAtDefaultWindowSize() async throws {
     try render(
-      makeEmptyModel(),
+      await makeEmptyModel(),
       name: "02-ready-state-default-window",
       size: CGSize(width: 1_320, height: 940)
     )
   }
 
-  func testCompletePrimeFactorizationRendersOffscreen() throws {
+  func testCompletePrimeFactorizationRendersOffscreen() async throws {
     try render(
-      makeCompletedModel(),
+      await makeCompletedModel(),
       name: "03-complete-prime-factorization",
       size: CGSize(width: 1_320, height: 940)
     )
   }
 
-  func testFailureStateAndLargeTextRenderAtMinimumWindowSize() throws {
+  func testFailureStateAndLargeTextRenderAtMinimumWindowSize() async throws {
     try render(
-      makeFailureModel(),
+      await makeFailureModel(),
       name: "04-failure-large-text-minimum-window",
       size: CGSize(width: 1_000, height: 740),
       dynamicTypeSize: .accessibility1
     )
   }
 
-  func testHistoryAndParameterSurfacesRenderOffscreen() throws {
-    let model = try makeCompletedModel()
+  func testHistoryAndParameterSurfacesRenderOffscreen() async throws {
+    let model = try await makeCompletedModel()
     try renderView(
       HistoryView(model: model)
         .preferredColorScheme(.dark),
@@ -49,52 +73,172 @@ final class OffscreenRenderingTests: XCTestCase {
     )
 
     try renderView(
-      ParameterInspectorView(
-        configuration: .constant(
-          RunConfiguration(
-            number: "1000036000099",
-            method: .auto,
-            parameters: .automatic
-          )
-        )
-      )
-      .preferredColorScheme(.dark),
+      ParameterInspectorView(form: .constant(ParameterForm(configuration: RunConfiguration())))
+        .preferredColorScheme(.dark),
       name: "06-parameter-inspector",
-      size: CGSize(width: 340, height: 700)
+      size: CGSize(width: 480, height: 560)
     )
+  }
+
+  func testLightAppearanceAtMinimumWindowSize() async throws {
+    try render(
+      await makeEmptyModel(), name: "07-ready-light-minimum", size: CGSize(width: 900, height: 640),
+      colorScheme: .light)
+    try render(
+      await makeLiveModel(), name: "08-live-light-minimum", size: CGSize(width: 900, height: 640),
+      colorScheme: .light)
+    try render(
+      await makeCompletedModel(), name: "09-result-light-minimum",
+      size: CGSize(width: 900, height: 900), colorScheme: .light)
+  }
+
+  func testLongInputAndInvalidParameterFormRender() async throws {
+    let model = await makeEmptyModel()
+    model.draftConfiguration.number = String(repeating: "1234567890", count: 10)
+    try render(model, name: "10-long-integer", size: CGSize(width: 900, height: 740))
+    var form = ParameterForm(configuration: RunConfiguration())
+    form.values[.rationalBound] = "abc"
+    form.values[.largePrimeBound] = "18446744073709551616"
+    try renderView(
+      ParameterInspectorView(form: .constant(form)).preferredColorScheme(.light),
+      name: "11-invalid-parameters", size: CGSize(width: 480, height: 560), colorScheme: .light)
+  }
+
+  func testCompleteParameterSheetFitsShortWindow() async throws {
+    let model = await makeEmptyModel()
+    try renderView(
+      ParameterEditorSheet(model: model), name: "12-parameter-sheet",
+      size: CGSize(width: 560, height: 580), colorScheme: .light)
+  }
+
+  func testReducedMotionAndExpandedConsoleRemainUsable() async throws {
+    let model = await makeLiveModel()
+    model.areLogsExpanded = true
+    try renderView(
+      ContentView(model: model).environment(\.workbenchReduceMotion, true),
+      name: "16-reduced-motion-live", size: CGSize(width: 1000, height: 1000))
+    let logs = (0..<600).map { index in
+      RunLogEntry(
+        timestamp: Double(index) / 10, severity: index % 11 == 0 ? .warning : .info,
+        phase: .sieving, message: "Batch \(index): processing special-q and collecting relations")
+    }
+    try renderView(
+      RunLogsView(
+        entries: logs, isExpanded: .constant(true), canClear: false,
+        copy: { _ in }, clear: {}
+      )
+      .padding(20).background(AppTheme.canvas).environment(\.workbenchReduceMotion, true),
+      name: "17-expanded-console-capacity", size: CGSize(width: 650, height: 350),
+      colorScheme: .light)
+  }
+
+  func testGNFSStatisticsAndEffectiveParametersRender() async throws {
+    let model = try await makeCompletedModel()
+    let baseline = try XCTUnwrap(model.activeRun?.result)
+    var object = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(baseline)) as? [String: Any])
+    var stats = try XCTUnwrap(object["stats"] as? [String: Any])
+    stats.merge([
+      "executed_algorithm": "gnfs", "algorithms_executed": ["trial", "rho", "gnfs"],
+      "gnfs_parameters_applied": true, "degree": 3, "rational_bound": 5000,
+      "algebraic_bound": 10000, "large_prime_bound": 131072, "sieve_width": 513,
+      "sieve_height": 128, "max_special_q": 10000, "relations_found": 15824,
+      "full_relations": 15000, "partial_1lp": 800, "partial_2lp": 24,
+      "relations_after_filter": 14000, "matrix_rows": 14000, "matrix_cols": 13600,
+      "matrix_weight": 82540, "matrix_excess": 400, "dependencies_found": 12,
+      "dependencies_tried": 3, "sieve_rounds_completed": 2,
+    ]) { _, new in new }
+    object["stats"] = stats
+    object["method"] = "gnfs"
+    let result = try JSONDecoder().decode(
+      FactorizationResult.self, from: JSONSerialization.data(withJSONObject: object))
+    try renderView(
+      RunStatisticsView(result: result).padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(
+          AppTheme.canvas),
+      name: "13-gnfs-statistics-light", size: CGSize(width: 1000, height: 600), colorScheme: .light)
+    try renderView(
+      RunStatisticsView(result: result).padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(
+          AppTheme.canvas),
+      name: "14-gnfs-statistics-dark", size: CGSize(width: 640, height: 850), colorScheme: .dark)
   }
 
   private func render(
     _ model: AppModel,
     name: String,
     size: CGSize,
-    dynamicTypeSize: DynamicTypeSize = .large
+    dynamicTypeSize: DynamicTypeSize = .large,
+    colorScheme: ColorScheme = .dark
   ) throws {
     try renderView(
       ContentView(model: model)
-        .preferredColorScheme(.dark)
+        .environment(\.colorScheme, colorScheme)
+        .preferredColorScheme(colorScheme)
         .environment(\.dynamicTypeSize, dynamicTypeSize)
         .frame(width: size.width, height: size.height),
       name: name,
-      size: size
+      size: size,
+      colorScheme: colorScheme
     )
   }
 
   private func renderView<Content: View>(
     _ view: Content,
     name: String,
-    size: CGSize
+    size: CGSize,
+    colorScheme: ColorScheme = .dark
   ) throws {
-    let hostingView = NSHostingView(rootView: view)
-    hostingView.frame = NSRect(origin: .zero, size: size)
-    hostingView.layoutSubtreeIfNeeded()
+    let appearance = try XCTUnwrap(
+      NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua))
+    var bitmap: NSBitmapImageRep?
+    // Split-view children need controller containment and an AppKit drawing appearance,
+    // not just SwiftUI's colorScheme. The window remains offscreen throughout capture.
+    appearance.performAsCurrentDrawingAppearance {
+      let controller = NSHostingController(
+        rootView: view.environment(\.colorScheme, colorScheme).preferredColorScheme(colorScheme))
+      let hostingView = controller.view
+      hostingView.appearance = appearance
+      let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: size),
+        styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.appearance = appearance
+      window.contentViewController = controller
+      defer { window.close() }
+      window.setContentSize(size)
 
-    guard let representation = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
-    else {
+      // Installing a SwiftUI toolbar can reduce the hosting viewport on the first
+      // layout pass. Correct the window by the measured deficit instead of forcing
+      // a child frame that AppKit will overwrite during the next layout.
+      for _ in 0..<4 {
+        window.contentView?.layoutSubtreeIfNeeded()
+        hostingView.layoutSubtreeIfNeeded()
+        let widthDeficit = size.width - hostingView.bounds.width
+        let heightDeficit = size.height - hostingView.bounds.height
+        if abs(widthDeficit) < 0.001, abs(heightDeficit) < 0.001 { break }
+        var frame = window.frame
+        frame.size.width += widthDeficit
+        frame.size.height += heightDeficit
+        window.setFrame(frame, display: false)
+      }
+      window.contentView?.layoutSubtreeIfNeeded()
+      hostingView.layoutSubtreeIfNeeded()
+      XCTAssertEqual(hostingView.bounds.width, size.width, accuracy: 0.001)
+      XCTAssertEqual(hostingView.bounds.height, size.height, accuracy: 0.001)
+
+      hostingView.effectiveAppearance.performAsCurrentDrawingAppearance {
+        bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
+        if let bitmap {
+          hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        }
+      }
+    }
+
+    guard let representation = bitmap else {
       XCTFail("Unable to allocate offscreen bitmap")
       return
     }
-    hostingView.cacheDisplay(in: hostingView.bounds, to: representation)
     guard let png = representation.representation(using: .png, properties: [:]) else {
       XCTFail("Unable to encode offscreen bitmap")
       return
@@ -146,16 +290,23 @@ final class OffscreenRenderingTests: XCTestCase {
 
     let sampleCount = sampleColumns * sampleRows
     XCTAssertGreaterThan(visibleSamples, sampleCount * 9 / 10)
-    XCTAssertGreaterThan(sampledColors.count, 8)
+    // A monochrome statistics panel is valid; require foreground structure, not a fixed palette.
+    XCTAssertGreaterThan(sampledColors.count, 2)
     XCTAssertGreaterThan(maximumLuminance - minimumLuminance, 0.08)
   }
 
-  private func makeEmptyModel() -> AppModel {
-    AppModel(runner: PreviewIdleRunner(), store: makeStore())
+  private func makeEmptyModel() async -> AppModel {
+    let model = AppModel(runner: PreviewIdleRunner(), store: makeStore())
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while model.historyRestorationState == .loading, ContinuousClock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(5))
+    }
+    XCTAssertEqual(model.historyRestorationState, .ready)
+    return model
   }
 
-  private func makeLiveModel() -> AppModel {
-    let model = makeEmptyModel()
+  private func makeLiveModel() async -> AppModel {
+    let model = await makeEmptyModel()
     var run = RunRecord(
       configuration: RunConfiguration(
         number: "1000036000099",
@@ -164,6 +315,13 @@ final class OffscreenRenderingTests: XCTestCase {
       ))
     run.status = .running
     run.selectedMethod = .gnfs
+    run.activeAlgorithm = "gnfs"
+    run.attemptIndex = 1
+    run.currentNumber = run.configuration.number
+    run.resolvedParameters = EffectiveGNFSParameters(
+      degree: 3, rationalBound: 5000,
+      algebraicBound: 10000, largePrimeBound: 131072, sieveWidth: 512, sieveHeight: 128,
+      maxSpecialQ: 10000)
     run.methodReason = "完整一般数域筛流水线"
     run.phase = .sieving
     run.phaseProgress = 0.86
@@ -184,8 +342,8 @@ final class OffscreenRenderingTests: XCTestCase {
     return model
   }
 
-  private func makeCompletedModel() throws -> AppModel {
-    let model = makeEmptyModel()
+  private func makeCompletedModel() async throws -> AppModel {
+    let model = await makeEmptyModel()
     var run = RunRecord(
       configuration: RunConfiguration(
         number: "360",
@@ -215,8 +373,8 @@ final class OffscreenRenderingTests: XCTestCase {
     return model
   }
 
-  private func makeFailureModel() -> AppModel {
-    let model = makeEmptyModel()
+  private func makeFailureModel() async -> AppModel {
+    let model = await makeEmptyModel()
     var run = RunRecord(
       configuration: RunConfiguration(
         number:
@@ -226,6 +384,7 @@ final class OffscreenRenderingTests: XCTestCase {
       ))
     run.status = .failed
     run.selectedMethod = .gnfs
+    run.activeAlgorithm = "gnfs"
     run.phase = .sieving
     run.elapsed = 83.42
     run.errorMessage = "关系数量不足，无法构造可求解矩阵。"
@@ -264,7 +423,7 @@ final class OffscreenRenderingTests: XCTestCase {
   }
 
   private static let completedResultJSON =
-    #"{"success":true,"factorization_complete":true,"factors_prime":true,"n":"360","n_bits":9,"n_digits":3,"method":"trial","method_name":"Trial Division","method_reason":"complete prime factorization","factors":["2","2","2","3","3","5"],"timings":{"total_s":0.012,"poly_s":0,"fb_s":0,"sieve_s":0,"filter_s":0,"linalg_s":0,"sqrt_s":0,"extract_s":0},"stats":{"degree":0,"rational_bound":0,"algebraic_bound":0,"large_prime_bound":0,"rational_primes":0,"algebraic_primes":0,"special_q_processed":0,"candidates_total":0,"relations_found":0,"full_relations":0,"partial_1lp":0,"partial_2lp":0,"relations_after_filter":0,"singletons_removed":0,"merged_relations":0,"matrix_rows":0,"matrix_cols":0,"matrix_excess":0,"dependencies_found":0,"dependencies_tried":0}}"#
+    #"{"success":true,"factorization_complete":true,"factors_prime":true,"n":"360","n_bits":9,"n_digits":3,"method":"trial","method_name":"Trial Division","method_reason":"complete prime factorization","factors":["2","2","2","3","3","5"],"timings":{"non_gnfs_s":0.012,"total_s":0.012,"poly_s":0,"fb_s":0,"sieve_s":0,"filter_s":0,"linalg_s":0,"sqrt_s":0,"extract_s":0},"stats":{"executed_algorithm":"trial","algorithms_executed":["trial"],"gnfs_parameters_applied":false,"degree":0,"rational_bound":0,"algebraic_bound":0,"large_prime_bound":0,"rational_primes":0,"algebraic_primes":0,"special_q_processed":0,"candidates_total":0,"relations_found":0,"full_relations":0,"partial_1lp":0,"partial_2lp":0,"relations_after_filter":0,"singletons_removed":0,"merged_relations":0,"matrix_rows":0,"matrix_cols":0,"matrix_excess":0,"dependencies_found":0,"dependencies_tried":0}}"#
 }
 
 private actor PreviewIdleRunner: GNFSRunning {

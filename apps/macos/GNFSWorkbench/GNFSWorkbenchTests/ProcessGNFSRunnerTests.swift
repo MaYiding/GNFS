@@ -68,6 +68,84 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(elapsed, .milliseconds(180))
   }
 
+  func testInheritedEngineOverridesAreIsolatedFromRunConfiguration() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let executable = root.appendingPathComponent("environment-probe.zsh")
+    let script = """
+      #!/bin/zsh
+      print -r -- "${GNFS_FORCE_SIQS-unset}|${GNFS_LP_BITS-unset}|${GNFS_CLI_PATH-unset}|${GNFS_RESUME}|${KEEP_ME}" > environment.txt
+      print -r -- '\(Self.successfulResultLine)'
+      """
+    try Data(script.utf8).write(to: executable)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    let workspace = RunWorkspace(
+      directory: root.appendingPathComponent("workspace"),
+      resumeBase: root.appendingPathComponent("workspace/state"))
+    let runner = ProcessGNFSRunner(
+      resolver: GNFSExecutableResolver(
+        bundle: .main,
+        environment: ["GNFS_CLI_PATH": executable.path], workingDirectory: root),
+      inheritedEnvironment: [
+        "GNFS_FORCE_SIQS": "1", "GNFS_LP_BITS": "19", "GNFS_RESUME": "foreign",
+        "GNFS_CLI_PATH": "foreign", "KEEP_ME": "preserved",
+      ])
+    let stream = try await runner.start(
+      configuration: RunConfiguration(number: "360"), workspace: workspace)
+    for try await _ in stream {}
+    await runner.cancel()
+    let observed = try String(
+      contentsOf: workspace.directory.appendingPathComponent("environment.txt"), encoding: .utf8)
+    XCTAssertEqual(observed, "unset|unset|unset|\(workspace.resumeBase.path)|preserved\n")
+  }
+
+  func testCompleteResultWithManySplitsExceedsLegacyOneMiBLimit() async throws {
+    let runner = ProcessGNFSRunner(
+      resolver: GNFSExecutableResolver(
+        bundle: .main,
+        environment: [:], workingDirectory: repositoryRoot()))
+    let workspace = temporaryWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace.directory) }
+    let number = try XCTUnwrap(
+      DecimalBigUInt.decimalValue("0x1" + String(repeating: "0", count: 256)))
+    let stream = try await runner.start(
+      configuration: RunConfiguration(number: number), workspace: workspace)
+    var result: FactorizationResult?
+    for try await event in stream where event.type == .result { result = event.result }
+    await runner.cancel()
+    let verified = try XCTUnwrap(result)
+    XCTAssertTrue(verified.isVerified)
+    XCTAssertEqual(verified.factors, Array(repeating: "2", count: 1024))
+    XCTAssertEqual(verified.attempts?.count, 1023)
+  }
+
+  func testRealCLIReportsEveryRecursiveSplitAndActualAlgorithms() async throws {
+    let runner = ProcessGNFSRunner(
+      resolver: GNFSExecutableResolver(
+        bundle: .main,
+        environment: [:], workingDirectory: repositoryRoot()))
+    let workspace = temporaryWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace.directory) }
+    let stream = try await runner.start(
+      configuration: RunConfiguration(number: "2000072000198"), workspace: workspace)
+    var result: FactorizationResult?
+    for try await event in stream where event.type == .result { result = event.result }
+    await runner.cancel()
+    let verified = try XCTUnwrap(result)
+    XCTAssertTrue(verified.isVerified)
+    XCTAssertEqual(verified.factors, ["2", "1000003", "1000033"])
+    XCTAssertEqual(verified.method, .rho)
+    XCTAssertEqual(verified.attempts?.map { $0.statistics.executedAlgorithm }, ["trial", "rho"])
+    XCTAssertEqual(verified.attempts?.map(\.number), ["2000072000198", "1000036000099"])
+    XCTAssertEqual(verified.statistics.gnfsParametersApplied, false)
+    XCTAssertEqual(verified.statistics.degree, 0)
+    XCTAssertNotNil(verified.timings.nonGNFS)
+    let restored = try JSONDecoder().decode(
+      FactorizationResult.self, from: JSONEncoder().encode(verified))
+    XCTAssertEqual(restored, verified)
+  }
+
   func testRealCLIStreamsVerifiedResultWithoutTerminalParsing() async throws {
     let executable = try XCTUnwrap(Bundle.main.url(forResource: "gnfs", withExtension: nil))
     XCTAssertTrue(FileManager.default.isExecutableFile(atPath: executable.path))
@@ -481,9 +559,10 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     XCTAssertLessThan(cancellationStarted.duration(to: clock.now), .seconds(5))
 
     let childPID = workspace.directory.appendingPathComponent("interrupt-child.pid")
-    XCTAssertTrue(FileManager.default.fileExists(
-      atPath: workspace.directory.appendingPathComponent("interrupt-handler-entered").path
-    ))
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: workspace.directory.appendingPathComponent("interrupt-handler-entered").path
+      ))
     for pidURL in [rootPID, childPID] {
       let didStop = await waitUntilProcessStops(pidURL: pidURL)
       XCTAssertTrue(didStop, processStateDescription(pidURL: pidURL))
@@ -593,13 +672,15 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     }
     XCTAssertLessThan(started.duration(to: clock.now), .seconds(4))
 
-    let rootPID = try XCTUnwrap(readProcessID(
-      at: workspace.directory.appendingPathComponent("crash-root.pid")
-    ))
-    for sessionName in ["crash-root.sid", "crash-child.sid", "crash-grandchild.sid"] {
-      let sessionID = try XCTUnwrap(readProcessID(
-        at: workspace.directory.appendingPathComponent(sessionName)
+    let rootPID = try XCTUnwrap(
+      readProcessID(
+        at: workspace.directory.appendingPathComponent("crash-root.pid")
       ))
+    for sessionName in ["crash-root.sid", "crash-child.sid", "crash-grandchild.sid"] {
+      let sessionID = try XCTUnwrap(
+        readProcessID(
+          at: workspace.directory.appendingPathComponent(sessionName)
+        ))
       XCTAssertEqual(sessionID, rootPID, "process escaped the isolated launch session")
     }
 
@@ -753,7 +834,7 @@ final class ProcessGNFSRunnerTests: XCTestCase {
     )
 
     await model.startRun()
-    let didStart = await waitUntil { model.activeRun?.selectedMethod == .gnfs }
+    let didStart = await waitUntil { model.activeRun?.activeAlgorithm != nil }
     XCTAssertTrue(didStart)
     model.cancelRun()
 

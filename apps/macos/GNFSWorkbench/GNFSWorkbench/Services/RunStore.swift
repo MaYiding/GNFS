@@ -85,6 +85,9 @@ actor RunStore: RunStoring {
     let decoded: [RunRecord]
     do {
       decoded = try decoder.decode([RunRecord].self, from: data)
+      guard Set(decoded.map(\.id)).count == decoded.count else {
+        throw CocoaError(.coderReadCorrupt)
+      }
     } catch {
       let quarantineURL = baseURL.appendingPathComponent(
         "history.invalid-\(UUID().uuidString).json",

@@ -45,7 +45,8 @@ protocol GNFSRunning: Sendable {
 
 actor ProcessGNFSRunner: GNFSRunning {
   nonisolated static let stdoutEventBufferLimit = 512
-  nonisolated static let maxEventLineBytes = 1_024 * 1_024
+  // Complete results contain per-split telemetry (e.g. 2^1024 has 1023 splits).
+  nonisolated static let maxEventLineBytes = 16 * 1_024 * 1_024
   nonisolated static let diagnosticTailLimit = 64 * 1_024
 
   private struct ByteRingBuffer {
@@ -190,6 +191,7 @@ actor ProcessGNFSRunner: GNFSRunning {
   }
 
   private let resolver: GNFSExecutableResolver
+  private let inheritedEnvironment: [String: String]
   private let processTrackingPollInterval: Duration
   private var processID: Int32?
   private var rootProcessIdentity: ManagedProcessIdentity?
@@ -201,9 +203,11 @@ actor ProcessGNFSRunner: GNFSRunning {
 
   init(
     resolver: GNFSExecutableResolver = GNFSExecutableResolver(),
-    processTrackingPollInterval: Duration = .milliseconds(100)
+    processTrackingPollInterval: Duration = .milliseconds(100),
+    inheritedEnvironment: [String: String] = ProcessInfo.processInfo.environment
   ) {
     self.resolver = resolver
+    self.inheritedEnvironment = inheritedEnvironment
     self.processTrackingPollInterval = processTrackingPollInterval
   }
 
@@ -221,7 +225,7 @@ actor ProcessGNFSRunner: GNFSRunning {
     )
     try Task.checkCancellation()
 
-    var environment = ProcessInfo.processInfo.environment
+    var environment = inheritedEnvironment.filter { !$0.key.hasPrefix("GNFS_") }
     environment["GNFS_RESUME"] = workspace.resumeBase.path
     environment["LC_ALL"] = "en_US.UTF-8"
     let launchedProcess = try Self.launchProcess(
@@ -362,12 +366,13 @@ actor ProcessGNFSRunner: GNFSRunning {
       if let processTracker {
         await processTracker.terminate()
       } else if let rootProcessIdentity {
-        _ = await Self.terminateProcessTree([
-          rootProcessIdentity.processID: ManagedProcessNode(
-            identity: rootProcessIdentity,
-            depth: 0
-          )
-        ], sessionID: rootProcessIdentity.processID)
+        _ = await Self.terminateProcessTree(
+          [
+            rootProcessIdentity.processID: ManagedProcessNode(
+              identity: rootProcessIdentity,
+              depth: 0
+            )
+          ], sessionID: rootProcessIdentity.processID)
       }
       processTrackerTask?.cancel()
       await processTrackerTask?.value
@@ -449,10 +454,12 @@ actor ProcessGNFSRunner: GNFSRunning {
         let children = directChildProcessIDs(of: parent.identity.processID)
         childSnapshotWasComplete = childSnapshotWasComplete && children.isComplete
         for childID in children.processIDs where isSafeManagedProcessID(childID) {
-          guard let childIdentity = managedProcessIdentity(
-            for: childID,
-            expectedParentID: parent.identity.processID
-          ) else { continue }
+          guard
+            let childIdentity = managedProcessIdentity(
+              for: childID,
+              expectedParentID: parent.identity.processID
+            )
+          else { continue }
           let existingIdentity = processTree[childID]?.identity
           if existingIdentity != childIdentity {
             processTree[childID] = ManagedProcessNode(
@@ -523,10 +530,12 @@ actor ProcessGNFSRunner: GNFSRunning {
       guard isProcessAlive(parent) else { continue }
       let children = directChildProcessIDs(of: parent.identity.processID)
       for childID in children.processIDs where isSafeManagedProcessID(childID) {
-        guard let childIdentity = managedProcessIdentity(
-          for: childID,
-          expectedParentID: parent.identity.processID
-        ) else { continue }
+        guard
+          let childIdentity = managedProcessIdentity(
+            for: childID,
+            expectedParentID: parent.identity.processID
+          )
+        else { continue }
         if processTree[childID]?.identity == childIdentity { continue }
         let child = ManagedProcessNode(identity: childIdentity, depth: parent.depth + 1)
         processTree[childID] = child
@@ -1003,7 +1012,8 @@ actor ProcessGNFSRunner: GNFSRunning {
   ) async -> String {
     await withCheckedContinuation { continuation in
       DispatchQueue.global(qos: .utility).async {
-        continuation.resume(returning: readDiagnosticTailSynchronously(from: descriptor, limit: limit))
+        continuation.resume(
+          returning: readDiagnosticTailSynchronously(from: descriptor, limit: limit))
       }
     }
   }

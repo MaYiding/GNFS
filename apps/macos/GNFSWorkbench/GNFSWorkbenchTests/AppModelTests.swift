@@ -29,6 +29,7 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(model.activeRun?.relationsFound, 500)
     XCTAssertEqual(model.activeRun?.logs.last?.message, "halfway")
     XCTAssertEqual(model.activeRun?.result?.factors, ["1000003", "1000033"])
+    XCTAssertEqual(model.activeRun?.result?.executionLabel, "未记录")
     XCTAssertEqual(model.history.first?.status, .succeeded)
   }
 
@@ -51,7 +52,6 @@ final class AppModelTests: XCTestCase {
     )
 
     for index in 0..<51 {
-      model.draftConfiguration.number = String(index + 2)
       await model.startRun()
       let didFinalize = await waitUntil { !model.isRunTaskActive }
       XCTAssertTrue(didFinalize)
@@ -102,6 +102,7 @@ final class AppModelTests: XCTestCase {
     let didCancel = await waitUntil { model.activeRun?.status == .cancelled }
     XCTAssertTrue(didCancel)
     XCTAssertEqual(model.activeRun?.errorMessage, "任务已由用户取消。")
+    XCTAssertGreaterThan(model.activeRun?.elapsed ?? 0, 0)
     let runnerCancelled = await runner.didCancel()
     XCTAssertTrue(runnerCancelled)
   }
@@ -253,8 +254,10 @@ final class AppModelTests: XCTestCase {
     let startCount = await runner.startCount()
     XCTAssertEqual(startCount, 0)
     XCTAssertFalse(FileManager.default.fileExists(atPath: historyURL.path))
-    let quarantines = try FileManager.default.contentsOfDirectory(at: storeURL, includingPropertiesForKeys: nil)
-      .filter { $0.lastPathComponent.hasPrefix("history.invalid-") }
+    let quarantines = try FileManager.default.contentsOfDirectory(
+      at: storeURL, includingPropertiesForKeys: nil
+    )
+    .filter { $0.lastPathComponent.hasPrefix("history.invalid-") }
     XCTAssertEqual(quarantines.count, 1)
     XCTAssertEqual(try Data(contentsOf: XCTUnwrap(quarantines.first)), malformed)
   }
@@ -276,6 +279,206 @@ final class AppModelTests: XCTestCase {
     XCTAssertEqual(message, "injected finalization failure")
     XCTAssertTrue(model.finalizationMessage(for: run).contains("未完成"))
     XCTAssertFalse(model.finalizationMessage(for: run).contains("已清理"))
+  }
+
+  func testInvalidParametersCannotBypassStartValidation() async {
+    let runner = ScriptedRunner(events: [])
+    let model = makeModel(runner: runner)
+    model.draftConfiguration.parameters.sieveWidth = 0
+    await model.startRun()
+    XCTAssertNil(model.activeRun)
+    XCTAssertNotNil(model.alertMessage)
+    let starts = await runner.startCount()
+    XCTAssertEqual(starts, 0)
+  }
+
+  func testResultForDifferentInputIsRejected() async throws {
+    let model = makeModel(runner: ScriptedRunner(events: [try decodeEvent(Self.resultEvent)]))
+    model.draftConfiguration.number = "360"
+    await model.startRun()
+    let finished = await waitUntil { !model.isRunTaskActive }
+    XCTAssertTrue(finished)
+    XCTAssertEqual(model.activeRun?.status, .failed)
+    XCTAssertNil(model.activeRun?.result)
+    XCTAssertEqual(model.activeRun?.errorMessage, "结果整数与本次输入不一致；结果未被接受。")
+  }
+
+  func testHexadecimalInputAcceptsEquivalentDecimalResult() async throws {
+    let model = makeModel(runner: ScriptedRunner(events: [try decodeEvent(Self.resultEvent)]))
+    model.draftConfiguration.number = "0x" + String(UInt64(1_000_036_000_099), radix: 16)
+    await model.startRun()
+    let finished = await waitUntil { !model.isRunTaskActive }
+    XCTAssertTrue(finished)
+    XCTAssertEqual(model.activeRun?.status, .succeeded)
+  }
+
+  func testHistoryRecoveryCanRetryAfterQuarantine() async throws {
+    let root = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data("invalid history".utf8).write(to: root.appendingPathComponent("history.json"))
+    let model = AppModel(
+      runner: ScriptedRunner(events: [try decodeEvent(Self.resultEvent)]),
+      store: RunStore(baseURL: root))
+    let failed = await waitUntil { model.historyRestorationState == .failed }
+    XCTAssertTrue(failed)
+    await model.retryHistoryRestoration()
+    XCTAssertEqual(model.historyRestorationState, .ready)
+    XCTAssertTrue(model.canStart)
+    await model.startRun()
+    let finished = await waitUntil { !model.isRunTaskActive }
+    XCTAssertTrue(finished)
+    XCTAssertEqual(model.activeRun?.status, .succeeded)
+    let files = try FileManager.default.contentsOfDirectory(atPath: root.path)
+    XCTAssertEqual(files.filter { $0.hasPrefix("history.invalid-") }.count, 1)
+  }
+
+  func testRepeatUsesSelectedRunInsteadOfStaleDraft() async throws {
+    let runner = ScriptedRunner(events: [try decodeEvent(Self.resultEvent)])
+    let model = makeModel(runner: runner)
+    model.draftConfiguration.parameters.rationalBound = 5000
+    await model.startRun()
+    let firstFinished = await waitUntil { !model.isRunTaskActive }
+    XCTAssertTrue(firstFinished)
+    let original = try XCTUnwrap(model.displayedRun)
+    model.draftConfiguration = RunConfiguration(number: "360")
+    await model.runOrRepeat()
+    let secondFinished = await waitUntil { !model.isRunTaskActive }
+    XCTAssertTrue(secondFinished)
+    XCTAssertEqual(model.activeRun?.configuration, original.configuration)
+    XCTAssertNotEqual(model.activeRun?.id, original.id)
+    let starts = await runner.startCount()
+    XCTAssertEqual(starts, 2)
+  }
+
+  func testRepeatCannotReplaceRunningTask() async throws {
+    let runner = HangingRunner(
+      startedEvent: try decodeEvent(
+        #"{"schema_version":1,"type":"started","n":"1000036000099","method":"gnfs"}"#))
+    let model = makeModel(runner: runner)
+    await model.startRun()
+    let id = model.activeRun?.id
+    await model.runOrRepeat()
+    XCTAssertEqual(model.activeRun?.id, id)
+    XCTAssertEqual(model.history.count, 1)
+    model.cancelRun()
+    let finished = await waitUntil { !model.isRunTaskActive }
+    XCTAssertTrue(finished)
+  }
+
+  func testInvalidFactorsCannotPassVerificationFlags() throws {
+    let object = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(Self.resultEvent.utf8)) as? [String: Any])
+    var result = try XCTUnwrap(object["result"] as? [String: Any])
+    for factors in [["1", "1000036000099"], ["0"], [""], ["２"], ["-2"]] {
+      result["factors"] = factors
+      if factors == ["0"] { result["n"] = "0" }
+      let data = try JSONSerialization.data(withJSONObject: result)
+      XCTAssertFalse(try JSONDecoder().decode(FactorizationResult.self, from: data).isVerified)
+    }
+  }
+
+  func testPhaseCountersAndRateSurviveFilteringWithoutChargingFilterTime() async throws {
+    let runner = ScriptedRunner(
+      events: try [
+        progress("sieve", elapsed: 100, relations: 0),
+        progress("sieve", elapsed: 102, relations: 200),
+        progress("filter", elapsed: 110),
+        progress("sieve", elapsed: 120, relations: 200),
+        progress("sieve", elapsed: 122, relations: 400),
+        progress("linalg", elapsed: 125, rows: 23, columns: 19),
+        progress("sqrt", elapsed: 127),
+      ])
+    let model = makeModel(runner: runner)
+    await model.startRun()
+    let finished = await waitUntil { model.activeRun?.status.isTerminal == true }
+    XCTAssertTrue(finished)
+    let run = try XCTUnwrap(model.activeRun)
+    XCTAssertEqual(run.relationsFound, 400)
+    XCTAssertEqual(run.matrixRows, 23)
+    XCTAssertEqual(run.matrixCols, 19)
+    XCTAssertEqual(run.samples.count, 2)
+    for sample in run.samples { XCTAssertEqual(sample.rate, 100, accuracy: 0.001) }
+    XCTAssertEqual(run.phase, .squareRoot)
+    XCTAssertTrue(run.usesGNFSPipeline)
+  }
+
+  func testNewAttemptAndCounterRestartResetRateWithoutHugeSpikes() async throws {
+    let runner = ScriptedRunner(
+      events: try [
+        progress("sieve", elapsed: 1, relations: 0),
+        progress("sieve", elapsed: 2, relations: 100),
+        progress("linalg", elapsed: 3, rows: 23, columns: 19),
+        progress("sieve", elapsed: 10, relations: 0, attempt: 2),
+        progress("sieve", elapsed: 12, relations: 20, attempt: 2),
+        progress("sieve", elapsed: 14, relations: 5, attempt: 2),
+        progress("sieve", elapsed: 16, relations: 25, attempt: 2),
+      ])
+    let model = makeModel(runner: runner)
+    await model.startRun()
+    let finished = await waitUntil { model.activeRun?.status.isTerminal == true }
+    XCTAssertTrue(finished)
+    let run = try XCTUnwrap(model.activeRun)
+    XCTAssertEqual(run.matrixRows, 0)
+    XCTAssertEqual(run.attemptIndex, 2)
+    XCTAssertEqual(run.samples.count, 1)
+    XCTAssertEqual(try XCTUnwrap(run.samples.last).rate, 10, accuracy: 0.001)
+  }
+
+  func testFailedResultRetainsObservedPhaseAndAuthoritativeFinalCounters() async throws {
+    var object = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(Self.resultEvent.utf8)) as? [String: Any])
+    var result = try XCTUnwrap(object["result"] as? [String: Any])
+    result["success"] = false
+    object["result"] = result
+    let terminal = try JSONDecoder().decode(
+      CLIEvent.self, from: JSONSerialization.data(withJSONObject: object))
+    let model = makeModel(
+      runner: ScriptedRunner(events: [
+        try progress("sqrt", elapsed: 2), try progress("done", elapsed: 2.1), terminal,
+      ]))
+    await model.startRun()
+    let finished = await waitUntil { model.activeRun?.status == .failed }
+    XCTAssertTrue(finished)
+    XCTAssertEqual(model.activeRun?.phase, .squareRoot)
+    XCTAssertEqual(model.activeRun?.relationsFound, 500)
+    XCTAssertEqual(model.activeRun?.specialQDone, 90)
+    XCTAssertEqual(model.activeRun?.elapsed, 2.1)
+  }
+
+  func testXORProgressRetainsDependencyTotalAndReportsCombinationAttempts() async throws {
+    let events = try [
+      decodeEvent(
+        #"{"schema_version":1,"type":"progress","phase":"sqrt","algorithm":"gnfs","dependency_index":2,"dependencies_total":2}"#
+      ),
+      decodeEvent(
+        #"{"schema_version":1,"type":"progress","phase":"extract","algorithm":"gnfs","dependency_index":-1,"dependencies_total":0}"#
+      ),
+      decodeEvent(
+        #"{"schema_version":1,"type":"progress","phase":"extract","algorithm":"gnfs","dependency_index":3,"dependencies_total":2}"#
+      ),
+    ]
+    let model = makeModel(runner: ScriptedRunner(events: events))
+    await model.startRun()
+    let finished = await waitUntil { model.activeRun?.status.isTerminal == true }
+    XCTAssertTrue(finished)
+    XCTAssertEqual(model.activeRun?.dependenciesTried, 3)
+    XCTAssertEqual(model.activeRun?.dependenciesTotal, 2)
+    XCTAssertEqual(model.activeRun?.phase, .extraction)
+  }
+
+  private func progress(
+    _ phase: String, elapsed: Double, relations: UInt64 = 0,
+    rows: UInt64 = 0, columns: UInt64 = 0, attempt: UInt64 = 1
+  ) throws -> CLIEvent {
+    let object: [String: Any] = [
+      "schema_version": 1, "type": "progress", "phase": phase,
+      "elapsed_s": elapsed, "relations_found": relations, "relations_target": 1000,
+      "special_q_done": 20, "matrix_rows": rows, "matrix_cols": columns,
+      "algorithm": "gnfs", "method": "gnfs", "attempt_index": attempt,
+    ]
+    return try JSONDecoder().decode(
+      CLIEvent.self, from: JSONSerialization.data(withJSONObject: object))
   }
 
   private func makeModel(runner: any GNFSRunning) -> AppModel {
