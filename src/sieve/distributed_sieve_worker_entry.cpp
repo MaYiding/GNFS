@@ -304,6 +304,18 @@ relation_identity(const NativeIdentityV1& identity) noexcept {
 #endif
 }
 
+// The wave store root is shared with the coordinator and with the other
+// workers. They add, rename, and remove entries while this process checks the
+// root, so the entry count, the size, and the timestamps of that directory are
+// never stable. Its identity, owner, and mode are the stable facts. A replaced
+// or re-permissioned root still differs in them.
+[[nodiscard]] bool stable_shared_directory(const struct stat& before,
+                                           const struct stat& after) noexcept {
+    return before.st_dev == after.st_dev && before.st_ino == after.st_ino &&
+           before.st_uid == after.st_uid && before.st_gid == after.st_gid &&
+           before.st_mode == after.st_mode;
+}
+
 [[nodiscard]] bool resource_error(int native_error) noexcept {
     return native_error == ENOMEM || native_error == EMFILE || native_error == ENFILE ||
            native_error == ENOSPC;
@@ -588,7 +600,7 @@ struct NamedBytesResult final {
     if (fstat_retrying_eintr(descriptor, after) != 0) {
         return failure(phase, Status::namespace_invalid, errno);
     }
-    if (!valid_root_metadata(after) || !stable_metadata(before, after) ||
+    if (!valid_root_metadata(after) || !stable_shared_directory(before, after) ||
         native_identity(after) != expected) {
         return namespace_failure(phase, Status::namespace_invalid);
     }
@@ -800,9 +812,9 @@ strict_absolute_path_components(std::string_view absolute_path) {
     }
     if (!valid_root_metadata(retained_before) || !valid_root_metadata(root_named) ||
         !valid_root_metadata(root_reopened) || !valid_root_metadata(retained_after) ||
-        !stable_metadata(retained_before, retained_after) ||
-        !stable_metadata(retained_after, root_named) ||
-        !stable_metadata(root_named, root_reopened) ||
+        !stable_shared_directory(retained_before, retained_after) ||
+        !stable_shared_directory(retained_after, root_named) ||
+        !stable_shared_directory(root_named, root_reopened) ||
         native_identity(root_named) != expected_identity ||
         native_identity(root_reopened) != expected_identity ||
         native_identity(retained_after) != expected_identity) {
