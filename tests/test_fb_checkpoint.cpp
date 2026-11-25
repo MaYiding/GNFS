@@ -5,15 +5,28 @@
 #include "gnfs/util/temp_path.hpp"
 #include "support/test_check.hpp"
 
-#include <cassert>
+#include <array>
+#include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 using namespace gnfs::factor_base;
 using gnfs::core::AlgebraicPrime;
@@ -103,24 +116,24 @@ void test_roundtrip_small_fb() {
     orig.save(path);
     auto loaded = FbCheckpoint::load(path);
 
-    assert(loaded.rational_bound == 1000);
-    assert(loaded.algebraic_bound == 1500);
-    assert(loaded.special_q_bound == 5000);
-    assert(loaded.large_prime_bound == 100000);
-    assert(loaded.log_scale == 16);
-    assert(loaded.ctx_degree == 4);
-    assert(loaded.ctx_n == Integer("314159265358979323846"));
+    GNFS_TEST_CHECK(loaded.rational_bound == 1000);
+    GNFS_TEST_CHECK(loaded.algebraic_bound == 1500);
+    GNFS_TEST_CHECK(loaded.special_q_bound == 5000);
+    GNFS_TEST_CHECK(loaded.large_prime_bound == 100000);
+    GNFS_TEST_CHECK(loaded.log_scale == 16);
+    GNFS_TEST_CHECK(loaded.ctx_degree == 4);
+    GNFS_TEST_CHECK(loaded.ctx_n == Integer("314159265358979323846"));
 
-    assert(loaded.rational.size() == 5);
-    assert(loaded.rational[0].p == 2 && loaded.rational[0].log_p == 16);
-    assert(loaded.rational[4].p == 11 && loaded.rational[4].log_p == 55);
+    GNFS_TEST_CHECK(loaded.rational.size() == 5);
+    GNFS_TEST_CHECK(loaded.rational[0].p == 2 && loaded.rational[0].log_p == 16);
+    GNFS_TEST_CHECK(loaded.rational[4].p == 11 && loaded.rational[4].log_p == 55);
 
-    assert(loaded.algebraic.size() == 4);
-    assert(loaded.algebraic[0].p == 2 && loaded.algebraic[0].r == 1);
-    assert(loaded.algebraic[2].is_projective());
-    assert(loaded.algebraic[2].degree == 2);
-    assert(loaded.algebraic[3].p == 7 && loaded.algebraic[3].r == 4);
-    assert(loaded.sieve_algebraic_count == 3);
+    GNFS_TEST_CHECK(loaded.algebraic.size() == 4);
+    GNFS_TEST_CHECK(loaded.algebraic[0].p == 2 && loaded.algebraic[0].r == 1);
+    GNFS_TEST_CHECK(loaded.algebraic[2].is_projective());
+    GNFS_TEST_CHECK(loaded.algebraic[2].degree == 2);
+    GNFS_TEST_CHECK(loaded.algebraic[3].p == 7 && loaded.algebraic[3].r == 4);
+    GNFS_TEST_CHECK(loaded.sieve_algebraic_count == 3);
 
     std::cout << "  Small FB roundtrip: PASS" << std::endl;
 }
@@ -148,33 +161,33 @@ void test_to_from_factor_base() {
     ck.sieve_algebraic_count = 1;
 
     FactorBase fb = ck.to_factor_base();
-    assert(fb.rational_count() == 2);
-    assert(fb.algebraic_count() == 1);
-    assert(fb.sieve_algebraic_count() == 1);
+    GNFS_TEST_CHECK(fb.rational_count() == 2);
+    GNFS_TEST_CHECK(fb.algebraic_count() == 1);
+    GNFS_TEST_CHECK(fb.sieve_algebraic_count() == 1);
     auto idx = fb.find_rational(17);
-    assert(idx.has_value() && *idx == 1);
+    GNFS_TEST_CHECK(idx.has_value() && *idx == 1);
     auto aidx = fb.find_algebraic(13, 5);
-    assert(aidx.has_value() && *aidx == 0);
+    GNFS_TEST_CHECK(aidx.has_value() && *aidx == 0);
 
     // Roundtrip back via from_factor_base + a context
     PolynomialContext ctx = make_ctx();
     auto ck2 = FbCheckpoint::from_factor_base(fb, ctx, /*special_q=*/2000);
-    assert(ck2.rational_bound == ck.rational_bound);
-    assert(ck2.algebraic_bound == ck.algebraic_bound);
-    assert(ck2.special_q_bound == 2000);
-    assert(ck2.rational.size() == 2);
-    assert(ck2.algebraic.size() == 1);
-    assert(ck2.ctx_n == ctx.n());
-    assert(ck2.ctx_degree == ctx.degree());
+    GNFS_TEST_CHECK(ck2.rational_bound == ck.rational_bound);
+    GNFS_TEST_CHECK(ck2.algebraic_bound == ck.algebraic_bound);
+    GNFS_TEST_CHECK(ck2.special_q_bound == 2000);
+    GNFS_TEST_CHECK(ck2.rational.size() == 2);
+    GNFS_TEST_CHECK(ck2.algebraic.size() == 1);
+    GNFS_TEST_CHECK(ck2.ctx_n == ctx.n());
+    GNFS_TEST_CHECK(ck2.ctx_degree == ctx.degree());
 
     ck2.save(path);
     auto loaded = FbCheckpoint::load(path);
     FactorBase fb2 = loaded.to_factor_base();
-    assert(fb2.rational_count() == 2);
-    assert(fb2.algebraic_count() == 1);
-    assert(loaded.ctx_fingerprint_present);
-    assert(loaded.ctx_fingerprint_lo == ck2.ctx_fingerprint_lo);
-    assert(loaded.ctx_fingerprint_hi == ck2.ctx_fingerprint_hi);
+    GNFS_TEST_CHECK(fb2.rational_count() == 2);
+    GNFS_TEST_CHECK(fb2.algebraic_count() == 1);
+    GNFS_TEST_CHECK(loaded.ctx_fingerprint_present);
+    GNFS_TEST_CHECK(loaded.ctx_fingerprint_lo == ck2.ctx_fingerprint_lo);
+    GNFS_TEST_CHECK(loaded.ctx_fingerprint_hi == ck2.ctx_fingerprint_hi);
 
     std::cout << "  FactorBase roundtrip: PASS" << std::endl;
 }
@@ -191,7 +204,7 @@ void test_explicit_zero_sieve_count() {
     FactorBase fb;
     fb.add_algebraic(3, 0, 25, 1);
     fb.set_sieve_algebraic_count_explicit(0);
-    assert(fb.sieve_algebraic_count() == 0);
+    GNFS_TEST_CHECK(fb.sieve_algebraic_count() == 0);
 
     PolynomialContext ctx = make_ctx();
     auto ck = FbCheckpoint::from_factor_base(fb, ctx, /*special_q=*/100);
@@ -214,7 +227,7 @@ void test_matches_ok() {
     PolynomialContext ctx = make_ctx();
     FbCheckpoint ck = checkpoint_for_context(ctx);
     auto status = ck.matches(ctx, 100, 100, 200, 10000, 16);
-    assert(status == FbCheckpoint::MatchStatus::Ok);
+    GNFS_TEST_CHECK(status == FbCheckpoint::MatchStatus::Ok);
     std::cout << "  matches() Ok: PASS" << std::endl;
 }
 
@@ -229,7 +242,8 @@ void test_matches_mismatch() {
     ccs.emplace_back(Integer(static_cast<int64_t>(1)));
     PolynomialContext other_n(Integer("99991"), std::move(ccs), Integer(static_cast<int64_t>(0)),
                               1.0);
-    assert(ck.matches(other_n, 100, 100, 200, 10000, 16) == FbCheckpoint::MatchStatus::NMismatch);
+    GNFS_TEST_CHECK(ck.matches(other_n, 100, 100, 200, 10000, 16) ==
+                    FbCheckpoint::MatchStatus::NMismatch);
 
     // Degree mismatch (synthesize new ctx with same N but degree 1)
     std::vector<Integer> ccs2;
@@ -237,9 +251,9 @@ void test_matches_mismatch() {
     ccs2.emplace_back(Integer(static_cast<int64_t>(1)));
     PolynomialContext other_deg(Integer(ctx.n()), std::move(ccs2), Integer(ctx.m()),
                                 ctx.skewness());
-    assert(other_deg.degree() == 1);
-    assert(ck.matches(other_deg, 100, 100, 200, 10000, 16) ==
-           FbCheckpoint::MatchStatus::DegreeMismatch);
+    GNFS_TEST_CHECK(other_deg.degree() == 1);
+    GNFS_TEST_CHECK(ck.matches(other_deg, 100, 100, 200, 10000, 16) ==
+                    FbCheckpoint::MatchStatus::DegreeMismatch);
 
     // Same N + degree, but a different m.
     std::vector<Integer> same_coeffs;
@@ -248,9 +262,9 @@ void test_matches_mismatch() {
     same_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
     PolynomialContext other_m(Integer(ctx.n()), std::move(same_coeffs), Integer("10000"),
                               ctx.skewness());
-    assert(other_m.degree() == ctx.degree());
-    assert(ck.matches(other_m, 100, 100, 200, 10000, 16) ==
-           FbCheckpoint::MatchStatus::ContextMismatch);
+    GNFS_TEST_CHECK(other_m.degree() == ctx.degree());
+    GNFS_TEST_CHECK(ck.matches(other_m, 100, 100, 200, 10000, 16) ==
+                    FbCheckpoint::MatchStatus::ContextMismatch);
 
     // Same N + degree + m, but a different coefficient.
     std::vector<Integer> other_coeffs;
@@ -259,9 +273,9 @@ void test_matches_mismatch() {
     other_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
     PolynomialContext other_poly(Integer(ctx.n()), std::move(other_coeffs), Integer(ctx.m()),
                                  ctx.skewness());
-    assert(other_poly.degree() == ctx.degree());
-    assert(ck.matches(other_poly, 100, 100, 200, 10000, 16) ==
-           FbCheckpoint::MatchStatus::ContextMismatch);
+    GNFS_TEST_CHECK(other_poly.degree() == ctx.degree());
+    GNFS_TEST_CHECK(ck.matches(other_poly, 100, 100, 200, 10000, 16) ==
+                    FbCheckpoint::MatchStatus::ContextMismatch);
 
     // Same N + degree + m + coefficients, but a different IEEE-754 skewness bit pattern.
     std::vector<Integer> other_skew_coeffs;
@@ -270,15 +284,18 @@ void test_matches_mismatch() {
     other_skew_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
     PolynomialContext other_skew(Integer(ctx.n()), std::move(other_skew_coeffs), Integer(ctx.m()),
                                  2.0);
-    assert(ck.matches(other_skew, 100, 100, 200, 10000, 16) ==
-           FbCheckpoint::MatchStatus::ContextMismatch);
+    GNFS_TEST_CHECK(ck.matches(other_skew, 100, 100, 200, 10000, 16) ==
+                    FbCheckpoint::MatchStatus::ContextMismatch);
 
     // Params mismatch: change rational_bound
-    assert(ck.matches(ctx, 101, 100, 200, 10000, 16) == FbCheckpoint::MatchStatus::ParamsMismatch);
+    GNFS_TEST_CHECK(ck.matches(ctx, 101, 100, 200, 10000, 16) ==
+                    FbCheckpoint::MatchStatus::ParamsMismatch);
     // Params mismatch: change log_scale
-    assert(ck.matches(ctx, 100, 100, 200, 10000, 8) == FbCheckpoint::MatchStatus::ParamsMismatch);
+    GNFS_TEST_CHECK(ck.matches(ctx, 100, 100, 200, 10000, 8) ==
+                    FbCheckpoint::MatchStatus::ParamsMismatch);
     // Params mismatch: change large_prime_bound
-    assert(ck.matches(ctx, 100, 100, 200, 99999, 16) == FbCheckpoint::MatchStatus::ParamsMismatch);
+    GNFS_TEST_CHECK(ck.matches(ctx, 100, 100, 200, 99999, 16) ==
+                    FbCheckpoint::MatchStatus::ParamsMismatch);
     std::cout << "  matches() mismatches: PASS" << std::endl;
 }
 
@@ -294,9 +311,9 @@ void test_legacy_v1_is_readable_but_stale() {
     legacy.save(path);
 
     const auto loaded = FbCheckpoint::load(path);
-    assert(!loaded.ctx_fingerprint_present);
-    assert(loaded.matches(ctx, 0, 0, 0, 0, gnfs::core::SIEVE_LOG_SCALE) ==
-           FbCheckpoint::MatchStatus::ContextMismatch);
+    GNFS_TEST_CHECK(!loaded.ctx_fingerprint_present);
+    GNFS_TEST_CHECK(loaded.matches(ctx, 0, 0, 0, 0, gnfs::core::SIEVE_LOG_SCALE) ==
+                    FbCheckpoint::MatchStatus::ContextMismatch);
     std::cout << "  Legacy v1 readable but stale: PASS" << std::endl;
 }
 
@@ -311,9 +328,9 @@ void test_empty_fb() {
     ck.ctx_degree = 1;
     ck.save(path);
     auto loaded = FbCheckpoint::load(path);
-    assert(loaded.rational.empty());
-    assert(loaded.algebraic.empty());
-    assert(loaded.sieve_algebraic_count == 0);
+    GNFS_TEST_CHECK(loaded.rational.empty());
+    GNFS_TEST_CHECK(loaded.algebraic.empty());
+    GNFS_TEST_CHECK(loaded.sieve_algebraic_count == 0);
     std::cout << "  Empty FB: PASS" << std::endl;
 }
 
@@ -332,7 +349,7 @@ void test_sieve_count_invariants() {
     } catch (const std::runtime_error&) {
         save_threw = true;
     }
-    assert(save_threw);
+    GNFS_TEST_CHECK(save_threw);
 
     bool rebuild_threw = false;
     try {
@@ -340,7 +357,7 @@ void test_sieve_count_invariants() {
     } catch (const std::runtime_error&) {
         rebuild_threw = true;
     }
-    assert(rebuild_threw);
+    GNFS_TEST_CHECK(rebuild_threw);
 
     std::cout << "  Checkpoint sieve-count invariants: PASS" << std::endl;
 }
@@ -372,11 +389,11 @@ void test_large_fb() {
     orig.save(path);
     auto loaded = FbCheckpoint::load(path);
 
-    assert(loaded.rational.size() == 10000);
-    assert(loaded.algebraic.size() == 10000);
-    assert(loaded.sieve_algebraic_count == 8000);
-    assert(loaded.rational[9999].p == orig.rational[9999].p);
-    assert(loaded.algebraic[5000].p == orig.algebraic[5000].p);
+    GNFS_TEST_CHECK(loaded.rational.size() == 10000);
+    GNFS_TEST_CHECK(loaded.algebraic.size() == 10000);
+    GNFS_TEST_CHECK(loaded.sieve_algebraic_count == 8000);
+    GNFS_TEST_CHECK(loaded.rational[9999].p == orig.rational[9999].p);
+    GNFS_TEST_CHECK(loaded.algebraic[5000].p == orig.algebraic[5000].p);
 
     std::cout << "  Large FB: PASS" << std::endl;
 }
@@ -482,14 +499,14 @@ void test_incomplete_magic_rejected() {
         write_u64_le(out, magic);
         write_u64_le(out, version);
     }
-    assert(!FbCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(!FbCheckpoint::exists_and_valid(path));
     bool threw = false;
     try {
         (void)FbCheckpoint::load(path);
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  INCOMPLETE rejected: PASS" << std::endl;
 }
 
@@ -510,7 +527,7 @@ void test_version_mismatch_rejected() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  Version mismatch: PASS" << std::endl;
 }
 
@@ -691,9 +708,9 @@ void test_remove_and_nonexistent() {
     FbCheckpoint ck;
     ck.ctx_n = Integer(static_cast<int64_t>(5));
     ck.save(path);
-    assert(FbCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(FbCheckpoint::exists_and_valid(path));
     FbCheckpoint::remove(path);
-    assert(!FbCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(!FbCheckpoint::exists_and_valid(path));
 
     bool threw = false;
     try {
@@ -701,8 +718,164 @@ void test_remove_and_nonexistent() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    GNFS_TEST_CHECK(threw);
     std::cout << "  Remove + nonexistent: PASS" << std::endl;
+}
+
+void test_save_rejects_nonseekable_output() {
+#if defined(_WIN32)
+    std::cout << "  Nonseekable checkpoint output: SKIP (POSIX FIFO required)" << std::endl;
+#else
+    std::cout << "Testing checkpoint save to a nonseekable output..." << std::endl;
+
+    // A default v1 checkpoint has a 68-byte body, including its header. The
+    // whole payload fits into an empty FIFO without a concurrent reader.
+    constexpr size_t empty_checkpoint_size = 68;
+    static_assert(empty_checkpoint_size < PIPE_BUF);
+    std::array<unsigned char, 128> bytes{};
+    size_t received = 0;
+    bool rejected = false;
+    {
+        const auto path = tmp_ckpt_path("nonseekable_output");
+        if (::mkfifo(path.c_str(), S_IRUSR | S_IWUSR) != 0) {
+            throw std::runtime_error("cannot create checkpoint test FIFO");
+        }
+        CkptCleanup cleanup{path};
+        struct ReaderCleanup {
+            int fd;
+            ~ReaderCleanup() {
+                if (fd >= 0)
+                    ::close(fd);
+            }
+        } reader{::open(path.c_str(), O_RDONLY | O_NONBLOCK)};
+        if (reader.fd < 0) {
+            throw std::runtime_error("cannot open checkpoint test FIFO reader");
+        }
+
+        try {
+            FbCheckpoint{}.save(path);
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+
+        // The read end never blocks. Opening it before save also lets the
+        // writer open synchronously; the save's seek, not its open, must fail.
+        while (received < bytes.size()) {
+            const ssize_t count =
+                ::read(reader.fd, bytes.data() + received, bytes.size() - received);
+            if (count < 0 && errno == EINTR)
+                continue;
+            if (count < 0)
+                throw std::runtime_error("cannot read checkpoint test FIFO payload");
+            if (count == 0)
+                break;
+            received += static_cast<size_t>(count);
+        }
+    }
+
+    // Check the payload before the rejection oracle to prove that the open
+    // and initial body write succeeded even against the unfixed implementation.
+    GNFS_TEST_CHECK(received == empty_checkpoint_size);
+    uint64_t magic = 0;
+    for (size_t i = 0; i < sizeof(magic); ++i)
+        magic |= static_cast<uint64_t>(bytes[i]) << (8 * i);
+    GNFS_TEST_CHECK(magic == FbCheckpoint::MAGIC_INCOMPLETE);
+    GNFS_TEST_CHECK(rejected);
+    std::cout << "  Nonseekable checkpoint output: PASS" << std::endl;
+#endif
+}
+
+void test_serialized_rational_order() {
+    std::cout << "Testing checkpoint rational-prime order..." << std::endl;
+    const auto path = tmp_ckpt_path("rational_order");
+    CkptCleanup cleanup{path};
+    for (const bool fingerprint : {false, true}) {
+        for (const auto& primes :
+             {std::vector<uint32_t>{2, 3, 5, 7}, std::vector<uint32_t>{2, 7, 3, 5},
+              std::vector<uint32_t>{2, 3, 3, 5}}) {
+            FbCheckpoint checkpoint;
+            checkpoint.rational_bound = 97;
+            checkpoint.ctx_n = Integer(143);
+            checkpoint.ctx_fingerprint_present = fingerprint;
+            for (uint32_t prime : primes) {
+                checkpoint.rational.push_back(RationalPrime{prime, 1});
+            }
+            checkpoint.save(path);
+            const auto original = read_bytes(path, std::filesystem::file_size(path));
+            std::optional<FbCheckpoint> loaded;
+            std::string rejection;
+            try {
+                loaded.emplace(FbCheckpoint::load(path));
+            } catch (const std::runtime_error& error) {
+                rejection = error.what();
+            }
+            GNFS_TEST_CHECK(loaded.has_value() == (primes == std::vector<uint32_t>{2, 3, 5, 7}));
+            if (!loaded) {
+                const char* expected = primes[1] == 7 ? "not strictly increasing" : "duplicate";
+                GNFS_TEST_CHECK(rejection.find(expected) != std::string::npos);
+            }
+            if (loaded) {
+                GNFS_TEST_CHECK(loaded->ctx_fingerprint_present == fingerprint);
+                GNFS_TEST_CHECK(loaded->rational.size() == primes.size());
+                for (size_t i = 0; i < primes.size(); ++i) {
+                    GNFS_TEST_CHECK(loaded->rational[i].p == primes[i]);
+                }
+            }
+            GNFS_TEST_CHECK(std::filesystem::file_size(path) == original.size());
+            GNFS_TEST_CHECK(read_bytes(path, original.size()) == original);
+        }
+    }
+    std::cout << "  Checkpoint rational-prime order: PASS" << std::endl;
+}
+
+void test_serialized_algebraic_order() {
+    std::cout << "Testing checkpoint algebraic-prime order..." << std::endl;
+    const auto path = tmp_ckpt_path("algebraic_order");
+    CkptCleanup cleanup{path};
+    using Entry = std::pair<uint32_t, uint32_t>;
+    const std::vector<std::vector<Entry>> cases{
+        {{3, 2}, {3, 1}, {67, 66}, {67, 1}},
+        {{7, 6}, {3, 1}},
+        {{3, 1}, {3, 2}, {3, 1}},
+    };
+    for (const bool fingerprint : {false, true}) {
+        for (size_t c = 0; c < cases.size(); ++c) {
+            FbCheckpoint checkpoint;
+            checkpoint.algebraic_bound = 97;
+            checkpoint.ctx_n = Integer(143);
+            checkpoint.ctx_fingerprint_present = fingerprint;
+            for (const auto& [prime, root] : cases[c]) {
+                checkpoint.algebraic.push_back(AlgebraicPrime{prime, root, 1, 1});
+            }
+            checkpoint.sieve_algebraic_count = cases[c].size();
+            checkpoint.save(path);
+            const auto original = read_bytes(path, std::filesystem::file_size(path));
+            std::optional<FbCheckpoint> loaded;
+            std::string rejection;
+            try {
+                loaded.emplace(FbCheckpoint::load(path));
+            } catch (const std::runtime_error& error) {
+                rejection = error.what();
+            }
+            GNFS_TEST_CHECK(loaded.has_value() == (c == 0));
+            if (loaded) {
+                GNFS_TEST_CHECK(loaded->ctx_fingerprint_present == fingerprint);
+                const auto fb = loaded->to_factor_base();
+                GNFS_TEST_CHECK(fb.algebraic_count() == cases[c].size());
+                for (size_t i = 0; i < cases[c].size(); ++i) {
+                    GNFS_TEST_CHECK(fb.algebraic()[i].p == cases[c][i].first);
+                    GNFS_TEST_CHECK(fb.algebraic()[i].r == cases[c][i].second);
+                    GNFS_TEST_CHECK(fb.find_algebraic(cases[c][i].first, cases[c][i].second) == i);
+                }
+            } else {
+                GNFS_TEST_CHECK(rejection.find(c == 1 ? "not nondecreasing" : "duplicate") !=
+                                std::string::npos);
+            }
+            GNFS_TEST_CHECK(std::filesystem::file_size(path) == original.size());
+            GNFS_TEST_CHECK(read_bytes(path, original.size()) == original);
+        }
+    }
+    std::cout << "  Checkpoint algebraic-prime order: PASS" << std::endl;
 }
 
 int main() {
@@ -720,8 +893,11 @@ int main() {
     test_incomplete_magic_rejected();
     test_version_mismatch_rejected();
     test_malformed_entries_rejected();
+    test_serialized_rational_order();
+    test_serialized_algebraic_order();
     test_truncated_payload_rejected_before_allocation();
     test_remove_and_nonexistent();
+    test_save_rejects_nonseekable_output();
     std::cout << "\n===== All FbCheckpoint tests PASSED =====" << std::endl;
     return 0;
 }

@@ -8,12 +8,13 @@
 
 ## Factor Base CZ roots 并行 (GNFS_FB_ROOTS_THREADS)
 
-**ENV `GNFS_FB_ROOTS_THREADS=N`** (2026-05-22 实施, default 0, range [0, hardware_concurrency * 2]):
+**ENV `GNFS_FB_ROOTS_THREADS=N`** (2026-05-22 helper 实施，2026-09-08 接入 builder,
+default 0, range [0, hardware_concurrency * 2]):
 Factor Base 构建的 Cantor-Zassenhaus 求根 per-prime parallel dispatcher.
 `find_roots_mod_p(ctx, p)` 是 pure function of `(p, monic_polynomial_mod_p)`,
-跨素数相互独立 (embarrassingly parallel). 当前 `src/factor_base/builder.cpp`
-主路径直接用 `std::vector<std::thread>` + `std::thread::hardware_concurrency()`,
-没有 runtime 旋钮可调.
+跨素数相互独立 (embarrassingly parallel). `src/factor_base/builder.cpp`
+现在通过 `resolve_fb_roots_threads` 消费此开关，普通代数因子基和 special-Q 范围
+两条根查找路径都遵守同一 worker cap。
 
 ```bash
 unset GNFS_FB_ROOTS_THREADS              # default: hardware_concurrency() (legacy)
@@ -35,45 +36,51 @@ GNFS_FB_ROOTS_THREADS=16 ./gnfs <N>      # 高并发实验
 - `"12abc"` 解析为 12 (std::stoi 接受前缀, consumed > 0)
 
 **并行模型**:
-- Entry = `parallel_fb_roots<Result>(primes, worker_fn)` over n primes
-- Inner = dedicated `gnfs::util::ThreadPool(min(threads, n))` + `parallel_for_index(0, n, lambda)`
-- 每个 task 调 `worker_fn(primes[i])` 写到 `results[i]` (disjoint per index)
-- 空 batch (n==0) 与 单 prime (n==1) 都走 sequential 短路, 不创建 pool
-- 默认 fallback 用 `hardware_concurrency()`, 与 legacy `src/factor_base/builder.cpp`
-  内的 `std::thread` 数量保持一致
+- builder 按连续素数区间分块，每个 worker 保留一个扁平结果缓冲，按区间顺序合并。
+- 普通代数因子基和 special-Q 范围共用此分块路径；每个素数的根向量只在当前迭代存活。
+- 少于 200 个素数、有效线程数为一或 `parallel=false` 时使用单块，不创建 pool。
+- 独立工具 `parallel_fb_roots<Result>(primes, worker_fn)` 保留按素数返回结果的 API；
+  builder 不通过该 API 保留逐素数结果容器。
+- 默认 fallback 用 `hardware_concurrency()`, 与集成前 builder 的线程数量保持一致
 
-**Bit-for-bit guarantee**: `worker_fn(p)` 是 pure function of `p` 加 read-only
-lambda capture, output[i] 仅由 owns-index-i 的 task 写入, output 容器预 size.
-单元测试 `tests/test_fb_roots_parallel.cpp` 强制 197 + 1000 + 500 prime sweep
-across N=1 / N=4 / N=hardware_concurrency 严格 per-index 比较.
+**Bit-for-bit guarantee**: 求根只读取 `(p, polynomial)`，每个连续区间只有一个
+写入者，合并顺序不依赖任务完成顺序。`tests/test_factor_base.cpp` 对比默认值、
+N=1、N=2、N=4 和 `parallel=false` 的完整代数条目及普通/special-Q 边界，
+并覆盖两个范围的 projective root。独立 dispatcher 的逐素数顺序由
+`tests/test_fb_roots_parallel.cpp` 验证。
+
+固定 50 位输入的分配次数和峰值内存对照见
+[root-buffer measurement](../perf/factor-base-root-buffers.md)。
 
 **ROI 与定位**:
-- 主要 ROI: opt-in 控制能力. 当前 `src/factor_base/builder.cpp` 已经 parallel
-  (按 `hardware_concurrency()`), 主路径并不缺乏并行度. helper 价值在于:
+- 主要 ROI: opt-in 控制能力. 当前 `src/factor_base/builder.cpp` 默认仍按
+  `hardware_concurrency()` 并行，helper 价值在于:
     * Debug: ENV=1 强制 sequential, lldb 单步无需修改源码
     * Sandbox CI runner (2-4 vCPU): ENV=N 显式 cap, 避免与其他 step 竞争 CPU
     * 实验: thread-count sweeps 测 ROI 边际效应
     * 复用: future 任何 per-prime parallel 工作都可经此 dispatcher
-- 主路径 wall-time: ENV=0 (默认) 与 legacy 直接 spawn `hardware_concurrency()` thread
-  完全等价, 零行为变化
-- Default OFF (N=0): 任何调用方未设 ENV 均走 fall-back path, 零回归风险
+- 主路径 wall-time: ENV=0 (默认) 与集成前直接 spawn `hardware_concurrency()` thread
+  完全等价, 零行为变化；ENV=1 可在调试或受限 runner 上可靠地关闭根查找并发
+- Default OFF (N=0): 任何调用方未设 ENV 均走 fall-back path, 保持原有并行度
 
 ### `FactorBaseBuilder::Options::parallel`
 
 `FactorBaseBuilder::Options::parallel` 是 C++ 调用方的显式并行开关，默认值为
 `true`。设置为 `false` 时，构建过程会同时关闭大范围分段筛和代数素数的跨素数根查找线程；
 根查找仍按与并行路径相同的素数顺序合并，输出保持 bit-for-bit 一致。该选项适用于调试、
-sanitizer 运行，以及调用方已经管理外层并发的场景。`GNFS_FB_ROOTS_THREADS` 只控制独立的
-helper，不会覆盖 `Options::parallel = false` 的单线程契约。
+sanitizer 运行，以及调用方已经管理外层并发的场景。`GNFS_FB_ROOTS_THREADS` 只控制代数素数
+根查找；当 `Options::parallel = false` 时 builder 直接使用单线程路径并忽略该环境变量。
+Eratosthenes 分段筛仍由 `Options::parallel` 和原有硬件线程策略控制。
 
 **集成点** (2026-05-22):
 - `include/gnfs/factor_base/fb_roots_parallel.hpp` — `fb_roots_threads()` env
   reader with `std::once_flag` cache + `resolve_fb_roots_threads(n)` helper +
   `parallel_fb_roots<Result>(primes, worker_fn)` template dispatcher +
   `fb_roots_threads_reset_env_cache_for_testing()` test hook
-- `src/factor_base/builder.cpp` — 主路径消费 `Options::parallel`：默认值保持原有
-  `std::thread` + `hardware_concurrency()` 行为，显式 `false` 时不创建并行工作线程。
-  `GNFS_FB_ROOTS_THREADS` helper 仍是独立的 future-infra，不改变 `Options` 的契约
+- `src/factor_base/builder.cpp` — 普通代数根查找和 special-Q 范围根查找均通过
+  `resolve_fb_roots_threads` 接入 worker cap，并保留按 worker 分块的扁平结果；
+  默认值保持原有 `hardware_concurrency()` 行为，
+  显式 `parallel=false` 时不创建并行工作线程。
 - `tests/test_fb_roots_parallel.cpp` — 12 个测试 (6 ENV 解析 + 5 dispatcher
   parity + 1 partial-parse 行为文档化)
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60 s timeout,

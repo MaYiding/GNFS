@@ -799,6 +799,12 @@ public:
     compute_from_element(const NumberFieldElement& elem, const NumberField& nf) const {
 
         metrics_.reset();
+        // Exact zero has a square root without selecting or lifting any primes.
+        // Keep this element API separate from the relation-input contract.
+        if (elem.is_zero()) {
+            metrics_.found_sqrt = true;
+            return nf.zero();
+        }
         uint32_t d = nf.degree();
         const Integer& n = nf.n();
 

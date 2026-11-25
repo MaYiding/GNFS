@@ -21,6 +21,7 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/util/mpz_powm_parallel.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -523,6 +524,146 @@ void test_perf_info_100_bases() {
               << " us, speedup=" << speedup << "x (parity verified)\n";
 }
 
+void test_shared_scalar_output_aliases() {
+    std::cout << "Shared exponent/modulus output aliases..." << std::flush;
+    const std::vector<Integer> bases{Integer(2), Integer(3)};
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        {
+            std::vector<Integer> results{Integer(2), Integer(777), Integer(999)};
+            const Integer modulus(7);
+            parallel_mpz_powm(bases, results[0], modulus, results);
+            GNFS_TEST_CHECK(results ==
+                            std::vector<Integer>({Integer(4), Integer(2), Integer(999)}));
+        }
+        {
+            std::vector<Integer> results{Integer(5), Integer(777), Integer(999)};
+            const Integer exp(2);
+            parallel_mpz_powm(bases, exp, results[0], results);
+            GNFS_TEST_CHECK(results ==
+                            std::vector<Integer>({Integer(4), Integer(4), Integer(999)}));
+        }
+        {
+            std::vector<Integer> results{Integer(2), Integer(5), Integer(999)};
+            parallel_mpz_powm(bases, results[0], results[1], results);
+            GNFS_TEST_CHECK(results ==
+                            std::vector<Integer>({Integer(4), Integer(4), Integer(999)}));
+        }
+        {
+            // Both shared references can name the same output element.
+            std::vector<Integer> results{Integer(5), Integer(777), Integer(999)};
+            parallel_mpz_powm(bases, results[0], results[0], results);
+            GNFS_TEST_CHECK(results ==
+                            std::vector<Integer>({Integer(2), Integer(3), Integer(999)}));
+        }
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_overlapping_base_output_spans() {
+    std::cout << "Exact and shifted base/output overlap..." << std::flush;
+    const Integer exp(2), modulus(5);
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        {
+            std::vector<Integer> storage{Integer(2), Integer(3), Integer(4), Integer(999)};
+            const auto bases = std::span<const Integer>(storage).first(3);
+            parallel_mpz_powm(bases, exp, modulus, storage);
+            GNFS_TEST_CHECK(storage == std::vector<Integer>(
+                                           {Integer(4), Integer(4), Integer(1), Integer(999)}));
+        }
+        {
+            // Exact in-place bases can also contain both shared scalars.
+            std::vector<Integer> storage{Integer(2), Integer(5), Integer(3)};
+            parallel_mpz_powm(storage, storage[0], storage[1], storage);
+            GNFS_TEST_CHECK(storage == std::vector<Integer>({Integer(4), Integer(0), Integer(4)}));
+        }
+        {
+            std::array<Integer, 6> storage{Integer(11), Integer(2),  Integer(3),
+                                           Integer(4),  Integer(19), Integer(23)};
+            const auto bases = std::span<const Integer>(storage).subspan(1, 3);
+            const auto results = std::span<Integer>(storage).subspan(2, 3);
+            parallel_mpz_powm(bases, exp, modulus, results);
+            GNFS_TEST_CHECK(
+                (storage == std::array<Integer, 6>{Integer(11), Integer(2), Integer(4), Integer(4),
+                                                   Integer(1), Integer(23)}));
+        }
+        {
+            std::array<Integer, 6> storage{Integer(11), Integer(19), Integer(2),
+                                           Integer(3),  Integer(4),  Integer(23)};
+            const auto bases = std::span<const Integer>(storage).subspan(2, 3);
+            const auto results = std::span<Integer>(storage).subspan(1, 3);
+            parallel_mpz_powm(bases, exp, modulus, results);
+            GNFS_TEST_CHECK(
+                (storage == std::array<Integer, 6>{Integer(11), Integer(4), Integer(4), Integer(1),
+                                                   Integer(4), Integer(23)}));
+        }
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_output_clamp_and_no_work_aliases() {
+    std::cout << "Output clamp and empty alias boundaries..." << std::flush;
+    const Integer exp(2), modulus(5);
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        {
+            const std::vector<Integer> bases{Integer(2), Integer(3), Integer(4), Integer(6)};
+            std::vector<Integer> results{Integer(101), Integer(103), Integer(107), Integer(109)};
+            parallel_mpz_powm(bases, exp, modulus, std::span<Integer>(results).first(2));
+            GNFS_TEST_CHECK(results == std::vector<Integer>(
+                                           {Integer(4), Integer(4), Integer(107), Integer(109)}));
+        }
+        {
+            // Only the first two bases participate, even though the input
+            // span is longer and overlaps the short output span.
+            std::array<Integer, 5> storage{Integer(2), Integer(3), Integer(4), Integer(6),
+                                           Integer(17)};
+            parallel_mpz_powm(std::span<const Integer>(storage).first(4), exp, modulus,
+                              std::span<Integer>(storage).subspan(1, 2));
+            GNFS_TEST_CHECK((storage == std::array<Integer, 5>{Integer(2), Integer(4), Integer(4),
+                                                               Integer(6), Integer(17)}));
+        }
+        {
+            std::vector<Integer> results{Integer(0), Integer(777)};
+            parallel_mpz_powm(std::span<const Integer>{}, results[0], results[0], results);
+            GNFS_TEST_CHECK(results == std::vector<Integer>({Integer(0), Integer(777)}));
+        }
+        {
+            // No output slots means no arithmetic, including with a zero
+            // shared modulus stored in the untouched input.
+            std::vector<Integer> bases{Integer(0), Integer(3)};
+            parallel_mpz_powm(bases, bases[0], bases[0], std::span<Integer>{});
+            GNFS_TEST_CHECK(bases == std::vector<Integer>({Integer(0), Integer(3)}));
+        }
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_wide_shared_scalar_aliases() {
+    std::cout << "Wide shared scalars stored in outputs..." << std::flush;
+    const Integer exp("1267650600228229401496703205653", 10);
+    const Integer modulus("1606938044258990275541962092341162602522202993782792835301301", 10);
+    const std::vector<Integer> bases{Integer("-340282366920938463463374607431768211507", 10),
+                                     Integer("1361129467683753853853498429727072845841", 10),
+                                     Integer(3)};
+    std::vector<Integer> expected;
+    for (const auto& base : bases)
+        expected.push_back(scalar_powm(base, exp, modulus));
+    expected.emplace_back(999);
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        std::vector<Integer> results{exp, modulus, Integer(777), Integer(999)};
+        parallel_mpz_powm(bases, results[0], results[1], results);
+        GNFS_TEST_CHECK(results == expected);
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
 } // namespace
 
 int main() {
@@ -541,6 +682,10 @@ int main() {
     test_n1_vs_n_hw_parity();
     test_common_exponent_semantics();
     test_reset_env_cache_hook();
+    test_shared_scalar_output_aliases();
+    test_overlapping_base_output_spans();
+    test_output_clamp_and_no_work_aliases();
+    test_wide_shared_scalar_aliases();
     test_perf_info_100_bases();
 
     std::cout << "\n=== All mpz_powm Parallel Tests PASSED ===\n";

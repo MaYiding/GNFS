@@ -3,12 +3,14 @@
 #include "fixtures/siqs_multi_a_cycle_profile_v2.hpp"
 #include "fixtures/siqs_multi_a_proof_profile_v4.hpp"
 #include "fixtures/siqs_multi_a_scale_profile_v3.hpp"
+#include "support/siqs_scale_row_snapshot.hpp"
 
 #include <gnfs/siqs/post_merge_dependency.hpp>
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/siqs.hpp>
 #include <gnfs/util/fixed_slot_executor.hpp>
+#include <gnfs/util/native_random_access_file.hpp>
 #include <gnfs/util/process_memory.hpp>
 
 #include <algorithm>
@@ -19,6 +21,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -73,6 +76,7 @@ using gnfs::siqs::SIQSShadowAssemblyFingerprints;
 using gnfs::siqs::SIQSShadowAssemblyOptions;
 using gnfs::siqs::SIQSShadowAssemblyStats;
 using gnfs::siqs::SIQSShadowAssemblyStatus;
+using gnfs::siqs::SIQSShadowMatrixBackend;
 using gnfs::siqs::SIQSShadowMatrixOptions;
 using gnfs::siqs::SIQSShadowMatrixStatus;
 using gnfs::siqs::SIQSShadowRow;
@@ -83,6 +87,7 @@ using gnfs::siqs::TwoLargePrimeCycleBasis;
 using gnfs::siqs::TwoLargePrimeCycleBasisLimits;
 using gnfs::siqs::TwoLargePrimeCycleBasisStatus;
 using gnfs::siqs::verify_siqs_post_merge_dependency;
+using gnfs::tests::SIQS_MULTI_A_CAPTURE_TERMINAL_GOLDEN_V3;
 using gnfs::tests::SIQS_MULTI_A_CYCLE_FIXTURE_V2;
 using gnfs::tests::SIQS_MULTI_A_PROOF_GOLDEN_V4;
 using gnfs::tests::SIQS_MULTI_A_SCALE_FIXTURE_V3;
@@ -2533,6 +2538,10 @@ enum class ScaleProofTerminalStatus : uint8_t {
         return "resource_limit";
     case SIQSShadowMatrixStatus::unsupported_backend:
         return "unsupported_backend";
+    case SIQSShadowMatrixStatus::no_dependencies:
+        return "no_dependencies";
+    case SIQSShadowMatrixStatus::solver_failure:
+        return "solver_failure";
     }
     return "unknown";
 }
@@ -2611,7 +2620,7 @@ struct ScaleProofRecord final {
     proof.options = SIQSShadowMatrixOptions{
         SCALE_SOLVER_MAX_DEPENDENCIES,          requested_workers,
         SCALE_SOLVER_PARALLEL_COLUMN_THRESHOLD, SCALE_SOLVER_MAX_DENSE_MATRIX_BYTES,
-        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT,
+        SCALE_SOLVER_MAX_DENSE_VARIABLE_COUNT,  SIQSShadowMatrixBackend::dense_only,
     };
     return proof;
 }
@@ -2847,17 +2856,98 @@ finish_scale_record(ScaleProfileRecord record, std::chrono::steady_clock::time_p
 }
 
 void validate_scale_plan_golden(const ScalePlanResult& plan) {
-    const auto& golden = SIQS_MULTI_A_SCALE_FIXTURE_V3.golden;
+    const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    const auto& golden = fixture.golden;
     require(plan.first_a == golden.first_a && plan.last_a == golden.last_a,
             "scale A endpoint golden mismatch");
     require(plan.planner_attempts == golden.planner_attempts &&
                 plan.duplicate_a_draws == golden.planner_duplicate_draws &&
-                plan.digest.low == golden.plan_digest_low &&
-                plan.digest.high == golden.plan_digest_high,
+                plan.digest.low == fixture.current_plan_digest_low &&
+                plan.digest.high == fixture.current_plan_digest_high,
             "scale plan golden mismatch");
 }
 
+// The corrected roots reach the fixed capture budget before any analysis.
+// Keep this current terminal oracle separate from the historical successful
+// corpus used by snapshot replay and parser regression fixtures.
+void validate_scale_capture_terminal(const ScaleProfileRecord& record,
+                                     const ScaleProofRecord* proof = nullptr) {
+    const auto& golden = SIQS_MULTI_A_CAPTURE_TERMINAL_GOLDEN_V3;
+    const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    require(scale_terminal_name(record.status) == golden.status &&
+                record.terminal_detail == golden.status && !record.terminal_slot &&
+                record.scale_evidence == "terminal",
+            "current scale capture terminal mismatch");
+    require(record.completed_batches == golden.completed_batches &&
+                record.completed_a == golden.completed_a &&
+                record.unstarted_a == fixture.a_count - golden.completed_a &&
+                record.planned_slots == fixture.a_count * fixture.b_slots_per_a &&
+                record.completed_slots == golden.completed_slots &&
+                record.unstarted_slots == record.planned_slots - golden.completed_slots,
+            "current scale capture completion mismatch");
+    require(record.capture.captured_relations == golden.produced_relations &&
+                record.global_relations == golden.admitted_relations &&
+                record.global_relations == SCALE_GLOBAL_RELATION_LIMIT &&
+                record.discarded_relations == golden.discarded_relations &&
+                record.capture.captured_payload_bytes == golden.produced_payload_bytes &&
+                record.global_payload_bytes == golden.admitted_payload_bytes &&
+                record.global_payload_bytes < SCALE_GLOBAL_PAYLOAD_LIMIT &&
+                record.discarded_payload_bytes == golden.discarded_payload_bytes,
+            "current scale capture admission mismatch");
+    require(std::array{record.raw_full_relations, record.raw_one_lp_relations,
+                       record.raw_two_lp_candidates} == golden.produced_kind_counts &&
+                std::array{record.admitted_full_relations, record.admitted_one_lp_relations,
+                           record.admitted_two_lp_candidates} == golden.admitted_kind_counts &&
+                std::array{record.capture.observed_full_relations,
+                           record.capture.observed_one_lp_relations,
+                           record.capture.observed_two_lp_candidates} ==
+                    golden.produced_kind_counts,
+            "current scale capture relation-kind mismatch");
+    require(record.capture.threshold_candidates == golden.threshold_candidates &&
+                record.capture.rejected_residuals == golden.rejected_residuals &&
+                record.capture.unrepresentable_residuals == 0 &&
+                record.capture.stop_none == golden.completed_slots &&
+                record.capture.capacity_truncated_slots() == 0 &&
+                record.capture.stop_invalid_limits == 0 &&
+                record.capture.stop_invalid_relation_kind == 0 &&
+                record.capture.stop_invalid_state == 0 && record.capture.stop_size_overflow == 0,
+            "current scale capture slot outcomes mismatch");
+    require(record.first_rejected &&
+                record.first_rejected->slot.a_ordinal == golden.first_rejected_a &&
+                record.first_rejected->slot.gray_ordinal == golden.first_rejected_gray &&
+                record.first_rejected->relation_ordinal == golden.first_rejected_relation &&
+                record.slot_digest.low == golden.slot_digest_low &&
+                record.slot_digest.high == golden.slot_digest_high &&
+                record.raw_digest.low == golden.raw_digest_low &&
+                record.raw_digest.high == golden.raw_digest_high,
+            "current scale capture identity mismatch");
+    require(!record.graph_attempted && !record.assembly_attempted &&
+                record.adapter.input_relations == 0 && record.graph_input_edges == 0 &&
+                record.graph_edges == 0 && record.graph_cycles == 0 &&
+                record.row_candidate_upper == 0 && record.assembly.rows_before_dedup == 0 &&
+                record.assembly.pretrim_rows == 0 && record.assembly.selected_rows == 0 &&
+                record.analysis_wall_nanoseconds == 0,
+            "current scale capture terminal reached downstream analysis");
+    if (proof != nullptr) {
+        require(!proof->attempted && proof->terminal == ScaleProofTerminalStatus::not_attempted &&
+                    !proof->projected_dense_bytes && !proof->matrix_status &&
+                    !proof->dependency_status && !proof->factor_status && proof->matrix_rows == 0 &&
+                    proof->matrix_columns == 0 && proof->minimum_nullity == 0 &&
+                    proof->dependencies_returned == 0 && proof->dependencies_examined == 0 &&
+                    proof->dependencies_verified == 0 && proof->no_factor_count == 0 &&
+                    proof->factor_found_count == 0 && !proof->dependency_cap_reached &&
+                    !proof->dependency_digest_available && !proof->first_failed_dependency &&
+                    !proof->winning_dependency && !proof->winning_dependency_size &&
+                    proof->factor == "none" && proof->cofactor == "none" &&
+                    proof->solver_wall_nanoseconds == 0 &&
+                    proof->verify_extract_wall_nanoseconds == 0,
+                "current scale capture terminal attempted proof work");
+    }
+}
+
 void validate_scale_corpus_goldens(const ScaleProfileRecord& record, size_t raw_relations) {
+    // Historical solver-ready corpus: current fixed capture budgets terminate
+    // before this point. Preserve these values for old snapshot/parser evidence.
     const auto& golden = SIQS_MULTI_A_SCALE_FIXTURE_V3.golden;
     require(raw_relations == golden.raw_relations &&
                 record.global_payload_bytes == golden.raw_payload_bytes &&
@@ -2937,7 +3027,8 @@ void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations)
 }
 
 [[nodiscard]] ScaleProfileRecord run_scale_profile(const ProfileOptions& options,
-                                                   ScaleProofRecord* proof = nullptr) {
+                                                   ScaleProofRecord* proof = nullptr,
+                                                   std::vector<std::byte>* snapshot = nullptr) {
     const auto started = std::chrono::steady_clock::now();
     const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
     ScaleProfileRecord record;
@@ -3280,10 +3371,14 @@ void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations)
                 "shadow assembly rejected the deterministic scale corpus");
         record.assembly = assembled.assembly()->stats;
         record.fingerprints = assembled.assembly()->fingerprints;
-        if (proof != nullptr) {
-            const size_t proof_raw_relation_count = relations.size();
-            apply_scale_assembly_gate(record, proof_raw_relation_count);
-            if (record.status == ScaleTerminalStatus::solver_ready) {
+        apply_scale_assembly_gate(record, relations.size());
+        if (record.status == ScaleTerminalStatus::solver_ready) {
+            if (snapshot != nullptr) {
+                *snapshot = gnfs::tests::siqs_scale_row_snapshot::encode(
+                    assembled.assembly()->rows, factor_base_span, sieved_modulus,
+                    SHADOW_TRIM_EXCESS);
+            }
+            if (proof != nullptr) {
                 std::vector<SIQSRelation>().swap(relations);
                 std::vector<RelationProvenance>().swap(provenances);
                 require(relations.empty() && relations.capacity() == 0 && provenances.empty() &&
@@ -3298,9 +3393,6 @@ void apply_scale_assembly_gate(ScaleProfileRecord& record, size_t raw_relations)
                 }
             }
         }
-    }
-    if (proof == nullptr) {
-        apply_scale_assembly_gate(record, relations.size());
     }
 
     const auto analysis_finished = std::chrono::steady_clock::now();
@@ -3640,16 +3732,84 @@ void emit_scale_records(const ScaleProfileRecord& record, const ScaleProofRecord
     }
 }
 
+void replay_scale_rows(const std::filesystem::path& file) {
+    const auto& fixture = SIQS_MULTI_A_SCALE_FIXTURE_V3;
+    const Integer modulus(std::string(fixture.modulus));
+    const Integer square_modulus = modulus * Integer(select_multiplier(modulus));
+    const auto factor_base = build_factor_base(square_modulus, fixture.factor_base_size);
+    std::vector<uint32_t> primes;
+    for (const auto& prime : factor_base) {
+        primes.push_back(prime.p);
+    }
+    const auto rows = gnfs::tests::siqs_scale_row_snapshot::decode(
+        gnfs::tests::siqs_scale_row_snapshot::read(file), primes, square_modulus,
+        SHADOW_TRIM_EXCESS);
+    std::ostringstream summary;
+    for (const auto backend :
+         {SIQSShadowMatrixBackend::dense_only, SIQSShadowMatrixBackend::sparse_only}) {
+        SIQSShadowMatrixOptions options;
+        options.backend = backend;
+        options.sparse_worker_threads = 1;
+        const auto matrix = solve_siqs_shadow_matrix(rows, primes, square_modulus, options);
+        require(matrix.solution() &&
+                    matrix.solution()->dependencies.size() == options.max_dependencies,
+                "incomplete V3 replay dependency set");
+        size_t successful = 0;
+        for (const auto& dependency : matrix.solution()->dependencies) {
+            const auto verified =
+                verify_siqs_post_merge_dependency(rows, dependency, primes, square_modulus);
+            require(verified.is_valid(), "V3 replay dependency verification failed");
+            const auto extracted = extract_siqs_post_merge_factor(verified, modulus);
+            if (extracted.factors()) {
+                require(extracted.factors()->factor.to_string() == fixture.factor_p &&
+                            extracted.factors()->cofactor.to_string() == fixture.factor_q,
+                        "unexpected V3 replay factorization");
+                ++successful;
+            } else {
+                require(extracted.status() == SIQSPostMergeFactorStatus::no_factor,
+                        "V3 replay factor extraction failed");
+            }
+        }
+        require(successful != 0, "V3 replay found no factor");
+        summary << "GNFS_SIQS_256A_ROW_REPLAY_V1 backend="
+                << (backend == SIQSShadowMatrixBackend::dense_only ? "dense_only" : "sparse_only")
+                << " rows=" << rows.size() << " columns=" << primes.size()
+                << " verified=" << matrix.solution()->dependencies.size()
+                << " factorizations=" << successful << " factor=" << fixture.factor_p
+                << " cofactor=" << fixture.factor_q << '\n';
+    }
+    std::cout << summary.str();
+}
+
 [[maybe_unused]] int run_v3_main(int argc, char** argv) {
     try {
         require(BUILD_TYPE == "Release",
                 "profile requires a Release build; observed " + std::string(BUILD_TYPE));
         require(RELEASE_ASSERTIONS_DISABLED, "profile requires NDEBUG to be defined");
-        const ProfileOptions options = parse_options(argc, argv);
+        if (argc == 3 && std::string_view(argv[1]) == "--replay-rows") {
+            replay_scale_rows(argv[2]);
+            return 0;
+        }
+        const bool export_rows = argc == 5 && std::string_view(argv[3]) == "--stage-rows";
+        const ProfileOptions options = parse_options(export_rows ? 3 : argc, argv);
         self_check_scale_global_admission();
         self_check_unique_a_collision_path();
         self_check_canonical_duplicate_provenance();
-        const ScaleProfileRecord record = run_scale_profile(options);
+        std::vector<std::byte> snapshot;
+        const ScaleProfileRecord record =
+            run_scale_profile(options, nullptr, export_rows ? &snapshot : nullptr);
+        validate_scale_capture_terminal(record);
+        if (export_rows) {
+            require(record.status == ScaleTerminalStatus::solver_ready && !snapshot.empty(),
+                    "V3 snapshot requires validated selected rows");
+            // The runner publishes the private staged file only after validating the V3 transcript.
+            const std::filesystem::path staging(argv[4]);
+            require(std::filesystem::create_directory(staging),
+                    "V3 snapshot staging directory already exists");
+            auto file = gnfs::util::NativeRandomAccessFile::create_truncated(staging / "rows.bin");
+            file.write_exact_at(0, snapshot);
+            file.sync();
+        }
         emit_scale_records(record);
         return 0;
     } catch (const std::exception& error) {
@@ -3672,6 +3832,7 @@ void emit_scale_records(const ScaleProfileRecord& record, const ScaleProofRecord
         self_check_canonical_duplicate_provenance();
         ScaleProofRecord proof = make_scale_proof_record(options.requested_workers);
         const ScaleProfileRecord record = run_scale_profile(options, &proof);
+        validate_scale_capture_terminal(record, &proof);
         emit_scale_records(record, &proof);
         return 0;
     } catch (const std::exception& error) {

@@ -12,6 +12,22 @@
 
 namespace gnfs::linalg {
 
+namespace detail {
+
+// With no columns, each row-unit vector is an independent left-kernel vector.
+inline std::vector<std::vector<bool>> zero_column_dependencies(size_t rows, size_t max_deps) {
+    const size_t count = std::min(rows, max_deps);
+    std::vector<std::vector<bool>> dependencies;
+    dependencies.reserve(count);
+    for (size_t row = 0; row < count; ++row) {
+        dependencies.emplace_back(rows, false);
+        dependencies.back()[row] = true;
+    }
+    return dependencies;
+}
+
+} // namespace detail
+
 /// Block Lanczos algorithm for finding GF(2) null space
 /// Implements Montgomery's Block Lanczos (1995) for large sparse matrices,
 /// with Gaussian elimination fallback for small matrices.
@@ -46,10 +62,12 @@ struct BlockVector {
         std::fill(data.begin(), data.end(), 0);
     }
 
+    /// XOR another block vector in place; both logical vectors must be equal
+    /// in length because their packed entries share the same coordinate space.
     void xor_with(const BlockVector& other) {
         validate_storage();
         other.validate_storage();
-        if (other.length < length) {
+        if (other.length != length) {
             throw std::invalid_argument("BlockVector::xor_with: incompatible lengths");
         }
         for (size_t i = 0; i < length; ++i)

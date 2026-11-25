@@ -346,6 +346,8 @@ matrix_fallback(SIQSShadowMatrixStatus status) noexcept {
     case SIQSShadowMatrixStatus::row_identity_mismatch:
     case SIQSShadowMatrixStatus::worker_failure:
     case SIQSShadowMatrixStatus::internal_invariant_failure:
+    case SIQSShadowMatrixStatus::no_dependencies:
+    case SIQSShadowMatrixStatus::solver_failure:
         return std::nullopt;
     }
     return std::nullopt;
@@ -466,6 +468,8 @@ private:
     case SIQSShadowMatrixStatus::worker_failure:
     case SIQSShadowMatrixStatus::resource_limit:
     case SIQSShadowMatrixStatus::unsupported_backend:
+    case SIQSShadowMatrixStatus::no_dependencies:
+    case SIQSShadowMatrixStatus::solver_failure:
         return false;
     }
     return true;
@@ -528,8 +532,8 @@ run_siqs_shadow_proof(SIQSRawRelationCorpusView raw_relations,
         const bool valid_options =
             options.limits.minimum_row_excess != 0 &&
             options.limits.minimum_row_excess <= options.assembly.trim_excess_rows &&
-            options.assembly.materialization_workers != 0 && options.matrix.max_dependencies != 0 &&
-            options.matrix.elimination_workers != 0 &&
+            options.assembly.materialization_workers != 0 &&
+            siqs_shadow_matrix_options_are_valid(options.matrix) &&
             shadow_proof_detail::checked_add_size(
                 factor_base_primes.size(), options.limits.minimum_row_excess, required_rows) &&
             shadow_proof_detail::checked_add_size(factor_base_primes.size(),

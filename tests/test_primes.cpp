@@ -36,6 +36,12 @@ std::vector<uint64_t> small_primes_up_to(uint64_t N) {
 
 } // namespace
 
+void test_add_mod_u64() {
+    GNFS_TEST_CHECK(add_mod_u64(17, 26, 7) == 1);
+    GNFS_TEST_CHECK(add_mod_u64(U64_MAX - 1, U64_MAX - 1, U64_MAX) == U64_MAX - 2);
+    GNFS_TEST_CHECK(add_mod_u64(17, 26, 0) == 0);
+}
+
 void test_mul_mod_u64() {
     std::cout << "Testing mul_mod_u64..." << std::endl;
 
@@ -80,10 +86,15 @@ void test_pow_mod_u64() {
 
     // Edge: exp == 0 with non-trivial base
     GNFS_TEST_CHECK(pow_mod_u64(5, 0, 13) == 1);
+    GNFS_TEST_CHECK(pow_mod_u64(5, 0, 1) == 0);
 
     // A zero modulus has no residue; return the documented sentinel instead
     // of evaluating base %= 0.
     GNFS_TEST_CHECK(pow_mod_u64(5, 10, 0) == 0);
+
+    // Modulo one has only the zero residue, including the exponent-zero case.
+    GNFS_TEST_CHECK(pow_mod_u64(5, 0, 1) == 0);
+    GNFS_TEST_CHECK(pow_mod_u64(5, 10, 1) == 0);
 
     // Carmichael: 561 = 3 * 11 * 17; 2^560 ≡ 1 (mod 561) but 561 composite.
     // We can still compute and verify.
@@ -296,6 +307,7 @@ void test_pow_mod_overflow_paranoia() {
 int main() {
     std::cout << "=== util/primes.hpp tests ===" << std::endl;
 
+    test_add_mod_u64();
     test_mul_mod_u64();
     test_pow_mod_u64();
     test_is_prime_u64_basics();

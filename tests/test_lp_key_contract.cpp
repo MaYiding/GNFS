@@ -18,6 +18,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -227,6 +228,52 @@ void test_merge_xor_homomorphism() {
 
     Relation merged = PartialRelationMerger::merge_two(lhs, rhs);
     CHECK(odd_large_prime_keys(merged) == expected);
+}
+
+void test_merge_large_prime_chunks_at_wire_limit() {
+    Relation lhs = make_relation(5);
+    Relation rhs = make_relation(6);
+    // Valuations 1787 and 2041 each have odd parity at the same ideal.
+    lhs.algebraic_large_prime.assign(7, {3, 1, 255});
+    lhs.algebraic_large_prime.push_back({3, 1, 2});
+    rhs.algebraic_large_prime.assign(8, {3, 1, 255});
+    rhs.algebraic_large_prime.push_back({3, 1, 1});
+    auto results = PartialRelationMerger::merge_all({lhs, rhs});
+    CHECK(results.size() == 1);
+    const auto& merged = results.front();
+    CHECK(odd_large_prime_keys_empty(merged));
+    Relation::LargePrimeList expected(15, {3, 1, 255});
+    expected.push_back({3, 1, 3});
+    CHECK(merged.algebraic_large_prime == expected);
+    std::stringstream stream;
+    merged.serialize(stream);
+    const auto recovered = Relation::deserialize(stream);
+    CHECK(recovered.algebraic_large_prime == expected);
+    const auto built = MatrixBuilder{}.build({lhs, rhs, recovered}, FactorBase{});
+    const auto column = built.mapping.alg_lp_to_col.at(PrimeIdealKey{3, 1});
+    CHECK(built.matrix.test(0, column) && built.matrix.test(1, column));
+    CHECK(!built.matrix.test(2, column));
+    BitVector dependency(1);
+    dependency.set(0);
+    CHECK(verify_algebraic_ideal_powers(dependency, {recovered}));
+
+    // Distinct roots keep separate valuations, and zero entries remain raw.
+    lhs.algebraic_large_prime.assign(8, {7, 1, 2});
+    rhs.algebraic_large_prime.assign(8, {7, 2, 3});
+    rhs.algebraic_large_prime.push_back({7, 1, 0});
+    lhs.rational_large_prime.assign(8, {3, 0, 255});
+    rhs.rational_large_prime.assign(9, {3, 0, 255});
+    const auto mixed = PartialRelationMerger::merge_two(lhs, rhs);
+    CHECK((mixed.algebraic_large_prime ==
+           Relation::LargePrimeList{{7, 1, 16}, {7, 2, 24}, {7, 1, 0}}));
+    CHECK(mixed.rational_large_prime == Relation::LargePrimeList(17, {3, 0, 255}));
+
+    rhs.algebraic_large_prime.pop_back();
+    const auto within_limit = PartialRelationMerger::merge_two(lhs, rhs);
+    Relation::LargePrimeList original_order = lhs.algebraic_large_prime;
+    original_order.insert(original_order.end(), rhs.algebraic_large_prime.begin(),
+                          rhs.algebraic_large_prime.end());
+    CHECK(within_limit.algebraic_large_prime == original_order);
 }
 
 void test_metrics_filtering_and_separation() {
@@ -577,6 +624,7 @@ int main() {
     test_full_width_identity_and_side();
     test_exponent_parity_and_deep_fallback();
     test_merge_xor_homomorphism();
+    test_merge_large_prime_chunks_at_wire_limit();
     test_metrics_filtering_and_separation();
     test_v0_v3_effective_classification();
     test_matrix_builder_uses_canonical_support();

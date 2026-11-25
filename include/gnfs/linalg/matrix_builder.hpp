@@ -146,12 +146,12 @@ struct MatrixBuildResult {
 
 /// 矩阵构建配置
 struct MatrixBuilderConfig {
-    bool include_sign_column = true; // 是否包含符号列
-    bool include_qc_columns = true;  // 是否包含二次特征列
-    bool include_class_group = false; // 类群特征列（默认禁用：大多数 N class number=1，无需额外列）
-    bool include_schirokauer = true;                // 是否包含 Schirokauer map 列
-    size_t num_qc_primes = 10;                      // 二次特征素数数量
-    uint32_t qc_prime_start = 1000;                 // 二次特征素数搜索起点
+    bool include_sign_column = true;  // 是否包含符号列
+    bool include_qc_columns = true;   // 是否包含二次特征列
+    bool include_class_group = false; // Include certified prime-ideal valuation parities.
+    bool include_schirokauer = true;  // 是否包含 Schirokauer map 列
+    size_t num_qc_primes = 10;        // 二次特征素数数量
+    uint32_t qc_prime_start = 1000;   // 二次特征素数搜索起点
     std::vector<uint32_t> schirokauer_primes = {2}; // GF(2) 矩阵只能用 ℓ=2
     bool verbose = false;                           // 详细输出
 };
@@ -312,7 +312,7 @@ public:
 
         // 添加类群特征列
         if (class_group) {
-            result.mapping.num_class_group_columns = class_group->num_generators();
+            result.mapping.num_class_group_columns = class_group->num_binary_characters();
         }
 
         // 添加 Schirokauer map 列
@@ -331,21 +331,20 @@ public:
         result.row_to_relation.resize(relations.size());
 
         // 主循环并行化:每行 i 独立写入 SparseMatrix::row(i) — vector<SparseRow>
-        // 元素互不冲突;build_row_with_qc / class_group->compute_character /
+        // 元素互不冲突;build_row_with_qc / class_group->compute_binary_characters /
         // schirokauer->compute_flat 全部 const,无内部状态修改。
         // SchirokauerMap::compute_flat 1M+ relations 是热点。
         gnfs::util::ThreadPool pool(0);
         pool.parallel_for_index(0, relations.size(), [&](size_t i) {
             build_row_with_qc(result.matrix.row(i), relations[i], fb, ctx, result.mapping);
 
-            // ClassGroup characters: χ is a homomorphism, so for merged relation
-            // χ(∏ x_i) = Σ χ(x_i) mod 2  →  XOR individual character bits
-            if (class_group && class_group->num_generators() > 0) {
+            // Valuations add on products. XOR the parities of every merged coordinate.
+            if (class_group && class_group->num_binary_characters() > 0) {
                 const auto& rel = relations[i];
-                auto cg_chars = class_group->compute_character(rel.a, rel.b);
+                auto cg_chars = class_group->compute_binary_characters(rel.a, rel.b);
 
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                    auto extra_chars = class_group->compute_character(ea, eb);
+                    auto extra_chars = class_group->compute_binary_characters(ea, eb);
                     for (size_t j = 0; j < cg_chars.size(); ++j) {
                         cg_chars[j] = cg_chars[j] ^ extra_chars[j];
                     }
@@ -499,7 +498,7 @@ public:
         setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_prime_roots);
 
         if (class_group) {
-            result.mapping.num_class_group_columns = class_group->num_generators();
+            result.mapping.num_class_group_columns = class_group->num_binary_characters();
         }
         if (schirokauer) {
             result.mapping.num_schirokauer_columns = schirokauer->num_columns();
@@ -526,10 +525,10 @@ public:
             Relation rel = source.read(i);
             build_row_with_qc(result.matrix.row(i), rel, fb, ctx, result.mapping);
 
-            if (class_group && class_group->num_generators() > 0) {
-                auto cg_chars = class_group->compute_character(rel.a, rel.b);
+            if (class_group && class_group->num_binary_characters() > 0) {
+                auto cg_chars = class_group->compute_binary_characters(rel.a, rel.b);
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                    auto extra_chars = class_group->compute_character(ea, eb);
+                    auto extra_chars = class_group->compute_binary_characters(ea, eb);
                     for (std::size_t j = 0; j < cg_chars.size(); ++j) {
                         cg_chars[j] = cg_chars[j] ^ extra_chars[j];
                     }

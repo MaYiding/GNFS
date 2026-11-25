@@ -19319,10 +19319,18 @@ void require_worker_coordinator_empty_has_no_attempt(const std::filesystem::path
     const sieve::DistributedSieveWorkIdentityV1& identity,
     const std::array<worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1, 3>&
         dispositions,
-    const std::filesystem::path& root) {
+    const std::filesystem::path& root, std::string_view fixture_role = {}) {
     if (!result) {
-        fail("worker coordinator result", __LINE__,
-             worker_coordinator_diagnostic_detail(result.diagnostic));
+        auto detail = worker_coordinator_diagnostic_detail(result.diagnostic);
+        if (!fixture_role.empty()) {
+            detail.append(", fixture=").append(fixture_role);
+        }
+        for (std::size_t slot = 0; slot < result.chunks.size(); ++slot) {
+            detail.append(", slot_wait[").append(std::to_string(slot)).append("]={");
+            append_worker_wait_facts(detail, result.chunks[slot].wait_facts);
+            detail.append("}");
+        }
+        fail("worker coordinator result", __LINE__, detail);
     }
     CHECK(result.store != nullptr);
     CHECK(result.coordinator_claim != nullptr);
@@ -19402,7 +19410,8 @@ merge_coordinator_terminal_inputs(const WorkerCoordinatorResult& result) {
 }
 
 [[nodiscard]] MergeCoordinatorWorkerRound
-coordinate_merge_coordinator_worker_round(WorkerCoordinatorFixture& fixture) {
+coordinate_merge_coordinator_worker_round(WorkerCoordinatorFixture& fixture,
+                                          std::string_view fixture_role = {}) {
     WorkerCoordinatorLaunchLedger ledger;
     auto result = worker_coordinator_detail::coordinate_missing_distributed_sieve_workers_v1(
         make_worker_coordinator_request(fixture.take_store(), ledger), fixture.identity,
@@ -19414,7 +19423,7 @@ coordinate_merge_coordinator_worker_round(WorkerCoordinatorFixture& fixture) {
             worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::executed,
             worker_coordinator_detail::DistributedSieveWorkerCoordinationDispositionV1::empty,
         },
-        fixture.root);
+        fixture.root, fixture_role);
     CHECK(!ledger.overflow);
     CHECK(ledger.count == 2U);
     CHECK(ledger.slots[0] == 0U);
@@ -19555,7 +19564,7 @@ void test_wave_store_borrowed_worker_lock_span_contract() {
     WaveRootSnapshot durable_snapshot;
 
     {
-        auto round = coordinate_merge_coordinator_worker_round(fixture);
+        auto round = coordinate_merge_coordinator_worker_round(fixture, "primary");
         auto* const store = round.result.store.get();
         auto* const coordinator_claim = round.result.coordinator_claim.get();
         const auto manifest = store->manifest();
@@ -19633,7 +19642,8 @@ void test_wave_store_borrowed_worker_lock_span_contract() {
         Digest foreign_manifest_digest;
         std::array<WorkerCoordinatorCorpusFacts, 2> foreign_facts{};
         {
-            auto foreign_round = coordinate_merge_coordinator_worker_round(foreign_fixture);
+            auto foreign_round =
+                coordinate_merge_coordinator_worker_round(foreign_fixture, "foreign");
             foreign_manifest_digest = foreign_round.result.store->manifest_digest();
             foreign_facts = foreign_round.facts;
             const auto foreign_adopted = merge_coordinator_adopted_anchors(foreign_round.result);

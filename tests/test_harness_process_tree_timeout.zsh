@@ -3,6 +3,105 @@
 set -eu
 unsetopt BG_NICE
 
+if [[ "${1:-}" == "--wait-status-contract" ]]; then
+    case_dir="${2:A}"
+    zsh_executable="${3:A}"
+    source "${0:A:h:h}/scripts/lib/process_tree_timeout.zsh"
+
+    # Inject TERM between the real wait and the wrapper's status check.
+    # Observe the helper directly because outer wrappers replay TERM as 143.
+    zmodload zsh/zselect
+    typeset -a wait_statuses
+    wait() {
+        local wait_status=0
+        if (( ${#wait_statuses} == 1 )) && [[ -n "${release_cleanup:-}" ]]; then
+            : > "$release_cleanup"
+        fi
+        builtin wait "$@" || wait_status=$?
+        wait_statuses+=("$wait_status")
+        if (( ${#wait_statuses} == 1 )); then
+            kill -TERM "$$"
+            if [[ -n "${cleanup_marker:-}" ]]; then
+                # Stop repeated USR1 before retrying. For 127 also wait until
+                # only zsh's saved status remains; for 23 the child stays live.
+                for (( i = 0; i < 100; ++i )); do
+                    if [[ -e "$cleanup_marker" &&
+                          ( -n "$release_cleanup" || -z "${jobstates[(r)*:${1}=*]}" ) ]]; then
+                        break
+                    fi
+                    zselect -t 1 || true
+                done
+                if (( i == 100 )); then
+                    print -u2 -r -- "cleanup did not reach expected wait state: $expected"
+                    exit 1
+                fi
+            fi
+        fi
+        return "$wait_status"
+    }
+
+    # Leave an unrelated shell job live throughout the post-reap cases.
+    ( zselect -t 1500 || true ) &
+    unrelated_pid=$!
+    trap 'kill "$unrelated_pid" 2>/dev/null || true; builtin wait "$unrelated_pid" 2>/dev/null || true' EXIT
+    for expected in 0 23 124 125 126 127 128 143 144 200; do
+        wait_statuses=()
+        actual=0
+        gnfs_run_process_supervisor "$case_dir/control" "$zsh_executable" \
+            -fc 'exit "$1"' _ "$expected" || actual=$?
+        if (( actual != expected || GNFS_TEST_PROCESS_FORWARDED_SIGNAL_STATUS != 143 )) ||
+           [[ "${(j:,:)wait_statuses}" != "$expected" ]]; then
+            print -u2 -r -- "post-reap TERM: expected=$expected actual=$actual waits=${(j:,:)wait_statuses}"
+            exit 1
+        fi
+    done
+    kill -0 "$unrelated_pid"
+
+    # A caller's trap can interrupt wait with a platform-specific signal.
+    # The child repeats USR1 until the forwarded TERM ends its cleanup.
+    trap 'if (( ! usr1_seen )); then print -u2 -r -- caller-USR1; usr1_seen=1; fi' USR1
+    usr1_status=$((128 + $(kill -l USR1)))
+    for expected in 23 127; do
+        cleanup_marker="$case_dir/term-seen-$expected"
+        child_stderr="$case_dir/interrupted-$expected.stderr"
+        release_cleanup=""
+        if (( expected == 23 )); then release_cleanup="$case_dir/retry-started"; fi
+        wait_statuses=()
+        usr1_seen=0
+        actual=0
+        gnfs_run_process_supervisor "$case_dir/control" "$zsh_executable" -fc '
+            caller=$1 marker=$2 code=$3 release=$4
+            finish_cleanup() {
+                print -u2 -r -- "cleanup-$code"
+                : > "$marker"
+                if [[ -n "$release" ]]; then
+                    for (( i = 0; i < 100; ++i )); do
+                        [[ -e "$release" ]] && break
+                        zselect -t 1 || true
+                    done
+                    [[ -e "$release" ]] || exit 126
+                fi
+                exit "$code"
+            }
+            trap finish_cleanup TERM
+            zmodload zsh/zselect || exit 126
+            for (( i = 0; i < 100; ++i )); do
+                kill -USR1 "$caller" || exit 126
+                zselect -t 1 || true
+            done
+            exit 126
+        ' _ "$$" "$cleanup_marker" "$expected" "$release_cleanup" 2>"$child_stderr" || actual=$?
+        if (( actual != expected || GNFS_TEST_PROCESS_FORWARDED_SIGNAL_STATUS != 143 )) ||
+           [[ "${(j:,:)wait_statuses}" != "$usr1_status,$expected" ||
+              "$(<"$child_stderr")" != $'caller-USR1\n'"cleanup-$expected" ]]; then
+            print -u2 -r -- "interrupted wait: expected=$expected actual=$actual waits=${(j:,:)wait_statuses}"
+            cat -- "$child_stderr" >&2
+            exit 1
+        fi
+    done
+    exit 0
+fi
+
 if [[ "${1:-}" == "--wrapper-signal-contract" ]]; then
     if (( $# != 7 && $# != 9 )); then
         exit 64
@@ -25,8 +124,20 @@ if [[ "${1:-}" == "--wrapper-signal-contract" ]]; then
     trap 'print -r -- HUP >"$trap_marker"' HUP
     trap 'print -r -- INT >"$trap_marker"' INT
     trap 'print -r -- TERM >"$trap_marker"' TERM
+    if [[ "$wrapper_mode" == "completed-failure" ]]; then
+        # Deliver a signal after the real wait has reaped a failed supervisor,
+        # before the wrapper examines the status and signal generation.
+        wait() {
+            local completed_status=0
+            builtin wait "$@" || completed_status=$?
+            if (( completed_status == 125 )); then
+                kill -TERM "$$"
+            fi
+            return "$completed_status"
+        }
+    fi
     contract_status=0
-    if [[ "$wrapper_mode" == "combined" && $# == 7 ]]; then
+    if [[ ( "$wrapper_mode" == "combined" || "$wrapper_mode" == "completed-failure" ) && $# == 7 ]]; then
         run_with_timeout 10 "$fake_child" --timeout-tree \
             "$survived_file" 1000 "$ready_file" || contract_status=$?
         print -r -- "$RUN_OUTPUT"
@@ -62,6 +173,12 @@ source "${PROJECT_ROOT}/scripts/lib/process_tree_timeout.zsh"
 
 test_directory=$(mktemp -d "${TMPDIR:-/tmp}/gnfs-harness-timeout.XXXXXX")
 trap 'rm -r -- "$test_directory"' EXIT
+wait_stderr="${test_directory}/wait-status.stderr"
+if ! "$zsh_executable" "${0:A}" --wait-status-contract "$test_directory" "$zsh_executable" \
+    2>"$wait_stderr" || [[ -s "$wait_stderr" ]]; then
+    cat -- "$wait_stderr" >&2
+    exit 1
+fi
 typeset -a cancellation_survived_files
 cancellation_survived_files=()
 
@@ -234,7 +351,28 @@ contract_status=0
 wait "$wrapper_pid" || contract_status=$?
 if (( contract_status != 125 )) || [[ -e "$failure_trap" ]] ||
    [[ -s "$failure_stderr" ]]; then
-    print -u2 -r -- "supervisor cleanup failure was masked by wrapper signal status"
+    print -u2 -r -- \
+        "supervisor cleanup failure contract: status=$contract_status trap=$([[ -e "$failure_trap" ]] && print present || print absent)"
+    [[ ! -s "$failure_stderr" ]] || cat -- "$failure_stderr" >&2
+    exit 1
+fi
+
+completed_failure_supervisor="${test_directory}/completed-failure-supervisor.zsh"
+print -r -- $'#!/usr/bin/env zsh\nexit 125' >"$completed_failure_supervisor"
+chmod +x "$completed_failure_supervisor"
+completed_failure_trap="${test_directory}/completed-failure.trap"
+completed_failure_stderr="${test_directory}/completed-failure.stderr"
+contract_status=0
+"$zsh_executable" "${0:A}" --wrapper-signal-contract \
+    "$completed_failure_supervisor" "$fake_child" \
+    "${test_directory}/completed-failure.ready" "${test_directory}/completed-failure.survived" \
+    completed-failure "$completed_failure_trap" \
+    >"${test_directory}/completed-failure.stdout" 2>"$completed_failure_stderr" || contract_status=$?
+if (( contract_status != 125 )) || [[ -e "$completed_failure_trap" ]] ||
+   [[ -s "$completed_failure_stderr" ]]; then
+    print -u2 -r -- \
+        "completed supervisor failure contract: status=$contract_status trap=$([[ -e "$completed_failure_trap" ]] && print present || print absent)"
+    [[ ! -s "$completed_failure_stderr" ]] || cat -- "$completed_failure_stderr" >&2
     exit 1
 fi
 

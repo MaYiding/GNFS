@@ -5,32 +5,29 @@
 //     leading whitespace " 4", empty
 //   * compute_b1_prime_powers correctness for B1 ∈ {0, 1, 2, 3, 10, 20, 100}
 //   * Literal expected sequence for B1=20: [16, 9, 5, 7, 11, 13, 17, 19]
-//   * Cache hit: second lookup of same B1 returns same content
-//   * Cache miss + not full: inserts and returns ref
-//   * Cache miss + full: returns ref to overflow slot with correct content
+//   * Cache hit: second lookup shares the same immutable vector
+//   * Cache miss + not full: inserts and returns an owning handle
+//   * Cache miss + full or zero capacity: independent retained results
 //   * cache.size() / cache.capacity() / cache.clear() behavior
-//   * Multi-thread concurrent lookups: 4 threads × 100 random B1 values,
-//     no data race, all results consistent
+//   * Retained handles survive other-thread misses, clear, and destruction
+//   * Concurrent unique keys exceed capacity and match literal content oracles
 //   * Shared singleton thread-safety (concurrent first call)
 //   * reset_env_cache_for_testing lets next env query re-resolve
 //   * Perf info: cache hit vs miss wall-time for B1=10000
 
-// Force assert() to remain live even under -DNDEBUG so Release builds
-// do not silently strip verification.
-#ifdef NDEBUG
-#undef NDEBUG
-#endif
-
 #include "gnfs/cofactor/ecm_prime_cache.hpp"
+#include "support/test_check.hpp"
 
-#include <atomic>
-#include <cassert>
+#include <array>
+#include <barrier>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 #include <iostream>
-#include <random>
-#include <string>
+#include <memory>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -44,8 +41,8 @@ static void test_env_unset_default_off() {
     std::cout << "Testing GNFS_ECM_B1_CACHE_SIZE unset => 0..." << std::endl;
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0);
-    assert(ecm_b1_cache_enabled() == false);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0);
+    GNFS_TEST_CHECK(ecm_b1_cache_enabled() == false);
     std::cout << "  ENV unset: PASS (size=0, disabled)" << std::endl;
 }
 
@@ -53,8 +50,8 @@ static void test_env_zero_explicit_off() {
     std::cout << "Testing GNFS_ECM_B1_CACHE_SIZE=0 => 0..." << std::endl;
     setenv("GNFS_ECM_B1_CACHE_SIZE", "0", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0);
-    assert(ecm_b1_cache_enabled() == false);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0);
+    GNFS_TEST_CHECK(ecm_b1_cache_enabled() == false);
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
     std::cout << "  ENV=0: PASS (size=0, disabled)" << std::endl;
@@ -64,8 +61,8 @@ static void test_env_4_enabled() {
     std::cout << "Testing GNFS_ECM_B1_CACHE_SIZE=4 => 4..." << std::endl;
     setenv("GNFS_ECM_B1_CACHE_SIZE", "4", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 4);
-    assert(ecm_b1_cache_enabled() == true);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 4);
+    GNFS_TEST_CHECK(ecm_b1_cache_enabled() == true);
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
     std::cout << "  ENV=4: PASS (size=4, enabled)" << std::endl;
@@ -75,13 +72,13 @@ static void test_env_33_clamp_to_32() {
     std::cout << "Testing GNFS_ECM_B1_CACHE_SIZE=33 => 32 (clamp)..." << std::endl;
     setenv("GNFS_ECM_B1_CACHE_SIZE", "33", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 32 && "33 must clamp to 32");
-    assert(ecm_b1_cache_enabled() == true);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 32 && "33 must clamp to 32");
+    GNFS_TEST_CHECK(ecm_b1_cache_enabled() == true);
 
     // Extreme out-of-range still clamps to 32.
     setenv("GNFS_ECM_B1_CACHE_SIZE", "999999", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 32);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 32);
 
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
@@ -95,9 +92,9 @@ static void test_env_huge_value_clamps_to_32() {
     for (const char* value : {"2147483648", "999999999999999999999999999"}) {
         setenv("GNFS_ECM_B1_CACHE_SIZE", value, 1);
         ecm_b1_cache_reset_env_cache_for_testing();
-        assert(ecm_b1_cache_size() == 32);
+        GNFS_TEST_CHECK(ecm_b1_cache_size() == 32);
     }
-    assert(ecm_b1_cache_enabled());
+    GNFS_TEST_CHECK(ecm_b1_cache_enabled());
     std::cout << "  huge value clamps to 32: PASS" << std::endl;
 }
 
@@ -105,16 +102,16 @@ static void test_env_garbage_default_off() {
     std::cout << "Testing GNFS_ECM_B1_CACHE_SIZE=garbage => 0..." << std::endl;
     setenv("GNFS_ECM_B1_CACHE_SIZE", "garbage", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0);
 
     setenv("GNFS_ECM_B1_CACHE_SIZE", "-5", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0);
 
     // Empty string → unset-like (returns 0).
     setenv("GNFS_ECM_B1_CACHE_SIZE", "", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0);
 
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
@@ -126,15 +123,16 @@ static void test_env_leading_whitespace_off() {
     // Leading whitespace explicitly disabled by strict parser.
     setenv("GNFS_ECM_B1_CACHE_SIZE", "  4", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0 && "Leading whitespace must be rejected by strict parser");
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0 &&
+                    "Leading whitespace must be rejected by strict parser");
 
     setenv("GNFS_ECM_B1_CACHE_SIZE", "\t8", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0 && "Leading tab must be rejected");
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0 && "Leading tab must be rejected");
 
     setenv("GNFS_ECM_B1_CACHE_SIZE", "\n2", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0 && "Leading newline must be rejected");
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0 && "Leading newline must be rejected");
 
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
@@ -150,22 +148,22 @@ static void test_compute_edge_cases() {
 
     // B1 = 0 → no primes
     auto r0 = compute_b1_prime_powers(0);
-    assert(r0.empty() && "B1=0 must return empty");
+    GNFS_TEST_CHECK(r0.empty() && "B1=0 must return empty");
 
     // B1 = 1 → no primes
     auto r1 = compute_b1_prime_powers(1);
-    assert(r1.empty() && "B1=1 must return empty");
+    GNFS_TEST_CHECK(r1.empty() && "B1=1 must return empty");
 
     // B1 = 2 → primes {2}, prime powers {2} (2^1 = 2 ≤ 2, 2^2 = 4 > 2)
     auto r2 = compute_b1_prime_powers(2);
-    assert(r2.size() == 1);
-    assert(r2[0] == 2);
+    GNFS_TEST_CHECK(r2.size() == 1);
+    GNFS_TEST_CHECK(r2[0] == 2);
 
     // B1 = 3 → primes {2, 3}, prime powers {2, 3} (2^2 = 4 > 3, 3^2 = 9 > 3)
     auto r3 = compute_b1_prime_powers(3);
-    assert(r3.size() == 2);
-    assert(r3[0] == 2);
-    assert(r3[1] == 3);
+    GNFS_TEST_CHECK(r3.size() == 2);
+    GNFS_TEST_CHECK(r3[0] == 2);
+    GNFS_TEST_CHECK(r3[1] == 3);
 
     std::cout << "  B1=0/1/2/3: PASS" << std::endl;
 }
@@ -178,11 +176,11 @@ static void test_compute_b1_10() {
     //   p=5: 5^1 = 5,       5^2 = 25 > 10 → 5
     //   p=7: 7^1 = 7,       7^2 = 49 > 10 → 7
     auto r = compute_b1_prime_powers(10);
-    assert(r.size() == 4);
-    assert(r[0] == 8);
-    assert(r[1] == 9);
-    assert(r[2] == 5);
-    assert(r[3] == 7);
+    GNFS_TEST_CHECK(r.size() == 4);
+    GNFS_TEST_CHECK(r[0] == 8);
+    GNFS_TEST_CHECK(r[1] == 9);
+    GNFS_TEST_CHECK(r[2] == 5);
+    GNFS_TEST_CHECK(r[3] == 7);
     std::cout << "  B1=10: PASS [8, 9, 5, 7]" << std::endl;
 }
 
@@ -196,7 +194,7 @@ static void test_compute_b1_20_literal() {
     //   p=11..19: each ^1
     const std::vector<uint64_t> expected{16, 9, 5, 7, 11, 13, 17, 19};
     auto r = compute_b1_prime_powers(20);
-    assert(r == expected && "B1=20 must match expected literal sequence");
+    GNFS_TEST_CHECK(r == expected && "B1=20 must match expected literal sequence");
     std::cout << "  B1=20: PASS [16, 9, 5, 7, 11, 13, 17, 19]" << std::endl;
 }
 
@@ -204,22 +202,22 @@ static void test_compute_b1_100_count() {
     std::cout << "Testing compute_b1_prime_powers(B1=100) prime count..." << std::endl;
     // pi(100) = 25 primes ≤ 100. Verify count + first few + sortedness by prime base.
     auto r = compute_b1_prime_powers(100);
-    assert(r.size() == 25 && "pi(100) = 25");
+    GNFS_TEST_CHECK(r.size() == 25 && "pi(100) = 25");
 
     // First 4 entries:
     //   p=2: 2^6 = 64 ≤ 100, 2^7 = 128 > 100  → 64
     //   p=3: 3^4 = 81 ≤ 100, 3^5 = 243 > 100  → 81
     //   p=5: 5^2 = 25 ≤ 100, 5^3 = 125 > 100  → 25
     //   p=7: 7^2 = 49 ≤ 100, 7^3 = 343 > 100  → 49
-    assert(r[0] == 64);
-    assert(r[1] == 81);
-    assert(r[2] == 25);
-    assert(r[3] == 49);
+    GNFS_TEST_CHECK(r[0] == 64);
+    GNFS_TEST_CHECK(r[1] == 81);
+    GNFS_TEST_CHECK(r[2] == 25);
+    GNFS_TEST_CHECK(r[3] == 49);
 
     // primes 11, 13, 17, ..., 97 each contribute themselves (p^2 > 100).
     // Specifically r[4] is 11, r[24] is 97.
-    assert(r[4] == 11);
-    assert(r[24] == 97);
+    GNFS_TEST_CHECK(r[4] == 11);
+    GNFS_TEST_CHECK(r[24] == 97);
 
     std::cout << "  B1=100: PASS (25 primes, first 4 powers: 64, 81, 25, 49)" << std::endl;
 }
@@ -230,8 +228,8 @@ static void test_compute_deterministic() {
     auto r1 = compute_b1_prime_powers(50);
     auto r2 = compute_b1_prime_powers(50);
     auto r3 = compute_b1_prime_powers(50);
-    assert(r1 == r2);
-    assert(r2 == r3);
+    GNFS_TEST_CHECK(r1 == r2);
+    GNFS_TEST_CHECK(r2 == r3);
     std::cout << "  Determinism: PASS (3 calls same output)" << std::endl;
 }
 
@@ -239,169 +237,265 @@ static void test_compute_deterministic() {
 // Cache behavior tests
 // ────────────────────────────────────────────────────────────────────
 
+using PrimePowersHandle = std::shared_ptr<const std::vector<uint64_t>>;
+
 static void test_cache_hit_returns_same_content() {
-    std::cout << "Testing cache hit returns same content..." << std::endl;
+    std::cout << "Testing cache hit shares the same immutable vector..." << std::endl;
     EcmB1PrimeCache cache(4);
-    assert(cache.size() == 0);
-    assert(cache.capacity() == 4);
+    GNFS_TEST_CHECK(cache.size() == 0);
+    GNFS_TEST_CHECK(cache.capacity() == 4);
 
-    const auto& v_first = cache.get_or_compute(20);
-    assert(cache.size() == 1);
-    // Capture pointer / address.
-    const auto* first_ptr = &v_first;
+    const auto first = cache.get_or_compute(20);
+    GNFS_TEST_CHECK(first);
+    GNFS_TEST_CHECK(cache.size() == 1);
 
-    // Second lookup of same B1: hit. Must return reference to same stored
-    // object (pointer identity assertion).
-    const auto& v_second = cache.get_or_compute(20);
-    assert(cache.size() == 1 && "Cache must not grow on hit");
-    assert(&v_second == first_ptr && "Hit must return ref to existing cached vector");
+    const auto second = cache.get_or_compute(20);
+    GNFS_TEST_CHECK(second);
+    GNFS_TEST_CHECK(cache.size() == 1 && "Cache must not grow on hit");
+    GNFS_TEST_CHECK(first.get() == second.get() && "Hits must share the cached vector");
 
-    // Content must match expected.
     const std::vector<uint64_t> expected{16, 9, 5, 7, 11, 13, 17, 19};
-    assert(v_second == expected);
-
-    std::cout << "  Cache hit: PASS (pointer identity + content match)" << std::endl;
+    GNFS_TEST_CHECK(*first == expected);
+    GNFS_TEST_CHECK(*second == expected);
+    std::cout << "  Cache hit: PASS (shared identity + content match)" << std::endl;
 }
 
 static void test_cache_miss_not_full_inserts() {
     std::cout << "Testing cache miss + not full inserts..." << std::endl;
     EcmB1PrimeCache cache(8);
 
-    // Insert 4 distinct B1 values.
-    for (uint64_t B1 : {10ULL, 20ULL, 50ULL, 100ULL}) {
-        const auto& v = cache.get_or_compute(B1);
-        auto expected = compute_b1_prime_powers(B1);
-        assert(v == expected && "Cached vector must match fresh compute");
+    for (uint64_t bound : {10ULL, 20ULL, 50ULL, 100ULL}) {
+        const auto result = cache.get_or_compute(bound);
+        const auto expected = compute_b1_prime_powers(bound);
+        GNFS_TEST_CHECK(result);
+        GNFS_TEST_CHECK(*result == expected && "Cached vector must match fresh compute");
     }
-    assert(cache.size() == 4);
+    GNFS_TEST_CHECK(cache.size() == 4);
 
-    // Re-lookup: hits, size stays.
-    for (uint64_t B1 : {10ULL, 20ULL, 50ULL, 100ULL}) {
-        const auto& v = cache.get_or_compute(B1);
-        auto expected = compute_b1_prime_powers(B1);
-        assert(v == expected);
+    for (uint64_t bound : {10ULL, 20ULL, 50ULL, 100ULL}) {
+        const auto result = cache.get_or_compute(bound);
+        const auto expected = compute_b1_prime_powers(bound);
+        GNFS_TEST_CHECK(result);
+        GNFS_TEST_CHECK(*result == expected);
     }
-    assert(cache.size() == 4);
-
+    GNFS_TEST_CHECK(cache.size() == 4);
     std::cout << "  Cache miss + not full: PASS (4 entries inserted)" << std::endl;
 }
 
-static void test_cache_miss_full_returns_correct_content() {
-    std::cout << "Testing cache miss + full returns correct content..." << std::endl;
+static void test_cache_miss_full_preserves_retained_results() {
+    std::cout << "Testing full-cache misses preserve all retained results..." << std::endl;
     EcmB1PrimeCache cache(2);
+    const auto cached_10 = cache.get_or_compute(10);
+    const auto cached_20 = cache.get_or_compute(20);
+    const auto missed_30 = cache.get_or_compute(30);
+    const auto missed_40 = cache.get_or_compute(40);
+    const auto missed_30_again = cache.get_or_compute(30);
+    const auto cached_10_again = cache.get_or_compute(10);
 
-    // Fill cache.
-    const auto& a = cache.get_or_compute(10);
-    const auto& b = cache.get_or_compute(20);
-    assert(cache.size() == 2);
-    (void)a;
-    (void)b;
-
-    // Cache full. Miss B1=30: should return correct content but NOT insert.
-    const auto& c = cache.get_or_compute(30);
-    assert(cache.size() == 2 && "Cache full: size must not grow");
-    auto expected_30 = compute_b1_prime_powers(30);
-    assert(c == expected_30 && "Overflow result must equal fresh compute");
-
-    // Another overflow miss B1=40: overwrites the overflow slot.
-    const auto& d = cache.get_or_compute(40);
-    assert(cache.size() == 2 && "Cache full: size still must not grow");
-    auto expected_40 = compute_b1_prime_powers(40);
-    assert(d == expected_40 && "Subsequent overflow content must be correct");
-
-    // Cached entries (B1=10 and 20) still hit cleanly.
-    const auto& a2 = cache.get_or_compute(10);
-    auto expected_10 = compute_b1_prime_powers(10);
-    assert(a2 == expected_10);
-    assert(cache.size() == 2);
-
-    std::cout << "  Cache miss + full: PASS (no insert, correct content)" << std::endl;
+    const std::vector<uint64_t> expected_10{8, 9, 5, 7};
+    const std::vector<uint64_t> expected_20{16, 9, 5, 7, 11, 13, 17, 19};
+    const std::vector<uint64_t> expected_30{16, 27, 25, 7, 11, 13, 17, 19, 23, 29};
+    const std::vector<uint64_t> expected_40{32, 27, 25, 7, 11, 13, 17, 19, 23, 29, 31, 37};
+    GNFS_TEST_CHECK(cached_10 && cached_20 && missed_30 && missed_40 && missed_30_again &&
+                    cached_10_again);
+    GNFS_TEST_CHECK(*cached_10 == expected_10);
+    GNFS_TEST_CHECK(*cached_20 == expected_20);
+    GNFS_TEST_CHECK(*missed_30 == expected_30);
+    GNFS_TEST_CHECK(*missed_40 == expected_40);
+    GNFS_TEST_CHECK(*missed_30_again == expected_30);
+    GNFS_TEST_CHECK(cached_10.get() == cached_10_again.get());
+    GNFS_TEST_CHECK(cache.size() == 2 && "Misses must not exceed the hard capacity");
+    std::cout << "  Full cache: PASS (all handles retain their original content)" << std::endl;
 }
 
-static void test_cache_clear_resets() {
-    std::cout << "Testing cache clear resets state..." << std::endl;
-    EcmB1PrimeCache cache(4);
-
-    (void)cache.get_or_compute(10);
-    (void)cache.get_or_compute(20);
-    (void)cache.get_or_compute(50);
-    assert(cache.size() == 3);
+static void test_cache_clear_preserves_retained_results() {
+    std::cout << "Testing clear preserves cached and uncached handles..." << std::endl;
+    EcmB1PrimeCache cache(1);
+    auto cached = cache.get_or_compute(10);
+    auto uncached = cache.get_or_compute(20);
+    const std::weak_ptr<const std::vector<uint64_t>> cached_observer = cached;
+    const std::weak_ptr<const std::vector<uint64_t>> uncached_observer = uncached;
+    GNFS_TEST_CHECK(cache.size() == 1);
 
     cache.clear();
-    assert(cache.size() == 0);
-    assert(cache.capacity() == 4 && "Clear must not change capacity");
+    GNFS_TEST_CHECK(cache.size() == 0);
+    GNFS_TEST_CHECK(cache.capacity() == 1 && "Clear must not change capacity");
+    const auto refilled = cache.get_or_compute(30);
+    GNFS_TEST_CHECK(cache.size() == 1);
 
-    // After clear, the same B1 misses again and inserts.
-    const auto& v = cache.get_or_compute(20);
-    assert(cache.size() == 1);
-    auto expected = compute_b1_prime_powers(20);
-    assert(v == expected);
-
-    std::cout << "  Cache clear: PASS (size=0 after clear, refills)" << std::endl;
+    const std::vector<uint64_t> expected_10{8, 9, 5, 7};
+    const std::vector<uint64_t> expected_20{16, 9, 5, 7, 11, 13, 17, 19};
+    const std::vector<uint64_t> expected_30{16, 27, 25, 7, 11, 13, 17, 19, 23, 29};
+    GNFS_TEST_CHECK(cached && uncached && refilled);
+    GNFS_TEST_CHECK(*cached == expected_10);
+    GNFS_TEST_CHECK(*uncached == expected_20);
+    GNFS_TEST_CHECK(*refilled == expected_30);
+    GNFS_TEST_CHECK(!cached_observer.expired() && !uncached_observer.expired());
+    cached.reset();
+    uncached.reset();
+    GNFS_TEST_CHECK(cached_observer.expired());
+    GNFS_TEST_CHECK(uncached_observer.expired());
+    std::cout << "  Clear: PASS (empty cache, retained content, refill)" << std::endl;
 }
 
-static void test_cache_zero_capacity_always_overflow() {
-    std::cout << "Testing zero-capacity cache always overflows..." << std::endl;
+static void test_cache_zero_capacity_preserves_retained_results() {
+    std::cout << "Testing zero-capacity results have independent lifetimes..." << std::endl;
     EcmB1PrimeCache cache(0);
-    assert(cache.size() == 0);
-    assert(cache.capacity() == 0);
+    const auto empty_zero = cache.get_or_compute(0);
+    const auto empty_one = cache.get_or_compute(1);
+    const auto first = cache.get_or_compute(20);
+    const auto second = cache.get_or_compute(30);
+    const auto third = cache.get_or_compute(2);
 
-    // Every lookup misses + cache is full (0 == 0), so we get the overflow slot.
-    const auto& v1 = cache.get_or_compute(20);
-    auto expected = compute_b1_prime_powers(20);
-    assert(v1 == expected);
-    assert(cache.size() == 0 && "Zero-cap cache must never insert");
-
-    const auto& v2 = cache.get_or_compute(30);
-    auto expected_30 = compute_b1_prime_powers(30);
-    assert(v2 == expected_30);
-    assert(cache.size() == 0);
-
-    std::cout << "  Zero capacity: PASS (always overflow path)" << std::endl;
+    const std::vector<uint64_t> expected_20{16, 9, 5, 7, 11, 13, 17, 19};
+    const std::vector<uint64_t> expected_30{16, 27, 25, 7, 11, 13, 17, 19, 23, 29};
+    const std::vector<uint64_t> expected_2{2};
+    GNFS_TEST_CHECK(empty_zero && empty_one && first && second && third);
+    GNFS_TEST_CHECK(empty_zero->empty());
+    GNFS_TEST_CHECK(empty_one->empty());
+    GNFS_TEST_CHECK(*first == expected_20);
+    GNFS_TEST_CHECK(*second == expected_30);
+    GNFS_TEST_CHECK(*third == expected_2);
+    GNFS_TEST_CHECK(cache.size() == 0 && "Zero-capacity cache must never insert");
+    GNFS_TEST_CHECK(cache.capacity() == 0);
+    std::cout << "  Zero capacity: PASS (all prior handles remain valid)" << std::endl;
 }
 
-// ────────────────────────────────────────────────────────────────────
-// Thread safety
-// ────────────────────────────────────────────────────────────────────
+static void test_invalid_bound_preserves_results_and_cache() {
+    std::cout << "Testing a rejected bound leaves handles and cache usable..." << std::endl;
+    const std::vector<uint64_t> expected_20{16, 9, 5, 7, 11, 13, 17, 19};
+    const std::vector<uint64_t> expected_30{16, 27, 25, 7, 11, 13, 17, 19, 23, 29};
+    for (std::size_t capacity : {std::size_t{0}, std::size_t{1}}) {
+        EcmB1PrimeCache cache(capacity);
+        const auto retained = cache.get_or_compute(20);
+        bool rejected = false;
+        try {
+            (void)cache.get_or_compute(100'000'001);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        GNFS_TEST_CHECK(rejected);
+        GNFS_TEST_CHECK(cache.size() == capacity);
+        GNFS_TEST_CHECK(retained);
+        GNFS_TEST_CHECK(*retained == expected_20);
+        // A successful follow-up also proves the throwing lookup released its lock.
+        const auto next = cache.get_or_compute(30);
+        GNFS_TEST_CHECK(next);
+        GNFS_TEST_CHECK(*next == expected_30);
+        GNFS_TEST_CHECK(*retained == expected_20);
+        GNFS_TEST_CHECK(cache.size() == capacity);
+    }
+    std::cout << "  Rejected bound: PASS (prior results, capacity, and subsequent lookup)"
+              << std::endl;
+}
 
+static void test_results_outlive_cache() {
+    std::cout << "Testing cached and uncached handles outlive the cache..." << std::endl;
+    PrimePowersHandle cached;
+    PrimePowersHandle uncached;
+    {
+        EcmB1PrimeCache cache(1);
+        cached = cache.get_or_compute(10);
+        uncached = cache.get_or_compute(20);
+    }
+    const std::vector<uint64_t> expected_10{8, 9, 5, 7};
+    const std::vector<uint64_t> expected_20{16, 9, 5, 7, 11, 13, 17, 19};
+    GNFS_TEST_CHECK(cached && uncached);
+    GNFS_TEST_CHECK(*cached == expected_10);
+    GNFS_TEST_CHECK(*uncached == expected_20);
+    std::cout << "  Cache destruction: PASS (both retained results remain valid)" << std::endl;
+}
+
+// The barriers impose the faulty interleaving without a scheduling race:
+// retain B1=20, finish another thread's misses, then read the retained value.
+static void test_retained_result_survives_other_thread_misses() {
+    std::cout << "Testing retained handles across another thread's misses..." << std::endl;
+    const std::vector<uint64_t> expected_20{16, 9, 5, 7, 11, 13, 17, 19};
+    const std::vector<uint64_t> expected_30{16, 27, 25, 7, 11, 13, 17, 19, 23, 29};
+    const std::vector<uint64_t> expected_40{32, 27, 25, 7, 11, 13, 17, 19, 23, 29, 31, 37};
+    for (std::size_t capacity : {std::size_t{0}, std::size_t{1}}) {
+        EcmB1PrimeCache cache(capacity);
+        const auto initial = cache.get_or_compute(10);
+        const auto retained = cache.get_or_compute(20);
+        PrimePowersHandle missed_30;
+        PrimePowersHandle missed_40;
+        std::barrier checkpoint(2);
+        std::thread other([&] {
+            checkpoint.arrive_and_wait();
+            missed_30 = cache.get_or_compute(30);
+            missed_40 = cache.get_or_compute(40);
+            checkpoint.arrive_and_wait();
+        });
+        checkpoint.arrive_and_wait();
+        checkpoint.arrive_and_wait();
+        other.join();
+
+        GNFS_TEST_CHECK(initial && retained && missed_30 && missed_40);
+        GNFS_TEST_CHECK(*retained == expected_20);
+        GNFS_TEST_CHECK(*missed_30 == expected_30);
+        GNFS_TEST_CHECK(*missed_40 == expected_40);
+        GNFS_TEST_CHECK(cache.size() == capacity);
+    }
+    std::cout << "  Other-thread misses: PASS (deterministic retained-content checks)" << std::endl;
+}
+
+// Each vector is a literal mathematical oracle in ascending prime-base order.
+// In particular, bounds at 8, 9, 16, 25, 27, 32, and 49 cross power boundaries.
 static void test_cache_thread_safe_concurrent_lookups() {
-    std::cout << "Testing 4 threads × 100 random B1 lookups concurrent..." << std::endl;
-    EcmB1PrimeCache cache(8);
-
-    constexpr int kThreads = 4;
-    constexpr int kLookupsPerThread = 100;
-    // Restrict B1 to a small set so most lookups hit the cache and we
-    // exercise the mutex + overflow paths heavily.
-    const std::vector<uint64_t> B1_set{10, 20, 50, 100, 200, 500, 1000};
-
-    std::atomic<bool> all_ok{true};
+    std::cout << "Testing 4 threads with 16 unique bounds and capacity 2..." << std::endl;
+    struct PrimePowerCase {
+        uint64_t bound;
+        std::vector<uint64_t> expected;
+    };
+    constexpr std::size_t thread_count = 4;
+    constexpr std::size_t rounds = 4;
+    constexpr std::size_t case_count = thread_count * rounds;
+    const std::array<PrimePowerCase, case_count> cases{{
+        {2, {2}},
+        {3, {2, 3}},
+        {4, {4, 3}},
+        {5, {4, 3, 5}},
+        {7, {4, 3, 5, 7}},
+        {8, {8, 3, 5, 7}},
+        {9, {8, 9, 5, 7}},
+        {10, {8, 9, 5, 7}},
+        {16, {16, 9, 5, 7, 11, 13}},
+        {20, {16, 9, 5, 7, 11, 13, 17, 19}},
+        {25, {16, 9, 25, 7, 11, 13, 17, 19, 23}},
+        {27, {16, 27, 25, 7, 11, 13, 17, 19, 23}},
+        {30, {16, 27, 25, 7, 11, 13, 17, 19, 23, 29}},
+        {32, {32, 27, 25, 7, 11, 13, 17, 19, 23, 29, 31}},
+        {40, {32, 27, 25, 7, 11, 13, 17, 19, 23, 29, 31, 37}},
+        {49, {32, 27, 25, 49, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47}},
+    }};
+    EcmB1PrimeCache cache(2);
+    std::array<PrimePowersHandle, case_count> retained;
+    std::array<std::size_t, case_count> observed_sizes{};
+    std::barrier checkpoint(static_cast<std::ptrdiff_t>(thread_count));
     std::vector<std::thread> threads;
-    threads.reserve(kThreads);
-
-    for (int t = 0; t < kThreads; ++t) {
-        threads.emplace_back([&, t]() {
-            std::mt19937_64 rng(static_cast<uint64_t>(t) * 0x9E3779B97F4A7C15ULL);
-            std::uniform_int_distribution<size_t> dist(0, B1_set.size() - 1);
-            for (int i = 0; i < kLookupsPerThread; ++i) {
-                const uint64_t B1 = B1_set[dist(rng)];
-                const auto& v = cache.get_or_compute(B1);
-                auto expected = compute_b1_prime_powers(B1);
-                if (v != expected) {
-                    all_ok = false;
-                    return;
-                }
+    threads.reserve(thread_count);
+    for (std::size_t t = 0; t < thread_count; ++t) {
+        threads.emplace_back([&, t] {
+            for (std::size_t round = 0; round < rounds; ++round) {
+                const std::size_t index = round * thread_count + t;
+                checkpoint.arrive_and_wait();
+                retained[index] = cache.get_or_compute(cases[index].bound);
+                observed_sizes[index] = cache.size();
+                checkpoint.arrive_and_wait();
             }
         });
     }
-    for (auto& th : threads)
-        th.join();
-    assert(all_ok.load() && "All concurrent lookups must return correct content");
+    for (auto& thread : threads)
+        thread.join();
 
-    // Cache size is bounded by capacity (8) regardless of how many unique
-    // B1 values were tried (7 unique here, so size could be up to 7).
-    assert(cache.size() <= cache.capacity());
-
-    std::cout << "  Concurrent lookups: PASS (no race, correct content)" << std::endl;
+    for (std::size_t index = 0; index < cases.size(); ++index) {
+        GNFS_TEST_CHECK(retained[index]);
+        GNFS_TEST_CHECK(*retained[index] == cases[index].expected);
+        GNFS_TEST_CHECK(observed_sizes[index] <= cache.capacity());
+    }
+    GNFS_TEST_CHECK(cache.size() == 2 && "Unique concurrent misses must respect capacity");
+    std::cout << "  Concurrent lookups: PASS (all retained literal oracles, hard capacity)"
+              << std::endl;
 }
 
 static void test_shared_singleton_thread_safe_first_call() {
@@ -427,14 +521,15 @@ static void test_shared_singleton_thread_safe_first_call() {
 
     // All threads must see the same singleton instance.
     for (std::size_t t = 1; t < kThreads; ++t) {
-        assert(ptrs[t] == ptrs[0] && "Singleton ref must be identical across threads");
+        GNFS_TEST_CHECK(ptrs[t] == ptrs[0] && "Singleton ref must be identical across threads");
     }
 
     // Singleton must be usable.
     auto& sg = shared_ecm_b1_cache();
-    const auto& v = sg.get_or_compute(20);
+    const auto v = sg.get_or_compute(20);
     auto expected = compute_b1_prime_powers(20);
-    assert(v == expected);
+    GNFS_TEST_CHECK(v);
+    GNFS_TEST_CHECK(*v == expected);
 
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
@@ -450,27 +545,27 @@ static void test_reset_env_cache_re_reads() {
     // Start with unset.
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0);
 
     // Set new value + reset cache.
     setenv("GNFS_ECM_B1_CACHE_SIZE", "16", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 16);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 16);
 
     // Change again.
     setenv("GNFS_ECM_B1_CACHE_SIZE", "32", 1);
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 32);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 32);
 
     unsetenv("GNFS_ECM_B1_CACHE_SIZE");
     ecm_b1_cache_reset_env_cache_for_testing();
-    assert(ecm_b1_cache_size() == 0);
+    GNFS_TEST_CHECK(ecm_b1_cache_size() == 0);
 
     std::cout << "  Reset cache: PASS (re-reads modified env)" << std::endl;
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Perf info (informational, not assert)
+// Perf info (informational only)
 // ────────────────────────────────────────────────────────────────────
 
 static void test_perf_hit_vs_miss_B1_10000() {
@@ -481,20 +576,24 @@ static void test_perf_hit_vs_miss_B1_10000() {
 
     // Warm: insert B1=10000.
     auto t_first_start = std::chrono::steady_clock::now();
-    (void)cache.get_or_compute(10000);
+    const auto first = cache.get_or_compute(10000);
     auto t_first_end = std::chrono::steady_clock::now();
     const auto first_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(t_first_end - t_first_start).count();
 
+    GNFS_TEST_CHECK(first);
+
     // Repeated hits: same B1, cache hit path.
+    PrimePowersHandle last_hit;
     auto t_hit_start = std::chrono::steady_clock::now();
     for (int i = 0; i < kRepeats; ++i) {
-        (void)cache.get_or_compute(10000);
+        last_hit = cache.get_or_compute(10000);
     }
     auto t_hit_end = std::chrono::steady_clock::now();
     const auto hit_total_ns =
         std::chrono::duration_cast<std::chrono::nanoseconds>(t_hit_end - t_hit_start).count();
     const auto hit_avg_ns = hit_total_ns / static_cast<long long>(kRepeats);
+    GNFS_TEST_CHECK(last_hit && last_hit.get() == first.get());
 
     // Miss (uncached): direct compute on new B1 value each iteration.
     // Use distinct B1 values to bypass any caching. We use values just below
@@ -520,7 +619,7 @@ static void test_perf_hit_vs_miss_B1_10000() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Additional behavior assertion: cache returned ref vs fresh compute equal
+// Additional behavior check: owned cache result vs fresh compute equal
 // ────────────────────────────────────────────────────────────────────
 
 static void test_cache_vs_fresh_compute_parity() {
@@ -528,9 +627,10 @@ static void test_cache_vs_fresh_compute_parity() {
     EcmB1PrimeCache cache(8);
 
     for (uint64_t B1 : {2ULL, 7ULL, 31ULL, 100ULL, 313ULL, 1000ULL, 9973ULL, 50000ULL}) {
-        const auto& cached = cache.get_or_compute(B1);
+        const auto cached = cache.get_or_compute(B1);
         auto fresh = compute_b1_prime_powers(B1);
-        assert(cached == fresh && "Cache content must match fresh compute");
+        GNFS_TEST_CHECK(cached);
+        GNFS_TEST_CHECK(*cached == fresh && "Cache content must match fresh compute");
     }
 
     std::cout << "  Cache vs fresh parity: PASS (8 distinct B1 values)" << std::endl;
@@ -564,12 +664,15 @@ int main() {
     // Cache behavior
     test_cache_hit_returns_same_content();
     test_cache_miss_not_full_inserts();
-    test_cache_miss_full_returns_correct_content();
-    test_cache_clear_resets();
-    test_cache_zero_capacity_always_overflow();
+    test_cache_miss_full_preserves_retained_results();
+    test_cache_clear_preserves_retained_results();
+    test_cache_zero_capacity_preserves_retained_results();
+    test_results_outlive_cache();
+    test_invalid_bound_preserves_results_and_cache();
     test_cache_vs_fresh_compute_parity();
 
     // Thread safety
+    test_retained_result_survives_other_thread_misses();
     test_cache_thread_safe_concurrent_lookups();
     test_shared_singleton_thread_safe_first_call();
 

@@ -2,12 +2,14 @@
 
 #include "../core/integer.hpp"
 #include "../core/params.hpp"
+#include "../core/sieve_limits.hpp"
 #include "progress.hpp"
 
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
+#include <cstdio>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -55,9 +57,10 @@ struct Config {
     std::optional<std::string> output_format; // "text", "json", "csv", "report"
 
     /// Parse a complete unsigned 32-bit value without platform-dependent
-    /// narrowing from unsigned long. Explicit negative signs are rejected.
+    /// narrowing from unsigned long. Negative signs are rejected even after
+    /// whitespace that stoull would skip before unsigned negation.
     static uint32_t parse_uint32(std::string_view value, std::string_view key) {
-        if (value.empty() || value.front() == '-') {
+        if (value.empty() || value.find('-') != std::string_view::npos) {
             throw std::invalid_argument("Config: " + std::string(key) +
                                         " must be an unsigned uint32 value");
         }
@@ -71,9 +74,10 @@ struct Config {
     }
 
     /// Parse a complete unsigned 64-bit value rather than accepting a numeric
-    /// prefix followed by arbitrary text. Explicit negative signs are rejected.
+    /// prefix followed by arbitrary text. No valid unsigned decimal contains
+    /// a minus sign, including after leading whitespace.
     static uint64_t parse_uint64(std::string_view value, std::string_view key) {
-        if (value.empty() || value.front() == '-') {
+        if (value.empty() || value.find('-') != std::string_view::npos) {
             throw std::invalid_argument("Config: " + std::string(key) +
                                         " must be an unsigned uint64 value");
         }
@@ -114,8 +118,23 @@ struct Config {
 
     static void require_positive_dimension(int32_t value, std::string_view key) {
         if (value <= 0) {
-            throw std::out_of_range("Config: " + std::string(key) +
-                                    " must be in [1, INT32_MAX]");
+            throw std::out_of_range("Config: " + std::string(key) + " must be in [1, INT32_MAX]");
+        }
+    }
+
+    /// Reject a geometrically valid region that would still request an
+    /// impractical per-sieve allocation. The same limit is enforced again by
+    /// LatticeSieve for callers that bypass Config.
+    static void require_sieve_region_capacity(const core::GNFSParams& params) {
+        const size_t cells = params.sieve_region_size();
+        if (cells == 0) {
+            throw std::out_of_range("Config: sieve region dimensions are not representable");
+        }
+        if (cells > core::SIEVE_MAX_REGION_CELLS) {
+            throw std::out_of_range("Config: sieve region exceeds the per-sieve allocation limit");
+        }
+        if (params.sieve_memory_bytes() == 0) {
+            throw std::out_of_range("Config: sieve region byte size is not representable");
         }
     }
 
@@ -154,14 +173,29 @@ struct Config {
     ///   verbose = true
     static Config from_file(const std::string& path) {
         Config cfg;
-        std::ifstream ifs(path);
-        if (!ifs.is_open()) {
+        const auto close_file = [](std::FILE* file) { std::fclose(file); };
+        std::unique_ptr<std::FILE, decltype(close_file)> input(std::fopen(path.c_str(), "r"),
+                                                               close_file);
+        if (!input) {
             throw std::runtime_error("Cannot open config file: " + path);
         }
 
         std::string line;
+        const auto read_line = [&] {
+            line.clear();
+            for (int byte; (byte = std::fgetc(input.get())) != EOF;) {
+                if (byte == '\n')
+                    return true;
+                line.push_back(static_cast<char>(byte));
+            }
+            // A partial line at clean EOF is valid. A read error must reject
+            // the entire config, including any settings already parsed.
+            if (std::ferror(input.get()))
+                throw std::runtime_error("Cannot read config file: " + path);
+            return !line.empty();
+        };
         int lineno = 0;
-        while (std::getline(ifs, line)) {
+        while (read_line()) {
             ++lineno;
             // Strip leading/trailing whitespace
             auto start = line.find_first_not_of(" \t");
@@ -169,8 +203,9 @@ struct Config {
                 continue;
             line = line.substr(start);
             auto end = line.find_last_not_of(" \t\r\n");
-            if (end != std::string::npos)
-                line = line.substr(0, end + 1);
+            if (end == std::string::npos)
+                continue;
+            line.resize(end + 1);
 
             // Skip comments and empty lines
             if (line.empty() || line[0] == '#')
@@ -388,8 +423,9 @@ struct Config {
 
         if (sieve_width.has_value()) {
             require_positive_dimension(*sieve_width, "sieve_width");
-            params.sieve_i_min = -(*sieve_width / 2);
-            params.sieve_i_max = *sieve_width / 2 - 1;
+            const auto [i_min, i_max] = core::GNFSParams::sieve_i_bounds_for_width(*sieve_width);
+            params.sieve_i_min = i_min;
+            params.sieve_i_max = i_max;
         }
         if (sieve_height.has_value()) {
             require_positive_dimension(*sieve_height, "sieve_height");
@@ -415,6 +451,8 @@ struct Config {
             }
             params.max_local_sieve_threads = *max_local_sieve_threads;
         }
+
+        require_sieve_region_capacity(params);
 
         return params;
     }

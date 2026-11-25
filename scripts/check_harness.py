@@ -32,13 +32,13 @@ OBSOLETE_HARNESS_FILES = (
 )
 SHELL_FUNCTION_SHA256 = {
     ("scripts/test.sh", "run_single_test"): (
-        "55c3e738e04fa08c35c3743d434390f1e23b7988dd7b5eab25d66278c5435920"
+        "3bae6314d8e5f2b08068f919d4544e631d379de95e1eac8c828ba1c36760148c"
     ),
     ("scripts/test.sh", "run_dual_stream_with_timeout"): (
         "4597d13f41083f419ba7d8b436e3cf592de6fcf86ec0acf339d4cbdfeac1719b"
     ),
     ("scripts/lib/process_tree_timeout.zsh", "gnfs_run_process_supervisor"): (
-        "1b2095568ca914b93a46d54d4fc4c1b448fc151a201744fbe109ce8c82eac339"
+        "571f996a6866d6648a6abd2e9a9eaac96dd86e5a37cbfb5603538725faeb3525"
     ),
     ("scripts/lib/process_tree_timeout.zsh", "run_with_timeout"): (
         "d5e06613c0728fe7a3d8a55b53ffa544d8e5d25438f352169a41c991ae550837"
@@ -324,8 +324,8 @@ class Checks:
         for marker in (
             "Verify MinGW process-tree supervisor",
             "-DGNFS_BUILD_TESTS=ON",
-            "--target gnfs_test_process_supervisor",
-            "-R '^ProcessSupervisor$'",
+            "--target gnfs_test_process_supervisor test_trial_wheel",
+            "-R '^(ProcessSupervisor|TrialWheel)$'",
         ):
             if marker not in release_readiness:
                 self.fail(

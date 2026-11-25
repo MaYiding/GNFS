@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <gmp.h>
 #include <iosfwd>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 
@@ -84,6 +85,7 @@ public:
     double to_double() const;
     std::string to_string(int base = 10) const;
     size_t bit_length() const;
+    /// Exact digit count of the magnitude (zero has one digit).
     size_t num_digits(int base = 10) const;
 
     // Fit checks
@@ -151,13 +153,37 @@ public:
 
     // 与 int64_t/uint64_t 直接比较,避免临时 Integer 分配 (走 mpz_cmp_si/ui)
     bool operator==(int64_t rhs) const;
+    bool operator==(uint64_t rhs) const;
     bool operator!=(int64_t rhs) const {
+        return !(*this == rhs);
+    }
+    bool operator!=(uint64_t rhs) const {
+        return !(*this == rhs);
+    }
+
+    // Keep comparisons with other integral types exact while avoiding an
+    // overload ambiguity for ordinary signed and unsigned integer literals.
+    template <typename T>
+        requires(std::is_integral_v<T> && sizeof(T) <= sizeof(uint64_t) &&
+                 !std::is_same_v<T, int64_t> && !std::is_same_v<T, uint64_t>)
+    bool operator==(T rhs) const {
+        if constexpr (std::is_signed_v<T>) {
+            return *this == static_cast<int64_t>(rhs);
+        } else {
+            return *this == static_cast<uint64_t>(rhs);
+        }
+    }
+
+    template <typename T>
+        requires(std::is_integral_v<T> && sizeof(T) <= sizeof(uint64_t) &&
+                 !std::is_same_v<T, int64_t> && !std::is_same_v<T, uint64_t>)
+    bool operator!=(T rhs) const {
         return !(*this == rhs);
     }
 
     int compare(const Integer& other) const;
 
-    // Bit operations
+    // Bit operations throw std::out_of_range if GMP cannot represent the index.
     bool test_bit(size_t index) const;
     void set_bit(size_t index);
     void clear_bit(size_t index);
@@ -220,9 +246,13 @@ Integer pow(const Integer& base, uint32_t exp);
 /// Return floor(sqrt(n)). Throws std::domain_error if n is negative.
 Integer sqrt(const Integer& n);
 
-/// 计算 a 模 m 的逆元 (a^{-1} mod m)
-/// 如果逆元不存在返回 0
+/// Return the inverse of a modulo |m| as a nonnegative residue, or zero if
+/// no inverse exists. Unit moduli also return zero. Throws std::domain_error
+/// when m is zero.
 inline Integer mod_inverse(const Integer& a, const Integer& m) {
+    if (m.is_zero()) {
+        throw std::domain_error("Integer modular inverse with zero modulus");
+    }
     Integer result;
     int ok = mpz_invert(result.get_mpz(), a.get_mpz(), m.get_mpz());
     if (!ok)

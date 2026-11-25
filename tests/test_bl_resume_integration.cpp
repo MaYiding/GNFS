@@ -11,17 +11,24 @@
 
 #include "gnfs/linalg/bl_checkpoint.hpp"
 #include "gnfs/linalg/block_lanczos.hpp"
+#include "gnfs/linalg/matrix_fingerprint.hpp"
 #include "gnfs/linalg/sparse_matrix.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
+#include "support/test_check.hpp"
 
 #include <algorithm>
-#include <cassert>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <initializer_list>
 #include <iostream>
 #include <random>
+#include <sstream>
+#include <streambuf>
 #include <string>
 #include <vector>
 
@@ -172,9 +179,9 @@ void test_baseline_no_ckpt() {
     auto deps = solver.find_dependencies(mat, 16);
 
     std::cout << "  baseline deps=" << deps.size() << std::endl;
-    assert(!deps.empty() && "baseline must produce at least one dep");
+    GNFS_TEST_CHECK(!deps.empty() && "baseline must produce at least one dep");
     for (const auto& d : deps) {
-        assert(dep_is_valid(mat, d));
+        GNFS_TEST_CHECK(dep_is_valid(mat, d));
     }
 
     std::cout << "  baseline no-ckpt: PASS" << std::endl;
@@ -211,10 +218,10 @@ void test_ckpt_enabled_completes_and_matches_baseline() {
     auto with_sig = canonical(with_ckpt);
 
     std::cout << "  baseline=" << baseline.size() << " with_ckpt=" << with_ckpt.size() << std::endl;
-    assert(baseline_sig == with_sig && "ckpt-enabled run must match baseline deps");
+    GNFS_TEST_CHECK(baseline_sig == with_sig && "ckpt-enabled run must match baseline deps");
 
     // 3. Successful completion must remove the checkpoint file.
-    assert(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+    GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
 
     std::cout << "  ENV-enabled run matches baseline + removes ckpt: PASS" << std::endl;
 }
@@ -268,6 +275,7 @@ void test_resume_from_synthetic_checkpoint() {
         const size_t wpr = (m + n + 63) / 64;
 
         BlockLanczosCheckpoint synth;
+        synth.matrix_fingerprint = sparse_matrix_fingerprint(mat);
         synth.rows = m;
         synth.cols = n;
         synth.aug_words_per_row = wpr;
@@ -291,8 +299,8 @@ void test_resume_from_synthetic_checkpoint() {
             }
         }
 
-        assert(synth.save(base + ".bl_ckpt"));
-        assert(BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+        GNFS_TEST_CHECK(synth.save(base + ".bl_ckpt"));
+        GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
     }
 
     // 3. Now run BL with ENV pointing at the synthetic ckpt; the resume
@@ -308,10 +316,10 @@ void test_resume_from_synthetic_checkpoint() {
     auto resumed_sig = canonical(resumed);
 
     std::cout << "  baseline=" << baseline.size() << " resumed=" << resumed.size() << std::endl;
-    assert(baseline_sig == resumed_sig && "resumed run must match baseline deps");
+    GNFS_TEST_CHECK(baseline_sig == resumed_sig && "resumed run must match baseline deps");
 
     // Successful completion still removes the ckpt file.
-    assert(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+    GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
 
     std::cout << "  resume from synthetic ckpt: PASS" << std::endl;
 }
@@ -400,13 +408,14 @@ void test_resume_from_real_partial_state() {
         ++cur_col;
     }
 
-    assert(iteration == TARGET_PIVOTS);
-    assert(pivot_row == TARGET_PIVOTS);
-    assert(cur_col > m);
+    GNFS_TEST_CHECK(iteration == TARGET_PIVOTS);
+    GNFS_TEST_CHECK(pivot_row == TARGET_PIVOTS);
+    GNFS_TEST_CHECK(cur_col > m);
 
     // Persist mid-state checkpoint.
     {
         BlockLanczosCheckpoint snap;
+        snap.matrix_fingerprint = sparse_matrix_fingerprint(mat);
         snap.rows = m;
         snap.cols = n;
         snap.aug_words_per_row = wpr;
@@ -414,7 +423,7 @@ void test_resume_from_real_partial_state() {
         snap.cur_col = cur_col;
         snap.iteration = iteration;
         snap.aug = aug; // copy
-        assert(snap.save(base + ".bl_ckpt"));
+        GNFS_TEST_CHECK(snap.save(base + ".bl_ckpt"));
     }
 
     // 3. Run BL with ENV pointing at this real mid-state ckpt; resume must
@@ -430,8 +439,8 @@ void test_resume_from_real_partial_state() {
 
     std::cout << "  baseline=" << baseline.size() << " resumed_from_partial=" << resumed.size()
               << std::endl;
-    assert(baseline_sig == resumed_sig && "real-partial resume must match baseline deps");
-    assert(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+    GNFS_TEST_CHECK(baseline_sig == resumed_sig && "real-partial resume must match baseline deps");
+    GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
 
     std::cout << "  resume from real partial state: PASS" << std::endl;
 }
@@ -446,6 +455,7 @@ void test_stale_dim_mismatch_rejected_and_falls_back() {
     // Save a checkpoint that claims a totally different matrix shape.
     {
         BlockLanczosCheckpoint stale;
+        stale.matrix_fingerprint = sparse_matrix_fingerprint(mat);
         stale.rows = mat.num_rows() + 100; // wrong
         stale.cols = mat.num_cols() + 100; // wrong
         stale.aug_words_per_row = 4;
@@ -453,8 +463,8 @@ void test_stale_dim_mismatch_rejected_and_falls_back() {
         stale.cur_col = stale.rows + 1;
         stale.iteration = 1;
         stale.aug.assign(stale.rows * stale.aug_words_per_row, 0x1111111111111111ULL);
-        assert(stale.save(base + ".bl_ckpt"));
-        assert(BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+        GNFS_TEST_CHECK(stale.save(base + ".bl_ckpt"));
+        GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
     }
 
     // Baseline (without env) for reference.
@@ -476,7 +486,7 @@ void test_stale_dim_mismatch_rejected_and_falls_back() {
         // Re-save the stale ckpt because the previous block's destructor
         // for `stale` doesn't touch the file, but baseline run didn't have
         // env set so it didn't touch it either. It should still exist.
-        assert(BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+        GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
         BlockLanczos solver;
         after_reject = solver.find_dependencies(mat, 16);
     }
@@ -484,9 +494,9 @@ void test_stale_dim_mismatch_rejected_and_falls_back() {
 
     std::cout << "  baseline=" << baseline.size() << " after_reject=" << after_reject.size()
               << std::endl;
-    assert(baseline_sig == after_sig && "post-rejection run must match baseline deps");
+    GNFS_TEST_CHECK(baseline_sig == after_sig && "post-rejection run must match baseline deps");
     // The rejected-on-load path removes the stale file.
-    assert(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+    GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
 
     std::cout << "  stale-dim rejection: PASS" << std::endl;
 }
@@ -516,6 +526,7 @@ void test_invalid_cursor_rejected_and_falls_back() {
     // completed before the first matrix column was scanned. The old resume
     // gate accepted this state and would run from an all-zero matrix.
     BlockLanczosCheckpoint invalid;
+    invalid.matrix_fingerprint = sparse_matrix_fingerprint(mat);
     invalid.rows = mat.num_rows();
     invalid.cols = mat.num_cols();
     invalid.aug_words_per_row = (invalid.rows + invalid.cols + 63) / 64;
@@ -542,6 +553,168 @@ void test_invalid_cursor_rejected_and_falls_back() {
     std::cout << "  impossible cursor rejection + fallback: PASS" << std::endl;
 }
 
+struct CerrCapture {
+    std::ostringstream output;
+    std::streambuf* original = std::cerr.rdbuf(output.rdbuf());
+    ~CerrCapture() {
+        std::cerr.rdbuf(original);
+    }
+};
+
+static SparseMatrix identity_fixture_matrix(bool different) {
+    SparseMatrix matrix(3, 2);
+    matrix.set(0, 0);
+    matrix.set(1, different ? 1 : 0);
+    matrix.set(2, 0);
+    if (different)
+        matrix.set(2, 1);
+    return matrix;
+}
+
+static BlockLanczosCheckpoint identity_fixture_checkpoint() {
+    // A = [[1,0],[1,0],[1,0]]. Initial [I|A] rows {9,10,12}
+    // become {9,3,5} after one actual Gaussian pivot.
+    BlockLanczosCheckpoint checkpoint;
+    checkpoint.rows = 3;
+    checkpoint.cols = 2;
+    checkpoint.aug_words_per_row = 1;
+    checkpoint.pivot_row = 1;
+    checkpoint.cur_col = 4;
+    checkpoint.iteration = 1;
+    checkpoint.aug = {9, 3, 5};
+    checkpoint.matrix_fingerprint = sparse_matrix_fingerprint(identity_fixture_matrix(false));
+    return checkpoint;
+}
+
+void test_matrix_fingerprint_canonical_bytes() {
+    auto matrix = identity_fixture_matrix(true);
+    // Independent SHA-256 oracle over the documented tag and LE u64 stream.
+    const auto expected = gnfs::util::decode_sha256_hex(
+        "7b48d6fe24130083cec0f6ffdaa8ae24d31ea5f7f44893a180683f9c4f0aaf67");
+    GNFS_TEST_CHECK(expected.has_value());
+    GNFS_TEST_CHECK(sparse_matrix_fingerprint(matrix) == *expected);
+
+    SparseMatrix reordered_insertion(3, 2);
+    reordered_insertion.set(2, 1);
+    reordered_insertion.set(2, 0);
+    reordered_insertion.set(1, 1);
+    reordered_insertion.set(0, 0);
+    GNFS_TEST_CHECK(sparse_matrix_fingerprint(reordered_insertion) == *expected);
+    reordered_insertion.swap_rows(0, 1);
+    GNFS_TEST_CHECK(sparse_matrix_fingerprint(reordered_insertion) != *expected);
+    // Identical flattened indices with different row boundaries are not the
+    // same matrix, even when the dimensions and total nonzero count match.
+    SparseMatrix regrouped(3, 2);
+    regrouped.set(0, 0);
+    regrouped.set(0, 1);
+    regrouped.set(2, 0);
+    regrouped.set(2, 1);
+    GNFS_TEST_CHECK(sparse_matrix_fingerprint(regrouped) != *expected);
+    matrix.set_num_cols(3);
+    GNFS_TEST_CHECK(sparse_matrix_fingerprint(matrix) != *expected);
+
+    SparseMatrix wide(1, UINT32_MAX);
+    wide.set(0, UINT32_MAX - 1);
+    const auto expected_wide = gnfs::util::decode_sha256_hex(
+        "1f095096733a42cfd32d838f3beafe3bd82eb0d04443bc27250e1fb9bea74dfb");
+    GNFS_TEST_CHECK(expected_wide.has_value());
+    GNFS_TEST_CHECK(sparse_matrix_fingerprint(wide) == *expected_wide);
+}
+
+void test_bound_matrix_resume_and_mismatch_rejection() {
+    const auto base = tmp_base_path("matrix_identity");
+    CkptCleanup cleanup{base + ".bl_ckpt"};
+    EnvUnsetScope no_checkpoint("GNFS_BL_CHECKPOINT");
+    BlockLanczos solver;
+    auto checkpoint = identity_fixture_checkpoint();
+
+    for (bool different : {false, true}) {
+        auto matrix = identity_fixture_matrix(different);
+        const auto baseline = canonical(solver.find_dependencies(matrix));
+        GNFS_TEST_CHECK(!baseline.empty());
+        GNFS_TEST_CHECK(checkpoint.save(base + ".bl_ckpt"));
+        std::vector<std::vector<bool>> resumed;
+        std::string log;
+        {
+            EnvScope enabled("GNFS_BL_CHECKPOINT", base);
+            CerrCapture capture;
+            resumed = solver.find_dependencies(matrix);
+            log = capture.output.str();
+        }
+        GNFS_TEST_CHECK(canonical(resumed) == baseline);
+        for (const auto& dependency : resumed)
+            GNFS_TEST_CHECK(dep_is_valid(matrix, dependency));
+        if (different) {
+            GNFS_TEST_CHECK(log.find("rejecting incompatible checkpoint") != std::string::npos);
+            GNFS_TEST_CHECK(log.find("resume from") == std::string::npos);
+        } else {
+            // Parity alone cannot prove the checkpoint was actually consumed.
+            GNFS_TEST_CHECK(log.find("resume from") != std::string::npos);
+            GNFS_TEST_CHECK(log.find("pivot_row=1 cur_col=4") != std::string::npos);
+        }
+        GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+    }
+}
+
+static void write_legacy_identity_fixture(const std::string& path, uint64_t version) {
+    const auto checkpoint = identity_fixture_checkpoint();
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    GNFS_TEST_CHECK(file);
+    const auto write_u64 = [&](uint64_t value) {
+        if (version == BlockLanczosCheckpoint::VERSION_V1) {
+            file.write(reinterpret_cast<const char*>(&value), sizeof(value));
+        } else {
+            std::array<char, sizeof(uint64_t)> bytes{};
+            for (size_t index = 0; index < bytes.size(); ++index)
+                bytes[index] = static_cast<char>(static_cast<uint8_t>(value >> (index * 8)));
+            file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        }
+        GNFS_TEST_CHECK(file);
+    };
+    for (uint64_t field : {BlockLanczosCheckpoint::MAGIC, version, checkpoint.rows, checkpoint.cols,
+                           checkpoint.aug_words_per_row, checkpoint.pivot_row, checkpoint.cur_col,
+                           checkpoint.iteration})
+        write_u64(field);
+    write_u64(version ^ checkpoint.rows ^ checkpoint.cols ^ checkpoint.aug_words_per_row ^
+              checkpoint.pivot_row ^ checkpoint.cur_col ^ checkpoint.iteration);
+    write_u64(checkpoint.aug.size());
+    uint64_t checksum = 0;
+    for (uint64_t word : checkpoint.aug) {
+        write_u64(word);
+        checksum ^= word;
+    }
+    write_u64(checksum);
+}
+
+void test_legacy_checkpoints_restart() {
+    const auto base = tmp_base_path("legacy_identity");
+    CkptCleanup cleanup{base + ".bl_ckpt"};
+    EnvUnsetScope no_checkpoint("GNFS_BL_CHECKPOINT");
+    auto matrix = identity_fixture_matrix(true);
+    BlockLanczos solver;
+    const auto baseline = canonical(solver.find_dependencies(matrix));
+    for (uint64_t version :
+         {BlockLanczosCheckpoint::VERSION_V1, BlockLanczosCheckpoint::VERSION_V2}) {
+        write_legacy_identity_fixture(base + ".bl_ckpt", version);
+        const auto loaded = BlockLanczosCheckpoint::load(base + ".bl_ckpt");
+        GNFS_TEST_CHECK(loaded.has_value());
+        GNFS_TEST_CHECK(!loaded->matrix_fingerprint);
+        std::vector<std::vector<bool>> resumed;
+        std::string log;
+        {
+            EnvScope enabled("GNFS_BL_CHECKPOINT", base);
+            CerrCapture capture;
+            resumed = solver.find_dependencies(matrix);
+            log = capture.output.str();
+        }
+        GNFS_TEST_CHECK(canonical(resumed) == baseline);
+        GNFS_TEST_CHECK(log.find("rejecting incompatible checkpoint") != std::string::npos);
+        GNFS_TEST_CHECK(log.find("resume from") == std::string::npos);
+        for (const auto& dependency : resumed)
+            GNFS_TEST_CHECK(dep_is_valid(matrix, dependency));
+    }
+}
+
 int main() {
     std::cout << "===== BlockLanczos resume integration tests =====" << std::endl;
 
@@ -551,6 +724,9 @@ int main() {
     test_resume_from_real_partial_state();
     test_stale_dim_mismatch_rejected_and_falls_back();
     test_invalid_cursor_rejected_and_falls_back();
+    test_matrix_fingerprint_canonical_bytes();
+    test_bound_matrix_resume_and_mismatch_rejection();
+    test_legacy_checkpoints_restart();
 
     std::cout << "\n===== All BL resume integration tests PASSED =====" << std::endl;
     return 0;

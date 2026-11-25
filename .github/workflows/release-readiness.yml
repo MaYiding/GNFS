@@ -136,12 +136,13 @@ jobs:
             -DGNFS_ENABLE_NTL=OFF \
             -DGNFS_ENABLE_NATIVE_ARCH=OFF
           cmake --build build-process-supervisor --parallel \
-            --target gnfs_test_process_supervisor
+            --target gnfs_test_process_supervisor test_trial_wheel
           ctest --test-dir build-process-supervisor \
             --output-on-failure \
             --no-tests=error \
             -C Release \
-            -R '^ProcessSupervisor$'
+            --verbose \
+            -R '^(ProcessSupervisor|TrialWheel)$'
 
       - name: Build and install Windows release tree
         shell: msys2 {0}

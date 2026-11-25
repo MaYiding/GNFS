@@ -526,10 +526,15 @@ target_link_libraries(gnfs PRIVATE
 # ============================================================
 
 option(GNFS_BUILD_TESTS "Build tests" ON)
+# The shell host may be MSYS even when the target uses the POSIX MSYS runtime.
+# Expose the exact condition used by the platform-specific test targets.
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/gnfs-test-platform.txt"
+    CONTENT "WIN32=$<BOOL:${WIN32}>\n")
 option(GNFS_BUILD_FUZZERS "Build libFuzzer fuzz targets" OFF)
 
 if(GNFS_BUILD_TESTS)
     enable_testing()
+    get_property(_targets_before_tests DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 
     function(add_siqs_rss_campaign_synthetic_child target_name behavior)
         add_executable(${target_name} EXCLUDE_FROM_ALL
@@ -564,7 +569,9 @@ if(GNFS_BUILD_TESTS)
                 PYTHON=${Python3_EXECUTABLE}
                 ${BASH_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_harness_hooks.sh)
         set_tests_properties(HarnessHooks PROPERTIES
-            LABELS "instant" TIMEOUT 10
+            # The aggregate shell contracts launch many fresh interpreters.
+            # Keep their CI selection while allowing for process startup cost.
+            LABELS "instant" TIMEOUT 60
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
@@ -854,6 +861,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME FactorBase COMMAND test_factor_base)
     set_tests_properties(FactorBase PROPERTIES LABELS "instant" TIMEOUT 30)
 
+    add_executable(test_factor_base_add_rollback tests/test_factor_base_add_rollback.cpp)
+    target_link_libraries(test_factor_base_add_rollback PRIVATE gnfs_core)
+    add_test(NAME FactorBaseAddRollback COMMAND test_factor_base_add_rollback)
+    set_tests_properties(FactorBaseAddRollback PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_factor_base_sieve_launch_failure tests/test_factor_base_sieve_launch_failure.cpp)
+    target_link_libraries(test_factor_base_sieve_launch_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME FactorBaseSieveLaunchFailure COMMAND test_factor_base_sieve_launch_failure)
+    set_tests_properties(FactorBaseSieveLaunchFailure PROPERTIES LABELS "fast" TIMEOUT 120)
+
     add_executable(test_special_q
         tests/test_special_q.cpp
     )
@@ -1088,6 +1105,14 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_bl_checkpoint PRIVATE gnfs_core Threads::Threads)
     add_test(NAME BlockLanczosCheckpoint COMMAND test_bl_checkpoint)
     set_tests_properties(BlockLanczosCheckpoint PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_bl_checkpoint_stream_failure
+        tests/test_bl_checkpoint_stream_failure.cpp
+    )
+    target_link_libraries(test_bl_checkpoint_stream_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME BlockLanczosCheckpointStreamFailure COMMAND test_bl_checkpoint_stream_failure)
+    set_tests_properties(BlockLanczosCheckpointStreamFailure
+        PROPERTIES LABELS "fast" TIMEOUT 60 SKIP_RETURN_CODE 77)
 
     add_executable(test_bl_resume_integration
         tests/test_bl_resume_integration.cpp
@@ -2003,6 +2028,11 @@ if(GNFS_BUILD_TESTS)
     set_tests_properties(SqrtDebug PROPERTIES LABELS "instant" TIMEOUT 10)
 
     # Nguyen hybrid Hensel lift parallel dispatch (GNFS_SQRT_HENSEL_THREADS)
+    add_executable(test_hensel_product_worker_failure tests/test_hensel_product_worker_failure.cpp)
+    target_link_libraries(test_hensel_product_worker_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME HenselProductWorkerFailure COMMAND test_hensel_product_worker_failure)
+    set_tests_properties(HenselProductWorkerFailure PROPERTIES LABELS "fast" TIMEOUT 120)
+
     add_executable(test_hensel_parallel
         tests/test_hensel_parallel.cpp
     )
@@ -2958,6 +2988,10 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME CLIEventStream
         COMMAND test_cli_event_stream $<TARGET_FILE:gnfs>)
     set_tests_properties(CLIEventStream PROPERTIES LABELS "instant" TIMEOUT 60)
+    add_test(NAME CLIReplConfig
+        COMMAND ${CMAKE_COMMAND} "-DCLI=$<TARGET_FILE:gnfs>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_repl_config.cmake)
+    set_tests_properties(CLIReplConfig PROPERTIES LABELS "instant" TIMEOUT 20)
 
     # Method selection 测试
     add_executable(test_method_selection
@@ -2982,6 +3016,18 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_siqs PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SIQS COMMAND test_siqs)
     set_tests_properties(SIQS PROPERTIES LABELS "fast" TIMEOUT 180)
+
+    add_executable(test_siqs_budget_admission tests/test_siqs_budget_admission.cpp)
+    target_link_libraries(test_siqs_budget_admission PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsBudgetAdmission COMMAND test_siqs_budget_admission)
+    set_tests_properties(SiqsBudgetAdmission PROPERTIES LABELS "fast" TIMEOUT 60)
+
+    add_executable(test_siqs_multiplier_coordinator
+        tests/test_siqs_multiplier_coordinator.cpp
+    )
+    target_link_libraries(test_siqs_multiplier_coordinator PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsMultiplierCoordinator COMMAND test_siqs_multiplier_coordinator)
+    set_tests_properties(SiqsMultiplierCoordinator PROPERTIES LABELS "fast" TIMEOUT 30)
 
     add_executable(test_siqs_2lp
         tests/test_siqs_2lp.cpp
@@ -3096,6 +3142,13 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SiqsPostMergeRow COMMAND test_siqs_post_merge_row)
     set_tests_properties(SiqsPostMergeRow PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    add_executable(test_siqs_post_merge_row_wire
+        tests/test_siqs_post_merge_row_wire.cpp
+    )
+    target_link_libraries(test_siqs_post_merge_row_wire PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsPostMergeRowWire COMMAND test_siqs_post_merge_row_wire)
+    set_tests_properties(SiqsPostMergeRowWire PROPERTIES LABELS "instant" TIMEOUT 10)
+
     add_executable(test_siqs_shadow_assembly
         tests/test_siqs_shadow_assembly.cpp
     )
@@ -3109,6 +3162,13 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_siqs_shadow_linear_algebra PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SiqsShadowLinearAlgebra COMMAND test_siqs_shadow_linear_algebra)
     set_tests_properties(SiqsShadowLinearAlgebra PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    add_executable(test_siqs_shadow_sparse_backend
+        tests/test_siqs_shadow_sparse_backend.cpp
+    )
+    target_link_libraries(test_siqs_shadow_sparse_backend PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SiqsShadowSparseBackend COMMAND test_siqs_shadow_sparse_backend)
+    set_tests_properties(SiqsShadowSparseBackend PROPERTIES LABELS "instant" TIMEOUT 10)
 
     add_executable(test_siqs_shadow_proof_runner
         tests/test_siqs_shadow_proof_runner.cpp
@@ -3425,6 +3485,79 @@ if(GNFS_BUILD_TESTS)
             endif()
         endforeach()
     endif()
+
+    # One build target lets Make share dependencies across all selected tests.
+    set(_gate_catalog_dir "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-catalog")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${_gate_catalog_dir}/smoke.txt" "${_gate_catalog_dir}/windows-unavailable.txt")
+    file(STRINGS "${_gate_catalog_dir}/smoke.txt" _gate_tests)
+    if(WIN32)
+        file(STRINGS "${_gate_catalog_dir}/windows-unavailable.txt" _gate_exclusions)
+        list(REMOVE_ITEM _gate_tests ${_gate_exclusions})
+    endif()
+    add_custom_target(gnfs_local_gate_quick)
+    add_dependencies(gnfs_local_gate_quick gnfs_test_process_supervisor ${_gate_tests})
+    add_custom_target(gnfs_local_gate)
+    add_dependencies(gnfs_local_gate gnfs_local_gate_quick test_regression_gate)
+
+    function(gnfs_add_local_module_targets catalog)
+        # The runner uses the same module|tests|downstream-modules catalog to
+        # select what to run. Aggregate targets share compilation work under Make.
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${catalog}")
+        file(STRINGS "${catalog}" _modules)
+        foreach(_row IN LISTS _modules)
+            string(REPLACE "|" ";" _fields "${_row}")
+            list(LENGTH _fields _field_count)
+            if(NOT _field_count EQUAL 3)
+                message(FATAL_ERROR "Invalid module catalog entry: ${_row}")
+            endif()
+            list(GET _fields 0 _module)
+            list(GET _fields 1 _tests)
+            list(GET _fields 2 _downstream)
+            separate_arguments(_tests UNIX_COMMAND "${_tests}")
+            if(WIN32)
+                list(REMOVE_ITEM _tests ${ARGN})
+            endif()
+            add_custom_target(gnfs_local_module_${_module})
+            add_dependencies(gnfs_local_module_${_module} gnfs_test_process_supervisor ${_tests})
+            add_custom_target(gnfs_local_deep_${_module})
+            separate_arguments(_downstream UNIX_COMMAND "${_downstream}")
+            foreach(_dependency IN ITEMS ${_module} ${_downstream})
+                add_dependencies(gnfs_local_deep_${_module} gnfs_local_module_${_dependency})
+            endforeach()
+        endforeach()
+        add_dependencies(gnfs_local_module_api gnfs) # CLI companion binary
+    endfunction()
+    gnfs_add_local_module_targets("${_gate_catalog_dir}/modules.txt" ${_gate_exclusions})
+
+    function(gnfs_write_test_source_index)
+        get_property(_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+        list(REMOVE_ITEM _targets ${ARGN})
+        set(_index "")
+        foreach(_target IN LISTS _targets)
+            get_target_property(_type ${_target} TYPE)
+            if(NOT _type STREQUAL "EXECUTABLE")
+                continue()
+            endif()
+            # The default build can reach an excluded helper through dependencies.
+            # Let the native generator decide whether its sources must compile.
+            get_target_property(_excluded ${_target} EXCLUDE_FROM_ALL)
+            if(_excluded)
+                set(_owner "@default")
+            else()
+                set(_owner "${_target}")
+            endif()
+            get_target_property(_sources ${_target} SOURCES)
+            foreach(_source IN LISTS _sources)
+                cmake_path(ABSOLUTE_PATH _source NORMALIZE OUTPUT_VARIABLE _absolute)
+                file(RELATIVE_PATH _relative "${PROJECT_SOURCE_DIR}" "${_absolute}")
+                string(APPEND _index "${_owner}\t${_relative}\n")
+            endforeach()
+        endforeach()
+        file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/gnfs-test-sources.txt"
+            CONTENT "${_index}" NEWLINE_STYLE UNIX)
+    endfunction()
+    gnfs_write_test_source_index(${_targets_before_tests})
 endif()
 
 # ============================================================

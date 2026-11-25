@@ -37,9 +37,9 @@ word-packed Gaussian elimination path used by `BlockLanczos`. The solver writes
 (default `50`, clamped to `[1, 1'000'000]`). A successful solve removes the
 checkpoint; an interrupted process may leave it for the next invocation.
 
-Resume is accepted only when the checksum, matrix shape, packed payload, and
-cursor semantics all agree. For a matrix with `rows` and `cols`, the persisted
-cursor must satisfy:
+Resume is accepted only when the checksum, source matrix identity, matrix shape,
+packed payload, and cursor semantics all agree. For a matrix with `rows` and
+`cols`, the persisted cursor must satisfy:
 
 ```text
 pivot_row <= rows
@@ -54,21 +54,61 @@ deterministic fallback). This prevents a malformed or stale cursor from
 skipping elimination work or treating an uninitialized augmented matrix as a
 completed prefix.
 
+V3 checkpoints bind the state to a SHA-256 digest of the source matrix. The
+canonical byte stream starts with the ASCII tag `GNFS_SPARSE_MATRIX_ID_V1`
+(without a terminator), followed by `rows` and `cols`. Each row then contributes
+its nonzero count and sorted column indices. Every number uses an unsigned
+64-bit little-endian encoding. Row boundaries, row order, and column coordinates
+are significant; insertion order is not. The solver normalizes rows before this
+step, so hashing reads existing indices without copying them.
+
+The digest is computed once per solve only when checkpointing is enabled. With
+`GNFS_BL_CHECKPOINT` unset or empty, the solver does not hash the matrix. Periodic
+saves reuse the same digest.
+
+V3 retains the V2 little-endian field order through `header_checksum`, then
+inserts the 32 digest bytes before `aug_word_count`. The header checksum XORs
+`version`, `rows`, `cols`, `aug_words_per_row`, `pivot_row`, `cur_col`, `iteration`,
+and the four little-endian digest words. The payload checksum and incomplete
+magic protocol remain unchanged. A complete V3 file contains
+`120 + 8 * aug_word_count` bytes. A state without a fingerprint cannot be saved;
+the writer rejects it before truncating an existing file.
+
+The reader checks payload counts against the 64 GiB packed-payload cap and the
+vector implementation's maximum size before allocation. If allocating a valid
+payload still fails, `load()` returns `nullopt`, allowing the solver to restart.
+The allocation-failure regression uses a Linux resource limit and explicitly
+skips that probe on other platforms or under AddressSanitizer; oversized-count
+rejection remains covered on every platform.
+
+V1 native-endian and V2 little-endian files remain decodable, with an absent
+matrix fingerprint. They are not safe to resume because a different matrix may
+have the same dimensions. The solver removes these unbound checkpoints and
+restarts elimination. This one-time compatibility transition loses saved
+elimination work but does not change relation data or the resulting dependencies.
+There is no option to resume an unbound legacy state.
+
 **集成点与测试**:
-- `src/linalg/block_lanczos.cpp` — shape conversion and cursor validation before
-  copying checkpoint state into the live augmented matrix.
-- `include/gnfs/linalg/bl_checkpoint.hpp` — V2 checksum, payload, and two-phase
-  completion marker contract.
+- `src/linalg/block_lanczos.cpp` — matrix identity, shape, and cursor validation
+  before copying checkpoint state into the live augmented matrix.
+- `include/gnfs/linalg/matrix_fingerprint.hpp` — canonical sparse-matrix identity.
+- `include/gnfs/linalg/bl_checkpoint.hpp` — V3 binding, legacy decoding, checksums,
+  payload bounds, and two-phase completion marker contract.
+- `tests/test_bl_checkpoint.cpp` — independent V3 byte fixture, legacy decoding,
+  identity corruption, and unbound-save preservation.
 - `tests/test_bl_resume_integration.cpp` — baseline parity, synthetic and real
-  partial resume, dimension mismatch rejection, and impossible-cursor fallback.
+  partial resume, same-shape matrix mismatch, legacy restart, dimension mismatch
+  rejection, and impossible-cursor fallback. Resume diagnostics prove a matching
+  checkpoint was consumed instead of merely producing fresh-run parity.
 
 ---
 
 ## BW Krylov sequence mmap (GNFS_BW_KRYLOV_MMAP)
 
 **ENV `GNFS_BW_KRYLOV_MMAP=1`** (2026-05-18 实施):
-BW Phase 1 Krylov sequence 写到系统临时目录中的 `gnfs_bw_krylov_*.kry` mmap-backed file
-而非 in-memory vector. Phase 2 BM 入口 copy mmap → vector 再 close.
+BW Phase 1 在系统临时目录下独占创建 `gnfs_bw_krylov_*.kry.scratch` 子目录，
+将 Krylov 序列映射到其中的 `sequence.kry`。Phase 2 BM 入口把序列复制到内存，
+随后关闭映射并删除本次调用的文件和子目录。重名时会尝试下一个 nonce，保留已有内容。
 
 ```bash
 GNFS_BW_KRYLOV_MMAP=1 ./gnfs <N>   # 50d+/60d 大矩阵 Phase 5 启用
@@ -112,7 +152,7 @@ platform and uses the same native-path conversion for its file probes.
 首次同步成功后才发布 completion marker；reader 在分配前验证完整 header、
 index extent 和每个 payload 边界。内部 I/O 使用 POSIX positioned I/O 或
 Win32 overlapped positioned I/O，路径保持 `std::filesystem::path`。正常完成或
-C++ 异常展开会关闭 handle 并清理 `.kryz` scratch；进程终止可能遗留
+C++ 异常展开会关闭 handle 并清理本次独占目录中的 `sequence.kryz`；进程终止可能遗留
 INCOMPLETE scratch，reader 会拒绝加载。
 
 **bit-for-bit contract**: 压缩只改变 Krylov 序列的存储介质，不改变 solver
@@ -160,8 +200,7 @@ unset GNFS_BW_KRYLOV_STREAMS          # 默认 K=1, 原行为
 - 次要: wall-time. Phase 2 (BM) inherently 单线程, 占 BW 总时间 ~70%. 多 stream
   不加速 single solve. K=2 ≈ K=1; K=4 ~10% 慢 (pool overhead). 实测 5550×5000:
   K=1=613ms, K=2=629ms, K=4=688ms (single-seed succeeds case).
-- Mmap 路径文件名含 stream_tag (`gnfs_bw_krylov_<pid>_s<N>_<seed>.kry`) 避免
-  并发 stream 之间路径冲突.
+- Mmap 临时目录名包含 PID、stream tag、seed 和进程内递增的 nonce；每个并发 stream 单独预留目录。
 
 **集成点** (commits `0857b7d` → `c5416ce`, 2026-05-21):
 - `src/linalg/block_wiedemann.cpp` — `bw_num_streams()` ENV parser +

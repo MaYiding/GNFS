@@ -586,6 +586,33 @@ void run_case(const CorpusSpec& spec, std::span<const uint32_t> generated_primes
     check_dependencies(baseline_assembly, *baseline_matrix.solution(), factor_base_span, modulus,
                        factor_p, factor_q);
 
+    SIQSShadowMatrixOptions sparse_options;
+    sparse_options.backend = gnfs::siqs::SIQSShadowMatrixBackend::sparse_only;
+    sparse_options.sparse_worker_threads = 1;
+    const auto sparse =
+        solve_siqs_shadow_matrix(baseline_assembly.rows, factor_base_span, modulus, sparse_options);
+    CHECK(sparse.solution().has_value());
+    if (sparse.solution()) {
+        // A different basis may yield the same factor through a different combination of rows.
+        CHECK(sparse.solution()->dependencies.size() ==
+              baseline_matrix.solution()->dependencies.size());
+        bool found_expected_factors = false;
+        for (const auto& dependency : sparse.solution()->dependencies) {
+            const auto verified = verify_siqs_post_merge_dependency(
+                baseline_assembly.rows, dependency, factor_base_span, modulus);
+            CHECK(verified.is_valid());
+            const auto extracted = extract_siqs_post_merge_factor(verified, modulus);
+            if (extracted.factors()) {
+                CHECK(extracted.factors()->factor == factor_p);
+                CHECK(extracted.factors()->cofactor == factor_q);
+                found_expected_factors = true;
+            } else {
+                CHECK(extracted.status() == SIQSPostMergeFactorStatus::no_factor);
+            }
+        }
+        CHECK(found_expected_factors);
+    }
+
     for (const uint32_t workers : {2U, 4U}) {
         const auto candidate = assemble(relation_span, factor_base_span, modulus, workers);
         CHECK(candidate.status() == SIQSShadowAssemblyStatus::valid);

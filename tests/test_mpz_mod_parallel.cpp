@@ -626,6 +626,82 @@ void test_reset_env_cache_hook() {
     std::cout << " PASS\n";
 }
 
+void test_output_owned_modulus() {
+    std::cout << "Output-owned modulus and untouched tail..." << std::flush;
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        const std::vector<Integer> dividends{Integer(8), Integer(9), Integer(-1), Integer(10)};
+        std::vector<Integer> results{Integer(5), Integer(777), Integer(777), Integer(777),
+                                     Integer(999)};
+        parallel_mpz_mod(dividends, results[0], results);
+        const std::vector<Integer> expected{Integer(3), Integer(4), Integer(4), Integer(0),
+                                            Integer(999)};
+        GNFS_TEST_CHECK(results == expected);
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_output_owned_modulus_with_growth() {
+    std::cout << "Output-owned modulus survives output growth..." << std::flush;
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        std::vector<Integer> results{Integer(5)};
+        // Exceed capacity, not just size, to force reference invalidation.
+        const std::size_t count = results.capacity() + 1;
+        const std::size_t old_capacity = results.capacity();
+        std::vector<Integer> dividends(count, Integer(8));
+        dividends.back() = Integer(9);
+        parallel_mpz_mod(dividends, results[0], results);
+        GNFS_TEST_CHECK(results.size() == count);
+        GNFS_TEST_CHECK(results.capacity() > old_capacity);
+        for (std::size_t i = 0; i + 1 < count; ++i) {
+            GNFS_TEST_CHECK(results[i] == Integer(3));
+        }
+        GNFS_TEST_CHECK(results.back() == Integer(4));
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_wide_output_owned_modulus() {
+    std::cout << "Wide output-owned modulus and negative dividends..." << std::flush;
+    Integer modulus(1);
+    mpz_mul_2exp(modulus.get_mpz(), modulus.get_mpz(), 200);
+    modulus += Integer(123);
+    const std::vector<Integer> dividends{modulus * Integer(2) + Integer(3), modulus - Integer(1),
+                                         Integer(-1), Integer(0) - modulus - Integer(2)};
+    const std::vector<Integer> expected{Integer(3), modulus - Integer(1), modulus - Integer(1),
+                                        modulus - Integer(2)};
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        std::vector<Integer> results(dividends.size(), Integer(777));
+        results[0] = modulus;
+        parallel_mpz_mod(dividends, results[0], results);
+        GNFS_TEST_CHECK(results == expected);
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
+void test_empty_batch_preserves_output_owned_modulus() {
+    std::cout << "Empty batch preserves output storage..." << std::flush;
+    for (const char* threads : {"1", "4"}) {
+        apply_env(threads);
+        const std::vector<Integer> dividends;
+        std::vector<Integer> results{Integer(5), Integer(999)};
+        const auto expected = results;
+        const auto capacity = results.capacity();
+        const auto* data = results.data();
+        parallel_mpz_mod(dividends, results[0], results);
+        GNFS_TEST_CHECK(results == expected);
+        GNFS_TEST_CHECK(results.capacity() == capacity);
+        GNFS_TEST_CHECK(results.data() == data);
+    }
+    apply_env(nullptr);
+    std::cout << " PASS\n";
+}
+
 // ---------------------------------------------------------------------------
 // Test 17: perf-info probe (informational, no assert) -- measure
 // hw_concurrency wall vs N=1 wall on 100 large-dividend mpz_mod calls.
@@ -705,6 +781,10 @@ int main() {
     test_dividend_equals_modulus();
     test_negative_dividend_semantics();
     test_reset_env_cache_hook();
+    test_output_owned_modulus();
+    test_output_owned_modulus_with_growth();
+    test_wide_output_owned_modulus();
+    test_empty_batch_preserves_output_owned_modulus();
     test_perf_info_100_dividends();
 
     std::cout << "\n=== All mpz_mod Parallel Tests PASSED ===\n";

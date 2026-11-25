@@ -135,9 +135,46 @@ configuration. It builds only the selected executable and
 remaining test arguments through unchanged. `--no-build` keeps the same name
 validation and executes existing binaries without invoking CMake. If the
 requested executable is missing or not executable, the runner reports a failed
-test and exits non-zero, including with `--no-build`. Other modes retain their
-full-build and optional-binary skip behavior. Verbose builds use CMake's
-`--verbose` option so Make and Ninja both build their targets.
+test and exits non-zero, including with `--no-build`.
+
+Within one `changed` or `diff` selection, overlapping module maps execute each
+shared binary without arguments once. Every affected module retains that first
+result for its summary, while the global report records one execution. Explicit
+`module` repetitions, `--slow`, and the runner's retry policy retain their
+existing behavior. API coverage comes from the API module; the separate SIQS and
+GNFS E2E selection rules remain unchanged.
+
+`module` (including `mod`), `changed` (including `diff`), and `gate` also fail
+when a selected binary is missing or not executable. This applies after a
+successful build and with `--no-build`. The explicit `WINDOWS_UNAVAILABLE_TESTS`
+list preserves CMake's `NOT WIN32` exclusions only when the build directory's
+internal `gnfs-test-platform.txt` contains `WIN32=1`. CMake generates this marker
+from its actual target condition, independently of the shell host and
+`GNFS_BUILD_TESTS`. Missing or unrecognized metadata grants no exemption;
+reconfigure an older Windows build before using `--no-build`. MSYS POSIX targets
+have `WIN32=0` and must provide these binaries. Harness tests check that the
+exclusion list matches CMake's conditional targets. Executed tests
+that return 77 remain platform skips. Other modes, including `perf` and
+`stress`, retain their optional-binary skip behavior.
+Failed gate stages still write the JSON report, including ordinary test failures
+and timeouts that stop immediately with `--fail-fast`. Ordinary test-mode results use
+exit status 1 for failures; the report retains the full failure count.
+
+`unit` and its `ctest` alias require CTest to discover at least one test and
+select the requested build configuration. The runner records the complete CTest
+suite as one result group, while CTest retains individual test details. `full`
+and `report` preserve that group's failure when continuing to later stages;
+passing later tests cannot turn a failed CTest suite into a successful run.
+
+These modes retain their existing build scope. Verbose builds use CMake's
+`--verbose` option so Make and Ninja both build their targets. Before a targeted
+Makefile build, the runner invokes the generated `cmake_check_build_system`
+target when present. CMake then refreshes changed configuration dependencies,
+including included files, before Make looks up a newly registered target.
+Unchanged configuration retains its cache without another configure pass.
+Other generators, explicitly suppressed regeneration, and `--no-build` retain
+their existing behavior. A failed dependency check stops the build, and a failed
+user target is not retried.
 
 `scripts/test.sh module <name>` treats an unknown module as a failed selection.
 The runner records that invalid request in `test_report.json` and exits non-zero;

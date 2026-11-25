@@ -5,10 +5,17 @@
 // UB because the result (2^63) doesn't fit in int64_t. safe_abs returns
 // uint64_t to safely cover the full range.
 
+#if defined(__clang__)
+#pragma STDC FENV_ACCESS ON
+#endif
+
 #include "gnfs/util/safe_math.hpp"
 #include "support/test_check.hpp"
 
+#include <cfenv>
+#include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <type_traits>
@@ -145,6 +152,19 @@ void test_size_arithmetic_contracts() {
     std::cout << "  PASS (compile-time boundaries)" << std::endl;
 }
 
+void test_floor_at_size_limit() {
+    const double limit = std::ldexp(1.0, std::numeric_limits<size_t>::digits);
+    const double below = std::nextafter(limit, 0.0);
+    const auto expected = static_cast<size_t>(below);
+    const int original = std::fegetround();
+    for (int mode : {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+        GNFS_TEST_CHECK(std::fesetround(mode) == 0);
+        const size_t result = size_from_nonnegative_double_floor(below);
+        GNFS_TEST_CHECK(std::fesetround(original) == 0);
+        GNFS_TEST_CHECK(result == expected);
+    }
+}
+
 int main() {
     std::cout << "=== util/safe_math.hpp tests ===" << std::endl;
 
@@ -158,6 +178,7 @@ int main() {
     test_return_type();
     test_sign_symmetry_in_range();
     test_size_arithmetic_contracts();
+    test_floor_at_size_limit();
 
     std::cout << "\n=== All util/safe_math.hpp tests PASSED ===" << std::endl;
     return 0;
