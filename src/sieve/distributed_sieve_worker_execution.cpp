@@ -8,6 +8,8 @@
 #include <array>
 #include <cerrno>
 #include <cstddef>
+#include <cstdio>
+#include <exception>
 #include <cstdint>
 #include <new>
 #include <span>
@@ -280,6 +282,14 @@ execute_distributed_sieve_worker_entry_v1(Entry&& entry) noexcept {
     } catch (...) {
         diagnostic.status = DistributedSieveWorkerExecutionStatusV1::handoff_failed;
         diagnostic.artifacts_may_remain = true;
+        // DIAGNOSTIC BRANCH ONLY: name the exception that the coordinator cannot see.
+        try {
+            throw;
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "worker handoff raised std::exception: %s\n", error.what());
+        } catch (...) {
+            std::fprintf(stderr, "worker handoff raised a non-std exception\n");
+        }
         return result;
     }
 }
