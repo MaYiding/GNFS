@@ -1884,7 +1884,19 @@ DistributedSieveWorkerWriterAdoptionResultV1 consume_distributed_sieve_worker_wr
                         if (diagnostic) {
                             return true;
                         }
+                        // DIAGNOSTIC BRANCH ONLY: name the failed lifetime check.
+                        std::fprintf(stderr,
+                                     "writer lifetime check failed: phase=%u status=%u "
+                                     "native_error=%d protocol=%u\n",
+                                     static_cast<unsigned>(diagnostic.phase),
+                                     static_cast<unsigned>(diagnostic.status),
+                                     diagnostic.native_error,
+                                     static_cast<unsigned>(diagnostic.protocol_status.error));
+                    } catch (const std::exception& error) {
+                        // DIAGNOSTIC BRANCH ONLY
+                        std::fprintf(stderr, "writer lifetime check raised: %s\n", error.what());
                     } catch (...) {
+                        std::fprintf(stderr, "writer lifetime check raised a non-std exception\n");
                     }
                     const_cast<DistributedSieveWorkerEntryV1::State*>(retained)->invalidated.store(
                         true, std::memory_order_release);

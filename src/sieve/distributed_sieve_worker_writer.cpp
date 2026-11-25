@@ -89,6 +89,14 @@ map_writer_creation_failure(const std::exception_ptr& primary,
                        DistributedSieveWorkerWriterStatusV1::private_lease_invalid, EPROTO,
                        rollback, rollback_native_error);
     } catch (...) {
+        // DIAGNOSTIC BRANCH ONLY: name the primary exception for the job log.
+        try {
+            std::rethrow_exception(primary);
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "exact writer primary exception: %s\n", error.what());
+        } catch (...) {
+            std::fprintf(stderr, "exact writer primary exception: non-std\n");
+        }
         return failure(DistributedSieveWorkerWriterPhaseV1::writer_creation,
                        DistributedSieveWorkerWriterStatusV1::unexpected_failure, 0, rollback,
                        rollback_native_error);
