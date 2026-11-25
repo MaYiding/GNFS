@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -612,6 +613,9 @@ void test_configured_output(const std::filesystem::path& executable,
 
 #ifndef _WIN32
 constexpr std::size_t limited_stdout_bytes = 1024;
+// Bytes of the result event that a sized window leaves writable. They cover the
+// event type, so the truncated line still classifies as a result.
+constexpr std::size_t result_event_prefix_bytes = 64;
 
 bool redirect_to_limited_stdout(const char* path, std::size_t writable_bytes) {
     // Leave room for the coverage runtime to write its ordinary profile files.
@@ -674,9 +678,29 @@ void test_stdout_failure(const std::filesystem::path& executable,
         CHECK_CONTEXT(run.stderr_bytes.ends_with("Cannot write to standard output.\n"), context);
     }
     for (const auto format : {"--json", "--event-stream"}) {
-        const auto run =
-            run_cli(test_executable, {"--with-limited-stdout", path.string(), executable.string(),
-                                      "--lang", "en", "--quiet", format, "360"});
+        // The JSON output is one long line, so a fixed window cuts it. The event
+        // stream also reports the progress of the fast path, so its window comes
+        // from a complete run and ends inside the result event.
+        std::size_t writable_bytes = limited_stdout_bytes;
+        std::vector<std::string> helper_arguments{"--with-limited-stdout", path.string()};
+        if (std::string_view(format) == "--event-stream") {
+            const auto complete =
+                run_cli(executable, {"--lang", "en", "--quiet", "--event-stream", "360"});
+            const auto complete_lines = split_lines(complete.stdout_bytes);
+            const bool complete_ok = complete.succeeded() && complete_lines.size() >= 2 &&
+                                     classify_event(complete_lines.back()) == EventKind::result;
+            CHECK_CONTEXT(complete_ok, "complete event stream: " + describe(complete));
+            if (complete_ok) {
+                writable_bytes = complete.stdout_bytes.size() - complete_lines.back().size() - 1 +
+                                 result_event_prefix_bytes;
+                helper_arguments = {"--with-limited-stdout-bytes", path.string(),
+                                    std::to_string(writable_bytes)};
+            }
+        }
+        auto arguments = helper_arguments;
+        arguments.insert(arguments.end(),
+                         {executable.string(), "--lang", "en", "--quiet", format, "360"});
+        const auto run = run_cli(test_executable, std::move(arguments));
         const auto context = std::string(format) + ": " + describe(run);
         CHECK_CONTEXT(run.error == BoundedChildProcessError::normal_nonzero &&
                           run.termination.exit_code == 1,
@@ -686,10 +710,10 @@ void test_stdout_failure(const std::filesystem::path& executable,
                           std::vector<std::string>{"Cannot write to standard output."},
                       context);
         std::ifstream output(path, std::ios::binary);
-        output.seekg(-static_cast<std::streamoff>(limited_stdout_bytes), std::ios::end);
+        output.seekg(-static_cast<std::streamoff>(writable_bytes), std::ios::end);
         const std::string bytes((std::istreambuf_iterator<char>(output)), {});
         // A leading zero would mean the read included the sparse hole.
-        CHECK_CONTEXT(bytes.size() == limited_stdout_bytes && bytes.front() == '{', context);
+        CHECK_CONTEXT(bytes.size() == writable_bytes && bytes.front() == '{', context);
         if (std::string_view(format) == "--event-stream") {
             const auto lines = split_lines(bytes);
             CHECK_CONTEXT(!lines.empty() && classify_event(lines.front()) == EventKind::started &&
@@ -794,6 +818,19 @@ void test_incompatible_options(const std::filesystem::path& executable,
 
 int main(int argc, char* argv[]) {
 #ifndef _WIN32
+    if (argc >= 5 && std::string_view(argv[1]) == "--with-limited-stdout-bytes") {
+        // --with-limited-stdout-bytes <path> <writable-bytes> <executable> [args...]
+        std::size_t writable_bytes = 0;
+        const std::string_view digits(argv[3]);
+        const auto parsed =
+            std::from_chars(digits.data(), digits.data() + digits.size(), writable_bytes);
+        if (digits.empty() || parsed.ec != std::errc{} ||
+            parsed.ptr != digits.data() + digits.size() || writable_bytes == 0 ||
+            !redirect_to_limited_stdout(argv[2], writable_bytes))
+            return 2;
+        ::execv(argv[4], argv + 4);
+        return 2;
+    }
     if (argc >= 4 && (std::string_view(argv[1]) == "--with-limited-stdout" ||
                       std::string_view(argv[1]) == "--with-full-stdout-live-stdin")) {
         const auto capacity =
