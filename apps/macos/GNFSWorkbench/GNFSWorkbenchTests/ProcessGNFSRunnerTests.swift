@@ -809,11 +809,12 @@ final class ProcessGNFSRunnerTests: XCTestCase {
           return XCTFail("unexpected runner error: \(error)")
         }
         XCTAssertTrue(message.contains("超过"))
-        // The probe starts a shell and an interpreter before the runner reads the line and
-        // reaps the child, which took close to five seconds on a busy runner. A runner that
-        // hangs instead runs into the test's execution-time allowance, so a generous limit
-        // here still tells the two apart.
-        XCTAssertLessThan(started.duration(to: clock.now), .seconds(10))
+        // The probe starts a shell and an interpreter and writes 16 MiB before the runner
+        // reads the line and reaps the child. Most probes finish within four seconds, but
+        // the slowest of eighty on a busy CI runner took 9.4 seconds. A runner that hangs
+        // instead runs into the test's execution-time allowance of 120 seconds, so a
+        // generous limit here still tells the two apart.
+        XCTAssertLessThan(started.duration(to: clock.now), .seconds(20))
       }
     }
   }
