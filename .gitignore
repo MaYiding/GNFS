@@ -39,6 +39,10 @@ __pycache__/
 .worktrees/
 .claude/worktrees/
 
+# ===== ZCode dynamic-workflow runtime artifacts =====
+.zcode/workflow-drafts/
+.zcode/workflow-runs/
+
 # ===== Claude runtime artifacts =====
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
