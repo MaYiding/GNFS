@@ -58,6 +58,7 @@ if [[ -n "${GNFS_WORKBENCH_ONLY_TEST:-}" ]]; then
 fi
 if [[ -n "${GNFS_WORKBENCH_TEST_ITERATIONS:-}" ]]; then
     xcode_test_options+=(-test-iterations "$GNFS_WORKBENCH_TEST_ITERATIONS")
+    xcode_test_options+=(-test-repetition-relaunch-enabled YES)
 fi
 
 set +e
