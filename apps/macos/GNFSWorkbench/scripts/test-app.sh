@@ -51,6 +51,15 @@ fi
 
 "$script_dir/generate-project.sh" "$generated_project_root"
 
+# Diagnostic repetition controls; the default path keeps running the whole target once.
+xcode_test_options=(-only-testing:"$test_target")
+if [[ -n "${GNFS_WORKBENCH_ONLY_TEST:-}" ]]; then
+    xcode_test_options=(-only-testing:"$test_target/$GNFS_WORKBENCH_ONLY_TEST")
+fi
+if [[ -n "${GNFS_WORKBENCH_TEST_ITERATIONS:-}" ]]; then
+    xcode_test_options+=(-test-iterations "$GNFS_WORKBENCH_TEST_ITERATIONS")
+fi
+
 set +e
 GNFS_WORKBENCH_CLI_BUILD_ROOT="$cli_build_root" \
   "$script_dir/run-with-wall-timeout.sh" \
@@ -70,7 +79,7 @@ GNFS_WORKBENCH_CLI_BUILD_ROOT="$cli_build_root" \
     DEVELOPMENT_TEAM= \
     GNFS_WORKBENCH_SOURCE_ROOT="$project_root" \
     GNFS_SOURCE_REVISION="$source_revision" \
-    -only-testing:"$test_target" \
+    "${xcode_test_options[@]}" \
     test
 xcodebuild_exit_code=$?
 set -e

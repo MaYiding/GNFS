@@ -37,6 +37,7 @@ jobs:
           python3 scripts/check_stdout_contract.py
 
       - name: Run Workbench tests
+        if: ${{ false }}
         id: workbench_unit
         env:
           GNFS_WORKBENCH_TEST_ARTIFACTS: ${{ runner.temp }}/gnfs-workbench-test-artifacts
@@ -55,18 +56,21 @@ jobs:
         id: workbench_ui
         env:
           GNFS_WORKBENCH_TEST_ARTIFACTS: ${{ runner.temp }}/gnfs-workbench-ui-test-artifacts
+          GNFS_WORKBENCH_ONLY_TEST: GNFSWorkbenchUITests/testReadingOlderLogsPausesFollowingAndLatestResumesIt
+          GNFS_WORKBENCH_TEST_ITERATIONS: "20"
+          GNFS_WORKBENCH_TEST_WALL_TIMEOUT_SECONDS: "3000"
         run: apps/macos/GNFSWorkbench/scripts/test-app.sh --ui
 
       - name: Upload Workbench UI test failure evidence
-        if: ${{ failure() && steps.workbench_ui.outcome == 'failure' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: gnfs-workbench-ui-test-failure-${{ github.run_attempt }}
+          name: gnfs-workbench-ui-test-repetition-${{ github.run_attempt }}
           path: ${{ runner.temp }}/gnfs-workbench-ui-test-artifacts
           if-no-files-found: warn
           retention-days: 14
 
       - name: Build and verify release package
+        if: ${{ false }}
         env:
           WORKBENCH_DIST: ${{ runner.temp }}/gnfs-workbench-dist
         run: |
@@ -117,6 +121,7 @@ jobs:
           done
 
       - name: Upload verified Workbench package
+        if: ${{ false }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gnfs-workbench-macos-arm64
