@@ -80,10 +80,15 @@ async function gate(wt: string): Promise<{ ok: boolean; detail: string }> {
   if (status.stdout.trim() !== "") {
     return { ok: false, detail: `工作树里有未提交的改动：\n${status.stdout}` };
   }
-  const checks = await world.run("sh", ["-c", STATIC, "sh", wt], {
-    timeoutMs: 1_200_000,
-    output: { tail: 16_384 },
-  });
+  let checks: WorldRunResult;
+  try {
+    checks = await world.run("sh", ["-c", STATIC, "sh", wt], {
+      timeoutMs: 1_200_000,
+      output: { tail: 16_384 },
+    });
+  } catch (error) {
+    return { ok: false, detail: `静态自检没有跑完：${String(error)}` };
+  }
   if (checks.exitCode !== 0) return { ok: false, detail: `静态自检有失败：\n${checks.stdout}` };
   return { ok: true, detail: checks.stdout };
 }
@@ -172,11 +177,25 @@ for (let round = 0; round < GATE_ROUNDS && fix.blockers === ""; round++) {
 }
 
 phase("推送修复");
+// A push that times out must be reported as a failure to push, not end the whole run.
 let pushed = false;
 if (passed && fix.blockers === "") {
-  const push = await world.run("git", ["-C", wt, "push", "origin", `HEAD:refs/heads/${info.headRefName}`, "--quiet"]);
+  let push: WorldRunResult;
+  try {
+    push = await world.run(
+      "git", ["-C", wt, "push", "origin", `HEAD:refs/heads/${info.headRefName}`, "--quiet"],
+      { timeoutMs: 900_000 },
+    );
+  } catch (error) {
+    push = { exitCode: 1, stdout: "", stderr: String(error) };
+  }
   pushed = push.exitCode === 0;
-  if (!pushed) fix = { ...fix, blockers: `推送失败：${push.stderr.trim()}` };
+  if (!pushed) {
+    fix = {
+      ...fix,
+      blockers: `推送没有完成，修复留在了本地分支 ${info.headRefName} 上：${push.stderr.trim()}`,
+    };
+  }
 }
 
 const ok = passed && fix.blockers === "" && pushed;

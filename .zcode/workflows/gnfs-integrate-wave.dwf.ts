@@ -107,10 +107,15 @@ async function gate(wt: string): Promise<{ ok: boolean; detail: string }> {
   if (status.stdout.trim() !== "") {
     return { ok: false, detail: `工作树里有未提交的改动：\n${status.stdout}` };
   }
-  const checks = await world.run("sh", ["-c", STATIC, "sh", wt], {
-    timeoutMs: 1_200_000,
-    output: { tail: 16_384 },
-  });
+  let checks: WorldRunResult;
+  try {
+    checks = await world.run("sh", ["-c", STATIC, "sh", wt], {
+      timeoutMs: 1_200_000,
+      output: { tail: 16_384 },
+    });
+  } catch (error) {
+    return { ok: false, detail: `静态自检没有跑完：${String(error)}` };
+  }
   if (checks.exitCode !== 0) return { ok: false, detail: `静态自检有失败：\n${checks.stdout}` };
   return { ok: true, detail: checks.stdout };
 }
@@ -130,7 +135,17 @@ phase("把各拉取请求的分支逐个合进来");
 let merged: { info: PrInfo; resolution: string }[] = [];
 let skipped: string[] = [];
 for (const number of prNumbers) {
-  const view = await world.run("gh", ["pr", "view", String(number), "--json", "number,title,state,headRefName"]);
+  // A network command that times out must count as this pull request being skipped,
+  // not as the whole run failing.
+  let view: WorldRunResult;
+  try {
+    view = await world.run(
+      "gh", ["pr", "view", String(number), "--json", "number,title,state,headRefName"],
+      { timeoutMs: 300_000 },
+    );
+  } catch (error) {
+    view = { exitCode: 1, stdout: "", stderr: String(error) };
+  }
   if (view.exitCode !== 0) {
     skipped = [...skipped, `#${number}：读不到，${view.stderr.trim()}`];
     continue;
@@ -140,7 +155,12 @@ for (const number of prNumbers) {
     skipped = [...skipped, `#${number}「${info.title}」不是打开状态（${info.state}），没有合入`];
     continue;
   }
-  const fetchBranch = await world.run("git", ["fetch", "origin", info.headRefName, "--quiet"]);
+  let fetchBranch: WorldRunResult;
+  try {
+    fetchBranch = await world.run("git", ["fetch", "origin", info.headRefName, "--quiet"], { timeoutMs: 600_000 });
+  } catch (error) {
+    fetchBranch = { exitCode: 1, stdout: "", stderr: String(error) };
+  }
   if (fetchBranch.exitCode !== 0) {
     skipped = [...skipped, `#${number}「${info.title}」的分支 ${info.headRefName} 拉不到`];
     continue;
@@ -214,7 +234,12 @@ if (!passed) {
     },
   ];
 } else {
-  const push = await world.run("git", ["-C", wt, "push", "-u", "origin", branch, "--quiet"]);
+  let push: WorldRunResult;
+  try {
+    push = await world.run("git", ["-C", wt, "push", "-u", "origin", branch, "--quiet"], { timeoutMs: 900_000 });
+  } catch (error) {
+    push = { exitCode: 1, stdout: "", stderr: String(error) };
+  }
   if (push.exitCode !== 0) {
     conclusion = `集成分支推送失败：${push.stderr.trim()}`;
     findings = [...findings, { where: wt, what: "集成分支推送失败", evidence: push.stderr, status: "unconfirmed", severity: "medium" }];
@@ -235,10 +260,15 @@ if (!passed) {
       "",
       "The static self-checks that mirror the CI script and Markdown link jobs pass locally. Builds and tests run on this pull request's checks.",
     ].join("\n");
-    const pr = await world.run("gh", [
-      "pr", "create", "--base", "main", "--head", branch,
-      "--title", `Integrate the pull requests for wave ${wave}`, "--body", body,
-    ]);
+    let pr: WorldRunResult;
+    try {
+      pr = await world.run("gh", [
+        "pr", "create", "--base", "main", "--head", branch,
+        "--title", `Integrate the pull requests for wave ${wave}`, "--body", body,
+      ]);
+    } catch (error) {
+      pr = { exitCode: 1, stdout: "", stderr: String(error) };
+    }
     const url =
       pr.exitCode === 0
         ? (pr.stdout.split("\n").map((line) => line.trim()).filter((line) => line.includes("/pull/")).pop() ?? "")

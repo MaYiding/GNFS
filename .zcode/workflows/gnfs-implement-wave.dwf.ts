@@ -48,9 +48,9 @@ interface Work {
 }
 
 interface Problem {
-  /** 位置：仓库相对路径加行号。 */
+  /** 位置：仓库相对路径加行号。用英文写，它会原样进入拉取请求正文。 */
   where: string;
-  /** 什么情况下会出错，或者违背了哪条规则。 */
+  /** 什么情况下会出错，或者违背了哪条规则。用英文写，它会原样进入拉取请求正文。 */
   what: string;
   /** 会算错结果或崩溃为 high，其余为 medium 或 low。 */
   severity: "low" | "medium" | "high";
@@ -68,9 +68,9 @@ interface Finding {
   where: string;
   /** 这个方向的结果。 */
   what: string;
-  /** 依据：静态自检的输出，以及拉取请求地址。 */
+  /** 依据：静态自检的输出，独立评审的遗留问题，以及拉取请求地址。 */
   evidence: string;
-  /** 拉取请求确实开出且静态自检全部通过为 verified，否则为 unconfirmed。 */
+  /** 拉取请求确实开出、静态自检全部通过、独立评审也通过，才是 verified；否则为 unconfirmed。 */
   status: "verified" | "unconfirmed";
   /** 重要程度。 */
   severity: "low" | "medium" | "high";
@@ -83,12 +83,21 @@ interface Item {
   wt: string;
 }
 
+interface Drafted {
+  item: Item;
+  worker: Agent;
+  work: Work;
+  /** 最后一轮评审仍然提出、之后没有再处理的问题；评审通过后是空数组。 */
+  leftover: Problem[];
+}
+
 const rawTasks = args.tasks;
 if (!Array.isArray(rawTasks)) throw new Error("tasks 必须是方向数组");
 const tasks = rawTasks as Task[];
-const wave = typeof args.wave === "string" ? args.wave : "wip";
+const waveRaw = typeof args.wave === "string" ? args.wave : "wip";
+const wave = waveRaw.toLowerCase().replace(/[^a-z0-9-]+/g, "-") || "wip";
 
-const REVIEW_ROUNDS = 2;
+const MAX_REVISIONS = 2;
 const GATE_ROUNDS = 3;
 
 const WORKER =
@@ -127,6 +136,7 @@ const RULES =
   "- 本机不允许编译。不要运行构建、测试或任何会触发编译的命令：./scripts/test.sh 除 list 以外的子命令、cmake、make、ninja、编译器、scripts/test-app.sh 都不行。\n" +
   "- 可以运行的静态检查（都与 CI 等价、不触发编译）：git diff --check；zsh ./scripts/test.sh list；python3 scripts/check_harness.py；" +
   "python3 scripts/check_distributed_sieve_policy.py --self-test；python3 scripts/check_stdout_contract.py；python3 scripts/ci/check_markdown_links.py。\n" +
+  "- 格式：CI 用 clang-format 18 检查，本机装的版本不同，它的输出不能当准。照着周边代码的写法写。\n" +
   "- 搜索和读取只限当前仓库，不要以 ~ 或 ~/Library 为搜索根。\n" +
   "- 不要 force-push，不要合并，不要改动 main。";
 
@@ -158,7 +168,8 @@ function reviewAsk(item: Item): string {
     "大素数列启用时裁剪上限必须算上大素数列；LP64 差异；浮点转整数前做范围检查；不能只靠 assert 做测试断言；" +
     "新测试要登记 CMake 和 scripts/test.sh；直接用到的标准库头文件要自己包含）。\n" +
     "回答：什么情况下这段改动会算错结果、崩溃、或在另一个平台上表现不同？有没有漏掉测试和文档？" +
-    "approved 只在没有必须修的问题时为 true；只列必须修的问题，风格偏好不要列。用中文回答。"
+    "approved 只在没有必须修的问题时为 true；只列必须修的问题，风格偏好不要列。" +
+    "where 和 what 两个字段用英文写，它们会原样进入拉取请求正文。"
   );
 }
 
@@ -181,6 +192,37 @@ function gateAsk(detail: string): string {
   );
 }
 
+// A network command that times out must count as that step failing, not as the whole run failing.
+async function pushBranch(item: Item): Promise<WorldRunResult> {
+  try {
+    return await world.run("git", ["-C", item.wt, "push", "-u", "origin", item.branch], {
+      timeoutMs: 900_000,
+      output: { tail: 16_384 },
+    });
+  } catch (error) {
+    return { exitCode: 1, stdout: "", stderr: `推送没有完成：${String(error)}` };
+  }
+}
+
+async function openPullRequest(item: Item, work: Work, leftover: Problem[]): Promise<WorldRunResult> {
+  const lines = leftover.map((problem) => `- **${problem.severity}** \`${problem.where}\`: ${problem.what}`);
+  const body =
+    leftover.length === 0
+      ? work.prBody
+      : `${work.prBody}\n\n## Open Review Findings\n\n` +
+        "An independent reviewer still raised the following points after the last revision. " +
+        "They are unresolved at the time this pull request opens:\n\n" +
+        lines.join("\n");
+  try {
+    return await world.run("gh", [
+      "pr", "create", "--base", "main", "--head", item.branch,
+      "--title", work.prTitle, "--body", body,
+    ]);
+  } catch (error) {
+    return { exitCode: 1, stdout: "", stderr: `拉取请求没有开成：${String(error)}` };
+  }
+}
+
 async function gate(wt: string): Promise<{ ok: boolean; detail: string }> {
   const changed = await world.run("git", ["-C", wt, "diff", "--name-only", "origin/main...HEAD"]);
   const files = changed.stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
@@ -193,10 +235,15 @@ async function gate(wt: string): Promise<{ ok: boolean; detail: string }> {
   if (status.stdout.trim() !== "") {
     return { ok: false, detail: `工作树里有未提交的改动：\n${status.stdout}` };
   }
-  const checks = await world.run("sh", ["-c", STATIC, "sh", wt], {
-    timeoutMs: 1_200_000,
-    output: { tail: 16_384 },
-  });
+  let checks: WorldRunResult;
+  try {
+    checks = await world.run("sh", ["-c", STATIC, "sh", wt], {
+      timeoutMs: 1_200_000,
+      output: { tail: 16_384 },
+    });
+  } catch (error) {
+    return { ok: false, detail: `静态自检没有跑完：${String(error)}` };
+  }
   if (checks.exitCode !== 0) return { ok: false, detail: `静态自检有失败：\n${checks.stdout}` };
   return { ok: true, detail: checks.stdout };
 }
@@ -215,15 +262,19 @@ artifact.board("progress", {
 
 phase("为每个方向准备独立的工作树");
 const root = (await world.run("pwd")).stdout.trim();
-const fetched = await world.run("git", ["fetch", "origin", "main", "--quiet"]);
+const fetched = await world.run("git", ["fetch", "origin", "main", "--quiet"], { timeoutMs: 600_000 });
 if (fetched.exitCode !== 0) throw new Error("拿不到 main 的最新提交，无法开始。");
 const items: Item[] = [];
+const usedSlugs: string[] = [];
 for (const task of tasks) {
-  const slug = task.slug.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
-  if (slug === "") {
-    log(`有一个方向的 slug 不可用，跳过：${task.title}`);
+  const base = (typeof task.slug === "string" ? task.slug : "").toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+  if (base === "") {
+    log(`有一个方向的 slug 不可用，跳过：${String(task.title)}`);
     continue;
   }
+  let slug = base;
+  for (let n = 2; usedSlugs.includes(slug); n++) slug = `${base}-${n}`;
+  usedSlugs.push(slug);
   const item: Item = { task, slug, branch: `codex/${slug}-${wave}`, wt: `${root}/.worktrees/${slug}` };
   const add = await world.run("git", ["worktree", "add", "-b", item.branch, item.wt, "origin/main"]);
   if (add.exitCode !== 0) {
@@ -231,29 +282,42 @@ for (const task of tasks) {
     continue;
   }
   items.push(item);
-  report({ slug, title: task.title, state: "实现中", pr: "", note: "" }, "progress");
+  report({ slug, title: String(task.title), state: "实现中", pr: "", note: "" }, "progress");
 }
 if (items.length === 0) throw new Error("没有建成任何工作树。");
 log(`共 ${items.length} 个方向，开始并行实现`);
 
 phase("并行实现，每个方向都由独立评审把关");
-// Each review follows its own implementation, so implementation, review, and revision chain per direction; the only join is here.
-type Drafted = { item: Item; worker: Agent; work: Work } | { item: Item; worker: Agent; failure: string };
+// Each review follows its own implementation, so implementation, review, and revision chain per
+// direction; the only join is here. Every revision is reviewed again: the last round only reviews.
 const drafted = await Promise.all(
   items.map(async (item): Promise<Drafted> => {
     const worker = agent(`实现者·${item.slug}`, WORKER);
     try {
       let work = await worker.ask<Work>(implementAsk(item));
-      for (let round = 0; round < REVIEW_ROUNDS && work.blockers === ""; round++) {
+      let leftover: Problem[] = [];
+      for (let round = 0; round <= MAX_REVISIONS && work.blockers === ""; round++) {
         const review = await agent(`评审者·${item.slug}·第${round + 1}轮`, REVIEWER).ask<Review>(
           reviewAsk(item),
         );
-        if (review.approved) break;
-        work = await worker.ask<Work>(reviseAsk(review));
+        if (review.approved) {
+          leftover = [];
+          break;
+        }
+        leftover = review.problems;
+        if (round < MAX_REVISIONS) work = await worker.ask<Work>(reviseAsk(review));
       }
-      return { item, worker, work };
+      return { item, worker, work, leftover };
     } catch (error) {
-      return { item, worker, failure: String(error) };
+      const failed: Work = {
+        prTitle: "",
+        prBody: "",
+        summary: "",
+        filesChanged: [],
+        selfChecks: [],
+        blockers: `实现过程中出错：${String(error)}`,
+      };
+      return { item, worker, work: failed, leftover: [] };
     }
   }),
 );
@@ -263,6 +327,7 @@ interface Ready {
   item: Item;
   work: Work;
   gate: string;
+  leftover: Problem[];
 }
 interface Stuck {
   item: Item;
@@ -272,16 +337,12 @@ const isReady = (value: Ready | Stuck): value is Ready => "work" in value;
 const outcomes = await Promise.all(
   drafted.map(async (entry): Promise<Ready | Stuck> => {
     const item = entry.item;
-    if (!("work" in entry)) {
-      report({ slug: item.slug, title: item.task.title, state: "受阻", pr: "", note: entry.failure }, "progress");
-      return { item, note: entry.failure };
-    }
-    let work = entry.work;
-    if (work.blockers !== "") {
-      report({ slug: item.slug, title: item.task.title, state: "受阻", pr: "", note: work.blockers }, "progress");
-      return { item, note: work.blockers };
+    if (entry.work.blockers !== "") {
+      report({ slug: item.slug, title: item.task.title, state: "受阻", pr: "", note: entry.work.blockers }, "progress");
+      return { item, note: entry.work.blockers };
     }
     report({ slug: item.slug, title: item.task.title, state: "自检中", pr: "", note: "" }, "progress");
+    let work = entry.work;
     let passed = false;
     let detail = "";
     for (let round = 0; round < GATE_ROUNDS; round++) {
@@ -295,14 +356,14 @@ const outcomes = await Promise.all(
       try {
         work = await entry.worker.ask<Work>(gateAsk(result.detail));
       } catch (error) {
-        work = { ...work, blockers: String(error) };
+        work = { ...work, blockers: `修自检问题时出错：${String(error)}` };
       }
       if (work.blockers !== "") {
         detail = work.blockers;
         break;
       }
     }
-    if (passed) return { item, work, gate: detail };
+    if (passed) return { item, work, gate: detail, leftover: entry.leftover };
     report({ slug: item.slug, title: item.task.title, state: "受阻", pr: "", note: detail }, "progress");
     return { item, note: `自检没有通过：${detail}` };
   }),
@@ -317,17 +378,14 @@ let opened: string[] = [];
 let stuck: Stuck[] = stuckBeforePush;
 for (const entry of ready) {
   const item = entry.item;
-  const push = await world.run("git", ["-C", item.wt, "push", "-u", "origin", item.branch]);
+  const push = await pushBranch(item);
   if (push.exitCode !== 0) {
     const note = `推送失败：${push.stderr.trim()}`;
     stuck = [...stuck, { item, note }];
     report({ slug: item.slug, title: item.task.title, state: "受阻", pr: "", note }, "progress");
     continue;
   }
-  const pr = await world.run("gh", [
-    "pr", "create", "--base", "main", "--head", item.branch,
-    "--title", entry.work.prTitle, "--body", entry.work.prBody,
-  ]);
+  const pr = await openPullRequest(item, entry.work, entry.leftover);
   const url =
     pr.exitCode === 0
       ? (pr.stdout.split("\n").map((line) => line.trim()).filter((line) => line.includes("/pull/")).pop() ?? "")
@@ -338,9 +396,19 @@ for (const entry of ready) {
     report({ slug: item.slug, title: item.task.title, state: "受阻", pr: "", note }, "progress");
     continue;
   }
+  const reviewNote =
+    entry.leftover.length === 0
+      ? "独立评审通过。"
+      : `独立评审在最后一次修订后仍提出 ${entry.leftover.length} 条问题，已附在拉取请求正文里。`;
   opened = [...opened, `${item.task.title}：${url}`];
   report(
-    { slug: item.slug, title: item.task.title, state: "已开拉取请求", pr: url, note: entry.work.summary },
+    {
+      slug: item.slug,
+      title: item.task.title,
+      state: "已开拉取请求",
+      pr: url,
+      note: `${entry.work.summary} ${reviewNote}`,
+    },
     "progress",
   );
   findings = [
@@ -348,9 +416,9 @@ for (const entry of ready) {
     {
       where: `${item.wt}（${item.branch}）`,
       what: `${item.task.title}：${entry.work.summary}`,
-      evidence: `静态自检全部通过：\n${entry.gate}\n拉取请求：${url}`,
-      status: "verified",
-      severity: "medium",
+      evidence: `静态自检全部通过：\n${entry.gate}\n${reviewNote}\n拉取请求：${url}`,
+      status: entry.leftover.length === 0 ? "verified" : "unconfirmed",
+      severity: entry.leftover.some((problem) => problem.severity === "high") ? "high" : "medium",
     },
   ];
 }
@@ -372,7 +440,7 @@ return {
     "工作树留在各自目录里等检查结果，拉取请求合并或者关闭后要清掉。",
   findings,
   verified: [
-    "每个方向由一名没有参与实现的评审员读改动挑毛病，最多两轮",
+    "每个方向都由没有参与实现的评审员读改动挑毛病，每次修订之后都会再审一次",
     "每个推出去的分支都通过了 git diff --check、干净的工作树，以及与 CI 等价的十二项静态自检",
     "分支已推送到远端，拉取请求地址由 gh 命令返回",
   ],
