@@ -250,18 +250,30 @@ final class GNFSWorkbenchUITests: XCTestCase {
 
   /// Scrolls the nested log console up until following turns off.
   ///
-  /// The console sits inside the scrolling document. On a slow runner a wheel event
-  /// synthesized over the console has been seen arriving in the document instead: the
-  /// pointer was already back at its earlier position in the document, the document
-  /// scrolled up, and the console stayed at its tail. Leave the pointer inside the
-  /// console first, scroll a small amount, then check which view took the event.
+  /// The console sits inside the scrolling document, and a wheel event synthesized over
+  /// either of them is lost or delivered to the other on a slow runner. Seen in a failed
+  /// run: the document stayed at its top with the logs off screen, and the pointer was
+  /// already back at its earlier position in the document when the console was scrolled,
+  /// so the document scrolled up and the console stayed at its tail. Scroll until the
+  /// console is on screen, leave the pointer inside it, scroll a small amount, and then
+  /// check which view took the event.
   private func pauseLogFollowing(
     console: XCUIElement, document: XCUIElement, following: XCUIElement, attempts: Int = 4,
     file: StaticString = #filePath, line: UInt = #line
   ) {
     var observations: [String] = []
     for attempt in 1...attempts {
-      if !console.isHittable { document.scroll(byDeltaX: 0, deltaY: -600) }
+      var consoleOnScreen = console.isHittable
+      for _ in 0..<3 where !consoleOnScreen {
+        document.scroll(byDeltaX: 0, deltaY: -600)
+        consoleOnScreen = waitUntilHittable(console, timeout: 6)
+      }
+      guard consoleOnScreen else {
+        XCTFail(
+          "The log console did not come on screen after scrolling the document.",
+          file: file, line: line)
+        return
+      }
       console.hover()
       console.scroll(byDeltaX: 0, deltaY: 120)
       if waitUntil(following, hasValue: "0", timeout: 6) { return }
@@ -270,8 +282,6 @@ final class GNFSWorkbenchUITests: XCTestCase {
       observations.append(
         "attempt \(attempt): following \(String(describing: following.value ?? "nil")), "
           + "toggle on screen \(toggleOnScreen), console \(consoleFrame)")
-      // The document took the wheel event and scrolled up; bring the logs back into view.
-      if !toggleOnScreen { document.scroll(byDeltaX: 0, deltaY: -600) }
     }
     XCTFail(
       "Scrolling the log console did not turn following off. "
