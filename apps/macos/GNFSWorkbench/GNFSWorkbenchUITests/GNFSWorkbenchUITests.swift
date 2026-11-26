@@ -231,12 +231,20 @@ final class GNFSWorkbenchUITests: XCTestCase {
     XCTAssertTrue((app.staticTexts["factorResult"].value as? String ?? "").contains("2^3"))
   }
 
-  /// Waits until `condition` holds, without recording a failure when it never does.
+  /// Waits until `element` reads `expected`, without recording a failure when it never does.
   private func waitUntil(
-    timeout: TimeInterval, _ condition: @escaping () -> Bool
+    _ element: XCUIElement, hasValue expected: String, timeout: TimeInterval
   ) -> Bool {
     let expectation = XCTNSPredicateExpectation(
-      predicate: NSPredicate { _, _ in condition() }, object: nil)
+      predicate: NSPredicate { _, _ in String(describing: element.value ?? "") == expected },
+      object: element)
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// Waits until `element` can be hit, without recording a failure when it never can.
+  private func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in element.isHittable }, object: element)
     return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
   }
 
@@ -256,7 +264,7 @@ final class GNFSWorkbenchUITests: XCTestCase {
       if !console.isHittable { document.scroll(byDeltaX: 0, deltaY: -600) }
       console.hover()
       console.scroll(byDeltaX: 0, deltaY: 120)
-      if waitUntil(timeout: 6, { String(describing: following.value ?? "") == "0" }) { return }
+      if waitUntil(following, hasValue: "0", timeout: 6) { return }
       let toggleOnScreen = following.isHittable
       let consoleFrame = NSStringFromRect(console.frame)
       observations.append(
@@ -290,16 +298,15 @@ final class GNFSWorkbenchUITests: XCTestCase {
       console.staticTexts.containing(
         NSPredicate(format: "value CONTAINS 'Console scrolling fixture'")
       ).firstMatch.waitForExistence(timeout: 8))
-    pauseLogFollowing(console, document: document, following: following)
+    pauseLogFollowing(console: console, document: document, following: following)
     // The button appears with the next layout pass, so wait instead of reading once.
     let jumpToLatest = app.buttons["jumpToLatestLogsButton"]
-    XCTAssertTrue(waitUntil(timeout: 6, { jumpToLatest.isHittable }))
+    XCTAssertTrue(waitUntilHittable(jumpToLatest, timeout: 6))
     disclosure.click()
     disclosure.click()
     // Collapsing and reopening the logs must keep following paused. Reading the toggle
     // asks the app for its accessibility state, which can take seconds on a busy runner.
-    let stillPaused = waitUntil(timeout: 10, { String(describing: following.value ?? "") == "0" })
-    XCTAssertTrue(stillPaused)
+    XCTAssertTrue(waitUntil(following, hasValue: "0", timeout: 10))
     app.buttons["jumpToLatestLogsButton"].click()
     let resumed = XCTNSPredicateExpectation(
       predicate: NSPredicate { _, _ in String(describing: following.value ?? "") == "1" },
