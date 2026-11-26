@@ -57,8 +57,8 @@ jobs:
         env:
           GNFS_WORKBENCH_TEST_ARTIFACTS: ${{ runner.temp }}/gnfs-workbench-ui-test-artifacts
           GNFS_WORKBENCH_ONLY_TEST: GNFSWorkbenchUITests/testReadingOlderLogsPausesFollowingAndLatestResumesIt
-          GNFS_WORKBENCH_TEST_ITERATIONS: "20"
-          GNFS_WORKBENCH_TEST_WALL_TIMEOUT_SECONDS: "3000"
+          GNFS_WORKBENCH_TEST_ITERATIONS: "40"
+          GNFS_WORKBENCH_TEST_WALL_TIMEOUT_SECONDS: "4500"
         run: apps/macos/GNFSWorkbench/scripts/test-app.sh --ui
 
       - name: Upload Workbench UI test failure evidence
