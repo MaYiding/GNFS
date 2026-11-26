@@ -2,6 +2,19 @@ import XCTest
 
 @MainActor
 final class GNFSWorkbenchUITests: XCTestCase {
+  override func setUpWithError() throws {
+    continueAfterFailure = false
+    // Diagnostic repetition only. Drop what the previous launch saved for the app under
+    // test, so every repetition starts from the state a fresh runner gives it: a restored
+    // window that is wider than the screen pushed the toolbar button off screen.
+    let defaults = Process()
+    defaults.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+    defaults.arguments = ["delete", "org.gnfs.workbench"]
+    if (try? defaults.run()) != nil { defaults.waitUntilExit() }
+    try? FileManager.default.removeItem(
+      atPath: NSHomeDirectory() + "/Library/Saved Application State/org.gnfs.workbench.savedState")
+  }
+
   private func launchApp(realEngine: Bool = false, streamLogs: Bool = false) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments = ["--ui-testing"]
