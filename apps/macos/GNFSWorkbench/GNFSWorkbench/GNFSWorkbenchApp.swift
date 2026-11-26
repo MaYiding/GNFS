@@ -50,7 +50,10 @@ struct GNFSWorkbenchApp: App {
       ContentView(model: model)
         .frame(minWidth: 900, minHeight: 640)
     }
-    .defaultSize(width: 1_240, height: 860)
+    // Diagnostic repetition only: the CI screen is 1024 points wide, and a window without a
+    // saved frame cascades to the right, which pushes the toolbar button off screen.
+    .defaultPosition(.topLeading)
+    .defaultSize(width: 1_024, height: 680)
     .windowToolbarStyle(.unifiedCompact(showsTitle: false))
     .commands {
       CommandGroup(replacing: .newItem) {
