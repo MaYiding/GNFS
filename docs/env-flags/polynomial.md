@@ -824,8 +824,8 @@ $p \leq 100$ 的 25 个素数，由 `RotationAlphaTracker` 计算。
   `1` 即启用。
 - **默认值**：关闭，只用 $L^2$ 范数排序。
 - **对结果的影响**：改变进入 Murphy E 精评的候选集合，可能选出不同的多项式，不属于
-  bit-for-bit 开关。代码注释记录了一次 25 位输入上的实测：启用后 Murphy E 从 $-1.20$
-  降到 $-1.33$，所以默认保持关闭。
+  bit-for-bit 开关。代码注释记录了一次 25 位十进制输入上的实测：启用后 Murphy E 从
+  $-1.20$ 降到 $-1.33$，所以默认保持关闭。
 - **接入点**：`include/gnfs/polynomial/kleinjung_selector.hpp` 与
   `include/gnfs/polynomial/bai_brent_selector.hpp` 的 `stage2_root_optimization()`；
   打分函数在 `include/gnfs/polynomial/rotation_alpha.hpp`。

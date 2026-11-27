@@ -1020,9 +1020,9 @@ N=1 vs N=4 vs N=hw_concurrency 严格 per-index bit-identical assert).
 `GNFS_LATTICE_SKEW=1` 让 LLL 路径在多项式 skewness 不等于 1 时升级为 SkewLLL：用 skew
 范数 $a^2 + s^2 b^2$（$s$ 为多项式 skewness）比较向量，得到 skew 意义下更短的格基。
 默认关闭。头文件注释记录的实测是 regression gate 快 1.8 倍、
-`test_factor_with_kleinjung` 快 2.1 倍；默认不开启，是因为在 27 位与 40 位的小输入上
-格基几何的变化可能让固定筛区域与光滑区域重叠得更少，而 25 位以上输入的收益在注释
-写下的当时仍待验证。
+`test_factor_with_kleinjung` 快 2.1 倍；默认不开启，是因为在 27 比特与 40 比特的小
+输入上格基几何的变化可能让固定筛区域与光滑区域重叠得更少，而 25 位、50 位与 60 位
+十进制输入的收益在注释写下的当时仍待验证。
 
 - **取值与解析**：`detail::lattice_skew_enabled_from_env()` 做整串比较，`1`、`on`、
   `ON`、`true`、`TRUE` 启用；未设置、空值和其余取值关闭，`True`、`yes` 之类的拼写不
