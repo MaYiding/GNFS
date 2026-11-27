@@ -48,6 +48,6 @@ workbench 启动引擎时不继承任何 `GNFS_*` 调优变量。`ProcessGNFSRun
 的开关在这种运行里全部保持默认值；这些开关只在直接运行 `gnfs` 命令行时生效。
 
 `testInheritedEngineOverridesAreIsolatedFromRunConfiguration` 用一个探针脚本验证这一点：
-继承环境里的 `GNFS_FORCE_SIQS`、`GNFS_LP_BITS` 与 `GNFS_CLI_PATH` 都没有到达子进程，
-`GNFS_RESUME` 被替换成工作区的路径，不带 `GNFS_` 前缀的变量原样保留。workbench 侧的
-说明见 [workbench README](../../../apps/macos/GNFSWorkbench/README.md)。
+继承环境里的 `GNFS_FORCE_SIQS`、`GNFS_CLI_PATH` 与另一个作为样例的 `GNFS_*` 变量都没有
+到达子进程，`GNFS_RESUME` 被替换成工作区的路径，不带 `GNFS_` 前缀的变量原样保留。
+workbench 侧的说明见 [workbench README](../../apps/macos/GNFSWorkbench/README.md)。
