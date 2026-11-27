@@ -1929,6 +1929,8 @@ void test_matrix_builder_pair_parity_column() {
     using factor_base::FactorBase;
 
     const auto rows = make_pair_parity_rows();
+    // The pair count of each row, and the parity bit the column must hold.
+    const std::array<size_t, 5> expected_counts{1, 1, 2, 3, 4};
     const std::array<bool, 5> expected_bits{true, true, false, true, false};
 
     // f(x) = a*x^2 + x + 1 and n = f(m).
@@ -1989,7 +1991,7 @@ void test_matrix_builder_pair_parity_column() {
             const auto column = static_cast<uint32_t>(mapping.pair_parity_start());
             for (size_t row = 0; row < rows.size(); ++row) {
                 const size_t pair_count = size_t{1} + rows[row].extra_ab_pairs.size();
-                GNFS_TEST_CHECK(pair_count == row + 1);
+                GNFS_TEST_CHECK(pair_count == expected_counts[row]);
                 GNFS_TEST_CHECK(result->matrix.row(row).test(column) == expected_bits[row]);
             }
         }
@@ -2067,7 +2069,7 @@ void test_matrix_builder_skips_schirokauer_for_even_leading_coefficient() {
         const char* label;
         std::vector<int64_t> coefficients; // low degree first
         int64_t m;
-        int64_t n; // f(m)
+        int64_t n; // modulus of the context; f(m) is a multiple of it
         size_t expected_schirokauer_columns;
         bool expect_qc_compensation; // f reducible modulo 2
     };
