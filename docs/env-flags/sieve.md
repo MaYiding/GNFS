@@ -980,3 +980,142 @@ N=1 vs N=4 vs N=hw_concurrency 严格 per-index bit-identical assert).
   Result move / exception propagation / reset env cache hook)
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   sieve 模块
+
+---
+
+## Lattice Basis Reduction Method (GNFS_LATTICE_LLL)
+
+`GNFS_LATTICE_LLL` 选择 special-q 格基的约化算法：`LLL`（默认，Franke-Kleinjung 风格
+的二维 LLL）或 `Gauss`（早期的 Lagrange-Gauss）。
+
+- **取值与解析**：`detail::lattice_reduction_method_from_env()` 做整串比较。只有 `0`、
+  `gauss`、`Gauss`、`GAUSS` 解析为 Gauss；未设置、空值以及 `1`、`lll`、`auto` 等其余
+  取值都是 LLL。
+- **默认值**：LLL。
+- **对结果的影响**：改变每个 special-q 的格基向量，筛区域在 $(a, b)$ 平面上的位置随之
+  改变，产出的关系集合不同，不属于 bit-for-bit 开关。两种算法都保持
+  $\det = \pm q$ 与 `verify_ab()` 不变量。
+- **接入点**：
+  - `include/gnfs/sieve/lattice_basis.hpp`：`lattice_reduction_method_from_env()` 读取；
+    `compute_lattice_basis()` 与不带显式配置的 `compute_lattice_basis_with_skewness()`
+    每次计算格基时调用它，结果不缓存。
+  - `include/gnfs/sieve/adaptive_lattice.hpp`：`AdaptiveBasisManager::get_initial()` 的
+    两参数重载走上述 ENV wrapper。
+  - `include/gnfs/sieve/lattice_sieve.hpp`：legacy 构造的 `LatticeSieve` 在
+    `initial_basis_for_special_q_()` 里调用 `get_initial()`；传入
+    `LatticeSieveExecutionConfig` 的实例改用 `config.lattice_basis`，不读 ENV。
+  - `src/api/pipeline.cpp`：`Pipeline::sieve_and_collect()` 用 legacy 构造创建
+    `LatticeSieve`，所以 pipeline 运行受该开关影响。
+  - `src/sieve/distributed_sieve_execution_policy_environment.cpp`：分布式筛把取值冻结进
+    execution policy，键为 `lattice_lll`（`closed_mode`，semantic）。
+- **测试**：`tests/test_lll_lattice.cpp` 的 `test_lll_env_gate` 覆盖未设置、`0`、`1`
+  三种取值并与显式算法逐字段比对，`test_explicit_lattice_basis_config` 验证显式配置
+  忽略 ENV；`tests/test_distributed_sieve_execution_policy.cpp` 覆盖冻结策略里的
+  `lattice_lll` 键。
+
+---
+
+## Skew-Aware Lattice Reduction (GNFS_LATTICE_SKEW)
+
+`GNFS_LATTICE_SKEW=1` 让 LLL 路径在多项式 skewness 不等于 1 时升级为 SkewLLL：用 skew
+范数 $a^2 + s^2 b^2$（$s$ 为多项式 skewness）比较向量，得到 skew 意义下更短的格基。
+默认关闭。头文件注释记录的实测是 regression gate 快 1.8 倍、
+`test_factor_with_kleinjung` 快 2.1 倍；默认不开启，是因为在 27 比特与 40 比特的小
+输入上格基几何的变化可能让固定筛区域与光滑区域重叠得更少，而 25 位、50 位与 60 位
+十进制输入的收益在注释写下的当时仍待验证。
+
+- **取值与解析**：`detail::lattice_skew_enabled_from_env()` 做整串比较，`1`、`on`、
+  `ON`、`true`、`TRUE` 启用；未设置、空值和其余取值关闭，`True`、`yes` 之类的拼写不
+  启用。
+- **默认值**：关闭。
+- **对结果的影响**：改变格基几何，关系集合随之变化，不属于 bit-for-bit 开关。
+- **接入点**：
+  - `include/gnfs/sieve/lattice_basis.hpp`：`lattice_skew_enabled_from_env()` 读取；
+    不带显式配置的 `compute_lattice_basis_with_skewness()` 在基础算法为 LLL 时调用它，
+    结果不缓存。`GNFS_LATTICE_LLL=0`（Gauss）时不读取该变量；skewness 与 1 的差不超过
+    `1e-6` 时也保持 LLL。
+  - 其余调用链与 `GNFS_LATTICE_LLL` 相同，见上一节。
+  - `src/sieve/distributed_sieve_execution_policy_environment.cpp`：分布式筛把取值冻结为
+    semantic 的布尔键 `lattice_skew`。
+- **测试**：`tests/test_lll_lattice.cpp` 的 `test_skew_lll_dispatch` 覆盖未设置时保持
+  LLL、`GNFS_LATTICE_SKEW=1` 且 skewness 为 10 时得到 SkewLLL、skewness 为 1 时退回
+  LLL、`GNFS_LATTICE_LLL=0` 优先，`test_explicit_lattice_basis_config` 验证显式配置忽略
+  ENV；`tests/test_distributed_sieve_execution_policy.cpp` 覆盖冻结策略里的
+  `lattice_skew` 键。
+
+---
+
+## Adaptive Lattice Re-Reduction (GNFS_ADAPTIVE_LATTICE)
+
+`GNFS_ADAPTIVE_LATTICE=1` 在单个 special-q 的筛命中密度过低时，对格基做保持行列式的
+斜切变换并重新筛该区域。默认关闭；关闭时格基与关系产出不变，只多出常数次布尔判断。
+
+- **取值与解析**：`AdaptiveLatticeConfig::from_env()` 做整串比较，`1`、`on`、`ON`、
+  `true`、`TRUE` 启用；未设置、空值和其余取值关闭。
+- **默认值**：关闭。
+- **对结果的影响**：只有 retry 产出更多候选时才采纳 retry 结果，但被采纳的 special-q
+  会产出不同的关系集合，因此不属于 bit-for-bit 开关。斜切是行列式为 $1$ 的 unimodular
+  变换，格不变，`verify_ab()` 仍严格成立。
+- **接入点**：
+  - `include/gnfs/sieve/adaptive_lattice.hpp`：`AdaptiveLatticeConfig::from_env()` 读取
+    本节列出的四个变量；`AdaptiveBasisManager` 的默认构造函数调用它。
+  - `include/gnfs/sieve/lattice_sieve.hpp`：`LatticeSieve::sieve_special_q()` 在首轮筛
+    完后检查命中密度，低于阈值且还有 retry 额度时调用 `try_perturb_and_rereduce()`；
+    `preflight_special_q()` 校验全部可能的 retry 格基。传入
+    `LatticeSieveExecutionConfig` 的实例改用 `config.adaptive_lattice`，不读 ENV。
+  - `src/api/pipeline.cpp`：`Pipeline::sieve_and_collect()` 构造一个共享的
+    `AdaptiveBasisManager`，并用 `set_adaptive_manager()` 注入每个线程的 `LatticeSieve`；
+    启用时筛法阶段结束会向 stderr 打印一行 `[adaptive_lattice]` 汇总。
+  - `src/sieve/distributed_sieve_execution_policy_environment.cpp`：分布式筛把四个取值
+    冻结进 execution policy，分类为 semantic。
+- **测试**：`tests/test_adaptive_lattice.cpp` 的 `test_config_default_off`、
+  `test_config_env_on`、`test_config_custom_threshold` 与
+  `test_config_custom_retries_and_seed` 覆盖解析，`test_lattice_sieve_integration` 用真实
+  `LatticeSieve` 对比开关前后的候选数与 telemetry，
+  `test_explicit_sieve_parallel_preserves_execution_config` 验证显式配置忽略 ENV；
+  `tests/test_distributed_sieve_execution_policy.cpp` 覆盖冻结策略里的四个键。
+
+### GNFS_ADAPTIVE_LATTICE_THRESHOLD
+
+命中密度阈值，单位是每个筛格的候选数。`std::strtod` 解析，要求至少解析出一个字符、
+值为有限数且落在 $(0, 100]$；允许尾部有多余字符。未设置、空值或越界时保持默认的
+`0.5`。只在 `GNFS_ADAPTIVE_LATTICE` 启用时生效。
+
+### GNFS_ADAPTIVE_LATTICE_MAX_RETRIES
+
+每个 special-q 的最大 retry 次数，`0` 表示不 retry。`std::strtol` 按十进制解析，要求
+至少解析出一个字符且落在 $[0, 16]$；允许尾部有多余字符，未设置、空值或越界时保持
+默认的 `2`。
+
+### GNFS_ADAPTIVE_LATTICE_SEED
+
+扰动种子。非零时与 special-q 混合后决定每次 retry 的斜切方向；为 `0` 时方向只由
+retry 序号决定。`std::strtoull` 按十进制解析，至少解析出一个字符即接受，未设置时
+为 `0`。
+
+---
+
+## Tiny-Prime SIMD Gate (GNFS_SIEVE_NO_TINY_SIMD)
+
+`GNFS_SIEVE_NO_TINY_SIMD` 关闭 lattice sieve 小素数写入路径的 SIMD 与循环融合实现，
+回到标量参考实现，供基准对比和调试使用。
+
+- **取值与解析**：`detail::tiny_simd_enabled()` 按整串比较：未设置、空值或恰好为 `0`
+  时 SIMD 启用；任何其他取值都关闭 SIMD。`off`、`false` 这类写法同样会关闭，只有
+  `0` 能重新启用。结果在首次调用时缓存到进程结束。
+- **默认值**：未设置，SIMD 启用。
+- **对结果的影响**：只改变性能。SIMD 路径与标量路径写出逐字节相同的筛数组，候选
+  关系不变。
+- **接入点**：
+  - `include/gnfs/sieve/lattice_sieve.hpp`：`tiny_simd_enabled()` 读取；legacy 的五参数
+    `apply_log_p_stride()` 和 `LatticeSieve::tiny_simd_enabled_()` 使用它，后者用于
+    bucket 应用和行内小素数写入。
+  - 传入 `LatticeSieveExecutionConfig` 的实例改用 `config.enable_tiny_simd`，不读 ENV。
+  - `src/sieve/distributed_sieve_execution_policy_environment.cpp`：分布式筛把它冻结进
+    execution policy，分类为 conservative；worker 侧由
+    `src/sieve/distributed_sieve_lattice_runtime_config.cpp` 写入显式配置。
+- **测试**：`tests/test_sieve_tiny_simd.cpp` 对比 SIMD 路径与标量参考的筛数组；
+  `tests/test_adaptive_lattice.cpp` 的
+  `test_explicit_sieve_parallel_preserves_execution_config` 在显式配置下翻转该变量，
+  验证结果不变；`tests/test_distributed_sieve_execution_policy.cpp` 覆盖冻结策略里的
+  `sieve_no_tiny_simd` 键。

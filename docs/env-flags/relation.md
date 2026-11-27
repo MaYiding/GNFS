@@ -783,3 +783,37 @@ mixed bucket 严格 per-index bit-identical assert).
   no-stall / non-trivial Result move / exception propagation)
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   relation 模块
+
+---
+
+## 3LP Relation Acceptance (GNFS_3LP)
+
+`GNFS_3LP=1` 让 cofactorizer 把落在 $(B^2, B^3]$ 的余因子分解成 3 个大素数，并让 V0 与
+V3 两个合并器的预过滤放行 weight 为 3 及以上的 partial 关系。默认关闭；关闭时 3LP+
+partial 在预过滤处丢弃，与引入该开关之前的行为一致。
+
+- **取值与解析**：`relation_merge_policy_from_environment()` 用 `std::atoi` 解析，结果
+  等于 `1` 才启用。未设置、空值、`0` 以及 `true` 之类的非数值都保持关闭。
+- **默认值**：`RelationMergePolicy::accept_3lp = false`。
+- **对结果的影响**：改变关系集合和后续矩阵，不属于 bit-for-bit 开关。启用后每个落在
+  $(B^2, B^3]$ 的余因子候选都要多走一次 3LP 分类，代码注释记录的 50 位十进制输入的
+  实测是 sieve 阶段约慢 50 倍，并建议只在小批量的 50 位与 60 位十进制实验里使用。
+- **接入点**：
+  - `include/gnfs/relation/filter.hpp`：`relation_merge_policy_from_environment()` 读取；
+    `PartialRelationMerger::merge_all()` 把它作为默认 policy 参数。
+  - `include/gnfs/relation/clique_merger.hpp`：`CliqueRelationMerger::merge_cliques()`
+    把它作为默认 policy 参数。
+  - `include/gnfs/relation/reduction_engine.hpp`：`RelationReductionConfig::merge_policy`
+    的默认值。
+  - `src/api/pipeline.cpp`：`Pipeline::sieve_and_collect()` 在任何 callback 之前冻结
+    policy，再写入 `cofac_config.allow_3lp` 和 reduction 配置；`Pipeline::filter()` 同样
+    先冻结再赋给 `reduction_config.merge_policy`。
+  - `include/gnfs/sieve/sieve_run_identity.hpp`：`accept_3lp` 进入 sieve run identity
+    哈希，改变取值后旧 checkpoint 不能续跑。
+- **测试**：`tests/test_3lp_merge.cpp` 覆盖 `CliqueRelationMerger` 与
+  `PartialRelationMerger::merge_all()` 在关闭时丢弃、开启时放行 3LP 关系。
+  `tests/test_api.cpp` 的 `test_pipeline_filter_freezes_strategy_before_callbacks` 把
+  `GNFS_3LP` 连同另外两个策略变量钉为 `0`，再在 callback 里改成 `1`，但只断言
+  `reduction.stats.strategy` 仍为 `StandardV0`，也就是只覆盖策略冻结，不检查
+  `accept_3lp`；冻结后的 3LP policy 没有测试覆盖。`tests/test_stress.cpp` 的 sieve
+  入口自行读取该变量来配置 cofactorizer。
