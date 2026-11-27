@@ -287,8 +287,12 @@ final class GNFSWorkbenchUITests: XCTestCase {
           file: file, line: line)
         return
       }
-      console.hover()
-      console.scroll(byDeltaX: 0, deltaY: 120)
+      // Hover and scroll through a coordinate, which skips the hit test. The stream renews
+      // the rows of the console many times a second, and a hit test that lands on a row
+      // which was just recycled fails with an element that cannot be mapped.
+      let inside = console.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+      inside.hover()
+      inside.scroll(byDeltaX: 0, deltaY: 120)
       if waitUntil(following, hasValue: "0", timeout: 6) { return }
       let toggleOnScreen = following.isHittable
       let consoleFrame = NSStringFromRect(console.frame)
