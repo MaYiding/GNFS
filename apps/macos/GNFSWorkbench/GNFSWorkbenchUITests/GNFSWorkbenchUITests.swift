@@ -231,8 +231,86 @@ final class GNFSWorkbenchUITests: XCTestCase {
     XCTAssertTrue((app.staticTexts["factorResult"].value as? String ?? "").contains("2^3"))
   }
 
+  /// Waits until `element` reads `expected`, without recording a failure when it never does.
+  private func waitUntil(
+    _ element: XCUIElement, hasValue expected: String, timeout: TimeInterval
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in String(describing: element.value ?? "") == expected },
+      object: element)
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// Scrolls the document toward its bottom until its visible part holds `element`, and
+  /// reports `false` after `scrolls` scrolls. The frames are read first, so an element that
+  /// is already visible costs no wait.
+  @discardableResult
+  private func revealInDocument(
+    _ element: XCUIElement, document: XCUIElement, scrolls: Int = 3,
+    file: StaticString = #filePath, line: UInt = #line
+  ) -> Bool {
+    var inside = reportedFrameLiesInside(element, document)
+    for _ in 0..<scrolls where !inside {
+      document.scroll(byDeltaX: 0, deltaY: -600)
+      inside = waitUntilLiesInside(element, document, timeout: 6)
+    }
+    guard inside else {
+      XCTFail(
+        "The element did not come into the visible part of the document, "
+          + NSStringFromRect(document.frame) + ", within \(scrolls) scrolls.",
+        file: file, line: line)
+      return false
+    }
+    return true
+  }
+
+  /// Waits until the interface reports the frame of `inner` inside the frame of `outer`.
+  private func waitUntilLiesInside(
+    _ inner: XCUIElement, _ outer: XCUIElement, timeout: TimeInterval
+  ) -> Bool {
+    let expectation = XCTNSPredicateExpectation(
+      predicate: NSPredicate { _, _ in reportedFrameLiesInside(inner, outer) }, object: inner)
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+  }
+
+  /// Scrolls the nested log console up until following turns off.
+  ///
+  /// The console sits inside the scrolling document, and on a slow runner a scroll that
+  /// should reach one of them is lost or reaches the other. Seen in failed runs: the scroll
+  /// of the document that brings the logs into view was lost, and a wheel event synthesized
+  /// over the console scrolled the document instead while the console stayed at its tail.
+  /// So the interface decides whether the console is on screen, and every scroll is
+  /// followed by a check of the toggle, with another attempt when following is still on.
+  private func pauseLogFollowing(
+    console: XCUIElement, document: XCUIElement, following: XCUIElement, attempts: Int = 4,
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    var observations: [String] = []
+    for attempt in 1...attempts {
+      guard revealInDocument(console, document: document, file: file, line: line) else { return }
+      // Hover and scroll through a coordinate, which skips the hit test. The stream renews
+      // the rows of the console many times a second, and a hit test that lands on a row
+      // which was just recycled fails with an element that cannot be mapped.
+      let inside = console.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+      inside.hover()
+      inside.scroll(byDeltaX: 0, deltaY: 120)
+      if waitUntil(following, hasValue: "0", timeout: 6) { return }
+      observations.append(
+        "attempt \(attempt): following \(String(describing: following.value ?? "nil")), "
+          + "console \(NSStringFromRect(console.frame)), "
+          + "document \(NSStringFromRect(document.frame))")
+    }
+    XCTFail(
+      "Scrolling the log console did not turn following off. "
+        + observations.joined(separator: "; "),
+      file: file, line: line)
+  }
+
   func testReadingOlderLogsPausesFollowingAndLatestResumesIt() {
     continueAfterFailure = false
+    // Every read of the interface takes seconds on a busy runner, and the test makes about
+    // thirty of them, so the default allowance of two minutes is too short there.
+    executionTimeAllowance = 240
     let app = launchApp(streamLogs: true)
     XCTAssertTrue(app.buttons["startRunButton"].waitForExistence(timeout: 4))
     app.buttons["startRunButton"].click()
@@ -241,7 +319,7 @@ final class GNFSWorkbenchUITests: XCTestCase {
     disclosure.click()
     let console = app.scrollViews["logConsole"]
     XCTAssertTrue(console.waitForExistence(timeout: 3))
-    app.scrollViews["workbenchDocument"].scroll(byDeltaX: 0, deltaY: -600)
+    let document = app.scrollViews["workbenchDocument"]
     let following = app.checkBoxes["followLogsToggle"]
     XCTAssertTrue(following.exists)
     // Wait for actual rows rather than an arbitrary sleep before scrolling.
@@ -249,18 +327,22 @@ final class GNFSWorkbenchUITests: XCTestCase {
       console.staticTexts.containing(
         NSPredicate(format: "value CONTAINS 'Console scrolling fixture'")
       ).firstMatch.waitForExistence(timeout: 8))
-    console.scroll(byDeltaX: 0, deltaY: 300)
-    // Reading the toggle asks the app for its accessibility state, which can take
-    // seconds on a busy runner. Both waits below allow for that delay.
-    let paused = XCTNSPredicateExpectation(
-      predicate: NSPredicate { _, _ in String(describing: following.value ?? "") == "0" },
-      object: following)
-    XCTAssertEqual(XCTWaiter.wait(for: [paused], timeout: 10), .completed)
-    XCTAssertTrue(app.buttons["jumpToLatestLogsButton"].isHittable)
+    pauseLogFollowing(console: console, document: document, following: following)
+    // The button appears with the next layout pass, so wait instead of reading once.
+    let jumpToLatest = app.buttons["jumpToLatestLogsButton"]
+    XCTAssertTrue(jumpToLatest.waitForExistence(timeout: 6))
     disclosure.click()
     disclosure.click()
-    XCTAssertEqual(String(describing: following.value ?? ""), "0")
-    app.buttons["jumpToLatestLogsButton"].click()
+    // Reopening the logs changes the length of the document, so the button can be below
+    // the fold again.
+    revealInDocument(jumpToLatest, document: document)
+    // Collapsing and reopening the logs must keep following paused. Reading the toggle
+    // asks the app for its accessibility state, which can take seconds on a busy runner.
+    XCTAssertTrue(waitUntil(following, hasValue: "0", timeout: 10))
+    // Click through a coordinate, which skips the hit test. In six of forty repetitions the
+    // interface reported the button as not hittable for six seconds, while the recording
+    // showed it on screen with following paused.
+    jumpToLatest.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
     let resumed = XCTNSPredicateExpectation(
       predicate: NSPredicate { _, _ in String(describing: following.value ?? "") == "1" },
       object: following)
@@ -269,4 +351,16 @@ final class GNFSWorkbenchUITests: XCTestCase {
     XCTAssertTrue(app.staticTexts["任务已取消"].waitForExistence(timeout: 4))
   }
 
+}
+
+/// Whether the interface reports the frame of `inner` inside the frame of `outer`.
+///
+/// The frames decide, and nothing is hit-tested. A hit test over the log console can land
+/// on a row which the stream has just recycled, and it then fails with an element that
+/// cannot be mapped.
+private func reportedFrameLiesInside(_ inner: XCUIElement, _ outer: XCUIElement) -> Bool {
+  guard inner.exists, outer.exists else { return false }
+  let innerFrame = inner.frame
+  let outerFrame = outer.frame
+  return outerFrame.minY <= innerFrame.minY + 1 && innerFrame.maxY <= outerFrame.maxY + 1
 }
