@@ -1,7 +1,11 @@
 /// test_factor_with_kleinjung.cpp - 使用 Kleinjung 多项式选择的 GNFS 分解测试
 ///
 /// 演示完整的 GNFS 流程，比较 Base-m 和 Kleinjung 多项式选择的效果
+///
+/// Every case ends in Release-active checks: the process exits with a nonzero
+/// status when a case does not produce a nontrivial prime factorization.
 
+#include "support/test_check.hpp"
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
@@ -22,6 +26,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -141,6 +146,8 @@ struct GNFSFactorResult {
     double time_sec = 0.0;
     std::string poly_method;
     double murphy_log_e = 0.0;
+    // Stage that ended the run early; empty when the factorization succeeded.
+    std::string failure_reason;
     // Matrix shape bookkeeping, printed with the result so that the trim can
     // be checked from the log.
     size_t fb_columns = 0;
@@ -164,6 +171,41 @@ constexpr double TRIM_SAFETY_FACTOR = 1.3;
 double dense_augmented_mib(size_t rows, size_t cols) {
     const size_t aug_cols = gnfs::util::saturating_size_add(rows, cols);
     return static_cast<double>(rows) * static_cast<double>(aug_cols) / 8.0 / (1024.0 * 1024.0);
+}
+
+// A factor is nontrivial when it lies strictly between 1 and N.
+bool is_nontrivial_factor(const Integer& n, const Integer& factor) {
+    const Integer one(1);
+    return factor.compare(one) > 0 && factor.compare(n) < 0;
+}
+
+// Postconditions of one factorization. They stay active in Release builds:
+// GNFS_TEST_CHECK throws on the first violated condition, and main() turns
+// that into a nonzero exit status.
+void check_factorization(const Integer& n, const GNFSFactorResult& result) {
+    GNFS_TEST_CHECK(result.success);
+
+    Integer product = result.p.clone();
+    product *= result.q;
+    const bool product_is_n = product.compare(n) == 0;
+    const bool p_nontrivial = is_nontrivial_factor(n, result.p);
+    const bool q_nontrivial = is_nontrivial_factor(n, result.q);
+    const bool p_prime = result.p.is_probable_prime(25) > 0;
+    const bool q_prime = result.q.is_probable_prime(25) > 0;
+
+    std::cout << "p * q = " << product.to_string() << "\n";
+    std::cout << "Verified (p * q == N): " << (product_is_n ? "YES" : "NO") << "\n";
+    std::cout << "p is nontrivial: " << (p_nontrivial ? "YES" : "NO") << "\n";
+    std::cout << "q is nontrivial: " << (q_nontrivial ? "YES" : "NO") << "\n";
+    std::cout << "p is prime: " << (p_prime ? "YES" : "NO") << "\n";
+    std::cout << "q is prime: " << (q_prime ? "YES" : "NO") << "\n";
+    std::cout.flush();
+
+    GNFS_TEST_CHECK(product_is_n);
+    GNFS_TEST_CHECK(p_nontrivial);
+    GNFS_TEST_CHECK(q_nontrivial);
+    GNFS_TEST_CHECK(p_prime);
+    GNFS_TEST_CHECK(q_prime);
 }
 
 // Prints the outcome of one factorization, including the matrix shape before
@@ -206,20 +248,8 @@ void print_final_result(const GNFSFactorResult& result) {
         std::cout << "N = " << result.n.to_string() << "\n";
         std::cout << "p = " << result.p.to_string() << "\n";
         std::cout << "q = " << result.q.to_string() << "\n";
-
-        // 验证
-        Integer check = result.p.clone();
-        check *= result.q;
-        std::cout << "p * q = " << check.to_string() << "\n";
-        std::cout << "Verified: " << (check.compare(result.n) == 0 ? "YES" : "NO") << "\n";
-
-        // 检查素性
-        int p_prime = result.p.is_probable_prime(25);
-        int q_prime = result.q.is_probable_prime(25);
-        std::cout << "p is prime: " << (p_prime > 0 ? "YES" : "NO") << "\n";
-        std::cout << "q is prime: " << (q_prime > 0 ? "YES" : "NO") << "\n";
     } else {
-        std::cout << "\nFactorization did not succeed.\n";
+        std::cout << "\nFactorization did not succeed: " << result.failure_reason << "\n";
         std::cout << "(May need more sieving or different parameters)\n";
     }
     std::cout.flush();
@@ -341,6 +371,7 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     if (collector.size() < 10) {
         if (verbose)
             std::cout << "  Not enough relations!\n";
+        result.failure_reason = "sieving produced fewer than 10 relations";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
@@ -366,6 +397,7 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     }
 
     if (relations.size() < 5) {
+        result.failure_reason = "singleton filtering left fewer than 5 relations";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
@@ -426,6 +458,7 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     }
 
     if (!matrix_stats.has_excess()) {
+        result.failure_reason = "matrix has no row excess after the trim";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
@@ -447,6 +480,7 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     }
 
     if (dependencies.empty()) {
+        result.failure_reason = "the solver found no dependencies";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
@@ -525,11 +559,14 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     }
 
     result.time_sec = total_timer.elapsed_sec();
+    if (!result.success) {
+        result.failure_reason = "no dependency yielded a nontrivial factorization";
+    }
     return result;
 }
 
 // 测试分解
-void test_factorization(const char* name, const Integer& n, uint32_t degree) {
+GNFSFactorResult test_factorization(const char* name, const Integer& n, uint32_t degree) {
     print_section(name);
 
     std::cout << "N = " << n.to_string() << "\n";
@@ -544,7 +581,11 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
 
     if (!basem_result.success) {
         std::cout << "Base-m selection failed!\n";
-        return;
+        GNFSFactorResult failed;
+        failed.n = n.clone();
+        failed.poly_method = "Base-m";
+        failed.failure_reason = "Base-m polynomial selection failed";
+        return failed;
     }
 
     auto basem_ctx = BaseMSelector::create_context(n, basem_result);
@@ -603,7 +644,7 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
 
         auto factor_result = factor_with_context(n, basem_ctx, "Base-m", basem_score.log_e_score);
         print_final_result(factor_result);
-        return;
+        return factor_result;
     }
 
     auto kleinjung_ctx = create_context_from_kleinjung(n, kleinjung_result);
@@ -641,6 +682,7 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
 
     // ============ 结果 ============
     print_final_result(factor_result);
+    return factor_result;
 }
 
 int main() {
@@ -648,33 +690,48 @@ int main() {
     std::cout << "    GNFS Factorization with Kleinjung Polynomial Selection\n";
     std::cout << "================================================================\n";
 
-    // 测试 1: 小半素数 (~27 bits)
-    {
-        Integer p("10007");
-        Integer q("10009");
-        Integer n = p * q; // 100160063
-        test_factorization("Test 1: 27-bit semiprime (10007 * 10009)", n, 3);
-    }
+    struct TestCase {
+        const char* title;
+        const char* p;
+        const char* q;
+        uint32_t degree;
+    };
+    const TestCase cases[] = {
+        // Test 1: small semiprime (~27 bits), N = 100160063
+        {"Test 1: 27-bit semiprime (10007 * 10009)", "10007", "10009", 3},
+        // Test 2: medium semiprime (~40 bits), N = 1000036000099
+        {"Test 2: 40-bit semiprime (1000003 * 1000033)", "1000003", "1000033", 3},
+        // Test 3: larger semiprime (~50 bits), N = 100000980001501
+        {"Test 3: 50-bit semiprime (10000019 * 10000079)", "10000019", "10000079", 4},
+    };
 
-    // 测试 2: 中等半素数 (~40 bits)
-    {
-        Integer p("1000003");
-        Integer q("1000033");
-        Integer n = p * q; // 1000036000099
-        test_factorization("Test 2: 40-bit semiprime (1000003 * 1000033)", n, 3);
-    }
-
-    // 测试 3: 较大半素数 (~50 bits)
-    {
-        Integer p("10000019");
-        Integer q("10000079");
-        Integer n = p * q; // 100000980001501
-        test_factorization("Test 3: 50-bit semiprime (10000019 * 10000079)", n, 4);
+    int passed = 0;
+    int failed = 0;
+    for (const TestCase& tc : cases) {
+        Integer p(tc.p);
+        Integer q(tc.q);
+        Integer n = p * q;
+        try {
+            const GNFSFactorResult result = test_factorization(tc.title, n, tc.degree);
+            check_factorization(n, result);
+            std::cout << "\n" << tc.title << ": PASS\n";
+            ++passed;
+        } catch (const std::exception& error) {
+            std::cout.flush();
+            std::cerr << "\n" << tc.title << ": FAIL: " << error.what() << "\n";
+            ++failed;
+        } catch (...) {
+            std::cout.flush();
+            std::cerr << "\n" << tc.title << ": FAIL: unknown exception\n";
+            ++failed;
+        }
     }
 
     std::cout << "\n================================================================\n";
     std::cout << "                    Tests Complete\n";
     std::cout << "================================================================\n";
+    std::cout << "Results: " << passed << " passed, " << failed << " failed\n";
+    std::cout.flush();
 
-    return 0;
+    return failed > 0 ? 1 : 0;
 }
