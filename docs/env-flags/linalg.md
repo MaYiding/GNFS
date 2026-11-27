@@ -1077,16 +1077,20 @@ Berlekamp-Massey，SpMV 调用次数约为 scalar 路径的 $1/64$。
   生效；未设置、空值和其余取值（包括 `block`）都走 block 路径。
 - **默认值**：block 路径。
 - **对结果的影响**：两条路径都返回通过校验的依赖向量，但不保证返回同一组向量，也
-  不保证逐位一致。行数和列数都小于 5000 的矩阵在读取该变量之前就已转给 Block
-  Lanczos，因此不受影响。薄矩阵（行数小于列数）没有 scalar 变体，请求 `scalar` 时
-  向 stderr 打印一行警告并改用 block 的薄矩阵变体。
+  不保证逐位一致。在内存路线上，行数和列数都小于 5000 的矩阵在读取该变量之前就已
+  转给 Block Lanczos，因此不受影响。薄矩阵（行数小于列数）没有 scalar 变体，请求
+  `scalar` 时向 stderr 打印一行警告并改用 block 的薄矩阵变体。
 - **接入点**：
-  - `src/linalg/block_wiedemann.cpp`：`BlockWiedemann::find_dependencies()` 读取；
-    scalar 路径调用 `block_wiedemann_scalar_solve()`。
+  - `src/linalg/block_wiedemann.cpp`：只有 `BlockWiedemann::find_dependencies()` 读取该
+    变量；scalar 路径调用 `block_wiedemann_scalar_solve()`。
   - `GNFS_BW_KRYLOV_STREAMS` 的多流并行只作用于 block 路径，强制 scalar 时无效。
+  - 落盘路线不读取该变量。`GNFS_LINALG_MMAP=on`（或 `auto` 判定落盘）时，
+    `Pipeline::matrix_phase()` 改调 `find_dependencies_view()`，那条路线始终用 block
+    或 thin 求解器，`scalar` 被静默忽略，所以两者同时设置做不了交叉验证。
 - **测试**：`tests/test_block_wiedemann.cpp` 的 `test_block_vs_scalar_cross_validate` 在
   同一矩阵上分别跑两条路径并验证两边的依赖都成立；
-  `tests/test_bw_krylov_mmap_integration.cpp` 在 `scalar` 取值下检查 mmap 路线的日志。
+  `tests/test_bw_krylov_mmap_integration.cpp` 在 `scalar` 取值下经 `find_dependencies()`
+  求解一个大矩阵，并检查 `[BW-scalar]` 日志。没有测试覆盖落盘路线忽略该变量的行为。
 
 ---
 
@@ -1132,9 +1136,17 @@ Berlekamp-Massey，SpMV 调用次数约为 scalar 路径的 $1/64$。
   比较。未设置、空值、`0`、`off`、`false` 和任何未列出的取值都是 Off；`1`、`on`、
   `true` 是 On；`auto`、`Auto`、`AUTO` 是 Auto。`off` 与 `on` 只接受小写。
 - **默认值**：Off，使用内存 CSR。
-- **对结果的影响**：只改变矩阵的存储位置，求解算法不变。On 与 Auto 会把 SGE 约简矩阵
-  写进临时目录下的 `.csrmat` scratch 文件；写入或求解抛出异常时回退到内存路径，并
-  打印 `[linalg-mmap] fallback` 警告。
+- **对结果的影响**：落盘不只是换一个存放位置。`Pipeline::matrix_phase()` 在落盘时改调
+  `BlockWiedemann::find_dependencies_view()`，它始终用 block 或 thin 的 Block Wiedemann
+  求解器，与内存路线有两处不同。第一，它不读取 `GNFS_BW_ALGORITHM`，`scalar` 在这条
+  路线上被静默忽略。第二，它没有内存路线里“行数与列数都小于 5000 的矩阵转交 Block
+  Lanczos”的分支，所以 `on` 之下 Block Lanczos 没有解出依赖的小矩阵由 Block Wiedemann
+  求解；`off` 之下这类小矩阵根本到不了 Block Wiedemann，`find_dependencies()` 把它们
+  再交回 Block Lanczos。`auto` 在默认阈值下只对很大的矩阵落盘，不会遇到这种小矩阵。
+  求解器可能不同，返回的依赖向量因此不保证相同。On 与 Auto 会把 SGE
+  约简矩阵写进临时目录下的 `.csrmat` scratch 文件；写入或求解抛出异常时回退到内存路径
+  的 `find_dependencies()` 并打印 `[linalg-mmap] fallback` 警告，回退之后
+  `GNFS_BW_ALGORITHM` 与小矩阵转交重新生效。
 - **接入点**：
   - `include/gnfs/linalg/linalg_mmap_policy.hpp`：`linalg_mmap_policy_from_env()` 与
     `should_use_mmap()`。

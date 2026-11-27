@@ -85,7 +85,7 @@ W7–W15 期间落地的一组 opt-in 并行 dispatcher,共享同一 ENV-gate + 
 | `GNFS_ADAPTIVE_LATTICE_MAX_RETRIES` | `2` | 每个 special-q 最多重筛几次，范围 0 到 16 | [sieve.md](sieve.md#gnfs_adaptive_lattice_max_retries) |
 | `GNFS_ADAPTIVE_LATTICE_SEED` | `0` | 重筛斜切方向的种子，非零时与 special-q 混合 | [sieve.md](sieve.md#gnfs_adaptive_lattice_seed) |
 | `GNFS_ADAPTIVE_LATTICE_THRESHOLD` | `0.5` | 触发重筛的命中密度阈值，范围 $(0, 100]$ | [sieve.md](sieve.md#gnfs_adaptive_lattice_threshold) |
-| `GNFS_BW_ALGORITHM` | block 路径 | `scalar` 强制 Block Wiedemann 走 scalar Berlekamp-Massey（调试） | [linalg.md](linalg.md#block-wiedemann-algorithm-selection-gnfs_bw_algorithm) |
+| `GNFS_BW_ALGORITHM` | block 路径 | `scalar` 强制内存路线的 Block Wiedemann 走 scalar Berlekamp-Massey（调试） | [linalg.md](linalg.md#block-wiedemann-algorithm-selection-gnfs_bw_algorithm) |
 | `GNFS_CLI_PATH` | 未设置 | workbench 优先用它指定的可执行文件当引擎，其次是内置的 `gnfs` | [workbench.md](workbench.md#engine-executable-override-gnfs_cli_path) |
 | `GNFS_COUVEIGNES_VERBOSE` | 未设置 | 向 stderr 打印一行 Couveignes 指标（诊断） | [sqrt.md](sqrt.md#couveignes-telemetry-gnfs_couveignes_verbose) |
 | `GNFS_DEBUG_BL_CKPT` | 未设置 | 每次 Block Lanczos checkpoint 保存后打印一行（诊断） | [linalg.md](linalg.md#block-lanczos-checkpoint-trace-gnfs_debug_bl_ckpt) |
@@ -97,7 +97,7 @@ W7–W15 期间落地的一组 opt-in 并行 dispatcher,共享同一 ENV-gate + 
 | `GNFS_FORCE_SIQS` | 未设置 | 只影响路由：试除判定之后的输入选 SIQS，显式 `--method` 优先（调试） | [siqs.md](siqs.md#method-routing-overrides-gnfs_force_siqs-gnfs_disable_siqs) |
 | `GNFS_LATTICE_LLL` | `LLL` | `0` 或 `gauss` 改用 Lagrange-Gauss 约化 | [sieve.md](sieve.md#lattice-basis-reduction-method-gnfs_lattice_lll) |
 | `GNFS_LATTICE_SKEW` | 关闭 | skewness 不为 1 时把 LLL 升级为 SkewLLL | [sieve.md](sieve.md#skew-aware-lattice-reduction-gnfs_lattice_skew) |
-| `GNFS_LINALG_MMAP` | `off` | Block Wiedemann 的矩阵落盘：`on` 强制，`auto` 按大小 | [linalg.md](linalg.md#linear-algebra-matrix-mmap-policy-gnfs_linalg_mmap) |
+| `GNFS_LINALG_MMAP` | `off` | Block Wiedemann 的矩阵落盘：`on` 强制，`auto` 按大小；落盘后 `GNFS_BW_ALGORITHM` 失效 | [linalg.md](linalg.md#linear-algebra-matrix-mmap-policy-gnfs_linalg_mmap) |
 | `GNFS_LINALG_MMAP_THRESHOLD_BYTES` | `2147483648` | `auto` 模式的落盘阈值，单位字节 | [linalg.md](linalg.md#gnfs_linalg_mmap_threshold_bytes) |
 | `GNFS_METAL_SPMV` | 关闭 | macOS 上 Block Wiedemann 的 SpMV 优先用 Metal GPU | [linalg.md](linalg.md#metal-spmv-opt-in-gnfs_metal_spmv) |
 | `GNFS_NO_LINEAR_SHORTCUT` | 未设置 | 关闭首一一次多项式的 alpha 短路，用于基准对比 | [polynomial.md](polynomial.md#linear-polynomial-alpha-shortcut-gnfs_no_linear_shortcut) |
