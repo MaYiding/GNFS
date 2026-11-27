@@ -52,11 +52,31 @@ class Exemption:
 
     name: str
     reason: str
+    # Repository-relative locations where the reason holds: an exact file path
+    # or a directory that ends with "/". Empty means the name is exempt
+    # wherever it appears. Otherwise an occurrence anywhere else is an
+    # ordinary name that has to be documented, so a reason such as "no code
+    # reads it" cannot outlive the files that justify it.
+    paths: tuple[str, ...] = ()
+
+    def allows(self, relative: str) -> bool:
+        if not self.paths:
+            return True
+        return any(
+            relative == allowed or (allowed.endswith("/") and relative.startswith(allowed))
+            for allowed in self.paths
+        )
+
+    def scope(self) -> str:
+        """Describe the allowed locations, or return an empty string."""
+        if not self.paths:
+            return ""
+        return " under " + " or ".join(self.paths)
 
 
 # Names that appear in string literals without being runtime tuning switches.
-# Every entry needs a reason, and an entry fails the check once its name
-# disappears from the sources, so the table cannot drift.
+# Every entry needs a reason, and an entry fails the check once no occurrence
+# inside its allowed locations is left, so the table cannot drift.
 EXEMPTIONS: tuple[Exemption, ...] = (
     Exemption(
         "GNFS_DISTRIBUTED_SIEVE_FAIL_ATTEMPT_",
@@ -109,15 +129,11 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         "RSS policy record",
     ),
     Exemption(
-        "GNFS_CLI_PATH",
-        "path override: the macOS workbench resolver tries this executable "
-        "before its bundled gnfs; it does not tune the engine",
-    ),
-    Exemption(
         "GNFS_LP_BITS",
-        "not a switch: no code reads it; it is a sample variable name in the "
-        "workbench environment-isolation test (the real override is "
+        "not a switch: no production code reads it; it is a sample variable "
+        "name in the workbench test sources (the real override is "
         "GNFS_OVERRIDE_LP_BITS)",
+        ("apps/macos/GNFSWorkbench/GNFSWorkbenchTests/",),
     ),
 )
 
@@ -126,12 +142,16 @@ EXEMPTIONS: tuple[Exemption, ...] = (
 class MissingName:
     name: str
     first_seen: str
+    # The allowed locations of a scoped exemption that shares the name.
+    exempt_under: str = ""
 
 
 @dataclass(frozen=True)
 class ScanResult:
     missing: tuple[MissingName, ...]
     stale_exemptions: tuple[str, ...]
+    # (name, allowed locations) for every exemption whose reason is scoped.
+    scopes: tuple[tuple[str, str], ...]
     documented: int
     exempt: int
 
@@ -430,8 +450,21 @@ def _read(path: Path, root: Path) -> str:
     return text
 
 
-def exemption_table(exemptions: tuple[Exemption, ...]) -> dict[str, str]:
-    table: dict[str, str] = {}
+def _validate_location(prefix: str, name: str) -> None:
+    """Reject anything but a clean repository-relative file path or directory."""
+    normalized = prefix.rstrip("/")
+    parts = normalized.split("/")
+    if (
+        not normalized
+        or prefix.startswith("/")
+        or "\\" in prefix
+        or any(part in ("", ".", "..") for part in parts)
+    ):
+        raise ContractError(f"exemption {name} has an invalid location {prefix!r}")
+
+
+def exemption_table(exemptions: tuple[Exemption, ...]) -> dict[str, Exemption]:
+    table: dict[str, Exemption] = {}
     for exemption in exemptions:
         if not NAME_RE.fullmatch(exemption.name):
             raise ContractError(f"invalid exemption name {exemption.name!r}")
@@ -439,39 +472,54 @@ def exemption_table(exemptions: tuple[Exemption, ...]) -> dict[str, str]:
             raise ContractError(f"exemption {exemption.name} needs a reason")
         if exemption.name in table:
             raise ContractError(f"duplicate exemption {exemption.name}")
-        table[exemption.name] = exemption.reason
+        for prefix in exemption.paths:
+            _validate_location(prefix, exemption.name)
+        table[exemption.name] = exemption
     return table
 
 
 def scan(root: Path, exemptions: tuple[Exemption, ...] = EXEMPTIONS) -> ScanResult:
     table = exemption_table(exemptions)
     first_seen: dict[str, str] = {}
+    exempt_seen: dict[str, str] = {}
+    uncovered: dict[str, str] = {}
     for path in iter_source_files(root):
         relative = path.relative_to(root).as_posix()
         text = _read(path, root)
-        if path.suffix in SWIFT_SUFFIXES:
+        if path.suffix.lower() in SWIFT_SUFFIXES:
             literals = swift_string_literals(text, relative)
         else:
             literals = cxx_string_literals(text, relative)
         for line, literal in literals:
             for match in NAME_RE.finditer(literal):
-                first_seen.setdefault(match.group(0), f"{relative}:{line}")
+                name = match.group(0)
+                location = f"{relative}:{line}"
+                first_seen.setdefault(name, location)
+                exemption = table.get(name)
+                if exemption is not None and exemption.allows(relative):
+                    exempt_seen.setdefault(name, location)
+                else:
+                    # Outside a scoped exemption this is an ordinary name.
+                    uncovered.setdefault(name, location)
 
     doc_names: set[str] = set()
     for path in iter_doc_files(root):
         doc_names.update(match.group(0) for match in NAME_RE.finditer(_read(path, root)))
 
     missing = tuple(
-        MissingName(name, first_seen[name])
-        for name in sorted(first_seen)
-        if name not in table and name not in doc_names
+        MissingName(name, uncovered[name], table[name].scope() if name in table else "")
+        for name in sorted(uncovered)
+        if name not in doc_names
     )
-    stale = tuple(sorted(name for name in table if name not in first_seen))
+    stale = tuple(sorted(name for name in table if name not in exempt_seen))
     return ScanResult(
         missing=missing,
         stale_exemptions=stale,
-        documented=sum(1 for name in first_seen if name not in table),
-        exempt=sum(1 for name in first_seen if name in table),
+        scopes=tuple(
+            (exemption.name, exemption.scope()) for exemption in exemptions if exemption.paths
+        ),
+        documented=sum(1 for name in first_seen if name not in exempt_seen),
+        exempt=sum(1 for name in exempt_seen),
     )
 
 
@@ -494,6 +542,86 @@ def _run_cli(root: Path) -> tuple[int, str]:
     return completed.returncode, completed.stdout + completed.stderr
 
 
+def _check_scoped_exemption() -> None:
+    """A scoped exemption covers its allowed locations and nothing else."""
+    with tempfile.TemporaryDirectory(prefix="gnfs-env-flag-scope-") as temp_directory:
+        root = Path(temp_directory)
+        for relative_root in SOURCE_ROOTS:
+            (root / relative_root).mkdir()
+        (root / DOC_ROOT).mkdir(parents=True)
+        (root / "apps" / "Tests").mkdir()
+        sample = root / "apps" / "Tests" / "Sample.swift"
+        other = root / "src" / "other.cpp"
+        page = root / DOC_ROOT / "sample.md"
+        sample.write_text('let sample = "GNFS_SAMPLE"\n', encoding="utf-8")
+        page.write_text("nothing yet\n", encoding="utf-8")
+        scoped = (Exemption("GNFS_SAMPLE", "sample name", ("apps/Tests/",)),)
+        outside = ("GNFS_SAMPLE", "apps/Tests/Sample.swift:1")
+
+        result = scan(root, scoped)
+        if result.missing or result.stale_exemptions or result.exempt != 1:
+            raise ContractError("self-test rejected a scoped exemption inside its directory")
+
+        # The same name in another file is an ordinary name that needs a page,
+        # reported at that file while the exemption itself stays alive.
+        other.write_text('const char* other = "GNFS_SAMPLE";\n', encoding="utf-8")
+        result = scan(root, scoped)
+        leaked = MissingName("GNFS_SAMPLE", "src/other.cpp:1", " under apps/Tests/")
+        if result.missing != (leaked,) or result.stale_exemptions:
+            raise ContractError(f"self-test leaked a scoped exemption: {result.missing!r}")
+        if result.scopes != (("GNFS_SAMPLE", " under apps/Tests/"),):
+            raise ContractError("self-test lost the scope of a scoped exemption")
+
+        # Documented outside the scope: not missing, and still a live exemption.
+        page.write_text("`GNFS_SAMPLE`\n", encoding="utf-8")
+        result = scan(root, scoped)
+        if result.missing or result.stale_exemptions:
+            raise ContractError("self-test rejected a documented name outside the scope")
+
+        # Once the allowed location is gone, the exemption exempts nothing.
+        sample.unlink()
+        result = scan(root, scoped)
+        if result.stale_exemptions != ("GNFS_SAMPLE",) or result.missing:
+            raise ContractError("self-test accepted a scoped exemption without a match")
+
+        # An exact file path matches that file only. A path that merely shares a
+        # prefix, or a directory that is a partial component, matches nothing.
+        sample.write_text('let sample = "GNFS_SAMPLE"\n', encoding="utf-8")
+        other.unlink()
+        page.write_text("nothing yet\n", encoding="utf-8")
+        exact = Exemption("GNFS_SAMPLE", "sample name", ("apps/Tests/Sample.swift",))
+        result = scan(root, (exact,))
+        if result.missing or result.stale_exemptions:
+            raise ContractError("self-test rejected an exact-file exemption")
+        for allowed in ("apps/Tests/Sample", "apps/Tes/", "apps/Tests/Sample.swiftx"):
+            result = scan(root, (Exemption("GNFS_SAMPLE", "sample name", (allowed,)),))
+            located = [(entry.name, entry.first_seen) for entry in result.missing]
+            if located != [outside] or result.stale_exemptions != ("GNFS_SAMPLE",):
+                raise ContractError(f"self-test accepted a partial location match: {allowed!r}")
+
+    for paths in (("/abs/",), ("a/../b",), ("",), ("a\\b",), ("a/./b",), ("a//b",)):
+        _expect_contract_error(
+            f"an invalid exemption location {paths!r}",
+            lambda paths=paths: exemption_table((Exemption("GNFS_X", "reason", paths),)),
+        )
+
+
+def _write_exempt_fixture(root: Path, entry: Exemption, number: int) -> Path:
+    """Place a name inside one of the locations its exemption entry allows."""
+    if not entry.paths:
+        target = root / "include" / "gnfs" / f"exempt_{number}.hpp"
+    elif entry.paths[0].endswith("/"):
+        target = root / entry.paths[0].rstrip("/") / f"exempt_{number}.cpp"
+    else:
+        target = root / entry.paths[0]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.suffix.lower() in SWIFT_SUFFIXES:
+        target.write_text(f'let e{number} = "{entry.name}"\n', encoding="utf-8")
+    else:
+        target.write_text(f'const char* e{number} = "{entry.name}";\n', encoding="utf-8")
+    return target
+
+
 def run_self_test() -> None:
     """Exercise both tokenizers, the exact-token rule, exemptions, and fail-closed paths."""
     local = (Exemption("GNFS_HOOK_ATTEMPT_", "test hook"),)
@@ -504,7 +632,6 @@ def run_self_test() -> None:
         (root / "apps").mkdir()
         (root / DOC_ROOT).mkdir(parents=True)
         header = root / "include" / "gnfs" / "sample.hpp"
-        exempt_header = root / "include" / "gnfs" / "exempt.hpp"
         source = root / "src" / "sample.cpp"
         broken = root / "src" / "broken.cpp"
         swift = root / "apps" / "Sample.swift"
@@ -570,28 +697,43 @@ def run_self_test() -> None:
             raise ContractError("self-test rejected documented names")
 
         # The command line must name every gap, pass only a clean tree, and
-        # reject a production exemption that no longer appears in the sources.
-        exempt_lines = [
-            f'const char* e{number} = "{entry.name}";\n'
+        # reject a production exemption with no occurrence left inside its
+        # allowed locations.
+        fixtures = [
+            _write_exempt_fixture(root, entry, number)
             for number, entry in enumerate(EXEMPTIONS)
         ]
-        exempt_header.write_text("".join(exempt_lines), encoding="utf-8")
         status, output = _run_cli(root)
         if status != 1 or "GNFS_HOOK_ATTEMPT_" not in output:
             raise ContractError("self-test accepted an undocumented name on the command line")
+        if any(entry.name in output for entry in EXEMPTIONS if entry.paths):
+            raise ContractError("self-test reported a scoped exemption inside its location")
         module_page.write_text(
             module_page.read_text(encoding="utf-8") + "`GNFS_HOOK_ATTEMPT_`\n", encoding="utf-8"
         )
         status, output = _run_cli(root)
         if status != 0 or "[PASS]" not in output:
             raise ContractError(f"self-test rejected a clean tree: {output.strip()}")
-        exempt_header.write_text("".join(exempt_lines[1:]), encoding="utf-8")
+        fixtures[0].unlink()
         status, output = _run_cli(root)
         if status != 1 or (
             f"exemption no longer present in source: {EXEMPTIONS[0].name}" not in output
         ):
             raise ContractError("self-test accepted a stale exemption on the command line")
-        exempt_header.unlink()
+        _write_exempt_fixture(root, EXEMPTIONS[0], 0)
+        for number, entry in enumerate(EXEMPTIONS):
+            if not entry.paths:
+                continue
+            fixtures[number].unlink()
+            status, output = _run_cli(root)
+            stale_line = f"exemption no longer present in source: {entry.name}; allowed only"
+            if status != 1 or stale_line not in output:
+                raise ContractError(
+                    "self-test accepted a stale scoped exemption on the command line"
+                )
+            _write_exempt_fixture(root, entry, number)
+        for fixture in fixtures:
+            fixture.unlink()
 
         # An exemption whose name left the sources is a failure, not a free pass.
         header.write_text('const char* documented = "GNFS_DOCUMENTED";\n', encoding="utf-8")
@@ -631,6 +773,8 @@ def run_self_test() -> None:
         index_page.unlink()
         _expect_contract_error("a doc root without pages", lambda: scan(root, local))
 
+    _check_scoped_exemption()
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -653,6 +797,7 @@ def main() -> int:
         return 1
 
     failed = False
+    scopes = dict(result.scopes)
     if result.missing:
         failed = True
         print(
@@ -661,10 +806,19 @@ def main() -> int:
             file=sys.stderr,
         )
         for entry in result.missing:
-            print(f"[FAIL]   {entry.name} (first seen at {entry.first_seen})", file=sys.stderr)
+            scope = "; exempt only" + entry.exempt_under if entry.exempt_under else ""
+            print(
+                f"[FAIL]   {entry.name} (first seen at {entry.first_seen}{scope})",
+                file=sys.stderr,
+            )
     for name in result.stale_exemptions:
         failed = True
-        print(f"[FAIL] exemption no longer present in source: {name}", file=sys.stderr)
+        allowed = scopes.get(name, "")
+        scope = "; allowed only" + allowed if allowed else ""
+        print(
+            f"[FAIL] exemption no longer present in source: {name}{scope}",
+            file=sys.stderr,
+        )
     if failed:
         return 1
 
