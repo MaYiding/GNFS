@@ -4,11 +4,22 @@
 #include "gnfs/polynomial/polynomial_optimizer.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace gnfs::polynomial {
 
 namespace {
+
+/// Largest half-width of the widened window that BaseMSelector::select() uses
+/// when its regular window holds no irreducible candidate. The window doubles
+/// per round, so at most 2 * kMaxWidenedDelta further values of m are examined
+/// before the selection reports failure.
+constexpr int kMaxWidenedDelta = 4096;
 
 /// Construct base-m polynomial of n with given degree.
 /// Guarantees f(m) = n for any m > 1.
@@ -156,27 +167,73 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
     std::vector<Candidate> candidates;
     candidates.reserve(static_cast<size_t>(2 * max_delta + 1));
 
-    for (int delta = -max_delta; delta <= max_delta; ++delta) {
+    // Tests m = m_base + delta and stores it in `candidates` when the base-m
+    // expansion keeps the requested degree and is irreducible over Q.
+    auto try_candidate = [&](int delta) {
         Integer m = m_base;
         m += static_cast<int64_t>(delta);
         if (mpz_cmp_si(m.get_mpz(), 1) <= 0)
-            continue;
+            return;
 
         auto f = construct_base_m_poly(n, m, degree);
         if (f.degree() != degree)
-            continue;
+            return;
 
         if (check_irreducible_over_Q(f)) {
             candidates.push_back({std::move(m), std::move(f)});
         }
+    };
+
+    for (int delta = -max_delta; delta <= max_delta; ++delta) {
+        try_candidate(delta);
     }
 
     if (candidates.empty()) {
-        // Fallback: use m_base (overwhelmingly likely irreducible)
+        // m_base itself was inside the window and did not pass the test, so it
+        // must not be returned unverified: a reducible f defines no number
+        // field, and the norms and square roots computed from it are void.
+        // Widen the window ring by ring instead, doubling max_delta per round,
+        // and return the first irreducible candidate, the one closest to
+        // m_base. Every m > m_base lowers the degree, so the search has covered
+        // every possible m once the window reaches m = 2.
+        const auto covers_every_m = [&] {
+            return mpz_cmp_ui(m_base.get_mpz(), static_cast<unsigned long>(max_delta) + 2UL) <= 0;
+        };
+        while (candidates.empty() && max_delta < kMaxWidenedDelta && !covers_every_m()) {
+            const int previous_delta = max_delta;
+            max_delta = std::min(2 * max_delta, kMaxWidenedDelta);
+            for (int radius = previous_delta + 1; radius <= max_delta && candidates.empty();
+                 ++radius) {
+                try_candidate(-radius);
+                if (candidates.empty()) {
+                    try_candidate(radius);
+                }
+            }
+        }
+
+        if (candidates.empty()) {
+            PolynomialSelectionResult failed;
+            if (covers_every_m()) {
+                failed.error = "no m in [2, ";
+                failed.error += m_base.to_string();
+                failed.error += "] gives an irreducible degree-";
+                failed.error += std::to_string(degree);
+                failed.error += " base-m polynomial";
+            } else {
+                failed.error = "no irreducible degree-";
+                failed.error += std::to_string(degree);
+                failed.error += " base-m polynomial within ";
+                failed.error += std::to_string(kMaxWidenedDelta);
+                failed.error += " of m = ";
+                failed.error += m_base.to_string();
+            }
+            return failed;
+        }
+
         PolynomialSelectionResult result;
         result.degree = degree;
-        result.m = m_base; // Integer op=
-        result.f = construct_base_m_poly(n, m_base, degree);
+        result.m = std::move(candidates[0].m);
+        result.f = std::move(candidates[0].f);
         result.success = true;
         return result;
     }
@@ -238,7 +295,12 @@ PolynomialSelectionResult BaseMSelector::select(const Integer& n, uint32_t degre
 PolynomialContext BaseMSelector::create_context(const Integer& n,
                                                 const PolynomialSelectionResult& result) {
     if (!result.success) {
-        throw std::runtime_error("Cannot create context from failed selection");
+        std::string message = "Cannot create context from failed selection";
+        if (!result.error.empty()) {
+            message += ": ";
+            message += result.error;
+        }
+        throw std::runtime_error(message);
     }
 
     // Extract coefficients from IntPolynomial

@@ -1,10 +1,14 @@
 // Unit tests for base-m polynomial selection (BaseMSelector)
 #include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/polynomial/base_m.hpp"
+#include "support/test_check.hpp"
 
 #include <cassert>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 using namespace gnfs::polynomial;
 using namespace gnfs::core;
@@ -13,6 +17,22 @@ using namespace gnfs::core;
 
 static Integer make_int(long long v) {
     return Integer(static_cast<int64_t>(v));
+}
+
+/// Exact irreducibility test over Q for a quadratic a2·x² + a1·x + a0: it is
+/// reducible iff its discriminant a1² - 4·a2·a0 is a non-negative perfect
+/// square. Independent of the selector's own Eisenstein and mod-p tests.
+static bool quadratic_is_irreducible_over_Q(const IntPolynomial& f) {
+    GNFS_TEST_CHECK(f.degree() == 2);
+    Integer disc = f[1] * f[1];
+    Integer four_ac = f[2] * f[0];
+    four_ac *= static_cast<int64_t>(4);
+    disc -= four_ac;
+    if (disc.is_negative())
+        return true;
+    Integer root = gnfs::core::sqrt(disc);
+    root *= root;
+    return disc != root;
 }
 
 // ─── tests ───────────────────────────────────────────────────
@@ -218,6 +238,127 @@ void test_invalid_selection_parameters() {
     std::cout << "  PASS" << std::endl;
 }
 
+/// The regular window can hold no irreducible candidate at all. N = 10403 =
+/// 101 * 103 with degree 2 gives m_base = 101, and the base-m expansion is
+/// reducible for every m in [96, 101]: (x + 5)(x + 7), ..., x(x + 2). The
+/// selector used to return the last one, x^2 + 2x, with success = true.
+void test_window_without_candidate_widens() {
+    std::cout << "Testing selection widens a window without irreducible candidate..." << std::endl;
+
+    Integer n = make_int(10403LL);
+    auto result = BaseMSelector::select(n, 2);
+    GNFS_TEST_CHECK(result.success);
+    GNFS_TEST_CHECK(result.error.empty());
+    GNFS_TEST_CHECK(result.degree == 2);
+
+    // The first irreducible expansion outside the window is m = 92 with
+    // f = x^2 + 21x + 7 (discriminant 413 = 7 * 59). Every m in [93, 101]
+    // stays reducible, and m > 101 lowers the degree.
+    GNFS_TEST_CHECK(result.m == make_int(92LL));
+    GNFS_TEST_CHECK(result.f.degree() == 2);
+    GNFS_TEST_CHECK(result.f[0] == make_int(7LL));
+    GNFS_TEST_CHECK(result.f[1] == make_int(21LL));
+    GNFS_TEST_CHECK(result.f[2] == make_int(1LL));
+    GNFS_TEST_CHECK(result.f.evaluate(result.m) == n);
+    GNFS_TEST_CHECK(quadratic_is_irreducible_over_Q(result.f));
+
+    auto ctx = BaseMSelector::create_context(n, result);
+    GNFS_TEST_CHECK(ctx.degree() == 2);
+    GNFS_TEST_CHECK(ctx.verify());
+
+    std::cout << "  PASS (m = " << ctx.m().to_string() << ", f = x^2 + 21x + 7)" << std::endl;
+}
+
+/// No base-m expansion with the requested degree is irreducible for these
+/// inputs: N = 4 and N = 16 with degree 2 give x^2, 4x^2 and (x + 1)^2, and
+/// N = 8 with degree 3 gives x^3. The regular window already covers every m,
+/// so the selection must report failure instead of returning a reducible
+/// polynomial.
+void test_no_candidate_anywhere_fails() {
+    std::cout << "Testing selection fails when every candidate is reducible..." << std::endl;
+
+    struct Case {
+        long long n_val;
+        uint32_t degree;
+    };
+    const Case cases[] = {
+        {4LL, 2},
+        {16LL, 2},
+        {8LL, 3},
+    };
+
+    for (const auto& c : cases) {
+        Integer n = make_int(c.n_val);
+        auto result = BaseMSelector::select(n, c.degree);
+        GNFS_TEST_CHECK(!result.success);
+        GNFS_TEST_CHECK(!result.error.empty());
+
+        bool threw = false;
+        try {
+            BaseMSelector::create_context(n, result);
+        } catch (const std::runtime_error& error) {
+            threw = true;
+            const std::string message = error.what();
+            GNFS_TEST_CHECK(message.find("Cannot create context from failed selection") !=
+                            std::string::npos);
+            GNFS_TEST_CHECK(message.find(result.error) != std::string::npos);
+        }
+        GNFS_TEST_CHECK(threw);
+    }
+
+    // The old API reports the same failure through its exception.
+    BaseMSelector selector(make_int(16LL));
+    bool threw = false;
+    try {
+        (void)selector.select_poly(2);
+    } catch (const std::runtime_error& error) {
+        threw = true;
+        const std::string message = error.what();
+        GNFS_TEST_CHECK(message.find("Cannot create context from failed selection") !=
+                        std::string::npos);
+    }
+    GNFS_TEST_CHECK(threw);
+
+    std::cout << "  PASS (N = 4, 16 with degree 2 and N = 8 with degree 3 report failure)"
+              << std::endl;
+}
+
+/// Inputs whose regular window does hold irreducible candidates must keep
+/// their selection. The coefficients are the ones the selector returned
+/// before the window widening was added.
+void test_window_with_candidate_is_unchanged() {
+    std::cout << "Testing selection is unchanged when the window holds a candidate..." << std::endl;
+
+    struct Pinned {
+        const char* n_str;
+        uint32_t degree;
+        const char* m_str;
+        std::vector<long long> coeffs; // f[0], f[1], ...
+    };
+    const Pinned cases[] = {
+        // N = 10403 with the degree the default parameters pick for its size.
+        {"10403", 3, "16", {3LL, 10LL, 8LL, 2LL}},
+        // N = 143 = 11 * 13 with degree 2.
+        {"143", 2, "6", {5LL, 5LL, 3LL}},
+    };
+
+    for (const auto& c : cases) {
+        Integer n(c.n_str);
+        auto result = BaseMSelector::select(n, c.degree);
+        GNFS_TEST_CHECK(result.success);
+        GNFS_TEST_CHECK(result.degree == c.degree);
+        GNFS_TEST_CHECK(result.m == Integer(c.m_str));
+        GNFS_TEST_CHECK(result.f.degree() == c.degree);
+        for (uint32_t i = 0; i <= c.degree; ++i) {
+            GNFS_TEST_CHECK(result.f[i] == make_int(c.coeffs[i]));
+        }
+        GNFS_TEST_CHECK(result.f.evaluate(result.m) == n);
+    }
+
+    std::cout << "  PASS (N = 10403 with degree 3 and N = 143 with degree 2 keep m and f)"
+              << std::endl;
+}
+
 int main() {
     std::cout << "=== BaseMSelector Unit Tests ===" << std::endl;
 
@@ -235,6 +376,9 @@ int main() {
     test_context_coefficients_match_polynomial();
     test_degree4_selection();
     test_invalid_selection_parameters();
+    test_window_without_candidate_widens();
+    test_no_candidate_anywhere_fails();
+    test_window_with_candidate_is_unchanged();
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

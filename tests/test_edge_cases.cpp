@@ -1323,7 +1323,39 @@ void test_schirokauer_large_ell_edge_cases() {
         assert(m1[0] == m2[0]);
     }
 
-    std::cout << "  PASS (ℓ=3,5,7,[2,3],empty tested)" << std::endl;
+    // Test 7: The selected f = x^2 + 21x + 7 is irreducible modulo 2, 3, and
+    // 5 and a perfect power modulo 7, so the checks above only take the
+    // unsplit path. A quadratic that splits into linear factors keeps the
+    // split path covered for odd ℓ: f = x^2 + 2x = x(x + 2) at m = 101.
+    {
+        std::vector<Integer> coeffs;
+        coeffs.push_back(Integer(int64_t(0)));
+        coeffs.push_back(Integer(int64_t(2)));
+        coeffs.push_back(Integer(int64_t(1)));
+        PolynomialContext split_ctx(n.clone(), std::move(coeffs), Integer(int64_t(101)));
+        GNFS_TEST_CHECK(split_ctx.verify());
+
+        struct SplitCase {
+            uint32_t ell;
+            uint32_t exponent_k;
+        };
+        const SplitCase split_cases[] = {{3u, 8u}, {5u, 8u}, {7u, 5u}};
+        for (const auto& sc : split_cases) {
+            SchirokaurConfig cfg;
+            cfg.primes = {sc.ell};
+            cfg.exponent_k = sc.exponent_k;
+            SchirokaurMap sm(split_ctx, cfg);
+            GNFS_TEST_CHECK(sm.num_columns() == degree);
+            const auto maps = sm.compute(11, 3);
+            GNFS_TEST_CHECK(maps.size() == 1);
+            GNFS_TEST_CHECK(maps[0].size() == degree);
+            for (uint32_t v : maps[0]) {
+                GNFS_TEST_CHECK(v < sc.ell);
+            }
+        }
+    }
+
+    std::cout << "  PASS (ℓ=3,5,7,[2,3],empty and a split quadratic tested)" << std::endl;
 }
 
 // 覆盖 ℓ>2 且 degree ≥ 3,且 f mod ℓ 含一个 degree≥2 的 split factor。
