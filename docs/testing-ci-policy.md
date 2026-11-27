@@ -144,10 +144,13 @@ modulo 4: one is unsplit modulo 2, the other splits into a linear and a
 quadratic factor. Companion-matrix reference values and hard-coded columns
 check both, and a matrix-builder case pins the count of degenerate Schirokauer
 rows.
-A further matrix-builder case checks the pair-parity column for leading
-coefficients 3, 7, and 12, its absence for 1, 4, 9, and 36, the row value of
-merged relations, and that a merged row is still the XOR of its constituents
-in every column, in the in-memory and the streaming build.
+Two further matrix-builder cases cover the non-monic constraints. One checks
+the pair-parity column for leading coefficients 3, 7, and 12, its absence for
+1, 4, 9, and 36, the row value of merged relations, and that a merged row is
+still the XOR of its constituents in every column. The other checks that an
+even leading coefficient yields no Schirokauer column while the compensated
+quadratic-character count stays in place, with odd leading coefficients as
+controls. Both compare the in-memory and streaming builds.
 `SchirokauerNonMonicE2E` is a `slow` end-to-end contract on the same two
 polynomials. Each one must factor the 27-bit semiprime 100160063 through sieve,
 filtering, matrix, dependencies, and square root. The Linux Release deep gate

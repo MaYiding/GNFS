@@ -2046,6 +2046,112 @@ void test_matrix_builder_pair_parity_column() {
     std::cout << "  Pair-parity column: PASSED" << std::endl;
 }
 
+// Regression: a Schirokauer map needs f to keep its degree modulo ℓ. When ℓ
+// divides the leading coefficient, ModularPoly::is_irreducible reports f as
+// reducible, the split path Hensel-lifts factors that do not multiply back to
+// f modulo ℓ^k, and the resulting columns are not a homomorphism. The GF(2)
+// matrix only uses ℓ = 2, so an even leading coefficient must yield no
+// Schirokauer column while the extra QC columns keep compensating for them.
+void test_matrix_builder_skips_schirokauer_for_even_leading_coefficient() {
+    std::cout << "Testing MatrixBuilder skips Schirokauer maps for an even leading "
+                 "coefficient..."
+              << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+    using factor_base::FactorBase;
+
+    const auto rows = make_pair_parity_rows();
+
+    struct Fixture {
+        const char* label;
+        std::vector<int64_t> coefficients; // low degree first
+        int64_t m;
+        int64_t n; // f(m)
+        size_t expected_schirokauer_columns;
+        bool expect_qc_compensation; // f reducible modulo 2
+    };
+    const Fixture fixtures[]{
+        {"2x^3 + x^2 + x + 1", {1, 1, 1, 2}, 11, 2795, 0, true},
+        {"2x^2 + x + 1", {1, 1, 2}, 14, 407, 0, true},
+        {"6x^2 + x + 1", {1, 1, 6}, 14, 1191, 0, true},
+        {"3x^3 + 55x^2 + 14x + 71", {71, 14, 55, 3}, 316, 100160063, 3, false},
+        {"3x^3 - 82x^2 + 54x + 41", {41, 54, -82, 3}, 415, 100160063, 3, true},
+    };
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = true;
+    config.include_class_group = false;
+    config.include_schirokauer = true;
+    config.num_qc_primes = 2;
+    config.schirokauer_primes = {2};
+    MatrixBuilder builder(config);
+    const FactorBase fb;
+
+    for (const auto& fixture : fixtures) {
+        std::cout << "  " << fixture.label << std::endl;
+        std::vector<Integer> coefficients;
+        for (int64_t value : fixture.coefficients)
+            coefficients.emplace_back(value);
+        const PolynomialContext ctx(Integer(fixture.n), coefficients, Integer(fixture.m));
+        GNFS_TEST_CHECK(ctx.verify());
+        GNFS_TEST_CHECK(ctx.degree() + 1 == fixture.coefficients.size());
+        GNFS_TEST_CHECK(ctx.leading_coeff().is_even() ==
+                        (fixture.expected_schirokauer_columns == 0));
+
+        const size_t expected_qc =
+            config.num_qc_primes + (fixture.expect_qc_compensation ? size_t{8} * ctx.degree() : 0);
+        const auto vector = builder.build_with_qc(rows, fb, ctx);
+        const auto streaming = builder.build_with_qc_streaming(VectorRelationSource(rows), fb, ctx);
+        GNFS_TEST_CHECK(vector.matrix.num_cols() == streaming.matrix.num_cols());
+
+        for (const auto* result : {&vector, &streaming}) {
+            const auto& mapping = result->mapping;
+            GNFS_TEST_CHECK(mapping.num_schirokauer_columns ==
+                            fixture.expected_schirokauer_columns);
+            // The map stores the primes it actually uses, not the configured ones.
+            GNFS_TEST_CHECK(mapping.schirokauer_primes.size() ==
+                            fixture.expected_schirokauer_columns / ctx.degree());
+            GNFS_TEST_CHECK(mapping.num_qc_columns == expected_qc);
+            GNFS_TEST_CHECK(mapping.num_pair_parity_columns == 1);
+            GNFS_TEST_CHECK(result->matrix.num_cols() == mapping.total_columns());
+            if (fixture.expected_schirokauer_columns == 0) {
+                GNFS_TEST_CHECK(result->schirokauer_degenerate_rows == 0);
+                GNFS_TEST_CHECK(mapping.pair_parity_start() == mapping.qc_start() + expected_qc);
+            } else {
+                GNFS_TEST_CHECK(mapping.pair_parity_start() ==
+                                mapping.schirokauer_start() + mapping.num_schirokauer_columns);
+            }
+        }
+        for (size_t row = 0; row < rows.size(); ++row)
+            GNFS_TEST_CHECK(vector.matrix.row(row).indices() ==
+                            streaming.matrix.row(row).indices());
+    }
+
+    // The GF(2) prime policy is checked before the leading-coefficient rule, so
+    // an even leading coefficient must not hide an invalid configuration.
+    {
+        const std::vector<Integer> coefficients{Integer(1), Integer(1), Integer(2)};
+        const PolynomialContext ctx(Integer(407), coefficients, Integer(14));
+        MatrixBuilderConfig invalid;
+        invalid.include_qc_columns = false;
+        invalid.schirokauer_primes = {3};
+        const MatrixBuilder invalid_builder(invalid);
+        require_throws<std::invalid_argument>(
+            [&] { (void)invalid_builder.build_with_qc(rows, FactorBase{}, ctx); },
+            "MatrixBuilder must reject Schirokauer ell>2 for an even leading coefficient");
+        require_throws<std::invalid_argument>(
+            [&] {
+                (void)invalid_builder.build_with_qc_streaming(VectorRelationSource(rows),
+                                                              FactorBase{}, ctx);
+            },
+            "Streaming MatrixBuilder must reject Schirokauer ell>2 for an even leading "
+            "coefficient");
+    }
+
+    std::cout << "  Schirokauer map skipped for an even leading coefficient: PASSED" << std::endl;
+}
+
 // Regression test: parallel Block Lanczos produces same results as Gaussian
 // for a medium-sized matrix (verifies parallelization correctness)
 void test_parallel_block_lanczos_correctness() {
@@ -2731,6 +2837,7 @@ int main() {
     test_schirokauer_non_monic_split_quadratic();
     test_matrix_builder_counts_degenerate_schirokauer_rows();
     test_matrix_builder_pair_parity_column();
+    test_matrix_builder_skips_schirokauer_for_even_leading_coefficient();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();

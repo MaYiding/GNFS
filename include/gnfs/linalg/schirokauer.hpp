@@ -672,6 +672,11 @@ public:
 ///   where d = deg(f) and ℓ^d - 1 is the group order |F_{ℓ^d}^×|
 ///
 /// For a product Πγ_i to be an ℓ-th power, we need Σλ_ℓ(γ_i) ≡ 0 mod ℓ
+///
+/// Precondition: no configured prime ℓ may divide the leading coefficient of
+/// f. Such an ℓ makes f degenerate modulo ℓ, and the columns computed for it
+/// are not a homomorphism (see precompute_for_prime). MatrixBuilder enforces
+/// this rule for the matrices it builds.
 class SchirokaurMap {
 public:
     using Config = SchirokaurConfig;
@@ -1048,9 +1053,15 @@ private:
         // Limitation: when ℓ divides the leading coefficient, no inverse exists
         // modulo ℓ^k and f_mod keeps its raw coefficients. reduce_inplace then
         // reduces modulo the polynomial whose leading coefficient is replaced
-        // by 1, so the columns for such a polynomial are not the Schirokauer
-        // map of f. This branch preserves the previous behavior; it is not
-        // covered by the normalization above.
+        // by 1. ModularPoly::is_irreducible below also rejects such an f, and
+        // factorize_and_setup then factors f with its vanishing leading term
+        // trimmed away. Hensel lifting cannot restore that term, nothing checks
+        // the mismatch, and the columns are neither the Schirokauer map of f
+        // nor a homomorphism. MatrixBuilder therefore drops every prime that
+        // divides the leading coefficient and never reaches this branch; a
+        // direct caller of SchirokaurMap must apply the same rule itself. This
+        // branch preserves the previous behavior; it is not covered by the
+        // normalization above.
 
         // Full Rabin irreducibility test (not just "no roots")
         // For degree > 3, "no roots" ≠ "irreducible"

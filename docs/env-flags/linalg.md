@@ -314,8 +314,9 @@ N=hw_concurrency 严格 assert).
 
 - 生效条件：$\ell \nmid f_d$。`MatrixBuilder` 固定用 $\ell = 2$，即 $f_d$ 为奇数。
 - 首一多项式不受影响：$f_d = 1$ 时逆元为 1，每一位都不变。
-- 未解决：$\ell \mid f_d$ 时逆元不存在，`f_mod` 保持原始系数，行为与归一化之前相同，列值仍不是 $f$ 的 Schirokauer 映射。
-- 验证：`LinearAlgebra` 的非首一用例以伴随矩阵为参照，`SchirokauerNonMonicE2E` 用首项系数模 4 余 3 的多项式走完整条流水线。
+- $\ell \mid f_d$ 时（2026-11-28 起）：逆元不存在，`MatrixBuilder` 不为这样的 $\ell$ 构造 `SchirokaurMap`。`ModularPoly::is_irreducible` 对 $f$ 模 $\ell$ 返回 false，`factorize_and_setup` 分解的是 $f$ 模 $\ell$ 去掉为零首项之后的多项式，Hensel 提升补不回首项，也没有校验，得到的列不是同态。直接构造 `SchirokaurMap` 的调用方必须自己排除整除 $f_d$ 的素数。
+- 补偿：$\ell = 2$ 整除 $f_d$ 时 $f$ 模 2 必然可约，`build_with_qc` 沿用已有的二次特征列补偿，列数为 `num_qc_primes + degree * 8`。
+- 验证：`LinearAlgebra` 的非首一用例以伴随矩阵为参照，并检查偶数首项时 Schirokauer 列数为 0；`SchirokauerNonMonicE2E` 用首项系数模 4 余 3 的多项式走完整条流水线。
 
 ### 非平方首项的对数奇偶列
 

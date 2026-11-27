@@ -315,17 +315,17 @@ public:
             if (sm_primes.empty()) {
                 sm_primes.push_back(2);
             }
-            SchirokaurConfig sm_config;
-            sm_config.primes = sm_primes;
-            sm_config.verbose = config_.verbose;
-            schirokauer = std::make_unique<SchirokaurMap>(ctx, sm_config);
+            schirokauer = make_schirokauer_map(ctx, sm_primes);
 
-            if (config_.verbose) {
+            if (schirokauer && config_.verbose) {
                 std::cerr << "[Schirokauer] Primes: ";
                 for (auto p : sm_primes)
                     std::cerr << p << " ";
                 std::cerr << "\n[Schirokauer] Columns per prime: " << ctx.degree() << "\n"
                           << "[Schirokauer] Total columns: " << schirokauer->num_columns() << "\n";
+            } else if (config_.verbose) {
+                std::cerr << "[Schirokauer] skipped: every prime divides the leading "
+                             "coefficient\n";
             }
         }
 
@@ -523,11 +523,8 @@ public:
             if (sm_primes.empty()) {
                 sm_primes.push_back(2);
             }
-            SchirokaurConfig sm_config;
-            sm_config.primes = sm_primes;
-            sm_config.verbose = config_.verbose;
-            schirokauer = std::make_unique<SchirokaurMap>(ctx, sm_config);
-            if (config_.verbose) {
+            schirokauer = make_schirokauer_map(ctx, sm_primes);
+            if (schirokauer && config_.verbose) {
                 std::cerr << "[Schirokauer] Total columns: " << schirokauer->num_columns() << "\n";
             }
         }
@@ -632,6 +629,31 @@ private:
                     "MatrixBuilder: GF(2) matrices support only Schirokauer prime ell=2");
             }
         }
+    }
+
+    /// Build the Schirokauer map for `primes`, or return nullptr when no prime
+    /// is usable.
+    ///
+    /// A Schirokauer map needs f to keep its degree modulo ℓ. When ℓ divides
+    /// the leading coefficient, ModularPoly::is_irreducible reports every
+    /// polynomial as reducible, so precompute_for_prime takes the split path
+    /// and Hensel-lifts factors whose product is not f modulo ℓ^k. Nothing
+    /// checks that mismatch, and the resulting columns are not a homomorphism.
+    /// Drop every prime that divides the leading coefficient instead of
+    /// emitting such columns. The caller selects extra QC columns whenever f
+    /// is reducible modulo 2, which includes every even leading coefficient.
+    [[nodiscard]] std::unique_ptr<SchirokaurMap>
+    make_schirokauer_map(const PolynomialContext& ctx, std::vector<uint32_t>& primes) const {
+        std::erase_if(primes, [&](uint32_t ell) {
+            return mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), ell) != 0;
+        });
+        if (primes.empty()) {
+            return nullptr;
+        }
+        SchirokaurConfig sm_config;
+        sm_config.primes = primes;
+        sm_config.verbose = config_.verbose;
+        return std::make_unique<SchirokaurMap>(ctx, sm_config);
     }
 
     /// Return whether the leading coefficient of f is a square in Q.
