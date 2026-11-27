@@ -317,6 +317,16 @@ N=hw_concurrency 严格 assert).
 - 未解决：$\ell \mid f_d$ 时逆元不存在，`f_mod` 保持原始系数，行为与归一化之前相同，列值仍不是 $f$ 的 Schirokauer 映射。
 - 验证：`LinearAlgebra` 的非首一用例以伴随矩阵为参照，`SchirokauerNonMonicE2E` 用首项系数模 4 余 3 的多项式走完整条流水线。
 
+### 非平方首项的对数奇偶列
+
+`PolynomialContext::algebraic_norm` 返回的是 $F(a, b) = b^d f(a/b) = f_d \cdot N(a - b\alpha)$，比域范数多一个因子 $f_d$。有理因子基、代数因子基、大素数与符号列只保证依赖里所有 $F$ 的乘积是平方整数。
+
+设依赖共有 $k$ 个 $(a, b)$ 对，合并关系的每个 `extra_ab_pairs` 条目各算一个对。$f_d$ 不是完全平方数且 $k$ 为奇数时，$f_d^k$ 不是平方，$N(\prod(a - b\alpha)) = |\prod F| / f_d^k$ 也不是平方，而数域中平方元素的范数必为平方，所以这样的依赖不可能是平方。
+
+`MatrixBuilder` 在 $f_d$ 不是有理数平方时追加一列：行值是该关系所含对数的奇偶，即 `1 + extra_ab_pairs.size()` 模 2；位置在 Schirokauer 列之后，偏移量由 `ColumnMapping::pair_parity_start()` 给出，列数记在 `num_pair_parity_columns`。$f_d$ 是完全平方数（含 1）时不加这一列，首一夹具与 120 bit 门禁的矩阵逐位不变。平方判断用 `Integer` 的精确整数开方，不经过浮点。不带 `PolynomialContext` 的 `build()` 不加这一列。
+
+- 验证：`LinearAlgebra` 检查首项 3、7、12 有这一列且行值正确（含合并关系），首项 1、4、9、36 没有，内存版与流式版列数一致。
+
 ---
 
 ## SGE batch-pivot 选择 (GNFS_SGE_BATCH_PIVOTS)

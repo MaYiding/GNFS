@@ -1891,6 +1891,161 @@ void test_matrix_builder_counts_degenerate_schirokauer_rows() {
     std::cout << "  Degenerate Schirokauer row count: PASSED" << std::endl;
 }
 
+// Five rows whose (a, b) pair counts are 1, 1, 2, 3, and 4.
+std::vector<core::Relation> make_pair_parity_rows() {
+    std::vector<core::Relation> rows;
+    rows.emplace_back(1, 1);
+    rows.emplace_back(2, 3);
+
+    core::Relation two(5, 7);
+    two.extra_ab_pairs.emplace_back(-3, 4);
+    rows.push_back(two);
+
+    core::Relation three(9, 2);
+    three.extra_ab_pairs.emplace_back(11, 5);
+    three.extra_ab_pairs.emplace_back(-13, 6);
+    rows.push_back(three);
+
+    core::Relation four(-4, 9);
+    four.extra_ab_pairs.emplace_back(17, 8);
+    four.extra_ab_pairs.emplace_back(19, 10);
+    four.extra_ab_pairs.emplace_back(-21, 12);
+    rows.push_back(four);
+    return rows;
+}
+
+// Regression: PolynomialContext::algebraic_norm returns F(a, b) = b^d * f(a/b)
+// = a_d * N(a - b*alpha), not the field norm. The other columns only force the
+// product of the F values to be a square integer. When a_d is not a square, a
+// dependency with an odd number of (a, b) pairs therefore has a non-square
+// norm and cannot be a square in the number field. MatrixBuilder must record
+// the pair-count parity in one extra column, and add no such column when a_d
+// is a square.
+void test_matrix_builder_pair_parity_column() {
+    std::cout << "Testing MatrixBuilder pair-parity column..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+    using factor_base::FactorBase;
+
+    const auto rows = make_pair_parity_rows();
+    const std::array<bool, 5> expected_bits{true, true, false, true, false};
+
+    // f(x) = a*x^2 + x + 1 and n = f(m).
+    struct Fixture {
+        const char* label;
+        int64_t a;
+        int64_t m;
+        int64_t n;
+        size_t expected_columns;
+    };
+    const Fixture fixtures[]{
+        {"non-square leading coefficient 3", 3, 14, 603, 1},
+        {"non-square leading coefficient 7", 7, 14, 1387, 1},
+        {"non-square leading coefficient 12", 12, 14, 2367, 1},
+        {"square leading coefficient 1", 1, 13, 183, 0},
+        {"square leading coefficient 4", 4, 14, 799, 0},
+        {"square leading coefficient 9", 9, 14, 1779, 0},
+        {"square leading coefficient 36", 36, 14, 7071, 0},
+    };
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.include_class_group = false;
+    config.include_schirokauer = false;
+    MatrixBuilder builder(config);
+    const FactorBase fb;
+
+    for (const auto& fixture : fixtures) {
+        std::cout << "  " << fixture.label << ": n = " << fixture.n << std::endl;
+        const std::vector<Integer> coefficients{Integer(1), Integer(1), Integer(fixture.a)};
+        const PolynomialContext ctx(Integer(fixture.n), coefficients, Integer(fixture.m));
+        GNFS_TEST_CHECK(ctx.verify());
+        GNFS_TEST_CHECK(ctx.degree() == 2);
+
+        const auto vector = builder.build_with_qc(rows, fb, ctx);
+        const auto streaming = builder.build_with_qc_streaming(VectorRelationSource(rows), fb, ctx);
+        GNFS_TEST_CHECK(vector.matrix.num_cols() == streaming.matrix.num_cols());
+        GNFS_TEST_CHECK(vector.matrix.num_rows() == rows.size());
+
+        for (const auto* result : {&vector, &streaming}) {
+            const auto& mapping = result->mapping;
+            const size_t columns_without_parity =
+                mapping.num_rational_fb + mapping.num_algebraic_fb + mapping.num_large_primes_rat +
+                mapping.num_large_primes_alg + mapping.num_qc_columns +
+                mapping.num_class_group_columns + mapping.num_schirokauer_columns +
+                (mapping.has_sign_column ? 1 : 0);
+            GNFS_TEST_CHECK(mapping.num_pair_parity_columns == fixture.expected_columns);
+            GNFS_TEST_CHECK(result->matrix.num_cols() ==
+                            columns_without_parity + fixture.expected_columns);
+            GNFS_TEST_CHECK(mapping.total_columns() == result->matrix.num_cols());
+
+            if (fixture.expected_columns == 0)
+                continue;
+            // The parity column is the last one: every earlier offset is unchanged.
+            GNFS_TEST_CHECK(mapping.pair_parity_start() ==
+                            mapping.schirokauer_start() + mapping.num_schirokauer_columns);
+            GNFS_TEST_CHECK(mapping.pair_parity_start() + 1 == result->matrix.num_cols());
+            const auto column = static_cast<uint32_t>(mapping.pair_parity_start());
+            for (size_t row = 0; row < rows.size(); ++row) {
+                const size_t pair_count = size_t{1} + rows[row].extra_ab_pairs.size();
+                GNFS_TEST_CHECK(pair_count == row + 1);
+                GNFS_TEST_CHECK(result->matrix.row(row).test(column) == expected_bits[row]);
+            }
+        }
+        for (size_t row = 0; row < rows.size(); ++row)
+            GNFS_TEST_CHECK(vector.matrix.row(row).indices() ==
+                            streaming.matrix.row(row).indices());
+    }
+
+    // With the optional column families present, a merged row is still the XOR
+    // of its constituents in every column, including the new one.
+    {
+        // 3x^3 + 55x^2 + 14x + 71 with m = 316, the unsplit fixture of the
+        // Schirokauer tests above.
+        const std::vector<Integer> coefficients{Integer(71), Integer(14), Integer(55), Integer(3)};
+        const PolynomialContext ctx(Integer("100160063"), coefficients, Integer(316));
+        MatrixBuilderConfig full;
+        full.include_qc_columns = true;
+        full.include_class_group = false;
+        full.include_schirokauer = true;
+        full.num_qc_primes = 2;
+        full.schirokauer_primes = {2};
+        core::Relation first(211, 1);
+        first.rational_large_prime.push_back({1009, 0, 1});
+        core::Relation second(-37, 1);
+        second.algebraic_large_prime.push_back({2003, 17, 1});
+        const auto merged = relation::PartialRelationMerger::merge_two(first, second);
+        const std::vector<core::Relation> product_rows{first, second, merged};
+
+        MatrixBuilder full_builder(full);
+        const auto result = full_builder.build_with_qc(product_rows, FactorBase{}, ctx);
+        const auto& mapping = result.mapping;
+        GNFS_TEST_CHECK(mapping.num_qc_columns == 2);
+        GNFS_TEST_CHECK(mapping.num_large_primes_rat == 1);
+        GNFS_TEST_CHECK(mapping.num_large_primes_alg == 1);
+        GNFS_TEST_CHECK(mapping.num_schirokauer_columns == 3);
+        GNFS_TEST_CHECK(mapping.num_pair_parity_columns == 1);
+        GNFS_TEST_CHECK(mapping.pair_parity_start() ==
+                        mapping.schirokauer_start() + mapping.num_schirokauer_columns);
+        GNFS_TEST_CHECK(mapping.pair_parity_start() + 1 == result.matrix.num_cols());
+        const auto column = static_cast<uint32_t>(mapping.pair_parity_start());
+        GNFS_TEST_CHECK(result.matrix.row(0).test(column));
+        GNFS_TEST_CHECK(result.matrix.row(1).test(column));
+        GNFS_TEST_CHECK(!result.matrix.row(2).test(column));
+
+        std::vector<bool> parity(result.matrix.num_cols(), false);
+        for (size_t row = 0; row < result.matrix.num_rows(); ++row) {
+            for (uint32_t index : result.matrix.row(row).indices())
+                parity[index] = !parity[index];
+        }
+        for (bool odd : parity)
+            GNFS_TEST_CHECK(!odd);
+    }
+
+    std::cout << "  Pair-parity column: PASSED" << std::endl;
+}
+
 // Regression test: parallel Block Lanczos produces same results as Gaussian
 // for a medium-sized matrix (verifies parallelization correctness)
 void test_parallel_block_lanczos_correctness() {
@@ -2575,6 +2730,7 @@ int main() {
     test_schirokauer_non_monic_unsplit();
     test_schirokauer_non_monic_split_quadratic();
     test_matrix_builder_counts_degenerate_schirokauer_rows();
+    test_matrix_builder_pair_parity_column();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();

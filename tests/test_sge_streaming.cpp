@@ -175,6 +175,8 @@ static bool mappings_equal(const ColumnMapping& a, const ColumnMapping& b) {
         return false;
     if (a.num_schirokauer_columns != b.num_schirokauer_columns)
         return false;
+    if (a.num_pair_parity_columns != b.num_pair_parity_columns)
+        return false;
     if (a.sign_column != b.sign_column)
         return false;
     if (a.has_sign_column != b.has_sign_column)
