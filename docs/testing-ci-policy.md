@@ -131,6 +131,15 @@ The `LinearAlgebra` contract keeps Schirokauer Hensel lifts active in Release
 at small and large accepted moduli, including `2^62` and `5^27`. Exact Integer
 convolution checks the lifted factors independently, and public-map tests cover
 odd-prime configurations separately from the GF(2) matrix prime policy.
+Its non-monic cases use cubics whose leading coefficient is congruent to 3
+modulo 4: one is unsplit modulo 2, the other splits into a linear and a
+quadratic factor. Companion-matrix reference values and hard-coded columns
+check both, and a matrix-builder case pins the count of degenerate Schirokauer
+rows.
+`SchirokauerNonMonicE2E` is a `slow` end-to-end contract on the same two
+polynomials. Each one must factor the 27-bit semiprime 100160063 through sieve,
+filtering, matrix, dependencies, and square root. The Linux Release deep gate
+runs it.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,

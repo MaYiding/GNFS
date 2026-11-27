@@ -2963,6 +2963,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
     set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 240)
 
+    # Schirokauer end-to-end with non-monic polynomials (leading coefficient
+    # congruent to 3 mod 4): the 27-bit pipeline on an unsplit and a split
+    # (linear times quadratic) fixture, each required to find a factor of N.
+    add_executable(test_schirokauer_non_monic_e2e
+        tests/test_schirokauer_non_monic_e2e.cpp
+    )
+    target_link_libraries(test_schirokauer_non_monic_e2e PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SchirokauerNonMonicE2E COMMAND test_schirokauer_non_monic_e2e)
+    set_tests_properties(SchirokauerNonMonicE2E PROPERTIES LABELS "slow" TIMEOUT 300)
+
     # API 层测试
     add_executable(test_api
         tests/test_api.cpp
