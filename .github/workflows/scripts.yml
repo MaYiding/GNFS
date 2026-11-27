@@ -44,7 +44,7 @@ jobs:
 
       - name: Install shells
         run: |
-          sudo apt-get update
+          bash scripts/ci/apt_update.sh
           sudo apt-get install -y zsh
 
       - name: Check script syntax
@@ -56,7 +56,7 @@ jobs:
             zsh -o NO_BG_NICE -n "${file}"
           done < <(
             {
-              git ls-files 'scripts/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
+              git ls-files 'scripts/*.sh' 'scripts/ci/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
                 | xargs grep -l '^#!/usr/bin/env zsh'
               git ls-files 'scripts/*.zsh' 'scripts/lib/*.zsh' 'tests/*.zsh'
             } | sort -u
@@ -64,7 +64,8 @@ jobs:
 
           while IFS= read -r file; do
             bash -n "${file}"
-          done < <(git ls-files '.claude/hooks/*.sh' 'scripts/*.sh' 'scripts/perf/*.sh' 'tests/*.sh' \
+          done < <(git ls-files '.claude/hooks/*.sh' 'scripts/*.sh' 'scripts/ci/*.sh' 'scripts/perf/*.sh' \
+            'tests/*.sh' \
             | xargs grep -l '^#!/usr/bin/env bash')
 
           python3 -m py_compile \

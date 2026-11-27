@@ -31,7 +31,7 @@ jobs:
 
       - name: Install actionlint dependencies
         run: |
-          sudo apt-get update
+          bash scripts/ci/apt_update.sh
           sudo apt-get install -y shellcheck
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
