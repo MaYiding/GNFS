@@ -26,10 +26,10 @@ bundle 内置的 `gnfs` 之前。未设置或为空值时没有影响。
   - `apps/macos/GNFSWorkbench/GNFSWorkbench/Services/GNFSRunner.swift`：
     `ProcessGNFSRunner` 的默认参数构造默认的 resolver，`start()` 在每次启动引擎前调用
     `resolve()`。
-  - `apps/macos/GNFSWorkbench/GNFSWorkbench/AppModel.swift`：`AppModel.init` 在非演示
-    模式下创建 `ProcessGNFSRunner()`，所以正式运行的 app 会读取该变量。带 `--ui-testing`
-    或 `--design-preview` 且不带 `--ui-testing-real-engine` 时改用 `DemoGNFSRunner`，
-    不读取任何环境变量。
+  - `apps/macos/GNFSWorkbench/GNFSWorkbench/AppModel.swift`：`AppModel.init` 在没有注入
+    runner 且不处于演示模式时创建 `ProcessGNFSRunner()`，所以正式运行的 app 会读取该
+    变量。带 `--ui-testing` 或 `--design-preview` 且不带 `--ui-testing-real-engine` 时
+    改用 `DemoGNFSRunner`，不读取任何环境变量。
 - **测试**：`apps/macos/GNFSWorkbench/GNFSWorkbenchTests/ProcessGNFSRunnerTests.swift` 的
   多数用例通过 `GNFSExecutableResolver(environment: ["GNFS_CLI_PATH": ...])` 把 runner
   指向探针脚本或真实 CLI。没有测试单独覆盖候选顺序，也没有测试覆盖取值不可执行时的

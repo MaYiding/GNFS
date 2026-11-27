@@ -525,7 +525,8 @@ terminal record 或 sealed holdout 自动启用。
 
 ## Method Routing Overrides (GNFS_FORCE_SIQS, GNFS_DISABLE_SIQS)
 
-这两个变量覆盖 `Pipeline::select_method()` 的自动方法选择，只用于调试和实验。
+这两个变量改变 `Pipeline::select_method()` 的自动方法选择，`GNFS_DISABLE_SIQS` 还直接
+决定 SIQS 阶段是否运行。两者只用于调试和实验。
 
 ### 取值与解析
 
