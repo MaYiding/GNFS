@@ -14,6 +14,8 @@ on:
       - 'AGENTS.md'
       - 'CMakeLists.txt'
       - 'CLAUDE.md'
+      - 'apps/**'
+      - 'docs/env-flags/**'
       - 'docs/harness-engineering.md'
       - 'include/**'
       - 'scripts/**'
@@ -70,6 +72,7 @@ jobs:
             scripts/check_distributed_sieve_policy.py \
             scripts/check_harness.py \
             scripts/check_stdout_contract.py \
+            scripts/ci/check_env_flag_docs.py \
             scripts/release_binary_contract.py \
             scripts/release_contract.py \
             scripts/reproducible_archive.py \
@@ -99,3 +102,8 @@ jobs:
         run: |
           python3 scripts/check_stdout_contract.py --self-test
           python3 scripts/check_stdout_contract.py
+
+      - name: Check env flag docs
+        run: |
+          python3 scripts/ci/check_env_flag_docs.py --self-test
+          python3 scripts/ci/check_env_flag_docs.py
