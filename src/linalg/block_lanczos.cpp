@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -256,6 +257,10 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
                 std::vector<std::future<void>> futures;
                 futures.reserve(n_threads);
                 const size_t wpr = aug.words_per_row_;
+                // A later submit may fail after earlier tasks were accepted, and
+                // every task captures aug and elim_rows by reference. Drain the
+                // accepted tasks before such a failure unwinds this scope.
+                gnfs::util::FutureLaunchGuard launch_guard(futures);
 
                 for (size_t t = 0; t < n_threads; ++t) {
                     size_t start = t * chunk;
@@ -275,6 +280,7 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
                         }
                     }));
                 }
+                launch_guard.release();
                 for (auto& f : futures)
                     f.get();
             } else {

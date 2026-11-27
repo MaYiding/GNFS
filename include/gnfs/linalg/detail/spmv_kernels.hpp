@@ -242,6 +242,10 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
 
     std::vector<std::future<void>> futures;
     futures.reserve(T);
+    // A later submit may fail after earlier tasks were accepted, and every
+    // task captures matrix and x by reference. Drain the accepted tasks
+    // before such a failure unwinds this function.
+    gnfs::util::FutureLaunchGuard launch_guard(futures);
     std::size_t T_used = 0;
 
     // Read the SIMD decision once per call rather than per row — the helper
@@ -288,6 +292,7 @@ inline void spmv_transpose(const M& matrix, const BlockVector& x, BlockVector& y
             }
         }));
     }
+    launch_guard.release();
     // Drain every submitted task before propagating a worker failure. A
     // MatrixView accessor may throw from a worker; returning immediately on
     // the first future would leave later tasks using the caller's references

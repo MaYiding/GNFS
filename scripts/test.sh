@@ -379,6 +379,7 @@ ALL_TEST_BINARIES=(
     test_linalg_mmap_policy
     test_metal_spmv
     test_spmv_simd
+    test_linalg_launch_failure
     test_transpose_blocked
     test_popcount_simd
     test_and_popcnt_simd
@@ -750,6 +751,7 @@ TEST_TIMEOUT=(
     test_linalg_mmap_policy  10
     test_metal_spmv          30
     test_spmv_simd           10
+    test_linalg_launch_failure 60
     test_transpose_blocked   10
     test_popcount_simd       60
     test_and_popcnt_simd     60
@@ -1049,6 +1051,7 @@ TEST_TIER=(
     test_linalg_mmap_policy  "instant"
     test_metal_spmv          "instant"
     test_spmv_simd           "instant"
+    test_linalg_launch_failure "instant"
     test_transpose_blocked   "instant"
     test_popcount_simd       "instant"
     test_and_popcnt_simd     "instant"

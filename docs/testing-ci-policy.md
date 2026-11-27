@@ -153,6 +153,19 @@ on POSIX; it is not a pathname-identity or durable-publication contract.
 The `ThreadPool` instant contract keeps task results, completion barriers,
 exception propagation, and bounded concurrent-submit stress checks active in
 Release builds.
+The `LinalgLaunchFailure` instant contract covers a later `submit` that fails
+after a `ThreadPool` already accepted tasks. The binary replaces `operator new`
+and arms injection only on the calling thread. One check sweeps main-thread
+allocation failures across the parallel Gaussian branch, whose fixture keeps
+more than 2000 rows and eliminates more rows than the dynamic threshold, and
+compares every same-process retry with the fault-free dependencies. Another
+check scans allocation ordinals until the pool accepts the first transpose
+task, which parks inside a test `MatrixView`. The next submit fails at that
+ordinal, and `spmv_transpose` must wait for the parked task. The public
+`gnfs::util::FutureLaunchGuard` contract is checked directly. A host with one
+hardware thread still covers allocation failure and retry, but the solver
+takes its serial branch there. The test stays out of smoke because the sweep
+cost grows with the solver thread count.
 The `Logger` instant contract keeps concurrent-output integrity and file-open
 failure propagation checks active in Release builds. Its level-toggle and
 output-lock concurrency paths also run in the narrow ThreadSanitizer lane.
