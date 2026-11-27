@@ -1,7 +1,7 @@
 # README 与文档写作规范
 
 > 撰写或修改 README / docs 设计文档 / 长 commit message body / PR 描述等正式文本前必读。
-> 返回: [CLAUDE.md](../CLAUDE.md)
+> 返回: [AGENTS.md](../AGENTS.md)
 
 ---
 

@@ -588,6 +588,14 @@ if(GNFS_BUILD_TESTS)
             LABELS "instant" TIMEOUT 10
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+        add_test(NAME MarkdownLinkCheckerSelfTest
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci/check_markdown_links.py
+                --self-test)
+        set_tests_properties(MarkdownLinkCheckerSelfTest PROPERTIES
+            LABELS "instant" TIMEOUT 10
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
         add_test(NAME DistributedSievePolicyInventory
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_distributed_sieve_policy.py

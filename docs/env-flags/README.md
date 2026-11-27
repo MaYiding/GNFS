@@ -2,7 +2,7 @@
 
 本目录收录所有 `GNFS_*` 运行时调优开关 / helper 的**详细设计文档**(算法、ENV 解析规则、bit-for-bit 保证、ROI 与定位、集成点、测试清单),按代码模块组织。
 
-顶层一句话速查表见 [CLAUDE.md → ENV 调优开关总览](../../CLAUDE.md#env-调优开关总览)。新增开关的文档化规范见 [CLAUDE.md → 设计细节文档化规范](../../CLAUDE.md#设计细节文档化规范强制)。
+各模块的开关数与文档入口见下文「模块导航」表。新增开关的文档化规范见 [AGENTS.md → Documentation Placement](../../AGENTS.md#documentation-placement)。
 
 ## 模块导航
 
