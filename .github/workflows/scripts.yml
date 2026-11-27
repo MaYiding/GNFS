@@ -98,12 +98,12 @@ jobs:
           bash tests/test_harness_hooks.sh
           zsh tests/test_changed_mode_base.sh
 
-      - name: Check stdout ownership
-        run: |
-          python3 scripts/check_stdout_contract.py --self-test
-          python3 scripts/check_stdout_contract.py
-
       - name: Check env flag docs
         run: |
           python3 scripts/ci/check_env_flag_docs.py --self-test
           python3 scripts/ci/check_env_flag_docs.py
+
+      - name: Check stdout ownership
+        run: |
+          python3 scripts/check_stdout_contract.py --self-test
+          python3 scripts/check_stdout_contract.py
