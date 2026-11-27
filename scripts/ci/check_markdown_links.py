@@ -15,7 +15,9 @@ from urllib.parse import unquote, urlparse
 
 
 INLINE_LINK_RE = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)")
-REF_LINK_RE = re.compile(r"^[ \t]*\[[^\]]+\]:[ \t]*(\S+)", re.MULTILINE)
+# A reference definition may put its destination on the line after the label.
+REF_LINK_RE = re.compile(r"^[ \t]*\[[^\]]+\]:[ \t]*(\S+|\n[ \t]*\S+)", re.MULTILINE)
+INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 SKIP_SCHEMES = {
     "http",
     "https",
@@ -29,13 +31,27 @@ CONTAINER_PREFIX_RE = re.compile(r"^ {0,3}(?:>[ \t]?|[-*+][ \t]+|\d{1,9}[.)][ \t
 ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*))?$")
 ATX_CLOSING_RE = re.compile(r"[ \t]+#+$")
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+FRONT_MATTER_DELIMITER_RE = re.compile(r"(?:---|\.\.\.)[ \t]*")
+# The first content line of YAML front matter is a mapping key.
+YAML_KEY_RE = re.compile(r"[^\s#][^:]*:(?:\s|$)")
+# Tags that open an HTML block in CommonMark (start condition 6).
+HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|"
+    "details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|"
+    "h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|"
+    "optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|"
+    "track|ul"
+)
 # Lines that cannot be the text of a Setext heading: indented code, list
-# items, table rows, and HTML blocks (a tag alone on the line, or a comment,
-# processing instruction, or declaration opener).
+# items, table rows, and HTML blocks (a block-level tag, a tag alone on the
+# line, or a comment, processing instruction, or declaration opener).
 NON_PARAGRAPH_RE = re.compile(
     r"^ {4}|^[-*+][ \t]|^\d{1,9}[.)][ \t]|^\||^<!--|^<[!?]"
     r"|^</?[A-Za-z][^\s/>]*(?:[ \t][^>]*)?/?>[ \t]*$"
+    rf"|^</?(?:{HTML_BLOCK_TAGS})(?=[\s/>]|$)",
+    re.IGNORECASE,
 )
+HTML_HEADING_RE = re.compile(r"<h([1-6])\b[^>]*>(.*?)</h\1\s*>", re.IGNORECASE | re.DOTALL)
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 HTML_TAG_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9-]*(?:[ \t/][^>]*)?>")
 A_START_TAG_RE = re.compile(r"<a\s[^>]*>", re.IGNORECASE)
@@ -109,9 +125,29 @@ def mask_fences(text: str) -> str:
     return "".join(masked_lines)
 
 
+def mask_front_matter(text: str) -> str:
+    """Mask YAML front matter while preserving line numbers.
+
+    GitHub renders a leading ``---`` block as a table instead of Markdown, so
+    none of its lines becomes a heading. Only a block that opens with a YAML
+    mapping key counts; otherwise, or without a closing delimiter, the leading
+    ``---`` is an ordinary thematic break.
+    """
+    lines = text.split("\n")
+    if not lines[0].startswith("-") or not FRONT_MATTER_DELIMITER_RE.fullmatch(lines[0]):
+        return text
+    first = next((line for line in lines[1:] if line.strip() and not line.lstrip().startswith("#")), "")
+    if not YAML_KEY_RE.match(first):
+        return text
+    for index in range(1, len(lines)):
+        if FRONT_MATTER_DELIMITER_RE.fullmatch(lines[index]):
+            return "\n".join([""] * (index + 1) + lines[index + 1 :])
+    return text
+
+
 def mask_code(text: str) -> str:
     """Mask fenced and inline code while preserving line numbers."""
-    return re.sub(r"`[^`\n]*`", lambda m: " " * len(m.group(0)), mask_fences(text))
+    return INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), mask_fences(text))
 
 
 def iter_links(text: str) -> list[tuple[int, str]]:
@@ -167,12 +203,19 @@ def slugify(text: str) -> str:
     return "".join(slug)
 
 
-def iter_headings(text: str) -> list[str]:
-    """Return the markup of every ATX and Setext heading outside fences."""
-    headings: list[str] = []
+def iter_headings(text: str) -> list[tuple[int, str]]:
+    """Return ``(offset, markup)`` for every ATX and Setext heading outside fences.
+
+    The offset is the position of the heading's first line in ``text``.
+    """
+    headings: list[tuple[int, str]] = []
     paragraph: list[str] = []
     paragraph_depth = 0
+    paragraph_offset = 0
+    offset = 0
     for line in text.split("\n"):
+        line_offset = offset
+        offset += len(line) + 1
         stripped = line
         depth = 0
         while match := CONTAINER_PREFIX_RE.match(stripped):
@@ -185,7 +228,8 @@ def iter_headings(text: str) -> list[str]:
 
         match = ATX_HEADING_RE.match(stripped)
         if match:
-            headings.append(ATX_CLOSING_RE.sub("", match.group(2) or "").strip())
+            markup = ATX_CLOSING_RE.sub("", match.group(2) or "").strip()
+            headings.append((line_offset, markup))
             paragraph = []
             continue
 
@@ -194,7 +238,7 @@ def iter_headings(text: str) -> list[str]:
             # The underline closes the paragraph only at its own container
             # depth (CommonMark 4.6).
             if paragraph and depth == paragraph_depth:
-                headings.append(" ".join(paragraph))
+                headings.append((paragraph_offset, " ".join(paragraph)))
                 paragraph = []
                 continue
             if underline.group(1)[0] == "-":
@@ -214,27 +258,47 @@ def iter_headings(text: str) -> list[str]:
         elif not paragraph or depth > paragraph_depth:
             paragraph = [stripped.strip()]
             paragraph_depth = depth
+            paragraph_offset = line_offset
         else:
             paragraph.append(stripped.strip())
 
     return headings
 
 
+def html_heading_text(inner: str) -> str:
+    """Reduce the inner HTML of a heading element to its text content."""
+    return html.unescape(HTML_TAG_RE.sub("", HTML_COMMENT_RE.sub("", inner)))
+
+
 def document_anchors(text: str) -> frozenset[str]:
     """Collect the explicit ``<a>`` anchors and heading anchors of a document."""
-    body = mask_fences(text)
+    body = mask_fences(mask_front_matter(text))
+    code_spans = [match.span() for match in INLINE_CODE_RE.finditer(body)]
+
+    def in_code(position: int) -> bool:
+        return any(start < position < end for start, end in code_spans)
+
     anchors: set[str] = set()
-    for tag in A_START_TAG_RE.findall(body):
-        attribute = A_ANCHOR_ATTRIBUTE_RE.search(tag)
-        if attribute:
+    for match in A_START_TAG_RE.finditer(body):
+        attribute = A_ANCHOR_ATTRIBUTE_RE.search(match.group(0))
+        if attribute and not in_code(match.start()):
             value = next(group for group in attribute.groups() if group is not None)
             if value:
                 anchors.add(value)
 
+    # Markdown and raw HTML headings share one numbering, in document order.
+    plain = [(offset, heading_text(markup)) for offset, markup in iter_headings(body)]
+    for match in HTML_HEADING_RE.finditer(body):
+        if in_code(match.start()):
+            continue
+        # Markdown inside an HTML block is not parsed.
+        plain = [item for item in plain if not match.start() < item[0] < match.end()]
+        plain.append((match.start(), html_heading_text(match.group(2))))
+
     # GitHub suffixes the n-th repeat of a slug with "-n", starting at 1.
     occurrences: dict[str, int] = {}
-    for markup in iter_headings(body):
-        slug = slugify(heading_text(markup))
+    for _, heading in sorted(plain):
+        slug = slugify(heading)
         if not slug:
             continue
         count = occurrences.get(slug, 0)
@@ -307,109 +371,155 @@ def run_self_test() -> None:
     """
     with tempfile.TemporaryDirectory(prefix="gnfs-markdown-links-") as temp_directory:
         root = Path(temp_directory).resolve()
-        docs = root / "docs"
-        docs.mkdir()
-        docs.joinpath("flags.md").write_text(
-            "---\n"
-            "name: flags\n"
-            "---\n"
-            '<a id="legacy"></a>\n'
-            "<a name='named' href=\"x\">named</a>\n"
-            "\n"
-            "# 环境变量与开关\n"
-            "\n"
-            "## The `GNFS_V0_BFS` policy (size-aware): default ON\n"
-            "\n"
-            "## 概述\n"
-            "\n"
-            "## 概述\n"
-            "\n"
-            "## 概述!\n"
-            "\n"
-            "> ### 引用里的标题\n"
-            "\n"
-            "1. 列表项\n"
-            "\n"
-            "   ### 列表里的标题\n"
-            "\n"
-            "跨行的\n"
-            "Setext 标题\n"
-            "---\n"
-            "\n"
-            "> 引用里的段落\n"
-            "---\n"
-            "\n"
-            "> foo\n"
-            "bar\n"
-            "===\n"
-            "\n"
-            "普通段落\n"
-            "> 引用里的段落二\n"
-            "> ---\n"
-            "\n"
-            "<b>行内标签</b> 段落\n"
-            "---\n"
-            "\n"
-            "```text\n"
-            "## 代码块里的标题\n"
-            "```\n"
-            "\n"
-            "- 列表项不是标题\n"
-            "---\n"
-            "\n"
-            "## 全角标点：中文（标题）\n"
-            "\n"
-            "## [链接文字](README.md) 与 **加粗**\n"
-            "\n"
-            "## 使用 `std::vector<int>` 与 `[x](y)`\n",
-            encoding="utf-8",
+        (root / "docs").mkdir()
+
+        def write(relative: str, *lines: str) -> None:
+            root.joinpath(relative).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        write(
+            "docs/flags.md",
+            "---",
+            "name: flags",
+            "---",
+            '<a id="legacy"></a>',
+            "<a name='named' href=\"x\">named</a>",
+            "",
+            '<h1 align="center">GNFS</h1>',
+            "",
+            "# 环境变量与开关",
+            "",
+            "## The `GNFS_V0_BFS` policy (size-aware): default ON",
+            "",
+            "## 概述",
+            "",
+            "## 概述",
+            "",
+            "## 概述!",
+            "",
+            "> ### 引用里的标题",
+            "",
+            "1. 列表项",
+            "",
+            "   ### 列表里的标题",
+            "",
+            "跨行的",
+            "Setext 标题",
+            "---",
+            "",
+            "> 引用里的段落",
+            "---",
+            "",
+            "> foo",
+            "bar",
+            "===",
+            "",
+            "普通段落",
+            "> 引用里的段落二",
+            "> ---",
+            "",
+            "<b>行内标签</b> 段落",
+            "---",
+            "",
+            "<h3>Q&amp;A</h3>",
+            "---",
+            "",
+            "<h2>",
+            "多行 HTML 标题",
+            "</h2>",
+            "",
+            "## GNFS",
+            "",
+            "```text",
+            "## 代码块里的标题",
+            "```",
+            "",
+            "- 列表项不是标题",
+            "---",
+            "",
+            "## 全角标点：中文（标题）",
+            "",
+            "## [链接文字](README.md) 与 **加粗**",
+            "",
+            "## 使用 `std::vector<int>` 与 `[x](y)`",
+            "",
+            "`<h4>代码里的标题</h4>`",
+            "",
+            '`<a id="in-code"></a>`',
         )
-        root.joinpath("data.txt").write_text("1\n2\n", encoding="utf-8")
-        root.joinpath("valid.md").write_text(
-            "- [中文](docs/flags.md#环境变量与开关)\n"
-            "- [元数据段落](docs/flags.md#name-flags)\n"
-            "- [编码](docs/flags.md#%E6%A6%82%E8%BF%B0-1)\n"
-            "- [代码与标点](docs/flags.md#the-gnfs_v0_bfs-policy-size-aware-default-on)\n"
-            "- [重复](docs/flags.md#概述-2)\n"
-            "- [显式 id](docs/flags.md#legacy)\n"
-            "- [显式 name](docs/flags.md#named)\n"
-            "- [引用块](docs/flags.md#引用里的标题)\n"
-            "- [列表里的标题](docs/flags.md#列表里的标题)\n"
-            "- [Setext](docs/flags.md#跨行的-setext-标题)\n"
-            "- [引用块里的 Setext](docs/flags.md#引用里的段落二)\n"
-            "- [行内 HTML](docs/flags.md#行内标签-段落)\n"
-            "- [行内标记](docs/flags.md#链接文字-与-加粗)\n"
-            "- [代码里的标记](docs/flags.md#使用-stdvectorint-与-xy)\n"
-            "- [同文件](#本地)\n"
-            "- [无锚点](docs/flags.md)\n"
-            "- [非 Markdown](data.txt#L10)\n"
-            "- [外链](https://example.com/missing#anchor)\n"
-            "- [引用式][ref]\n"
-            "- 行内代码里的 `[fake](docs/flags.md#不存在)` 不算链接\n"
-            "\n"
-            "[ref]: docs/flags.md#全角标点中文标题\n"
-            "\n"
-            "## 本地\n",
-            encoding="utf-8",
+        # A leading "---" without a closing delimiter is a thematic break.
+        write("docs/thematic.md", "---", "标题", "===")
+        # A leading "---" that opens on a heading is not front matter either,
+        # and neither is a YAML block that never closes.
+        write("docs/rule.md", "---", "## 第一个标题", "", "...", "", "## 第二个标题")
+        write("docs/unterminated.md", "---", "name: unterminated", "", "## 之后的标题")
+        write("data.txt", "1", "2")
+        write(
+            "valid.md",
+            "- [中文](docs/flags.md#环境变量与开关)",
+            "- [编码](docs/flags.md#%E6%A6%82%E8%BF%B0-1)",
+            "- [代码与标点](docs/flags.md#the-gnfs_v0_bfs-policy-size-aware-default-on)",
+            "- [重复](docs/flags.md#概述-2)",
+            "- [显式 id](docs/flags.md#legacy)",
+            "- [显式 name](docs/flags.md#named)",
+            "- [引用块](docs/flags.md#引用里的标题)",
+            "- [列表里的标题](docs/flags.md#列表里的标题)",
+            "- [Setext](docs/flags.md#跨行的-setext-标题)",
+            "- [引用块里的 Setext](docs/flags.md#引用里的段落二)",
+            "- [行内 HTML](docs/flags.md#行内标签-段落)",
+            "- [HTML 标题](docs/flags.md#gnfs)",
+            "- [HTML 标题之后的重复](docs/flags.md#gnfs-1)",
+            "- [HTML 实体](docs/flags.md#qa)",
+            "- [多行 HTML 标题](docs/flags.md#多行-html-标题)",
+            "- [开头的横线](docs/thematic.md#标题)",
+            "- [横线后的标题](docs/rule.md#第一个标题)",
+            "- [省略号后的标题](docs/rule.md#第二个标题)",
+            "- [未闭合元数据之后的标题](docs/unterminated.md#之后的标题)",
+            "- [行内标记](docs/flags.md#链接文字-与-加粗)",
+            "- [代码里的标记](docs/flags.md#使用-stdvectorint-与-xy)",
+            "- [同文件](#本地)",
+            "- [无锚点](docs/flags.md)",
+            "- [非 Markdown](data.txt#L10)",
+            "- [外链](https://example.com/missing#anchor)",
+            "- [引用式][ref]",
+            "- [跨行引用式][ref-next]",
+            "- 行内代码里的 `[fake](docs/flags.md#不存在)` 不算链接",
+            "",
+            "[ref]: docs/flags.md#全角标点中文标题",
+            "",
+            "[ref-next]:",
+            "  docs/flags.md#全角标点中文标题",
+            "",
+            "## 本地",
         )
-        root.joinpath("broken.md").write_text(
-            "[跨文件](docs/flags.md#不存在的标题)\n"
-            "[同文件](#不存在的标题)\n"
-            "[代码块](docs/flags.md#代码块里的标题)\n"
-            "[大小写](docs/flags.md#Legacy)\n"
-            "[引用下的横线](docs/flags.md#引用里的段落)\n"
-            "[惰性续行](docs/flags.md#foo-bar)\n"
-            "[惰性续行末行](docs/flags.md#bar)\n"
-            "[跨块拼接](docs/flags.md#普通段落-引用里的段落二)\n"
-            "[列表项](docs/flags.md#列表项不是标题)\n"
-            "[开头的横线](docs/flags.md#---name-flags)\n"
-            "[被改写的代码](docs/flags.md#使用-stdvector-与-x)\n"
-            "[文件缺失](docs/missing.md#anchor)\n"
-            "\n"
-            "[引用式][ref]\n"
-            "\n"
-            "[ref]: docs/flags.md#概述-3\n",
-            encoding="utf-8",
+        write(
+            "broken.md",
+            "[跨文件](docs/flags.md#不存在的标题)",
+            "[同文件](#不存在的标题)",
+            "[代码块](docs/flags.md#代码块里的标题)",
+            "[大小写](docs/flags.md#Legacy)",
+            "[引用下的横线](docs/flags.md#引用里的段落)",
+            "[惰性续行](docs/flags.md#foo-bar)",
+            "[惰性续行末行](docs/flags.md#bar)",
+            "[跨块拼接](docs/flags.md#普通段落-引用里的段落二)",
+            "[列表项](docs/flags.md#列表项不是标题)",
+            "[元数据段落](docs/flags.md#name-flags)",
+            "[未闭合的元数据段落](docs/unterminated.md#name-unterminated)",
+            "[横线拼进标题](docs/thematic.md#----标题)",
+            "[代码里的 HTML 标题](docs/flags.md#代码里的标题)",
+            "[代码里的显式锚点](docs/flags.md#in-code)",
+            "[HTML 重复错位](docs/flags.md#gnfs-2)",
+            "[HTML 块里的横线](docs/flags.md#qa-1)",
+            "[被改写的代码](docs/flags.md#使用-stdvector-与-x)",
+            "[文件缺失](docs/missing.md#anchor)",
+            "",
+            "[引用式][ref]",
+            "",
+            "[ref]: docs/flags.md#概述-3",
+            "",
+            "[跨行引用式][ref-next]",
+            "",
+            "[ref-next]:",
+            "  docs/flags.md#概述-4",
         )
         sources = [root / "valid.md", root / "broken.md"]
 
@@ -423,10 +533,17 @@ def run_self_test() -> None:
             "broken.md:7: missing link anchor: docs/flags.md#bar",
             "broken.md:8: missing link anchor: docs/flags.md#普通段落-引用里的段落二",
             "broken.md:9: missing link anchor: docs/flags.md#列表项不是标题",
-            "broken.md:10: missing link anchor: docs/flags.md#---name-flags",
-            "broken.md:11: missing link anchor: docs/flags.md#使用-stdvector-与-x",
-            "broken.md:12: missing local link target: docs/missing.md#anchor",
-            "broken.md:16: missing link anchor: docs/flags.md#概述-3",
+            "broken.md:10: missing link anchor: docs/flags.md#name-flags",
+            "broken.md:11: missing link anchor: docs/unterminated.md#name-unterminated",
+            "broken.md:12: missing link anchor: docs/thematic.md#----标题",
+            "broken.md:13: missing link anchor: docs/flags.md#代码里的标题",
+            "broken.md:14: missing link anchor: docs/flags.md#in-code",
+            "broken.md:15: missing link anchor: docs/flags.md#gnfs-2",
+            "broken.md:16: missing link anchor: docs/flags.md#qa-1",
+            "broken.md:17: missing link anchor: docs/flags.md#使用-stdvector-与-x",
+            "broken.md:18: missing local link target: docs/missing.md#anchor",
+            "broken.md:22: missing link anchor: docs/flags.md#概述-3",
+            "broken.md:26: missing link anchor: docs/flags.md#概述-4",
         ]
         failures = scan(root, sources)
         if failures != expected:
