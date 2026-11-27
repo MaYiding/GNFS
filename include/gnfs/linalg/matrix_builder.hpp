@@ -81,6 +81,10 @@ struct ColumnMapping {
     size_t num_qc_columns = 0;          // 二次特征列数
     size_t num_class_group_columns = 0; // 类群特征列数
     size_t num_schirokauer_columns = 0; // Schirokauer map 列数
+    // Parity of the (a, b) pair count of a row. MatrixBuilder appends exactly
+    // one such column after the Schirokauer columns when the leading
+    // coefficient of f is not a square, and none otherwise.
+    size_t num_pair_parity_columns = 0; // 对数奇偶列数（0 或 1）
     size_t sign_column = 0;             // 符号列（如果有）
     bool has_sign_column = false;       // 是否有符号列
 
@@ -100,7 +104,7 @@ struct ColumnMapping {
     [[nodiscard]] size_t total_columns() const noexcept {
         return num_rational_fb + num_algebraic_fb + num_large_primes_rat + num_large_primes_alg +
                num_qc_columns + num_class_group_columns + num_schirokauer_columns +
-               (has_sign_column ? 1 : 0);
+               num_pair_parity_columns + (has_sign_column ? 1 : 0);
     }
 
     /// 获取有理因子基列的起始索引
@@ -136,6 +140,11 @@ struct ColumnMapping {
     /// 获取 Schirokauer map 列的起始索引
     [[nodiscard]] size_t schirokauer_start() const noexcept {
         return class_group_start() + num_class_group_columns;
+    }
+
+    /// 获取对数奇偶列的起始索引（紧跟在 Schirokauer map 列之后）
+    [[nodiscard]] size_t pair_parity_start() const noexcept {
+        return schirokauer_start() + num_schirokauer_columns;
     }
 };
 
@@ -306,22 +315,22 @@ public:
             if (sm_primes.empty()) {
                 sm_primes.push_back(2);
             }
-            SchirokaurConfig sm_config;
-            sm_config.primes = sm_primes;
-            sm_config.verbose = config_.verbose;
-            schirokauer = std::make_unique<SchirokaurMap>(ctx, sm_config);
+            schirokauer = make_schirokauer_map(ctx, sm_primes);
 
-            if (config_.verbose) {
+            if (schirokauer && config_.verbose) {
                 std::cerr << "[Schirokauer] Primes: ";
                 for (auto p : sm_primes)
                     std::cerr << p << " ";
                 std::cerr << "\n[Schirokauer] Columns per prime: " << ctx.degree() << "\n"
                           << "[Schirokauer] Total columns: " << schirokauer->num_columns() << "\n";
+            } else if (config_.verbose) {
+                std::cerr << "[Schirokauer] skipped: every prime divides the leading "
+                             "coefficient\n";
             }
         }
 
         // 第五步：设置列映射（包含类群特征和 Schirokauer）
-        setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_prime_roots);
+        setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_prime_roots, ctx);
 
         // 添加类群特征列
         if (class_group) {
@@ -514,17 +523,14 @@ public:
             if (sm_primes.empty()) {
                 sm_primes.push_back(2);
             }
-            SchirokaurConfig sm_config;
-            sm_config.primes = sm_primes;
-            sm_config.verbose = config_.verbose;
-            schirokauer = std::make_unique<SchirokaurMap>(ctx, sm_config);
-            if (config_.verbose) {
+            schirokauer = make_schirokauer_map(ctx, sm_primes);
+            if (schirokauer && config_.verbose) {
                 std::cerr << "[Schirokauer] Total columns: " << schirokauer->num_columns() << "\n";
             }
         }
 
         // 第五步：列映射
-        setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_prime_roots);
+        setup_column_mapping_with_qc(result.mapping, fb, lp_info, qc_prime_roots, ctx);
 
         if (class_group) {
             result.mapping.num_class_group_columns = class_group->num_binary_characters();
@@ -623,6 +629,55 @@ private:
                     "MatrixBuilder: GF(2) matrices support only Schirokauer prime ell=2");
             }
         }
+    }
+
+    /// Build the Schirokauer map for `primes`, or return nullptr when no prime
+    /// is usable.
+    ///
+    /// A Schirokauer map needs f to keep its degree modulo ℓ. When ℓ divides
+    /// the leading coefficient, ModularPoly::is_irreducible reports every
+    /// polynomial as reducible, so precompute_for_prime takes the split path
+    /// and Hensel-lifts factors whose product is not f modulo ℓ^k. Nothing
+    /// checks that mismatch, and the resulting columns are not a homomorphism.
+    /// Drop every prime that divides the leading coefficient instead of
+    /// emitting such columns. The caller selects extra QC columns whenever f
+    /// is reducible modulo 2, which includes every even leading coefficient.
+    [[nodiscard]] std::unique_ptr<SchirokaurMap>
+    make_schirokauer_map(const PolynomialContext& ctx, std::vector<uint32_t>& primes) const {
+        std::erase_if(primes, [&](uint32_t ell) {
+            return mpz_divisible_ui_p(ctx.leading_coeff().get_mpz(), ell) != 0;
+        });
+        if (primes.empty()) {
+            return nullptr;
+        }
+        SchirokaurConfig sm_config;
+        sm_config.primes = primes;
+        sm_config.verbose = config_.verbose;
+        return std::make_unique<SchirokaurMap>(ctx, sm_config);
+    }
+
+    /// Return whether the leading coefficient of f is a square in Q.
+    ///
+    /// PolynomialContext::algebraic_norm returns F(a, b) = b^d * f(a / b) =
+    /// a_d * N(a - b*alpha), not the field norm. The factor-base, large-prime,
+    /// and sign columns only force the product of the F values of a dependency
+    /// to be a square integer. Write k for the number of (a, b) pairs in the
+    /// dependency. When a_d is not a square and k is odd, a_d^k is not a
+    /// square, so N(product) = |product F| / a_d^k is not a square either and
+    /// the product cannot be a square in the number field. The pair-parity
+    /// column records k mod 2 per row and removes such dependencies. A square
+    /// a_d (including 1) needs no column, so monic matrices are unchanged.
+    ///
+    /// The test is an exact integer square root; no floating-point value is
+    /// involved. A negative leading coefficient is not a square in Q.
+    [[nodiscard]] static bool leading_coefficient_is_square(const PolynomialContext& ctx) {
+        const Integer& lead = ctx.leading_coeff();
+        if (lead.is_negative()) {
+            return false;
+        }
+        Integer root = core::sqrt(lead);
+        root *= root;
+        return root == lead;
     }
 
     Config config_;
@@ -928,9 +983,13 @@ private:
 
     /// 设置带二次特征的列映射（per-root QC）
     /// 此版本可选启用符号列（build_with_qc 有 PolynomialContext，可以正确计算符号）
-    void setup_column_mapping_with_qc(
-        ColumnMapping& mapping, const FactorBase& fb, const LargePrimeInfo& lp_info,
-        const std::vector<std::pair<uint32_t, uint32_t>>& qc_prime_roots) const {
+    /// `ctx` decides whether the pair-parity column exists; both build paths
+    /// derive it from the same leading coefficient, so their layouts agree.
+    void
+    setup_column_mapping_with_qc(ColumnMapping& mapping, const FactorBase& fb,
+                                 const LargePrimeInfo& lp_info,
+                                 const std::vector<std::pair<uint32_t, uint32_t>>& qc_prime_roots,
+                                 const PolynomialContext& ctx) const {
 
         // Enable sign column if requested — build_with_qc can compute it
         if (config_.include_sign_column) {
@@ -948,6 +1007,9 @@ private:
         // 二次特征列
         mapping.num_qc_columns = qc_prime_roots.size();
         mapping.qc_prime_roots = qc_prime_roots;
+
+        // 对数奇偶列：仅当首项系数不是完全平方数时存在
+        mapping.num_pair_parity_columns = leading_coefficient_is_square(ctx) ? 0 : 1;
 
         setup_large_prime_mapping(mapping, lp_info);
     }
@@ -1142,6 +1204,17 @@ private:
         // this branch, so the hot path pays no atomic operation.
         if (zero_legendre_count != 0) {
             qc_zero_legendre_count.fetch_add(zero_legendre_count, std::memory_order_relaxed);
+        }
+
+        // Pair-parity column. A merged relation contributes its primary pair and
+        // one pair per extra_ab_pairs entry, so the row bit is the parity of
+        // 1 + extra_ab_pairs.size(). The column exists only when the leading
+        // coefficient of f is not a square (see leading_coefficient_is_square).
+        if (mapping.num_pair_parity_columns != 0) {
+            const size_t pair_count = size_t{1} + rel.extra_ab_pairs.size();
+            if ((pair_count & size_t{1}) != 0) {
+                row.set(static_cast<uint32_t>(mapping.pair_parity_start()));
+            }
         }
     }
 

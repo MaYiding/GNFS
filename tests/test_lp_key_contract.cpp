@@ -111,6 +111,7 @@ void check_mapping_equal(const gnfs::linalg::ColumnMapping& lhs,
     CHECK(lhs.num_qc_columns == rhs.num_qc_columns);
     CHECK(lhs.num_class_group_columns == rhs.num_class_group_columns);
     CHECK(lhs.num_schirokauer_columns == rhs.num_schirokauer_columns);
+    CHECK(lhs.num_pair_parity_columns == rhs.num_pair_parity_columns);
     CHECK(lhs.has_sign_column == rhs.has_sign_column);
     CHECK(lhs.rat_lp_to_col == rhs.rat_lp_to_col);
     CHECK(lhs.alg_lp_to_col == rhs.alg_lp_to_col);
