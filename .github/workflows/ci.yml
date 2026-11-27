@@ -21,6 +21,12 @@ jobs:
       cancel-in-progress: true
     continue-on-error: ${{ matrix.experimental }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
+    env:
+      # ccache on the POSIX rows. The directory stays inside the workspace so
+      # actions/cache can persist it, and the size cap keeps the five POSIX
+      # rows well below the 10 GB that all caches of this repository share.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
     strategy:
       fail-fast: false
       matrix:
@@ -85,24 +91,47 @@ jobs:
       with:
         persist-credentials: false
 
-    - name: Cache build directory
+    # The former build-directory cache never saved a compile: Make trusts
+    # mtimes, and a fresh checkout plus a fresh GMP/NTL install always leave
+    # the sources and dependency headers newer than the restored objects.
+    # ccache keys on preprocessed content instead, so entries accumulate
+    # across commits. The key names the row and its sources; restore-keys
+    # takes the newest entry of the row when the source hash is new.
+    - name: Restore ccache (POSIX)
+      if: runner.os != 'Windows'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: build
-        key: ${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-cmake-${{ matrix.build_type }}-${{ hashFiles('.github/workflows/ci.yml') }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**') }}
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**', 'tests/**') }}
         restore-keys: |
-          ${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-cmake-${{ matrix.build_type }}-${{ hashFiles('.github/workflows/ci.yml') }}-
+          ccache-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-${{ matrix.build_type }}-
+
+    # vcpkg writes its binary packages here (VCPKG_BINARY_SOURCES in the
+    # install step). The key names the pinned vcpkg commit and the MSYS2
+    # package revision patched into the GMP port; change it together with
+    # the checkout and install steps. vcpkg's package ABI also covers the
+    # detected compiler, so an entry goes stale when the runner image
+    # changes. The commit suffix lets a rebuilt archive be saved under a new
+    # key, and restore-keys still picks the newest entry of this pin.
+    - name: Restore vcpkg binary cache (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .vcpkg-binary-cache
+        key: vcpkg-gmp-${{ matrix.os }}-${{ runner.arch }}-e12aaf7336cc1e348c43a1244f348451b534c0a9-autoconf2.71-2.71-4-${{ github.sha }}
+        restore-keys: |
+          vcpkg-gmp-${{ matrix.os }}-${{ runner.arch }}-e12aaf7336cc1e348c43a1244f348451b534c0a9-autoconf2.71-2.71-4-
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y clang libgmp-dev libntl-dev zsh
+        sudo apt-get install -y ccache clang libgmp-dev libntl-dev zsh
 
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install gmp ntl
+        brew install gmp ntl ccache
 
     # ── Windows: vcpkg-based GMP install ──
     # Pin vcpkg instead of using the mutable windows-latest installation. The
@@ -144,6 +173,14 @@ jobs:
           $portfile,
           [System.Text.UTF8Encoding]::new($false))
 
+        # Store vcpkg's binary packages in the directory that actions/cache
+        # restores above; "clear" drops the default cache under LOCALAPPDATA.
+        $binaryCache = Join-Path $env:GITHUB_WORKSPACE ".vcpkg-binary-cache"
+        if (!(Test-Path -LiteralPath $binaryCache -PathType Container)) {
+          New-Item -ItemType Directory -Path $binaryCache | Out-Null
+        }
+        $env:VCPKG_BINARY_SOURCES = "clear;files,${binaryCache},readwrite"
+
         echo "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
         & "$vcpkgRoot\vcpkg.exe" install gmp:x64-windows
         if ($LASTEXITCODE -ne 0) {
@@ -156,9 +193,13 @@ jobs:
       env:
         CXX_COMPILER: ${{ matrix.cxx_compiler }}
       run: |
+        # The restored directory also carries older counters; start at zero so
+        # the statistics printed after the build describe this run.
+        ccache --zero-stats
         cmake -B build \
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
           -DCMAKE_CXX_COMPILER="${CXX_COMPILER}" \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
           -DGNFS_ENABLE_NATIVE_ARCH=OFF
 
     - name: Configure CMake (Windows)
@@ -176,6 +217,14 @@ jobs:
       id: build_posix
       if: runner.os != 'Windows'
       run: cmake --build build --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+
+    # Hits, misses, and cache size for this run. Skipped when the build did
+    # not run, for example after an earlier step failed.
+    - name: Report ccache statistics (POSIX)
+      if: ${{ !cancelled() && steps.build_posix.outcome != 'skipped' }}
+      run: |
+        ccache --version
+        ccache --show-stats
 
     - name: Build (Windows)
       if: runner.os == 'Windows'
@@ -225,6 +274,48 @@ jobs:
         test -x build/test_distributed_sieve_worker_cleanup_authorization_publisher
         ./scripts/test.sh -t Release --no-build --no-color run \
           test_distributed_sieve_worker_cleanup_authorization_publisher
+
+    # The three WaveMergeCommit shards are Apple-only `slow` CTest entries,
+    # which the label filter above excludes. CMakeLists.txt bounds them at 60,
+    # 60, and 90 seconds; the script runner allows five minutes per shard.
+    - name: Run macOS WaveMergeCommit core
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-15' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_wave_merge_commit
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_wave_merge_commit --suite core
+
+    - name: Run macOS WaveMergeCommit commit-crash
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-15' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_wave_merge_commit
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_wave_merge_commit --suite commit-crash
+
+    - name: Run macOS WaveMergeCommit protection
+      if: >-
+        ${{
+          !cancelled() &&
+          steps.build_posix.outcome == 'success' &&
+          matrix.os == 'macos-15' &&
+          matrix.build_type == 'Release'
+        }}
+      run: |
+        test -x build/test_distributed_sieve_wave_merge_commit
+        ./scripts/test.sh -t Release --no-build --no-color run \
+          test_distributed_sieve_wave_merge_commit --suite protection
 
     - name: Run macOS worker cleanup orchestrator
       if: >-

@@ -588,6 +588,14 @@ if(GNFS_BUILD_TESTS)
             LABELS "instant" TIMEOUT 10
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+        add_test(NAME MarkdownLinkCheckerSelfTest
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci/check_markdown_links.py
+                --self-test)
+        set_tests_properties(MarkdownLinkCheckerSelfTest PROPERTIES
+            LABELS "instant" TIMEOUT 10
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
         add_test(NAME DistributedSievePolicyInventory
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_distributed_sieve_policy.py
@@ -2800,6 +2808,17 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LinalgSpmvSimd COMMAND test_spmv_simd)
     set_tests_properties(LinalgSpmvSimd PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Launch failure in the hand-written submit loops of Gaussian elimination
+    # and SpMV transpose. The binary replaces operator new and fails allocations
+    # of the calling thread; a parked MatrixView task shows whether transpose
+    # returns before the tasks it already submitted have finished.
+    add_executable(test_linalg_launch_failure
+        tests/test_linalg_launch_failure.cpp
+    )
+    target_link_libraries(test_linalg_launch_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LinalgLaunchFailure COMMAND test_linalg_launch_failure)
+    set_tests_properties(LinalgLaunchFailure PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Cache-blocked GF(2) matrix transpose helper (correctness).
     # Exercises the naive scalar reference path, the 64x64 tile-blocked
     # path, and the ENV-gated dispatcher across a battery of edge sizes
@@ -2963,6 +2982,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
     set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 240)
 
+    # Schirokauer end-to-end with non-monic polynomials (leading coefficient
+    # congruent to 3 mod 4): the 27-bit pipeline on an unsplit and a split
+    # (linear times quadratic) fixture, each required to find a factor of N.
+    add_executable(test_schirokauer_non_monic_e2e
+        tests/test_schirokauer_non_monic_e2e.cpp
+    )
+    target_link_libraries(test_schirokauer_non_monic_e2e PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SchirokauerNonMonicE2E COMMAND test_schirokauer_non_monic_e2e)
+    set_tests_properties(SchirokauerNonMonicE2E PROPERTIES LABELS "slow" TIMEOUT 300)
+
     # API 层测试
     add_executable(test_api
         tests/test_api.cpp
@@ -3008,6 +3037,15 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_i18n PRIVATE gnfs_core Threads::Threads)
     add_test(NAME I18N COMMAND test_i18n)
     set_tests_properties(I18N PROPERTIES LABELS "instant" TIMEOUT 10)
+
+    # Matrix-phase failure diagnostics: rejected solver dependencies and
+    # square-root failure logs.
+    add_executable(test_dependency_diagnostics
+        tests/test_dependency_diagnostics.cpp
+    )
+    target_link_libraries(test_dependency_diagnostics PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME DependencyDiagnostics COMMAND test_dependency_diagnostics)
+    set_tests_properties(DependencyDiagnostics PROPERTIES LABELS "instant" TIMEOUT 30)
 
     # SIQS (Self-Initializing Quadratic Sieve) 测试
     add_executable(test_siqs

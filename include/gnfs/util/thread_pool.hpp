@@ -62,6 +62,47 @@ inline void set_current_thread_qos(QoSClass qos) noexcept {
 #endif
 }
 
+/// Scope guard for a hand-written sequence of `ThreadPool::submit` calls.
+///
+/// Declare it after the `futures` vector and before the first submission,
+/// call `release()` once the last submission has been accepted, and keep the
+/// normal `future.get()` loop afterwards. When a later `submit` throws (for
+/// example `std::bad_alloc`), the destructor waits for every task that the
+/// pool already accepted before the launch failure leaves the scope. An
+/// accepted callback therefore cannot outlive the locals that it captured by
+/// reference while the caller unwinds. Exceptions raised by callbacks during
+/// the drain are discarded, because the launch failure must remain the
+/// exception that propagates. The guard owns no storage and allocates nothing.
+class FutureLaunchGuard {
+public:
+    explicit FutureLaunchGuard(std::vector<std::future<void>>& futures) noexcept
+        : futures_(futures) {}
+    FutureLaunchGuard(const FutureLaunchGuard&) = delete;
+    FutureLaunchGuard& operator=(const FutureLaunchGuard&) = delete;
+
+    ~FutureLaunchGuard() noexcept {
+        if (active_) {
+            for (auto& future : futures_) {
+                try {
+                    future.get();
+                } catch (...) {
+                    // Callback failures must not replace a launch failure.
+                }
+            }
+        }
+    }
+
+    /// Every planned submission has been accepted. The owner drains the
+    /// futures itself and must observe their results and exceptions.
+    void release() noexcept {
+        active_ = false;
+    }
+
+private:
+    std::vector<std::future<void>>& futures_;
+    bool active_ = true;
+};
+
 /// 高性能线程池
 class ThreadPool {
 public:
@@ -298,37 +339,6 @@ public:
     }
 
 private:
-    // A later partition or submission may throw after earlier tasks have been
-    // accepted. Drain those tasks before references to the callback or local
-    // work cursor can become dangling, preserving the original launch error.
-    class FutureLaunchGuard {
-    public:
-        explicit FutureLaunchGuard(std::vector<std::future<void>>& futures) noexcept
-            : futures_(futures) {}
-        FutureLaunchGuard(const FutureLaunchGuard&) = delete;
-        FutureLaunchGuard& operator=(const FutureLaunchGuard&) = delete;
-
-        ~FutureLaunchGuard() noexcept {
-            if (active_) {
-                for (auto& future : futures_) {
-                    try {
-                        future.get();
-                    } catch (...) {
-                        // Callback failures must not replace a launch failure.
-                    }
-                }
-            }
-        }
-
-        void release() noexcept {
-            active_ = false;
-        }
-
-    private:
-        std::vector<std::future<void>>& futures_;
-        bool active_ = true;
-    };
-
     // Drain every task before rethrowing so a callback cannot outlive this
     // call when one of the parallel chunks fails.
     static void wait_for_futures(std::vector<std::future<void>>& futures) {

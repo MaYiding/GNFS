@@ -442,6 +442,49 @@ std::optional<std::vector<bool>> detail::xor_dependency_pair_checked(const std::
     return combined;
 }
 
+// Verify a dependency (XOR of selected rows = zero) against the final matrix.
+// Uses uint8_t per-column parity (XOR), 8× more cache-friendly than size_t counter.
+bool detail::verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
+    if (dep.size() != mat.num_rows())
+        return false;
+    std::vector<uint8_t> col_parity(mat.num_cols(), 0);
+    for (size_t row = 0; row < mat.num_rows(); ++row) {
+        if (row < dep.size() && dep[row]) {
+            for (uint32_t col : mat.row(row).indices()) {
+                if (static_cast<size_t>(col) >= mat.num_cols()) {
+                    return false;
+                }
+                col_parity[col] ^= 1; // XOR in GF(2)
+            }
+        }
+    }
+    for (size_t c = 0; c < col_parity.size(); ++c) {
+        if (col_parity[c])
+            return false;
+    }
+    return true;
+}
+
+std::vector<std::vector<bool>>
+detail::retain_verified_dependencies(std::vector<std::vector<bool>> dependencies,
+                                     const SparseMatrix& matrix,
+                                     const DependencyRejectionSink& on_rejected) {
+    std::vector<std::vector<bool>> verified;
+    verified.reserve(dependencies.size());
+    for (size_t index = 0; index < dependencies.size(); ++index) {
+        if (detail::verify_dependency(matrix, dependencies[index])) {
+            verified.push_back(std::move(dependencies[index]));
+            continue;
+        }
+        char message[192];
+        std::snprintf(message, sizeof(message),
+                      "Dropped dependency %zu/%zu: not a null vector of the %zux%zu matrix",
+                      index + 1, dependencies.size(), matrix.num_rows(), matrix.num_cols());
+        on_rejected(LogLevel::Warn, Phase::LinearAlgebra, message);
+    }
+    return verified;
+}
+
 detail::StructuredOOCGenerationPaths
 detail::StructuredOOCRunPaths::generation_paths(uint64_t logical_generation) const {
     if (logical_generation == 0) {
@@ -3522,6 +3565,13 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                  std::to_string(matrix_stats.num_cols) +
                  " excess=" + std::to_string(matrix_stats.excess));
 
+    // A QC column is undefined where a - b*r is 0 modulo its prime. QC primes
+    // are selected above every prime that can divide a relation norm, so this
+    // count must stay 0. A nonzero value means a dependency that sets that
+    // column is not certified to be a square.
+    emit_log(LogLevel::Info, Phase::LinearAlgebra,
+             "qc zero legendre count: " + std::to_string(build_result.qc_zero_legendre_count));
+
     // BACKLOG #1 diagnostic (F.1): row/col weight distribution. Reveals
     // sieve gap (empty cols) and SGE-eliminable garbage (singleton cols/rows)
     // before BL/BW kicks in. Cost: one full nnz scan (~50ms at 50d, < 1% of
@@ -3538,6 +3588,18 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                       diag.avg_col_weight);
         emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
         std::fprintf(stderr, "%s\n", buf);
+    }
+
+    // Rows whose Schirokauer vector is all zero. The map returns all-zero
+    // columns when its ℓ-adic precision is insufficient, but a genuine kernel
+    // element yields the same vector, so read this as an upper bound on the
+    // number of precision fallbacks. Reported before any trimming.
+    {
+        char degenerate_buf[128];
+        std::snprintf(degenerate_buf, sizeof(degenerate_buf),
+                      "schirokauer degenerate rows: %zu/%zu",
+                      build_result.schirokauer_degenerate_rows, matrix_stats.num_rows);
+        emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(degenerate_buf));
     }
 
     if (solve_dependencies && !matrix_stats.has_excess()) {
@@ -3643,6 +3705,15 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                 diag2.low_weight_cols, diag2.max_col_weight, diag2.avg_col_weight);
             emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
             std::fprintf(stderr, "%s\n", buf);
+        }
+        // Re-emit the degenerate Schirokauer count for the trimmed matrix that
+        // is handed to SGE and the solver.
+        {
+            char degenerate_buf[128];
+            std::snprintf(degenerate_buf, sizeof(degenerate_buf),
+                          "schirokauer degenerate rows post-trim: %zu/%zu",
+                          build_result.schirokauer_degenerate_rows, matrix_stats.num_rows);
+            emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(degenerate_buf));
         }
     }
 
@@ -3789,6 +3860,15 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
     dependencies = detail::expand_solver_dependencies_checked(sge_result, dependencies,
                                                               build_result.matrix.num_rows());
 
+    // Extraction rejects a dependency that is not a null vector of the final
+    // matrix. Drop such dependencies here, before they are published or
+    // counted, and leave a trace for each one instead of losing it silently.
+    dependencies = detail::retain_verified_dependencies(
+        std::move(dependencies), build_result.matrix,
+        [this](LogLevel level, Phase phase, const std::string& message) {
+            emit_log(level, phase, message);
+        });
+
     stats_.dependencies_found = dependencies.size();
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -3814,29 +3894,6 @@ static linalg::BitVector to_bitvector(const std::vector<bool>& vec) {
             bv.set(i);
     }
     return bv;
-}
-
-// Helper: verify dependency (XOR of selected rows = zero)
-// Uses uint8_t per-column parity (XOR), 8× more cache-friendly than size_t counter.
-static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
-    if (dep.size() != mat.num_rows())
-        return false;
-    std::vector<uint8_t> col_parity(mat.num_cols(), 0);
-    for (size_t row = 0; row < mat.num_rows(); ++row) {
-        if (row < dep.size() && dep[row]) {
-            for (uint32_t col : mat.row(row).indices()) {
-                if (static_cast<size_t>(col) >= mat.num_cols()) {
-                    return false;
-                }
-                col_parity[col] ^= 1; // XOR in GF(2)
-            }
-        }
-    }
-    for (size_t c = 0; c < col_parity.size(); ++c) {
-        if (col_parity[c])
-            return false;
-    }
-    return true;
 }
 
 FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase& fb,
@@ -3935,16 +3992,29 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         }
     }
 
-    const auto try_relation_dependency =
-        [&](const linalg::BitVector& dependency,
-            const std::vector<Relation>& dependency_relations) -> bool {
+    // A failed square root wastes the attempt, so report which dependency
+    // failed and why before moving on.
+    const auto try_relation_dependency = [&](const linalg::BitVector& dependency,
+                                             const std::vector<Relation>& dependency_relations,
+                                             const std::string& label) -> bool {
         auto rat_result =
             sqrt::compute_rational_sqrt(dependency, dependency_relations, fb, n_, ctx.m());
         if (!rat_result.success) {
+            char message[512];
+            std::snprintf(message, sizeof(message), "Rational sqrt failed for %s: %s",
+                          label.c_str(), rat_result.error.c_str());
+            emit_log(LogLevel::Warn, Phase::SquareRoot, message);
             return false;
         }
 
         auto alg_result = sqrt::compute_algebraic_sqrt(dependency, dependency_relations, ctx);
+        if (!alg_result.success) {
+            char message[512];
+            std::snprintf(message, sizeof(message),
+                          "Algebraic sqrt failed for %s, using algebraic value 1 instead: %s",
+                          label.c_str(), alg_result.error.c_str());
+            emit_log(LogLevel::Warn, Phase::SquareRoot, message);
+        }
         Integer alg_value = alg_result.success ? alg_result.value : Integer(1); // copy ctor
 
         if (try_factor(rat_result.value, alg_value)) {
@@ -3957,14 +4027,15 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         return try_factor(rat_result.value, alg_neg);
     };
 
-    const auto try_matrix_dependency = [&](const std::vector<bool>& dependency) -> bool {
+    const auto try_matrix_dependency = [&](const std::vector<bool>& dependency,
+                                           const std::string& label) -> bool {
         // Always validate in matrix coordinates before mapping or materializing.
-        if (!verify_dependency(mr.matrix, dependency)) {
+        if (!detail::verify_dependency(mr.matrix, dependency)) {
             return false;
         }
 
         if (structured_corpus == nullptr) {
-            return try_relation_dependency(to_bitvector(dependency), mr.relations);
+            return try_relation_dependency(to_bitvector(dependency), mr.relations, label);
         }
 
         const auto selection = linalg::dependency_to_relation_selection(
@@ -3977,7 +4048,7 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         for (size_t index = 0; index < selected_relations.size(); ++index) {
             local_dependency.set(index);
         }
-        return try_relation_dependency(local_dependency, selected_relations);
+        return try_relation_dependency(local_dependency, selected_relations, label);
     };
 
     // Try each dependency
@@ -3990,7 +4061,10 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
                           std::to_string(mr.dependencies.size()),
                       static_cast<double>(dep_idx) / static_cast<double>(mr.dependencies.size()));
 
-        if (try_matrix_dependency(dep)) {
+        char attempt_label[80];
+        std::snprintf(attempt_label, sizeof(attempt_label), "dependency %zu/%zu", dep_idx + 1,
+                      mr.dependencies.size());
+        if (try_matrix_dependency(dep, attempt_label)) {
             break;
         }
     }
@@ -4013,7 +4087,10 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
                 ++stats_.dependencies_tried;
                 emit_progress(Phase::FactorExtraction,
                               "Trying XOR dependency " + std::to_string(stats_.dependencies_tried));
-                if (try_matrix_dependency(*combined)) {
+                char attempt_label[64];
+                std::snprintf(attempt_label, sizeof(attempt_label), "XOR dependency %zu",
+                              stats_.dependencies_tried);
+                if (try_matrix_dependency(*combined, attempt_label)) {
                     break;
                 }
             }

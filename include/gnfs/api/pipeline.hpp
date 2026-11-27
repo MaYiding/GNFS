@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -78,6 +79,26 @@ expand_solver_dependencies_checked(const linalg::SGEResult& sge_result,
 [[nodiscard]] std::optional<std::vector<bool>>
 xor_dependency_pair_checked(const std::vector<bool>& lhs, const std::vector<bool>& rhs,
                             size_t expected_matrix_rows);
+
+/// Return whether `dependency` is a null vector of `matrix` over GF(2): its
+/// length must equal the matrix row count, and the selected rows must XOR to
+/// the zero vector without indexing a column outside the matrix.
+[[nodiscard]] bool verify_dependency(const linalg::SparseMatrix& matrix,
+                                     const std::vector<bool>& dependency);
+
+/// Level, phase, and message of one rejected dependency, in the shape that
+/// `Pipeline` passes to its log callback.
+using DependencyRejectionSink = std::function<void(LogLevel, Phase, const std::string&)>;
+
+/// Keep the dependencies that `verify_dependency` accepts, in input order.
+/// Each rejected dependency is reported once through `on_rejected`, in input
+/// order, as a `Warn` log for the `LinearAlgebra` phase whose message names
+/// the one-based position of the dependency in the batch and the matrix shape.
+/// `on_rejected` must be a non-empty callable.
+[[nodiscard]] std::vector<std::vector<bool>>
+retain_verified_dependencies(std::vector<std::vector<bool>> dependencies,
+                             const linalg::SparseMatrix& matrix,
+                             const DependencyRejectionSink& on_rejected);
 
 } // namespace detail
 

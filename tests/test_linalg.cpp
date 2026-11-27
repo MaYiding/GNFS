@@ -15,8 +15,10 @@
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/sqrt/number_field.hpp>
+#include <gnfs/util/primes.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace gnfs;
@@ -927,6 +930,113 @@ void test_matrix_builder_rejects_unrepresentable_qc_start() {
     std::cout << "  Unrepresentable QC start rejected: PASSED" << std::endl;
 }
 
+// Regression: a QC column (q, r) is undefined on any relation whose algebraic
+// norm q divides, and compute_legendre_bit records 0 there. QC primes must
+// therefore stay above the algebraic factor-base bound, the special-Q range,
+// and the large-prime bound. The old rule used only the first, so a small
+// algebraic bound let it pick special-Q primes.
+void test_matrix_builder_qc_primes_stay_above_relation_norm_primes() {
+    std::cout << "Testing MatrixBuilder QC prime lower bound..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+    using factor_base::FactorBase;
+    using factor_base::FactorBaseBuilder;
+
+    // f(x) = x - 1 has the single root 1 modulo every prime, so the QC pairs
+    // are exactly (q, 1) for the first primes above the lower bound.
+    std::vector<Integer> coeffs = {Integer(-1), Integer(1)};
+    PolynomialContext ctx(Integer(143), std::move(coeffs), Integer(2), 1.0);
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = true;
+    config.include_class_group = false;
+    config.include_schirokauer = false;
+    config.num_qc_primes = 6;
+    // The previous rule searched from max(qc_prime_start, algebraic_bound + 1).
+    // With the first fixture below it began at 101, a special-Q prime of that
+    // base.
+    config.qc_prime_start = 100;
+    MatrixBuilder builder(config);
+
+    // A relation sieved with the special-Q ideal (101, 1). The cofactorizer
+    // records that ideal as an algebraic large prime, and a = 102 makes a - b*r
+    // divisible by 101, so the old QC column (101, 1) was undefined here.
+    core::Relation special_q_relation(102, 1);
+    special_q_relation.algebraic_large_prime.push_back({101, 1, 1});
+    const std::vector<core::Relation> rows{special_q_relation};
+    const std::vector<core::Relation> no_rows;
+
+    // f(x) = x - 1 gives every QC prime the root 1, so a QC selection is fully
+    // described by its primes. `zeros` is the expected zero-argument count.
+    struct Expectation {
+        const std::vector<core::Relation>& relations;
+        std::vector<uint32_t> primes;
+        uint64_t zeros = 0;
+    };
+    const auto expect_pairs = [&](const FactorBase& fb, const Expectation& expectation) {
+        std::vector<std::pair<uint32_t, uint32_t>> expected;
+        for (uint32_t q : expectation.primes) {
+            expected.emplace_back(q, 1u);
+        }
+        const auto vector = builder.build_with_qc(expectation.relations, fb, ctx);
+        const auto streaming =
+            builder.build_with_qc_streaming(VectorRelationSource(expectation.relations), fb, ctx);
+        for (const auto* result : {&vector, &streaming}) {
+            GNFS_TEST_CHECK(result->mapping.num_qc_columns == expected.size());
+            GNFS_TEST_CHECK(result->mapping.qc_prime_roots == expected);
+            GNFS_TEST_CHECK(result->qc_zero_legendre_count == expectation.zeros);
+        }
+    };
+
+    // The first six primes above 1000. Every QC column must be defined on the
+    // special-Q relation.
+    const std::vector<uint32_t> primes_above_1000{1009, 1013, 1019, 1021, 1031, 1033};
+    const Expectation special_q_rows{rows, primes_above_1000};
+
+    struct Bounds {
+        uint32_t algebraic_bound;
+        uint32_t special_q_bound;
+        uint64_t large_prime_bound;
+    };
+    // Each row makes a different term of the lower bound dominate. The second
+    // one reaches 997 through the largest algebraic entry, not through a bound.
+    // A zero special_q_bound gives the base no special-Q range at all.
+    const Bounds cases[]{
+        {10, 100, 1'000}, // large-prime bound
+        {10, 1'000, 500}, // special-Q range
+        {1'000, 0, 500},  // algebraic bound
+    };
+    for (const auto& bounds : cases) {
+        FactorBaseBuilder::Options options;
+        options.rational_bound = 10;
+        options.algebraic_bound = bounds.algebraic_bound;
+        options.special_q_bound = bounds.special_q_bound;
+        options.large_prime_bound = bounds.large_prime_bound;
+        options.parallel = false;
+        expect_pairs(FactorBaseBuilder::build(ctx, options), special_q_rows);
+    }
+
+    // A hand-built base can end far below algebraic_bound.
+    FactorBase sparse(core::FactorBaseParams{10, 1'000, 500});
+    sparse.add_algebraic(101, 1, 1);
+    expect_pairs(sparse, special_q_rows);
+
+    // A default-constructed base declares no bounds, so the configured search
+    // start applies on its own.
+    expect_pairs(FactorBase{}, Expectation{no_rows, {101, 103, 107, 109, 113, 127}});
+
+    // The zero count must be live. With a = b = 1 every QC column sees
+    // a - b*r = 0, once for the primary pair and once for the merged pair.
+    core::Relation degenerate(1, 1);
+    degenerate.extra_ab_pairs.emplace_back(1, 1);
+    const std::vector<core::Relation> degenerate_rows{degenerate};
+    const uint64_t two_pairs_per_column = 2U * static_cast<uint64_t>(config.num_qc_primes);
+    expect_pairs(sparse, Expectation{degenerate_rows, primes_above_1000, two_pairs_per_column});
+
+    std::cout << "  QC prime lower bound: PASSED" << std::endl;
+}
+
 // Test matrix stats
 // Thin matrix test (m < n) — BACKLOG #80 step 7 — confirm BW/BL can find
 // left-kernel of M when rows < cols. Synthetic: 3 rows × 4 cols, all rows
@@ -1313,6 +1423,8 @@ void test_schirokauer_overflow_guards() {
 
     // Integer::mod uses truncating division in this project, so normalize
     // negative coefficients back to the non-negative fdiv_ui residue range.
+    // The polynomial is monic, so the leading-coefficient normalization in
+    // precompute_for_prime leaves f_mod unchanged.
     {
         std::vector<Integer> signed_coeffs = {Integer(-1), Integer(0), Integer(1)};
         PolynomialContext signed_ctx(Integer(1), std::move(signed_coeffs), Integer(0), 1.0);
@@ -1462,6 +1574,321 @@ void test_schirokauer_wide_public_map() {
         check_schirokauer_lift_product(factors, coefficients, modulus);
     }
     std::cout << "  Public Schirokauer maps with wide lift moduli: PASSED" << std::endl;
+}
+
+// ---------------------------------------------------------------------------
+// Schirokauer maps of non-monic polynomials
+//
+// FastPoly::reduce_inplace cancels the leading term with coefficient 1, so it
+// is only valid for a monic modulus. precompute_for_prime scales f mod ℓ^k by
+// the inverse of the leading coefficient before anything else uses it. The
+// reference values below never call FastPoly::power or
+// FastPoly::reduce_inplace: the companion matrix C of the monic modulus
+// represents multiplication by α, γ = a - bα acts as aI - bC, and the
+// coefficient vector of γ^e is the first column of (aI - bC)^e. The
+// extraction copies the production convention: subtract 1 from coefficient 0,
+// then divide by ℓ modulo ℓ.
+// ---------------------------------------------------------------------------
+
+using ModulusMatrix = std::vector<std::vector<uint64_t>>;
+
+ModulusMatrix multiply_mod(const ModulusMatrix& lhs, const ModulusMatrix& rhs, uint64_t modulus) {
+    const size_t n = lhs.size();
+    ModulusMatrix product(n, std::vector<uint64_t>(n, 0));
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t t = 0; t < n; ++t) {
+            for (size_t j = 0; j < n; ++j) {
+                const uint64_t term = gnfs::util::mul_mod_u64(lhs[i][t], rhs[t][j], modulus);
+                product[i][j] = gnfs::util::add_mod_u64(product[i][j], term, modulus);
+            }
+        }
+    }
+    return product;
+}
+
+// Reference Schirokauer columns of γ = a - bα for one monic modulus over
+// Z/ℓ^k (`monic`, low degree first). `exponent` is ℓ^deg(monic) - 1. γ must
+// be an ℓ-adic unit: no ℓ-adic stripping is modelled here.
+std::vector<uint32_t> schirokauer_companion_reference(const std::vector<uint64_t>& monic,
+                                                      uint32_t ell, uint32_t k, int64_t a,
+                                                      uint64_t b, uint64_t exponent) {
+    const uint64_t modulus = GFPolyOps::checked_power_u64(ell, k);
+    const size_t degree = monic.size() - 1;
+
+    // Companion matrix of multiplication by α in the basis 1, α, ..., α^(degree-1).
+    ModulusMatrix companion(degree, std::vector<uint64_t>(degree, 0));
+    for (size_t j = 0; j + 1 < degree; ++j)
+        companion[j + 1][j] = 1;
+    for (size_t i = 0; i < degree; ++i)
+        companion[i][degree - 1] = (modulus - monic[i] % modulus) % modulus;
+
+    int64_t a_mod = a % static_cast<int64_t>(modulus);
+    if (a_mod < 0)
+        a_mod += static_cast<int64_t>(modulus);
+    const uint64_t a_residue = static_cast<uint64_t>(a_mod);
+    const uint64_t neg_b = (modulus - b % modulus) % modulus;
+
+    // aI - bC, written with the non-negative residue of -b.
+    ModulusMatrix gamma(degree, std::vector<uint64_t>(degree, 0));
+    for (size_t i = 0; i < degree; ++i) {
+        for (size_t j = 0; j < degree; ++j)
+            gamma[i][j] = gnfs::util::mul_mod_u64(neg_b, companion[i][j], modulus);
+        gamma[i][i] = gnfs::util::add_mod_u64(gamma[i][i], a_residue, modulus);
+    }
+
+    ModulusMatrix power(degree, std::vector<uint64_t>(degree, 0));
+    for (size_t i = 0; i < degree; ++i)
+        power[i][i] = 1;
+    ModulusMatrix base = gamma;
+    uint64_t remaining = exponent;
+    while (remaining > 0) {
+        if (remaining & 1)
+            power = multiply_mod(power, base, modulus);
+        base = multiply_mod(base, base, modulus);
+        remaining >>= 1;
+    }
+
+    std::vector<uint32_t> columns;
+    columns.reserve(degree);
+    for (size_t i = 0; i < degree; ++i) {
+        uint64_t coeff = power[i][0];
+        if (i == 0)
+            coeff = (coeff >= 1) ? (coeff - 1) : (modulus - 1);
+        columns.push_back(static_cast<uint32_t>((coeff / ell) % ell));
+    }
+    return columns;
+}
+
+struct NonMonicSchirokauerRow {
+    int64_t a;
+    uint64_t b;
+    std::array<uint32_t, 3> unsplit_columns;
+    std::array<uint32_t, 3> split_columns;
+};
+
+// Columns expected for the two fixtures below (ℓ = 2, ℓ^k = 256), computed
+// with the companion-matrix reference and with exact integer arithmetic.
+// Every pair has a and b of opposite parity, so γ stays a 2-adic unit and no
+// ℓ-adic stripping occurs. The normalization changes the columns of
+// (100, 13), (-1000, 999), (0, 1), (-60, 1), (-60, 3), (-58, 3) and (-196, 1).
+// Before it, in that order, the unsplit fixture produced {1, 0, 0}, {0, 0, 0},
+// {1, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 1}, {1, 0, 0} and the split fixture
+// produced {1, 0, 1}, {0, 1, 1}, {1, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 0, 0},
+// {1, 0, 1}. All other rows keep their columns.
+constexpr NonMonicSchirokauerRow kNonMonicSchirokauerRows[] = {
+    {1, 2, {0, 1, 0}, {1, 0, 1}},
+    {3, 2, {1, 1, 0}, {0, 1, 1}},
+    {-5, 2, {1, 1, 0}, {0, 1, 1}},
+    {7, 16, {1, 0, 0}, {1, 1, 0}},
+    {-33, 64, {1, 0, 0}, {1, 1, 0}},
+    {100, 13, {0, 0, 0}, {1, 0, 0}},
+    {255, 256, {1, 0, 0}, {1, 1, 0}},
+    {-1000, 999, {1, 0, 0}, {0, 1, 0}},
+    {1000003, 1000034, {1, 1, 0}, {0, 1, 1}},
+    {0, 1, {0, 0, 0}, {1, 0, 0}},
+    {5, 0, {0, 0, 0}, {0, 0, 0}},
+    {-1, 2, {1, 1, 0}, {0, 1, 1}},
+    {-60, 1, {0, 0, 0}, {1, 0, 0}},
+    {-60, 3, {1, 0, 0}, {0, 1, 0}},
+    {-58, 3, {1, 1, 1}, {1, 0, 1}},
+    {-196, 1, {0, 0, 0}, {1, 0, 0}},
+};
+
+// Both fixtures have leading coefficient 3 and satisfy f(m) ≡ 0 (mod N) for
+// N = 100160063 = 10007 * 10009, with f(m) = N and f(m) = 2N. Both are
+// irreducible over Q with a squarefree discriminant (-44963311 and 97929893).
+void check_non_monic_schirokauer(const char* label, const std::vector<int64_t>& coefficients,
+                                 int64_t m, uint64_t expected_lead_inverse, bool expect_split) {
+    std::cout << "Testing " << label << "..." << std::endl;
+    using core::Integer;
+    using core::PolynomialContext;
+
+    const Integer n("100160063");
+    std::vector<Integer> integer_coefficients;
+    for (int64_t coefficient : coefficients)
+        integer_coefficients.emplace_back(coefficient);
+    const PolynomialContext ctx(n.clone(), integer_coefficients, Integer(m), 1.0);
+    GNFS_TEST_CHECK(ctx.verify());
+    GNFS_TEST_CHECK(ctx.degree() == 3);
+    GNFS_TEST_CHECK(coefficients.back() % 4 == 3);
+
+    // Independent normalization of f modulo 256: brute-force lead^{-1}, then scale.
+    constexpr uint64_t modulus = 256;
+    const uint64_t lead = static_cast<uint64_t>(coefficients.back());
+    uint64_t lead_inverse = 0;
+    for (uint64_t candidate = 1; candidate < modulus; ++candidate) {
+        if (lead * candidate % modulus == 1) {
+            lead_inverse = candidate;
+            break;
+        }
+    }
+    GNFS_TEST_CHECK(lead_inverse == expected_lead_inverse);
+    std::vector<uint64_t> normalized;
+    for (int64_t coefficient : coefficients) {
+        int64_t raw = coefficient % static_cast<int64_t>(modulus);
+        if (raw < 0)
+            raw += static_cast<int64_t>(modulus);
+        normalized.push_back(static_cast<uint64_t>(raw) * lead_inverse % modulus);
+    }
+    GNFS_TEST_CHECK(normalized.back() == 1);
+
+    SchirokaurConfig config;
+    config.primes = {2};
+    config.exponent_k = 8;
+    const SchirokaurMap smap(ctx, config);
+    GNFS_TEST_CHECK(smap.prime_info_.size() == 1);
+    const auto& info = smap.prime_info_[0];
+    GNFS_TEST_CHECK(info.ell_k == modulus);
+    GNFS_TEST_CHECK(info.is_split == expect_split);
+    for (uint32_t i = 0; i <= ctx.degree(); ++i)
+        GNFS_TEST_CHECK(info.f_mod[i] == normalized[i]);
+
+    // Reference moduli: the normalized polynomial itself, or the monic factors
+    // that GFPolyOps::hensel_lift_all lifts from it.
+    std::vector<std::pair<std::vector<uint64_t>, uint64_t>> reference_moduli;
+    if (!info.is_split) {
+        GNFS_TEST_CHECK(info.exponent == 7); // 2^3 - 1
+        reference_moduli.emplace_back(normalized, info.exponent);
+    } else {
+        std::vector<uint64_t> f_mod_2;
+        for (uint64_t coefficient : normalized)
+            f_mod_2.push_back(coefficient % 2);
+        const auto irreducible = GFPolyOps::factor(f_mod_2, 2);
+        // Sorted by degree: x + 1 first, then x^2 + x + 1.
+        const GFPolyOps::Poly expected_factors[] = {{1, 1}, {1, 1, 1}};
+        GNFS_TEST_CHECK(irreducible.size() == 2);
+        for (size_t idx = 0; idx < 2; ++idx)
+            GNFS_TEST_CHECK(irreducible[idx] == expected_factors[idx]);
+        const auto lifted = GFPolyOps::hensel_lift_all(normalized, irreducible, 2, 8);
+        std::vector<Integer> normalized_integers;
+        for (uint64_t coefficient : normalized)
+            normalized_integers.emplace_back(coefficient);
+        // Monic lifts that multiply back to the normalized polynomial.
+        check_schirokauer_lift_product(lifted, normalized_integers, modulus);
+        GNFS_TEST_CHECK(info.factors.size() == lifted.size());
+        for (size_t idx = 0; idx < lifted.size(); ++idx) {
+            const uint64_t degree = lifted[idx].size() - 1;
+            GNFS_TEST_CHECK(info.factors[idx].degree == degree);
+            GNFS_TEST_CHECK(info.factors[idx].exponent == (uint64_t{1} << degree) - 1);
+            for (size_t i = 0; i < lifted[idx].size(); ++i)
+                GNFS_TEST_CHECK(info.factors[idx].f_mod[i] == lifted[idx][i]);
+            reference_moduli.emplace_back(lifted[idx], info.factors[idx].exponent);
+        }
+    }
+
+    for (const auto& row : kNonMonicSchirokauerRows) {
+        const auto maps = smap.compute(row.a, row.b);
+        GNFS_TEST_CHECK(maps.size() == 1);
+        std::vector<uint32_t> reference;
+        for (const auto& [monic, exponent] : reference_moduli) {
+            const auto columns =
+                schirokauer_companion_reference(monic, 2, 8, row.a, row.b, exponent);
+            reference.insert(reference.end(), columns.begin(), columns.end());
+        }
+        const auto& expected = expect_split ? row.split_columns : row.unsplit_columns;
+        GNFS_TEST_CHECK(maps[0] == reference);
+        GNFS_TEST_CHECK(maps[0].size() == expected.size());
+        for (size_t i = 0; i < expected.size(); ++i)
+            GNFS_TEST_CHECK(maps[0][i] == expected[i]);
+    }
+
+    // Stripping the 2-part recovers the same unit: λ(2a, 2b) = λ(a, b).
+    const std::pair<int64_t, uint64_t> unit_pairs[] = {{1, 3}, {5, 7}, {-9, 11}};
+    for (const auto& [a, b] : unit_pairs) {
+        GNFS_TEST_CHECK(smap.compute(2 * a, 2 * b) == smap.compute(a, b));
+        GNFS_TEST_CHECK(smap.compute(4 * a, 4 * b) == smap.compute(a, b));
+    }
+    std::cout << "  " << label << ": PASSED" << std::endl;
+}
+
+// f(x) = 3x^3 + 55x^2 + 14x + 71 with m = 316: f mod 2 = x^3 + x^2 + 1 is
+// irreducible, so the map takes the unsplit path with the normalized modulus
+// x^3 + 189x^2 + 90x + 109 (3^{-1} = 171 modulo 256).
+void test_schirokauer_non_monic_unsplit() {
+    check_non_monic_schirokauer("Schirokauer map with a non-monic unsplit polynomial",
+                                {71, 14, 55, 3}, 316, 171, false);
+}
+
+// f(x) = 3x^3 - 82x^2 + 54x + 41 with m = 415: f mod 2 = (x + 1)(x^2 + x + 1),
+// so the split path reduces by a Hensel-lifted quadratic factor
+// (3^{-1} = 171 modulo 256).
+void test_schirokauer_non_monic_split_quadratic() {
+    check_non_monic_schirokauer("Schirokauer map with a non-monic split polynomial",
+                                {41, 54, -82, 3}, 415, 171, true);
+}
+
+// Degenerate Schirokauer rows (all-zero map vectors) are counted in
+// MatrixBuildResult. Only the count is new; no matrix bit changes.
+void test_matrix_builder_counts_degenerate_schirokauer_rows() {
+    std::cout << "Testing MatrixBuilder degenerate Schirokauer row count..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    // 3x^3 + 55x^2 + 14x + 71 with m = 316: unsplit mod 2, same fixture as above.
+    const std::vector<Integer> coefficients = {Integer(71), Integer(14), Integer(55), Integer(3)};
+    const PolynomialContext ctx(Integer("100160063"), coefficients, Integer(316));
+    factor_base::FactorBase fb;
+    std::vector<core::Relation> relations;
+    // Five relations with a non-zero Schirokauer vector.
+    const std::pair<int64_t, uint64_t> regular_pairs[] = {
+        {1, 2}, {3, 2}, {-5, 2}, {7, 16}, {-33, 64},
+    };
+    for (const auto& [a, b] : regular_pairs)
+        relations.emplace_back(a, b);
+    // Precision fallback: γ = 256 - 128x has coefficients (0, 128) modulo 256.
+    // Stripping their common factor 2^7 leaves fewer than two ℓ-adic bits.
+    relations.emplace_back(256, 128);
+    // Both coefficients vanish modulo 2^8.
+    relations.emplace_back(512, 256);
+    relations.emplace_back(0, 0);
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.include_schirokauer = true;
+    config.schirokauer_primes = {2};
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(relations, fb, ctx);
+    const auto streaming =
+        builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+
+    // Independent count: rows without any set bit in the Schirokauer column range.
+    const auto count_zero_rows = [](const MatrixBuildResult& result) {
+        size_t count = 0;
+        const uint32_t first = static_cast<uint32_t>(result.mapping.schirokauer_start());
+        const uint32_t count_columns =
+            static_cast<uint32_t>(result.mapping.num_schirokauer_columns);
+        for (size_t row = 0; row < result.matrix.num_rows(); ++row) {
+            bool any = false;
+            for (uint32_t column = first; column < first + count_columns; ++column)
+                any = any || result.matrix.row(row).test(column);
+            if (!any)
+                ++count;
+        }
+        return count;
+    };
+    for (const auto* result : {&vector, &streaming}) {
+        GNFS_TEST_CHECK(result->mapping.num_schirokauer_columns == 3);
+        GNFS_TEST_CHECK(result->matrix.num_rows() == 8);
+        GNFS_TEST_CHECK(count_zero_rows(*result) == 3);
+        GNFS_TEST_CHECK(result->schirokauer_degenerate_rows == 3);
+    }
+    for (size_t row = 0; row < relations.size(); ++row) {
+        GNFS_TEST_CHECK(vector.matrix.row(row).indices() == streaming.matrix.row(row).indices());
+    }
+    // λ(1, 2) = {0, 1, 0} from the fixture table.
+    const uint32_t first = static_cast<uint32_t>(vector.mapping.schirokauer_start());
+    GNFS_TEST_CHECK(!vector.matrix.row(0).test(first));
+    GNFS_TEST_CHECK(vector.matrix.row(0).test(first + 1));
+    GNFS_TEST_CHECK(!vector.matrix.row(0).test(first + 2));
+
+    // Without Schirokauer columns there is nothing to count.
+    config.include_schirokauer = false;
+    const auto disabled = MatrixBuilder(config).build_with_qc(relations, fb, ctx);
+    GNFS_TEST_CHECK(disabled.mapping.num_schirokauer_columns == 0);
+    GNFS_TEST_CHECK(disabled.schirokauer_degenerate_rows == 0);
+
+    std::cout << "  Degenerate Schirokauer row count: PASSED" << std::endl;
 }
 
 // Regression test: parallel Block Lanczos produces same results as Gaussian
@@ -2131,6 +2558,7 @@ int main() {
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();
+    test_matrix_builder_qc_primes_stay_above_relation_norm_primes();
     test_ramified_index_square_dependency();
     test_find_dependencies();
     test_thin_matrix_dependencies();
@@ -2144,6 +2572,9 @@ int main() {
     test_schirokauer_overflow_guards();
     test_schirokauer_lift_residues();
     test_schirokauer_wide_public_map();
+    test_schirokauer_non_monic_unsplit();
+    test_schirokauer_non_monic_split_quadratic();
+    test_matrix_builder_counts_degenerate_schirokauer_rows();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();

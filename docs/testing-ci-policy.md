@@ -51,6 +51,14 @@ label so the existing Debug, sanitizer, coverage, and platform lanes still
 execute every contract. CTest allows 60 seconds for the aggregate so the shell
 and Python processes can finish when other tests share the runner.
 
+`MarkdownLinkCheckerSelfTest` is the `instant` script contract for the
+Markdown link checker. It runs `scripts/ci/check_markdown_links.py
+--self-test` over a temporary directory, so it needs no build product, and
+CTest allows it 10 seconds. `scripts/test.sh` maps the checker to `util`, so
+`changed` runs the contract after an edit to the checker. Docs Integrity and
+Script Checks run the same self-test, and Docs Integrity also scans the
+tracked Markdown.
+
 ### Local Change Selection
 
 The local `scripts/test.sh gate --quick` builds the binaries in
@@ -131,6 +139,15 @@ The `LinearAlgebra` contract keeps Schirokauer Hensel lifts active in Release
 at small and large accepted moduli, including `2^62` and `5^27`. Exact Integer
 convolution checks the lifted factors independently, and public-map tests cover
 odd-prime configurations separately from the GF(2) matrix prime policy.
+Its non-monic cases use cubics whose leading coefficient is congruent to 3
+modulo 4: one is unsplit modulo 2, the other splits into a linear and a
+quadratic factor. Companion-matrix reference values and hard-coded columns
+check both, and a matrix-builder case pins the count of degenerate Schirokauer
+rows.
+`SchirokauerNonMonicE2E` is a `slow` end-to-end contract on the same two
+polynomials. Each one must factor the 27-bit semiprime 100160063 through sieve,
+filtering, matrix, dependencies, and square root. The Linux Release deep gate
+runs it.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,
@@ -144,6 +161,19 @@ on POSIX; it is not a pathname-identity or durable-publication contract.
 The `ThreadPool` instant contract keeps task results, completion barriers,
 exception propagation, and bounded concurrent-submit stress checks active in
 Release builds.
+The `LinalgLaunchFailure` instant contract covers a later `submit` that fails
+after a `ThreadPool` already accepted tasks. The binary replaces `operator new`
+and arms injection only on the calling thread. One check sweeps main-thread
+allocation failures across the parallel Gaussian branch, whose fixture keeps
+more than 2000 rows and eliminates more rows than the dynamic threshold, and
+compares every same-process retry with the fault-free dependencies. Another
+check scans allocation ordinals until the pool accepts the first transpose
+task, which parks inside a test `MatrixView`. The next submit fails at that
+ordinal, and `spmv_transpose` must wait for the parked task. The public
+`gnfs::util::FutureLaunchGuard` contract is checked directly. A host with one
+hardware thread still covers allocation failure and retry, but the solver
+takes its serial branch there. The test stays out of smoke because the sweep
+cost grows with the solver thread count.
 The `Logger` instant contract keeps concurrent-output integrity and file-open
 failure propagation checks active in Release builds. Its level-toggle and
 output-lock concurrency paths also run in the narrow ThreadSanitizer lane.
@@ -213,6 +243,11 @@ The PR CI intentionally has three layers:
      invocation is the CI witness for the Apple-only same-OFD lock, fork
      rejection, and cleanup-intent conversion path; unsupported hosts execute
      only the platform stub.
+   - macOS Release also runs the three Apple-only shards of
+     `test_distributed_sieve_wave_merge_commit` (`--suite core`,
+     `--suite commit-crash`, and `--suite protection`) as targeted
+     `scripts/test.sh run` steps. They are `slow` entries, so the label filter
+     does not select them.
    - Windows Release runs `instant` plus the targeted fast
      `BWKrylovMmapIntegration` contract. This required end-to-end witness
      exercises the real Win32 raw-mapping and compressed positioned-I/O paths
@@ -1025,7 +1060,10 @@ justify a narrower tier. Their timeouts bound each logical shard rather than
 classify its expected duration. CTest does not register the aggregate because
 that would duplicate the complete matrix. The script runner catalogs the
 physical no-argument binary as `slow` with a five-minute timeout; the aggregate
-runs all supported-host shards for direct changed-file validation.
+runs all supported-host shards for direct changed-file validation. The macOS
+Release CI row runs the three Apple shards as separate targeted steps, each
+through `scripts/test.sh run` with its `--suite` argument, because the
+cross-platform label filter excludes `slow`.
 
 `test_distributed_sieve_resume` is also the dedicated M2j-A receipt-gated
 launcher contract.

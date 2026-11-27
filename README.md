@@ -48,7 +48,7 @@ GNFS（General Number Field Sieve）是目前已知最强的经典大整数分�
 
 1. **正确性优先于速度**：每个数学子例程都有跨规模回归（17/27/40/81 bit）门禁，禁止只在小规模 PASS 的实现合入主线。
 2. **内存即资源**：50 位及以上规模下内存比 CPU 更早成为瓶颈，因而提供完整的 out-of-core 通道（关系流式持久化、Krylov 序列 mmap、筛法 mid-flight 检查点）。
-3. **运行时可控**：所有实验性策略以环境变量开关暴露（默认 OFF），避免「算法分支爆炸」并保证生产路径零回归风险。
+3. **运行时可控**：实验性策略以环境变量开关暴露，未设置时走标准生产路径，避免「算法分支爆炸」；仅 `GNFS_V0_BFS` 与 `GNFS_OOC_RELATIONS` 例外，二者在 `lp_bits ≥ 22` 时默认开启（见「运行时配置」）。
 
 ## 性能数据
 
@@ -414,7 +414,7 @@ flowchart LR
 | ⑦ 平方根 | Nguyen Hybrid（主） + Couveignes（备选） | K 小素数 + Hensel + CRT，比大素数 CRT 快 200 倍 |
 | ⑧ GCD | gcd(a ± b, N) | 多依赖回退 |
 
-> 算法细节与最新工程权衡（V0/V3 cascade、thin BW 解、Schirokauer maps）记录于 [CLAUDE.md](CLAUDE.md)。
+> 算法细节与最新工程权衡（V0/V3 cascade、thin BW 解、Schirokauer maps）记录于 [relation.md](docs/env-flags/relation.md)、[linalg.md](docs/env-flags/linalg.md) 与 [V3 cascade 设计](docs/perf/v3-cascade-design.md)；正确性约定见 [AGENTS.md](AGENTS.md)。
 
 ### 代码约定
 
@@ -487,14 +487,14 @@ GNFS/
 
 ## 运行时配置
 
-所有实验性策略以环境变量开关暴露，默认 OFF 即标准生产路径，确保零回归风险。各开关的设计动机、实测数据与触发条件详见 [CLAUDE.md](CLAUDE.md) 对应章节。
+实验性策略以环境变量开关暴露，未设置时走标准生产路径。例外是两个按尺寸决定的开关：`GNFS_OOC_RELATIONS` 与 `GNFS_V0_BFS`。二者在 `lp_bits ≥ 22` 时默认开启，在 `lp_bits < 22` 时默认关闭。各开关的设计动机、实测数据与触发条件详见 [docs/env-flags/](docs/env-flags/README.md)。
 
 **过滤合并策略**
 
 | 环境变量 | 取值 | 作用 |
 |---|---|---|
 | `GNFS_CASCADE_V3` | `1` / `auto` / unset | V3 BFS spanning tree 合并 weight ≥ 3 LP 键；`auto` 仅 Round 2+ 启用 |
-| `GNFS_V0_BFS` | `1` | V0 主路径替换为 BFS chain merge（自动 size-gated，lp\_bits ≤ 20 时 fallback） |
+| `GNFS_V0_BFS` | unset / `0` / `1` | V0 主路径替换为 BFS chain merge；未设置时 `lp_bits ≥ 22` 默认开启、否则默认关闭；`1` 在 `lp_bits < 22` 时回退到 V0 standard；`0` 关闭 |
 | `GNFS_V0_WEIGHT3` | `1` | V0 Phase 2 合并 weight = 3 LP 键的前 2 partials |
 | `GNFS_DROP_RESIDUAL` | `1` | 丢弃合并后含残留 LP 的关系（50 d β plateau 实验） |
 | `GNFS_WEIGHT_CUTOFF` | `N` | 丢弃 LP 键 weight > N 的关系（CADO-NFS purge.c 思路） |
@@ -503,7 +503,7 @@ GNFS/
 
 | 环境变量 | 取值 | 作用 |
 |---|---|---|
-| `GNFS_OOC_RELATIONS` | `1` | 关系流式写盘（`.reldata` / `.relidx`），50 d Round 2 OOM 缓解 |
+| `GNFS_OOC_RELATIONS` | unset / `0` / `1` | 关系流式写盘（`.reldata` / `.relidx`），50 d Round 2 OOM 缓解；未设置时 `lp_bits ≥ 22` 默认开启；`0` 关闭，启用 resume 时除外 |
 | `GNFS_OOC_BASE_PATH` | `<path>` | 覆盖 OOC 文件路径前缀 |
 | `GNFS_SIEVE_RESUME` | `<base_path>` | 筛 mid-flight 检查点 + OOC 续写，支持 hours 级 sieve 崩溃恢复 |
 | `GNFS_DISTRIBUTED_SIEVE_WORKERS` | `1–64` | 启用 POSIX 多进程 special-Q wave；不能与 resume 变量同时设置 |
@@ -536,15 +536,7 @@ GNFS/
 ./scripts/test.sh list                  # 查看全部测试、分级、超时
 ```
 
-| 分级 | 超时 | 数量 | 范围 |
-|---|---|:---:|---|
-| `instant` | 10–60 s | 118 | 纯单元 / helper correctness，进入跨平台 PR、sanitizer、coverage |
-| `fast` | 60–180 s | 16 | 中速集成 / 资源敏感 helper，进入 Release PR 快矩阵 |
-| `gate` | 240 s | 1 | 17/27/40/81 bit 回归门禁，进入 Linux Release 深门禁 |
-| `slow` | 120–900 s | 8 | 真实 GNFS / API pipeline，进入 Linux Release 深门禁和 nightly |
-| `heavy` | 600–3600 s | 2 | Kleinjung large、25 位基准；渐进 L3–L5 属手动 heavy 路径 |
-| `bench` | 120–300 s | 3 | informational micro-benchmark，不阻塞 PR |
-| `stress` | 43200 s | 1 | 50 位（L1） + 60 位（L2） |
+测试按 `instant`、`fast`、`gate`、`slow`、`heavy`、`bench`、`stress` 分级。各级的超时、数量与范围随代码变动，本文不抄录，以 `./scripts/test.sh list` 的实时输出为准。
 
 完整测试与 CI 分层规范见 [docs/testing-ci-policy.md](docs/testing-ci-policy.md)。
 首个版本采用 exact-SHA 两阶段发布，操作与安全边界见
@@ -572,7 +564,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release + 调试信息
 
 欢迎贡献。请遵循以下流程：
 
-1. Fork 仓库并创建特性分支：`feat/YYMMDD-描述`（日期前缀格式见 [CLAUDE.md](CLAUDE.md#分支规范)）
+1. Fork 仓库并创建特性分支，命名格式 `<type>/YYMMDD-描述`，例如 `feat/260519-bucket-sieve`
 2. 确保测试通过：`./scripts/test.sh gate`（合并门禁，约 20 秒）
 3. 遵循约定：C++20 风格、`snake_case` 函数、`PascalCase` 类型
 4. 提交 PR 并附清晰描述

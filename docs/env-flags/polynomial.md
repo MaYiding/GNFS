@@ -2,7 +2,7 @@
 
 > 本文档收录 `polynomial` 模块所有 `GNFS_*` 运行时调优开关 / helper 的详细设计(算法、ENV 解析、bit-for-bit 保证、ROI、集成点、测试)。
 >
-> 返回: [ENV 开关总览](README.md) · [CLAUDE.md ENV 索引表](../../CLAUDE.md#env-调优开关总览)
+> 返回: [ENV 开关模块导航](README.md)
 
 ---
 
@@ -788,3 +788,88 @@ coeff / negative x + horner_eval_one_scalar sanity + 1M-eval perf info).
 
 **Default ON (auto)**: helper standalone, 当前主 pipeline 无调用点,
 ENV 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
+---
+
+## Non-Monic Bai-Brent Selection (GNFS_POLY_BAI_BRENT)
+
+`GNFS_POLY_BAI_BRENT=1` 让次数不低于 5 的多项式选择优先尝试非首一的 Bai-Brent
+选择器。默认关闭，走 Kleinjung 选择器。设计与实测见
+[docs/perf/bai-brent-design.md](../perf/bai-brent-design.md)。
+
+- **取值与解析**：`SelectorDispatch::select(n, params, verbose)` 每次调用时读取，首字符
+  为 `1` 即启用；未设置、空值和其余取值关闭。
+- **默认值**：关闭。
+- **对结果的影响**：改变选出的多项式，后续因子基、筛法与平方根的输入都随之变化，
+  不属于 bit-for-bit 开关。Bai-Brent 失败时回退到 Kleinjung，再失败回退到
+  `BaseMSelector`。
+- **接入点**：`include/gnfs/polynomial/selector_dispatch.hpp` 的
+  `SelectorDispatch::select()`。`Pipeline::select_polynomial()` 经
+  `select(n, degree, verbose)` 重载进入同一分支；次数小于 5 时该变量无效。
+- **测试**：`tests/test_bai_brent_poly.cpp` 的 `test_dispatch_env_off_uses_kleinjung` 与
+  `test_dispatch_env_on_uses_bai_brent`。这两个用例在分发抛出异常时也按通过处理，因此
+  只锁定了不抛异常时返回的次数。
+
+---
+
+## Top-K Alpha Ranking (GNFS_TOPK_ALPHA)
+
+`GNFS_TOPK_ALPHA=1` 让 Kleinjung 与 Bai-Brent 选择器的 Stage 2 用
+$\log \lVert f \rVert_2 + \alpha_{\text{cheap}}$ 代替纯 $L^2$ 范数给平移与旋转得到的
+候选排序，再对前 3 个候选计算完整的 Murphy E。$\alpha_{\text{cheap}}$ 只累加
+$p \leq 100$ 的 25 个素数，由 `RotationAlphaTracker` 计算。
+
+- **取值与解析**：`KleinjungSelector::stage2_root_optimization()` 与
+  `BaiBrentSelector::stage2_root_optimization()` 在每次调用开始时读取一次，首字符为
+  `1` 即启用。
+- **默认值**：关闭，只用 $L^2$ 范数排序。
+- **对结果的影响**：改变进入 Murphy E 精评的候选集合，可能选出不同的多项式，不属于
+  bit-for-bit 开关。代码注释记录了一次 25 位十进制输入上的实测：启用后 Murphy E 从
+  $-1.20$ 降到 $-1.33$，所以默认保持关闭。
+- **接入点**：`include/gnfs/polynomial/kleinjung_selector.hpp` 与
+  `include/gnfs/polynomial/bai_brent_selector.hpp` 的 `stage2_root_optimization()`；
+  打分函数在 `include/gnfs/polynomial/rotation_alpha.hpp`。
+- **测试**：`tests/test_rotation_incremental.cpp` 覆盖 `RotationAlphaTracker` 本身；
+  没有测试设置该变量。
+
+---
+
+## Root-Property Cache (GNFS_POLY_ROOT_CACHE_SIZE)
+
+`GNFS_POLY_ROOT_CACHE_SIZE=N` 为 Murphy E 的 $\alpha$ 计算启用按 $(p, f \bmod p)$ 记忆
+的缓存：Kleinjung 的旋转与平移会反复得到同余的多项式，命中时跳过求根。`N` 是缓存的
+条目上限，按先进先出淘汰。默认 `0`，即关闭。
+
+- **取值与解析**：`RootPropertyCache::env_capacity()` 调用 `parse_env_capacity()`，用
+  `std::atoll` 解析；未设置、空值、非数字或不大于 `0` 时为 `0`，超过 $2^{26}$ 时钳制
+  到 $2^{26}$。结果用 `std::call_once` 在进程内只解析一次，之后修改环境变量无效。
+- **默认值**：`0`，关闭。
+- **对结果的影响**：命中时直接返回缓存的贡献值，不改变 $\alpha$ 的计算方式。关闭时
+  查表与插入都是空操作。
+- **接入点**：`include/gnfs/polynomial/root_property_cache.hpp` 的 `env_capacity()`；
+  `include/gnfs/polynomial/murphy_evaluator.hpp` 的 `MurphyEvaluator` 构造函数用它创建
+  缓存，`compute_alpha()` 经 `alpha_contribution()` 查表。缓存启用时
+  `KleinjungSelector::select()` 结束后会向 stderr 打印一行 `[poly_root_cache]`
+  命中率。
+- **测试**：`tests/test_root_property_cache.cpp` 覆盖缓存行为、`MurphyEvaluator` 接线与
+  `env_capacity()` 的进程内解析；`test_alpha_identity_cache_off_vs_on` 断言同一多项式
+  重复计算的 $\alpha$ 一致，并核对基准值，但只在运行时环境里设置了该变量才会走到
+  命中路径。
+
+---
+
+## Linear-Polynomial Alpha Shortcut (GNFS_NO_LINEAR_SHORTCUT)
+
+`GNFS_NO_LINEAR_SHORTCUT=1` 关闭 `MurphyEvaluator::compute_alpha()` 对首一一次多项式的
+短路，让它也走通用的小素数扫描，用于基准对比。
+
+- **取值与解析**：`compute_alpha(f, prime_bound)` 在遇到首一一次多项式时读取，首字符
+  为 `1` 即关闭短路。
+- **默认值**：未设置，使用短路。
+- **对结果的影响**：短路返回按素数上界预先累加的常量，通用路径逐素数累加，两者是
+  同一个求和 $\sum_{p}(1/p - 1/(p - 1)) \log p$；并行路径按线程分块再相加，浮点舍入
+  可能不同。没有测试断言两条路径逐位一致。
+- **接入点**：`include/gnfs/polynomial/murphy_evaluator.hpp` 的 `compute_alpha()`。
+  Kleinjung 的 $g(x) = x - m$ 总是首一一次多项式，所以每次 Murphy E 评分都会经过这个
+  分支。
+- **测试**：没有测试设置该变量。

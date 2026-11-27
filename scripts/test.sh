@@ -359,6 +359,7 @@ ALL_TEST_BINARIES=(
     test_threshold_scan_simd
     test_saturated_sub_simd
     test_regression_gate
+    test_schirokauer_non_monic_e2e
     test_stress
     test_3lp_cofactor
     test_3lp_merge
@@ -378,6 +379,7 @@ ALL_TEST_BINARIES=(
     test_linalg_mmap_policy
     test_metal_spmv
     test_spmv_simd
+    test_linalg_launch_failure
     test_transpose_blocked
     test_popcount_simd
     test_and_popcnt_simd
@@ -443,6 +445,7 @@ ALL_TEST_BINARIES=(
     test_lp_key_hash
     test_merger_parallel
     test_method_selection
+    test_dependency_diagnostics
     test_mmap_csr
     test_ooc_relations
     test_root_property_cache
@@ -511,6 +514,7 @@ MODULE_SLOW_TESTS=(
     sieve          "test_lattice_sieve"
     cofactor       "test_ecm_brent_suyama_bench"
     relation       "test_structured_ooc_scale test_structured_filter_pipeline_120bit"
+    linalg         "test_schirokauer_non_monic_e2e"
     api            "test_api test_full_resume"
     siqs           "test_siqs_e2e"
 )
@@ -519,7 +523,7 @@ MODULE_SLOW_TESTS=(
 typeset -A MODULE_CTEST_CONTRACTS
 MODULE_CTEST_CONTRACTS=(
     api "^CLIReplConfig$"
-    util "^(ProcessSupervisor|HarnessProcessTreeTimeout)$"
+    util "^(ProcessSupervisor|HarnessProcessTreeTimeout|MarkdownLinkCheckerSelfTest)$"
 )
 SMOKE_CTEST_CONTRACT="^ProcessSupervisor$"
 
@@ -709,6 +713,7 @@ TEST_TIMEOUT=(
     test_mmap_csr            10
     test_bucket_sieve        120
     test_regression_gate     240
+    test_schirokauer_non_monic_e2e 300
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
@@ -717,6 +722,7 @@ TEST_TIMEOUT=(
     test_cli_event_stream    60
     test_i18n                10
     test_method_selection    60
+    test_dependency_diagnostics 30
     test_clique_merger       10
     test_clique_merger_50d_synthetic 60
     test_3lp_cofactor        30
@@ -747,6 +753,7 @@ TEST_TIMEOUT=(
     test_linalg_mmap_policy  10
     test_metal_spmv          30
     test_spmv_simd           10
+    test_linalg_launch_failure 60
     test_transpose_blocked   10
     test_popcount_simd       60
     test_and_popcnt_simd     60
@@ -970,6 +977,7 @@ TEST_TIER=(
     test_mmap_csr            "instant"
     test_bucket_sieve        "fast"
     test_regression_gate     "gate"
+    test_schirokauer_non_monic_e2e "slow"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
     test_stress              "stress"
@@ -978,6 +986,7 @@ TEST_TIER=(
     test_cli_event_stream    "instant"
     test_i18n                "instant"
     test_method_selection    "instant"
+    test_dependency_diagnostics "instant"
     test_siqs                "fast"
     test_siqs_budget_admission "fast"
     test_siqs_multiplier_coordinator "fast"
@@ -1045,6 +1054,7 @@ TEST_TIER=(
     test_linalg_mmap_policy  "instant"
     test_metal_spmv          "instant"
     test_spmv_simd           "instant"
+    test_linalg_launch_failure "instant"
     test_transpose_blocked   "instant"
     test_popcount_simd       "instant"
     test_and_popcnt_simd     "instant"
@@ -1121,7 +1131,7 @@ path_to_module() {
         done
     fi
     case "$path" in
-        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
+        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|scripts/ci/check_markdown_links.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_primes.cpp|tests/test_timer.cpp|tests/test_mpz_powm_parallel.cpp|tests/test_mpz_mod_parallel.cpp|tests/test_mpz_gcd_parallel.cpp|tests/test_mpz_mul_parallel.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
@@ -8583,6 +8593,7 @@ do_list() {
     echo "${BOLD}非二进制 CTest 合同:${RESET}"
     echo "  ${BULLET} ${CYAN}ProcessSupervisor${RESET} — instant, 15s, cross-platform"
     echo "  ${BULLET} ${CYAN}HarnessProcessTreeTimeout${RESET} — fast, 20s, POSIX + zsh"
+    echo "  ${BULLET} ${CYAN}MarkdownLinkCheckerSelfTest${RESET} — instant, 10s, 跨平台"
 
     echo ""
     echo "${BOLD}特殊测试:${RESET}"

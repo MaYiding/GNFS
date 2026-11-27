@@ -520,3 +520,66 @@ terminal record 或 sealed holdout 自动启用。
 ./scripts/test.sh compare-siqs-shadow-observe
 ./scripts/test.sh changed --deep
 ```
+
+---
+
+## Method Routing Overrides (GNFS_FORCE_SIQS, GNFS_DISABLE_SIQS)
+
+这两个变量改变 `Pipeline::select_method()` 的自动方法选择，`GNFS_DISABLE_SIQS` 还直接
+决定 SIQS 阶段是否运行。两者只用于调试和实验。
+
+### 取值与解析
+
+| 取值 | 作用 |
+|------|------|
+| `GNFS_FORCE_SIQS=1` | 只影响路由：十进制超过 6 位且二进制超过 20 比特的输入选 SIQS，不再选 Pollard rho 或 GNFS |
+| `GNFS_DISABLE_SIQS=1` | 路由上让十进制 25 到 100 位的输入直接选 GNFS；运行时跳过整个 SIQS 阶段，显式 `--method siqs` 也不例外 |
+
+两个变量都只比较首字符：已设置且首字符为 `1` 即生效，其余取值（包括 `0` 和
+`true`）视为未设置。`Pipeline::select_method()` 每次调用时各读取一次；
+`Pipeline::run()` 在 Phase 2 另读一次 `GNFS_DISABLE_SIQS`。
+
+两个变量对显式方法的优先级不同，`Config::method` 即命令行的 `--method`：
+
+- `GNFS_FORCE_SIQS` 只在 `Pipeline::select_method()` 里读取。`Config::method` 指定了
+  非 `Auto` 的方法时，它被忽略。
+- `GNFS_DISABLE_SIQS` 在 `Pipeline::run()` 里的那次读取不看 `Config::method`。
+  `--method siqs` 配上 `GNFS_DISABLE_SIQS=1` 时，只要运行走到 Phase 2，SIQS 阶段整个
+  跳过，落入 Phase 3 的 GNFS 流水线，结果的 `method_used` 报告为 GNFS。
+
+### Default 与 bit-for-bit 契约
+
+默认两个变量都未设置，选择结果完全由输入的十进制位数与二进制位数决定。两个变量都会
+改变实际运行的算法，因而不属于 bit-for-bit 开关：`GNFS_FORCE_SIQS=1` 让目标方法本会是
+Pollard rho 的输入改以 SIQS 为目标方法，进入 SIQS 的超时受控搜索；`GNFS_DISABLE_SIQS=1`
+让 GNFS 路线跳过 SIQS 探测，并把显式的 SIQS 方法变成一次 GNFS 运行。两个变量都不跳过
+Phase 0 的试除；二进制 128 比特以下的输入在 SIQS 或 GNFS 之前仍会做一次快速 rho 探测，
+十进制 26 到 28 位的输入还会做一次 ECM 探测，探测先找到因子时运行就此结束。
+
+### 集成点与输出
+
+- `src/api/pipeline.cpp` 的 `Pipeline::select_method()` 做路由决策，`Pipeline::run()`
+  调用它。十进制不超过 6 位或二进制不超过 20 比特的输入在此之前已判定为试除，
+  `GNFS_FORCE_SIQS` 对它们无效。返回的 reason 字符串会带上
+  `GNFS_FORCE_SIQS=1 override` 或 `SIQS disabled via ENV`。
+- `src/api/pipeline.cpp` 的 `Pipeline::run()` 在 Phase 2 再读一次 `GNFS_DISABLE_SIQS`，
+  这次读取不看 `Config::method`。方法为 SIQS 时，`GNFS_DISABLE_SIQS=1` 跳过整个 SIQS
+  阶段，连“SIQS 失败不落到 GNFS”的分支也一起绕过，直接进入 Phase 3，并把
+  `method_used` 改写成 GNFS。方法为 GNFS 且十进制位数不超过 100 时，默认会先做一次有
+  时限的 SIQS 探测；`GNFS_DISABLE_SIQS=1` 把这次探测也跳过。
+- `scripts/sweep_full.sh` 与 `scripts/sweep_combo.sh` 只在 `bit_*` 档（按比特长度取值的
+  扫描）固定注入 `GNFS_DISABLE_SIQS=1` 并传 `--method gnfs`，保证测的是 GNFS 而不是被
+  SIQS 抢先解掉；`digit_50` 与 `digit_60` 档直接跑 `./build/test_stress`，不注入。
+
+### 测试
+
+- `tests/test_method_selection.cpp` 覆盖 `GNFS_FORCE_SIQS=1` 把十进制 12 位输入提升为
+  SIQS、十进制 5 位的输入仍走试除、`GNFS_DISABLE_SIQS=1` 让十进制 50 位输入选 GNFS，
+  以及在 `Pipeline::select_method()` 里显式 `Config::method` 优先于两个变量。
+- `tests/test_siqs_e2e.cpp` 的 `run_force_siqs_env` 在 `GNFS_FORCE_SIQS=1` 下跑完整
+  pipeline，并断言实际使用的方法是 SIQS。
+- `tests/test_api.cpp` 的 `test_structured_filter_run_freezes_route_before_callbacks`
+  同时设置 `Config::method` 为 GNFS 与 `GNFS_DISABLE_SIQS=1`，并要求运行到达 GNFS 的
+  factor base 阶段。
+- `Pipeline::run()` 里 `GNFS_DISABLE_SIQS=1` 压过显式 SIQS 方法的组合没有测试覆盖；
+  `tests/test_method_selection.cpp` 只覆盖 `Pipeline::select_method()`。

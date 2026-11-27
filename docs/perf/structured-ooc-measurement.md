@@ -931,6 +931,15 @@ frozen identity is:
 | Matrix nonzeros | 15,585 | 25,678 |
 | Matrix digest | `14525310064104378093 / 16319658707909074699` | `14532202369606426594 / 8411150515085501241` |
 
+The two matrix rows above are the values measured before the quadratic-character
+primes moved above the special-Q and large-prime ranges (2026-11-27). That change
+left every other field of the identity unchanged, and the gate now freezes:
+
+| Field | Legacy | Structured |
+|---|---:|---:|
+| Matrix nonzeros | 15,632 | 26,134 |
+| Matrix digest | `11249492236301261937 / 12935708802098224886` | `7306099024060028890 / 7552764259524638440` |
+
 The raw LP histogram is also frozen at weight-1/2/3/4+ counts
 `13048/370/29/32`. Both routes stop after full thin-matrix construction with
 dependency extraction disabled. This closes the planned 100-150-bit

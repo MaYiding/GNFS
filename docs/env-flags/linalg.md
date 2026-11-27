@@ -2,7 +2,7 @@
 
 > 本文档收录 `linalg` 模块所有 `GNFS_*` 运行时调优开关 / helper 的详细设计(算法、ENV 解析、bit-for-bit 保证、ROI、集成点、测试)。
 >
-> 返回: [ENV 开关总览](README.md) · [CLAUDE.md ENV 索引表](../../CLAUDE.md#env-调优开关总览)
+> 返回: [ENV 开关模块导航](README.md)
 
 ---
 
@@ -302,9 +302,20 @@ N=hw_concurrency 严格 assert).
 - `include/gnfs/linalg/schirokauer_parallel.hpp` — `schirokauer_threads()` env
   reader with `std::once_flag` cache + `compute_schirokauer_flat_batch<ABPair>`
   template dispatcher + `schirokauer_threads_reset_env_cache_for_testing()`
-- `include/gnfs/linalg/schirokauer.hpp` — 未改动 (核心算法保持 bit-identical)
+- `include/gnfs/linalg/schirokauer.hpp` — 并行化时未改动；2026-11-27 加入下面的首一化
 - `tests/test_schirokauer_parallel.cpp` — 7 个测试 (baseline + 2 parity +
   env parsing + empty + single + perf info)
+
+### 模多项式首一化
+
+`SchirokaurMap::precompute_for_prime` 把 $f(x)$ 的系数取模 $\ell^k$ 存入 `info.f_mod` 后，若首项系数模 $\ell$ 可逆，就乘上它的逆元（模 $\ell^k$），使 `f_mod` 首一。
+
+原因：`FastPoly::reduce_inplace` 只以系数 1 消去最高次项。模多项式不首一时，它等于在「把 $f$ 的首项系数换成 1」的多项式下做 reductions，算出的列不是 $f$ 的 Schirokauer 映射。首项系数 $f_d$ 是 $\ell^k$ 的单位时，$(f)$ 与 $(f / f_d)$ 在 $\mathbb{Z}/\ell^k$ 上是同一个理想，商环不变，所以按首一模多项式算出的列就是 $f$ 的 Schirokauer 映射。split 路径的 `f_pk` 取自同一个 `f_mod`，Hensel 提升出的因子因此全部首一。
+
+- 生效条件：$\ell \nmid f_d$。`MatrixBuilder` 固定用 $\ell = 2$，即 $f_d$ 为奇数。
+- 首一多项式不受影响：$f_d = 1$ 时逆元为 1，每一位都不变。
+- 未解决：$\ell \mid f_d$ 时逆元不存在，`f_mod` 保持原始系数，行为与归一化之前相同，列值仍不是 $f$ 的 Schirokauer 映射。
+- 验证：`LinearAlgebra` 的非首一用例以伴随矩阵为参照，`SchirokauerNonMonicE2E` 用首项系数模 4 余 3 的多项式走完整条流水线。
 
 ---
 
@@ -1064,3 +1075,149 @@ ops, 不接触 stderr 缓冲. 100k 次 `tick` 实测 0 ms (perf-info probe). 启
 
 **Default OFF (N=0)**: helper standalone, 当前主 pipeline 无调用点, ENV
 对运行行为无影响. 仅 helper 被 wire-in 后 ENV 才生效.
+
+---
+
+## Block Wiedemann Algorithm Selection (GNFS_BW_ALGORITHM)
+
+`GNFS_BW_ALGORITHM=scalar` 让 `BlockWiedemann::find_dependencies()` 走早期的 scalar
+Berlekamp-Massey 路径，用于校验和调试。默认走 Coppersmith 的 block
+Berlekamp-Massey，SpMV 调用次数约为 scalar 路径的 $1/64$。
+
+- **取值与解析**：`find_dependencies()` 每次调用时读取并做整串比较，只有 `scalar`
+  生效；未设置、空值和其余取值（包括 `block`）都走 block 路径。
+- **默认值**：block 路径。
+- **对结果的影响**：两条路径都返回通过校验的依赖向量，但不保证返回同一组向量，也
+  不保证逐位一致。在内存路线上，行数和列数都小于 5000 的矩阵在读取该变量之前就已
+  转给 Block Lanczos，因此不受影响。薄矩阵（行数小于列数）没有 scalar 变体，请求
+  `scalar` 时向 stderr 打印一行警告并改用 block 的薄矩阵变体。
+- **接入点**：
+  - `src/linalg/block_wiedemann.cpp`：只有 `BlockWiedemann::find_dependencies()` 读取该
+    变量；scalar 路径调用 `block_wiedemann_scalar_solve()`。
+  - `GNFS_BW_KRYLOV_STREAMS` 的多流并行只作用于 block 路径，强制 scalar 时无效。
+  - 落盘路线不读取该变量。`GNFS_LINALG_MMAP=on`（或 `auto` 判定落盘）时，
+    `Pipeline::matrix_phase()` 改调 `find_dependencies_view()`，那条路线始终用 block
+    或 thin 求解器，`scalar` 被静默忽略，所以两者同时设置做不了交叉验证。
+- **测试**：`tests/test_block_wiedemann.cpp` 的 `test_block_vs_scalar_cross_validate` 在
+  同一矩阵上分别跑两条路径并验证两边的依赖都成立；
+  `tests/test_bw_krylov_mmap_integration.cpp` 在 `scalar` 取值下经 `find_dependencies()`
+  求解一个大矩阵，并检查 `[BW-scalar]` 日志。没有测试覆盖落盘路线忽略该变量的行为。
+
+---
+
+## Block Lanczos Checkpoint Trace (GNFS_DEBUG_BL_CKPT)
+
+`GNFS_DEBUG_BL_CKPT` 让 word-packed Gaussian elimination 在每次成功保存 checkpoint 后
+向 stderr 打印一行 `[bl_ckpt] save iter=... pivot_row=... col=...`。
+
+- **取值与解析**：`BlockLanczos::find_dependencies_sparse()` 在每次保存后读取。已设置、
+  非空且首字符不是 `0` 即生效，`1`、`on`、`true` 都可以；未设置、空值或以 `0` 开头
+  时不输出。
+- **默认值**：未设置，不输出。
+- **对结果的影响**：只增加 stderr 输出，不改变依赖向量。
+- **接入点**：`src/linalg/block_lanczos.cpp` 的 `find_dependencies_sparse()`。该变量只在
+  `GNFS_BL_CHECKPOINT` 启用且 checkpoint 保存成功时才被读取。
+- **测试**：没有测试设置该变量。
+
+---
+
+## Gaussian Elimination Trace (GNFS_DEBUG_GAUSSIAN)
+
+`GNFS_DEBUG_GAUSSIAN` 让 word-packed Gaussian elimination 在结束时向 stderr 打印一行
+`[Gaussian]` 统计，包含矩阵规模、pivot 数、并行调用量、平均与最大消元行数、线程数
+以及找到的依赖数。
+
+- **取值与解析**：`BlockLanczos::find_dependencies_sparse()` 在消元结束后读取一次。
+  已设置、非空且首字符不是 `0` 即生效。
+- **默认值**：未设置，不输出。
+- **对结果的影响**：只增加 stderr 输出，不改变依赖向量。统计计数器无论是否设置都会
+  累加。
+- **接入点**：`src/linalg/block_lanczos.cpp` 的 `find_dependencies_sparse()`。
+- **测试**：没有测试设置该变量；`bench/results/2026-05-14-gaussian-threadpool.md`
+  记录了用它做的一次线程池测量。
+
+---
+
+## Linear-Algebra Matrix mmap Policy (GNFS_LINALG_MMAP)
+
+`GNFS_LINALG_MMAP` 决定 Phase 5 在 Block Wiedemann 分支上把 SGE 约简后的矩阵放在内存
+还是磁盘。`1` 强制走 `MmapCSRMatrix`，`auto` 在矩阵足够大时才落盘。
+
+- **取值与解析**：`linalg_mmap_policy_from_env()` 调用 `parse_mmap_policy()` 做整串
+  比较。未设置、空值、`0`、`off`、`false` 和任何未列出的取值都是 Off；`1`、`on`、
+  `true` 是 On；`auto`、`Auto`、`AUTO` 是 Auto。`off` 与 `on` 只接受小写。
+- **默认值**：Off，使用内存 CSR。
+- **对结果的影响**：落盘不只是换一个存放位置。`Pipeline::matrix_phase()` 在落盘时改调
+  `BlockWiedemann::find_dependencies_view()`，它始终用 block 或 thin 的 Block Wiedemann
+  求解器，与内存路线有两处不同。第一，它不读取 `GNFS_BW_ALGORITHM`，`scalar` 在这条
+  路线上被静默忽略。第二，它没有内存路线里“行数与列数都小于 5000 的矩阵转交 Block
+  Lanczos”的分支，所以 `on` 之下 Block Lanczos 没有解出依赖的小矩阵由 Block Wiedemann
+  求解；`off` 之下这类小矩阵根本到不了 Block Wiedemann，`find_dependencies()` 把它们
+  再交回 Block Lanczos。`auto` 在默认阈值下只对很大的矩阵落盘，不会遇到这种小矩阵。
+  求解器可能不同，返回的依赖向量因此不保证相同。On 与 Auto 会把 SGE
+  约简矩阵写进临时目录下的 `.csrmat` scratch 文件；写入或求解抛出异常时回退到内存路径
+  的 `find_dependencies()` 并打印 `[linalg-mmap] fallback` 警告，回退之后
+  `GNFS_BW_ALGORITHM` 与小矩阵转交重新生效。
+- **接入点**：
+  - `include/gnfs/linalg/linalg_mmap_policy.hpp`：`linalg_mmap_policy_from_env()` 与
+    `should_use_mmap()`。
+  - `src/api/pipeline.cpp`：`Pipeline::matrix_phase()` 在 Block Wiedemann 分支读取，即
+    Block Lanczos 没有返回依赖，或 SGE 约简矩阵是薄矩阵时。Auto 模式下投影的列索引
+    字节数（非零元数乘 4）不小于阈值才落盘。
+- **测试**：`tests/test_linalg_mmap_policy.cpp` 覆盖解析、三种模式的判定与 Auto 阈值；
+  `tests/test_api.cpp` 的 `test_mmap_solve_preserves_existing_scratch_entries` 在 `on`
+  下验证 scratch 文件不覆盖临时目录里的既有文件、成功后清理，以及路径被占用时回退到
+  内存路径；同文件其他用例把变量钉为 `off`。
+
+### GNFS_LINALG_MMAP_THRESHOLD_BYTES
+
+Auto 模式的落盘阈值，单位是字节，默认 $2^{31}$（2 GiB，约合 $5.4 \times 10^8$ 个非零
+元）。`linalg_mmap_threshold_bytes()` 只接受非零的十进制数字串：出现任何其他字符、值
+为 `0` 或超出 `uint64_t` 范围时都回到默认值。Off 与 On 模式不读取该变量。
+`tests/test_linalg_mmap_policy.cpp` 覆盖覆盖值、非法输入与溢出。
+
+---
+
+## Metal SpMV Opt-In (GNFS_METAL_SPMV)
+
+`GNFS_METAL_SPMV=1` 让 Block Wiedemann 的 GF(2) SpMV 在 macOS 上优先使用 Metal GPU
+内核。默认关闭。
+
+- **取值与解析**：`metal::env_opt_in()` 把取值转成小写后比较，`1`、`true`、`yes`、
+  `on` 启用，其余关闭。首次调用后缓存到进程结束。非 Apple 平台编译的是
+  `src/linalg/metal_spmv_stub.cpp`，`env_opt_in()` 恒为 `false`。
+- **默认值**：关闭。
+- **对结果的影响**：只改变性能。GF(2) 上的 `uint64_t` XOR 是精确运算，Metal 输出与
+  CPU 内核逐位一致；GPU 路径不可用或失败时自动回到 CPU 路径。
+- **接入点**：
+  - `src/linalg/metal_spmv.mm`：`env_opt_in()` 读取；`metal::should_use()` 要求同时满足
+    ENV 启用、`is_available()` 以及行数或列数不少于 10000。
+  - `include/gnfs/linalg/detail/spmv_kernels.hpp`：`spmv_forward()` 与
+    `spmv_transpose()` 的默认 `SpmvMetalPolicy::environment` 分支，只对 `CSRMatrix`
+    生效，`MmapCSRMatrix` 始终走 CPU。
+  - `src/linalg/block_wiedemann.cpp`：传入显式 `SeededPolicy` 的
+    `find_dependencies_view_seeded()` 重载不读取该变量，改由 `policy.allow_metal`
+    决定。
+- **测试**：`tests/test_metal_spmv.cpp` 在 `main()` 里设置 `GNFS_METAL_SPMV=1`，对比
+  Metal 与 CPU 内核的输出，并在 Metal 不可用时跳过相关用例；
+  `tests/test_siqs_shadow_sparse_backend.cpp` 验证显式 `SeededPolicy` 忽略该变量。
+
+---
+
+## Streaming Matrix Build (GNFS_SGE_STREAMING)
+
+`GNFS_SGE_STREAMING` 让 legacy 路线的关系在构建矩阵时经 `VectorRelationSource` 流式
+读取，省去并行建行期间的中间关系副本。structured 路线始终走流式构建，不读取该变量。
+
+- **取值与解析**：`Pipeline::matrix_phase()` 每次调用时读取并做整串比较。`1`、`on`、
+  `true` 启用；`auto` 仅在 `GNFS_OOC_RELATIONS=1` 或设置了 `GNFS_RESUME` /
+  `GNFS_SIEVE_RESUME` 时启用；未设置、空值和其余取值关闭。
+- **默认值**：关闭，使用 `MatrixBuilder::build_with_qc()`。
+- **对结果的影响**：不改变输出。流式构建与向量构建产出逐位一致的 `MatrixBuildResult`；
+  启用时多一行 `[matrix-streaming]` 的 stderr 输出。
+- **接入点**：`src/api/pipeline.cpp` 的 `Pipeline::matrix_phase()`。
+- **测试**：`tests/test_sge_streaming.cpp` 覆盖流式与向量构建的等价性；
+  `tests/test_api.cpp`、`tests/test_structured_ooc_50d_probe.cpp`、
+  `tests/test_structured_filter_pipeline_120bit.cpp` 与
+  `tests/test_candidate_batch_50d_sweep.cpp` 把变量钉为 `off` 以隔离各自的路由断言。
+  没有测试通过 ENV 打开该开关。

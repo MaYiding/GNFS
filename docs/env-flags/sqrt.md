@@ -2,7 +2,7 @@
 
 > 本文档收录 `sqrt` 模块所有 `GNFS_*` 运行时调优开关 / helper 的详细设计(算法、ENV 解析、bit-for-bit 保证、ROI、集成点、测试)。
 >
-> 返回: [ENV 开关总览](README.md) · [CLAUDE.md ENV 索引表](../../CLAUDE.md#env-调优开关总览)
+> 返回: [ENV 开关模块导航](README.md)
 
 ---
 
@@ -124,3 +124,36 @@ unset GNFS_COUVEIGNES_PARALLEL_THREADS          # same as N=1
 **Default OFF (N=1)**: 任何 caller 不设 ENV 也不传 helper 调用时完全跑
 历史 sequential 路径, 零行为变化. 仅 Couveignes 主路径 wire-in helper +
 用户 explicit opt-in 时启用.
+
+---
+
+## Couveignes-Only Square Root (GNFS_FORCE_COUVEIGNES)
+
+`GNFS_FORCE_COUVEIGNES=1` 让 `AlgebraicSqrt::compute()` 跳过 Hensel lifting，直接走
+Couveignes 算法，用于验证 Couveignes 能独立承担完整的代数平方根阶段。默认先尝试
+Hensel lifting，失败时才回退到 Couveignes。
+
+- **取值与解析**：`AlgebraicSqrt::compute()` 每次调用时做整串比较，只有 `1` 生效。
+- **默认值**：未设置，Hensel 优先。
+- **对结果的影响**：改变算法路线。Hensel 失败时本来就会回退到 Couveignes，该变量只是
+  去掉第一次尝试。两条路线都给出代数平方根模 $N$ 的值，仓库里没有测试断言两者逐位
+  一致。
+- **接入点**：`include/gnfs/sqrt/algebraic_sqrt.hpp` 的 `AlgebraicSqrt::compute()`。
+- **测试**：`tests/test_couveignes_large_class_group.cpp` 的 `test_force_couveignes_env`
+  只验证变量能写入并读回，没有调用 `compute()`；仓库里没有测试或 CI 步骤在
+  `GNFS_FORCE_COUVEIGNES=1` 下运行。
+
+---
+
+## Couveignes Telemetry (GNFS_COUVEIGNES_VERBOSE)
+
+`GNFS_COUVEIGNES_VERBOSE=1` 让 `AlgebraicSqrt::compute_couveignes()` 在 Couveignes 求解
+结束后向 stderr 打印一行 `[Couveignes]` 指标，包括使用的素数数、因各种原因跳过的
+素数数、尝试的符号模式数以及是否找到平方根。
+
+- **取值与解析**：`compute_couveignes()` 每次调用时做整串比较，只有 `1` 生效。
+- **默认值**：未设置，不输出。
+- **对结果的影响**：只增加 stderr 输出，不改变结果。指标对象无论是否设置都会填充。
+- **接入点**：`include/gnfs/sqrt/algebraic_sqrt.hpp` 的
+  `AlgebraicSqrt::compute_couveignes()`；指标来自 `CouveignesSqrt::last_metrics()`。
+- **测试**：没有测试设置该变量。
