@@ -965,10 +965,11 @@ void test_matrix_builder_qc_primes_stay_above_relation_norm_primes() {
     const std::vector<core::Relation> no_rows;
 
     // f(x) = x - 1 gives every QC prime the root 1, so a QC selection is fully
-    // described by its primes.
+    // described by its primes. `zeros` is the expected zero-argument count.
     struct Expectation {
         const std::vector<core::Relation>& relations;
         std::vector<uint32_t> primes;
+        uint64_t zeros = 0;
     };
     const auto expect_pairs = [&](const FactorBase& fb, const Expectation& expectation) {
         std::vector<std::pair<uint32_t, uint32_t>> expected;
@@ -981,6 +982,7 @@ void test_matrix_builder_qc_primes_stay_above_relation_norm_primes() {
         for (const auto* result : {&vector, &streaming}) {
             GNFS_TEST_CHECK(result->mapping.num_qc_columns == expected.size());
             GNFS_TEST_CHECK(result->mapping.qc_prime_roots == expected);
+            GNFS_TEST_CHECK(result->qc_zero_legendre_count == expectation.zeros);
         }
     };
 
@@ -1020,6 +1022,14 @@ void test_matrix_builder_qc_primes_stay_above_relation_norm_primes() {
     // A default-constructed base declares no bounds, so the configured search
     // start applies on its own.
     expect_pairs(FactorBase{}, Expectation{no_rows, {101, 103, 107, 109, 113, 127}});
+
+    // The zero count must be live. With a = b = 1 every QC column sees
+    // a - b*r = 0, once for the primary pair and once for the merged pair.
+    core::Relation degenerate(1, 1);
+    degenerate.extra_ab_pairs.emplace_back(1, 1);
+    const std::vector<core::Relation> degenerate_rows{degenerate};
+    const uint64_t two_pairs_per_column = 2U * static_cast<uint64_t>(config.num_qc_primes);
+    expect_pairs(sparse, Expectation{degenerate_rows, primes_above_1000, two_pairs_per_column});
 
     std::cout << "  QC prime lower bound: PASSED" << std::endl;
 }

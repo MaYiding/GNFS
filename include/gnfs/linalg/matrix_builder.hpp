@@ -15,6 +15,7 @@
 #include "sparse_matrix.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -143,6 +144,12 @@ struct MatrixBuildResult {
     SparseMatrix matrix;                 // 构建的矩阵
     ColumnMapping mapping;               // 列映射信息
     std::vector<size_t> row_to_relation; // 行索引 -> 原始关系索引的映射
+    // Number of QC column evaluations whose argument a - b*r is 0 modulo the
+    // QC prime. The Legendre symbol is undefined there, so the column records 0
+    // and stops certifying that a dependency is a square. QC primes are chosen
+    // above every prime that can divide a relation norm, so a real corpus must
+    // report zero here.
+    uint64_t qc_zero_legendre_count = 0;
 };
 
 /// 矩阵构建配置
@@ -334,9 +341,13 @@ public:
         // 元素互不冲突;build_row_with_qc / class_group->compute_binary_characters /
         // schirokauer->compute_flat 全部 const,无内部状态修改。
         // SchirokauerMap::compute_flat 1M+ relations 是热点。
+        // Rows are built concurrently, so the zero count of the QC columns is
+        // accumulated in a shared atomic and published in the result.
+        std::atomic<uint64_t> qc_zero_legendre_count{0};
         gnfs::util::ThreadPool pool(0);
         pool.parallel_for_index(0, relations.size(), [&](size_t i) {
-            build_row_with_qc(result.matrix.row(i), relations[i], fb, ctx, result.mapping);
+            build_row_with_qc(result.matrix.row(i), relations[i], fb, ctx, result.mapping,
+                              qc_zero_legendre_count);
 
             // Valuations add on products. XOR the parities of every merged coordinate.
             if (class_group && class_group->num_binary_characters() > 0) {
@@ -381,6 +392,7 @@ public:
 
             result.row_to_relation[i] = i;
         });
+        result.qc_zero_legendre_count = qc_zero_legendre_count.load(std::memory_order_relaxed);
 
         return result;
     }
@@ -520,10 +532,12 @@ public:
         // local deserialize) and VectorRelationSource (const access) satisfy
         // this. The relation goes out of scope at the end of each lambda
         // invocation — no accumulation in any shared structure.
+        std::atomic<uint64_t> qc_zero_legendre_count{0};
         gnfs::util::ThreadPool pool(0);
         pool.parallel_for_index(0, n, [&](std::size_t i) {
             Relation rel = source.read(i);
-            build_row_with_qc(result.matrix.row(i), rel, fb, ctx, result.mapping);
+            build_row_with_qc(result.matrix.row(i), rel, fb, ctx, result.mapping,
+                              qc_zero_legendre_count);
 
             if (class_group && class_group->num_binary_characters() > 0) {
                 auto cg_chars = class_group->compute_binary_characters(rel.a, rel.b);
@@ -564,6 +578,7 @@ public:
             }
             // rel destroyed here — RAM not accumulating.
         });
+        result.qc_zero_legendre_count = qc_zero_legendre_count.load(std::memory_order_relaxed);
 
         return result;
     }
@@ -1024,8 +1039,12 @@ private:
     }
 
     /// 构建带二次特征的单行
+    /// `qc_zero_legendre_count` accumulates the number of QC evaluations in this
+    /// row whose argument a - b*r is 0 modulo the QC prime. The Legendre symbol
+    /// is undefined there: the column records 0 and stops certifying a square.
     void build_row_with_qc(SparseRow& row, const Relation& rel, const FactorBase& fb,
-                           const PolynomialContext& ctx, const ColumnMapping& mapping) const {
+                           const PolynomialContext& ctx, const ColumnMapping& mapping,
+                           std::atomic<uint64_t>& qc_zero_legendre_count) const {
 
         // 首先构建基础行
         build_row(row, rel, fb, mapping);
@@ -1059,6 +1078,10 @@ private:
         // Per-root QC columns (Briggs 2004): for each (q, r) pair where r is a root
         // of f(x) mod q, compute Legendre symbol ((a - b*r) / q).
         // For merged relations, XOR individual bits (character is multiplicative).
+        // A zero argument has no Legendre symbol. It still contributes 0 to GF(2),
+        // but the column then no longer certifies a square, so count it for the
+        // caller instead of staying silent.
+        uint64_t zero_legendre_count = 0;
         for (size_t i = 0; i < mapping.qc_prime_roots.size(); ++i) {
             auto [q, r] = mapping.qc_prime_roots[i];
             int64_t q_s = static_cast<int64_t>(q);
@@ -1069,8 +1092,10 @@ private:
                 uint64_t b_mod = b % q;
                 uint64_t br = (b_mod * r) % q;
                 int64_t val = (a_mod - static_cast<int64_t>(br) + q_s) % q_s;
-                if (val == 0)
+                if (val == 0) {
+                    ++zero_legendre_count;
                     return false; // (0/q) = 0, contributes 0 to GF(2)
+                }
                 uint64_t leg = powmod_u64(static_cast<uint64_t>(val), (q - 1) / 2, q);
                 return (leg == q - 1); // -1 → bit=1 (non-residue)
             };
@@ -1083,6 +1108,12 @@ private:
             if (qc_bit) {
                 row.set(static_cast<uint32_t>(mapping.qc_start() + i));
             }
+        }
+
+        // Rows are built concurrently. A correct QC prime selection never reaches
+        // this branch, so the hot path pays no atomic operation.
+        if (zero_legendre_count != 0) {
+            qc_zero_legendre_count.fetch_add(zero_legendre_count, std::memory_order_relaxed);
         }
     }
 

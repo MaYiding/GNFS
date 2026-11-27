@@ -3522,6 +3522,13 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                  std::to_string(matrix_stats.num_cols) +
                  " excess=" + std::to_string(matrix_stats.excess));
 
+    // A QC column is undefined where a - b*r is 0 modulo its prime. QC primes
+    // are selected above every prime that can divide a relation norm, so this
+    // count must stay 0. A nonzero value means a dependency that sets that
+    // column is not certified to be a square.
+    emit_log(LogLevel::Info, Phase::LinearAlgebra,
+             "qc zero legendre count: " + std::to_string(build_result.qc_zero_legendre_count));
+
     // BACKLOG #1 diagnostic (F.1): row/col weight distribution. Reveals
     // sieve gap (empty cols) and SGE-eliminable garbage (singleton cols/rows)
     // before BL/BW kicks in. Cost: one full nnz scan (~50ms at 50d, < 1% of
