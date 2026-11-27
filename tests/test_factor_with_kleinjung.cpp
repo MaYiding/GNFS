@@ -1,23 +1,38 @@
 /// test_factor_with_kleinjung.cpp - 使用 Kleinjung 多项式选择的 GNFS 分解测试
 ///
 /// 演示完整的 GNFS 流程，比较 Base-m 和 Kleinjung 多项式选择的效果
+///
+/// Every case ends in Release-active checks: the process exits with a nonzero
+/// status when a case does not produce a nontrivial prime factorization.
 
+#include "support/test_check.hpp"
 #include <gnfs/cofactor/cofactorizer.hpp>
 #include <gnfs/factor_base/builder.hpp>
 #include <gnfs/linalg/block_lanczos.hpp>
 #include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/sge.hpp>
 #include <gnfs/polynomial/base_m.hpp>
 #include <gnfs/polynomial/kleinjung_selector.hpp>
 #include <gnfs/relation/collector.hpp>
+#include <gnfs/relation/filter.hpp>
 #include <gnfs/relation/reduction_engine.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/sqrt/rational_sqrt.hpp>
+#include <gnfs/util/safe_math.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <iomanip>
 #include <iostream>
+#include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace gnfs;
 using namespace gnfs::core;
@@ -131,7 +146,114 @@ struct GNFSFactorResult {
     double time_sec = 0.0;
     std::string poly_method;
     double murphy_log_e = 0.0;
+    // Stage that ended the run early; empty when the factorization succeeded.
+    std::string failure_reason;
+    // Matrix shape bookkeeping, printed with the result so that the trim can
+    // be checked from the log.
+    size_t fb_columns = 0;
+    size_t lp_columns = 0;
+    size_t effective_columns = 0;
+    size_t rows_before_trim = 0;
+    size_t max_rows = 0;
+    size_t matrix_rows = 0;
+    size_t matrix_cols = 0;
+    size_t sge_rows = 0;
+    size_t sge_cols = 0;
 };
+
+// Rows kept before the solve, as a multiple of the effective column count
+// (factor-base columns plus large-prime columns).
+constexpr double TRIM_SAFETY_FACTOR = 1.3;
+
+// Size in MiB of the dense m x (m + n) augmented matrix that the dependency
+// solver builds from an m x n sparse matrix. This is the quantity the trim
+// reduces.
+double dense_augmented_mib(size_t rows, size_t cols) {
+    const size_t aug_cols = gnfs::util::saturating_size_add(rows, cols);
+    return static_cast<double>(rows) * static_cast<double>(aug_cols) / 8.0 / (1024.0 * 1024.0);
+}
+
+// A factor is nontrivial when it lies strictly between 1 and N.
+bool is_nontrivial_factor(const Integer& n, const Integer& factor) {
+    const Integer one(1);
+    return factor.compare(one) > 0 && factor.compare(n) < 0;
+}
+
+// Postconditions of one factorization. They stay active in Release builds:
+// GNFS_TEST_CHECK throws on the first violated condition, and main() turns
+// that into a nonzero exit status.
+void check_factorization(const Integer& n, const GNFSFactorResult& result) {
+    GNFS_TEST_CHECK(result.success);
+
+    Integer product = result.p.clone();
+    product *= result.q;
+    const bool product_is_n = product.compare(n) == 0;
+    const bool p_nontrivial = is_nontrivial_factor(n, result.p);
+    const bool q_nontrivial = is_nontrivial_factor(n, result.q);
+    const bool p_prime = result.p.is_probable_prime(25) > 0;
+    const bool q_prime = result.q.is_probable_prime(25) > 0;
+
+    std::cout << "p * q = " << product.to_string() << "\n";
+    std::cout << "Verified (p * q == N): " << (product_is_n ? "YES" : "NO") << "\n";
+    std::cout << "p is nontrivial: " << (p_nontrivial ? "YES" : "NO") << "\n";
+    std::cout << "q is nontrivial: " << (q_nontrivial ? "YES" : "NO") << "\n";
+    std::cout << "p is prime: " << (p_prime ? "YES" : "NO") << "\n";
+    std::cout << "q is prime: " << (q_prime ? "YES" : "NO") << "\n";
+    std::cout.flush();
+
+    GNFS_TEST_CHECK(product_is_n);
+    GNFS_TEST_CHECK(p_nontrivial);
+    GNFS_TEST_CHECK(q_nontrivial);
+    GNFS_TEST_CHECK(p_prime);
+    GNFS_TEST_CHECK(q_prime);
+}
+
+// Prints the outcome of one factorization, including the matrix shape before
+// and after the trim.
+void print_final_result(const GNFSFactorResult& result) {
+    const auto print_shape = [](const char* label, size_t rows, size_t cols) {
+        std::cout << label << ": " << rows << " x " << cols << "\n";
+    };
+
+    std::cout << "\n=== FINAL RESULT ===\n";
+    std::cout << "Polynomial method: " << result.poly_method << "\n";
+    std::cout << "Murphy log(E): " << result.murphy_log_e << "\n";
+    std::cout << "Relations collected: " << result.relations << "\n";
+    std::cout << "Total time: " << std::fixed << std::setprecision(2) << result.time_sec
+              << " seconds\n";
+
+    if (result.rows_before_trim > 0) {
+        const double mib_before =
+            dense_augmented_mib(result.rows_before_trim, result.effective_columns);
+        const double mib_after = dense_augmented_mib(result.matrix_rows, result.matrix_cols);
+        std::cout << "Factor-base columns: " << result.fb_columns << "\n";
+        std::cout << "Large-prime columns before trim: " << result.lp_columns << "\n";
+        std::cout << "Effective columns before trim (factor-base + large-prime): "
+                  << result.effective_columns << "\n";
+        std::cout << "Rows before trim: " << result.rows_before_trim << "\n";
+        std::cout << "Trim limit: " << result.max_rows << " rows\n";
+        print_shape("Matrix after trim", result.matrix_rows, result.matrix_cols);
+        print_shape("Matrix after SGE", result.sge_rows, result.sge_cols);
+        std::cout << "Dense size is the m x (m + n) augmented matrix the solver eliminates.\n";
+        std::cout << std::setprecision(1);
+        std::cout << "Trim safety factor: " << TRIM_SAFETY_FACTOR << "\n";
+        std::cout << "Dense matrix before trim (estimated): " << mib_before << " MiB\n";
+        std::cout << "Dense matrix after trim: " << mib_after << " MiB\n";
+        // Keep the two-decimal format that the rest of the output relies on.
+        std::cout << std::setprecision(2);
+    }
+
+    if (result.success) {
+        std::cout << "\n*** FACTORIZATION SUCCESSFUL! ***\n";
+        std::cout << "N = " << result.n.to_string() << "\n";
+        std::cout << "p = " << result.p.to_string() << "\n";
+        std::cout << "q = " << result.q.to_string() << "\n";
+    } else {
+        std::cout << "\nFactorization did not succeed: " << result.failure_reason << "\n";
+        std::cout << "(May need more sieving or different parameters)\n";
+    }
+    std::cout.flush();
+}
 
 // 使用给定的多项式上下文进行 GNFS 分解
 GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& ctx,
@@ -249,6 +371,7 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     if (collector.size() < 10) {
         if (verbose)
             std::cout << "  Not enough relations!\n";
+        result.failure_reason = "sieving produced fewer than 10 relations";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
@@ -274,13 +397,44 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     }
 
     if (relations.size() < 5) {
+        result.failure_reason = "singleton filtering left fewer than 5 relations";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
 
+    result.rows_before_trim = relations.size();
+
     // ============ 线性代数 ============
     if (verbose)
         std::cout << "\n[Linear Algebra]\n";
+
+    // Trim the overdetermined relation set before building the matrix. The
+    // dependency solver eliminates a dense m x (m + n) augmented matrix, so
+    // its cost grows with the square of the row count. The limit counts
+    // large-prime columns together with the factor-base columns: the matrix
+    // builder creates one column per unique odd-exponent large-prime key, so
+    // a factor-base-only limit would keep fewer rows than the matrix has
+    // columns.
+    const size_t fb_columns =
+        gnfs::util::saturating_size_add(fb.rational_count(), fb.sieve_algebraic_count());
+    const size_t lp_columns = gnfs::relation::count_unique_lp_keys(relations);
+    const size_t effective_columns = effective_column_count(fb_columns, lp_columns);
+    const double limit = static_cast<double>(effective_columns) * TRIM_SAFETY_FACTOR;
+    const size_t max_rows = gnfs::util::size_from_nonnegative_double_floor(limit);
+
+    result.fb_columns = fb_columns;
+    result.lp_columns = lp_columns;
+    result.effective_columns = effective_columns;
+    result.max_rows = max_rows;
+
+    if (relations.size() > max_rows) {
+        if (verbose) {
+            std::cout << "  Trim: " << relations.size() << " rows -> " << max_rows << " rows\n";
+        }
+        std::mt19937 rng(42);
+        std::shuffle(relations.begin(), relations.end(), rng);
+        relations.resize(max_rows);
+    }
 
     MatrixBuilderConfig mb_config;
     mb_config.include_sign_column = true;
@@ -294,6 +448,8 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     auto build_result = mb.build_with_qc(relations, fb, ctx);
 
     auto matrix_stats = compute_matrix_stats(build_result.matrix);
+    result.matrix_rows = matrix_stats.num_rows;
+    result.matrix_cols = matrix_stats.num_cols;
 
     if (verbose) {
         std::cout << "  Matrix: " << matrix_stats.num_rows << " x " << matrix_stats.num_cols
@@ -302,17 +458,29 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     }
 
     if (!matrix_stats.has_excess()) {
+        result.failure_reason = "matrix has no row excess after the trim";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
 
-    auto dependencies = find_dependencies(build_result.matrix, 50);
+    // Structured Gaussian Elimination removes singleton rows and merges
+    // weight-2 columns before the solve. Each dependency found on the reduced
+    // matrix is expanded back to the original row indices afterwards.
+    auto sge_result = linalg::SGE::preprocess(build_result.matrix);
+    result.sge_rows = sge_result.reduced_matrix.num_rows();
+    result.sge_cols = sge_result.reduced_matrix.num_cols();
+
+    auto dependencies = find_dependencies(sge_result.reduced_matrix, 50);
+    for (auto& dependency : dependencies) {
+        dependency = sge_result.expand_dependency(dependency);
+    }
 
     if (verbose) {
         std::cout << "  Dependencies: " << dependencies.size() << "\n";
     }
 
     if (dependencies.empty()) {
+        result.failure_reason = "the solver found no dependencies";
         result.time_sec = total_timer.elapsed_sec();
         return result;
     }
@@ -391,11 +559,14 @@ GNFSFactorResult factor_with_context(const Integer& n, const PolynomialContext& 
     }
 
     result.time_sec = total_timer.elapsed_sec();
+    if (!result.success) {
+        result.failure_reason = "no dependency yielded a nontrivial factorization";
+    }
     return result;
 }
 
 // 测试分解
-void test_factorization(const char* name, const Integer& n, uint32_t degree) {
+GNFSFactorResult test_factorization(const char* name, const Integer& n, uint32_t degree) {
     print_section(name);
 
     std::cout << "N = " << n.to_string() << "\n";
@@ -410,7 +581,11 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
 
     if (!basem_result.success) {
         std::cout << "Base-m selection failed!\n";
-        return;
+        GNFSFactorResult failed;
+        failed.n = n.clone();
+        failed.poly_method = "Base-m";
+        failed.failure_reason = "Base-m polynomial selection failed";
+        return failed;
     }
 
     auto basem_ctx = BaseMSelector::create_context(n, basem_result);
@@ -468,22 +643,8 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
         std::cout << "Using Base-m polynomial for factorization...\n";
 
         auto factor_result = factor_with_context(n, basem_ctx, "Base-m", basem_score.log_e_score);
-
-        std::cout << "\n=== RESULT (Base-m only) ===\n";
-        if (factor_result.success) {
-            std::cout << "SUCCESS!\n";
-            std::cout << "N = " << factor_result.n.to_string() << "\n";
-            std::cout << "p = " << factor_result.p.to_string() << "\n";
-            std::cout << "q = " << factor_result.q.to_string() << "\n";
-
-            // 验证
-            Integer check = factor_result.p.clone();
-            check *= factor_result.q;
-            std::cout << "Verified: " << (check.compare(n) == 0 ? "YES" : "NO") << "\n";
-        } else {
-            std::cout << "Factorization failed.\n";
-        }
-        return;
+        print_final_result(factor_result);
+        return factor_result;
     }
 
     auto kleinjung_ctx = create_context_from_kleinjung(n, kleinjung_result);
@@ -520,34 +681,8 @@ void test_factorization(const char* name, const Integer& n, uint32_t degree) {
     }
 
     // ============ 结果 ============
-    std::cout << "\n=== FINAL RESULT ===\n";
-    std::cout << "Polynomial method: " << factor_result.poly_method << "\n";
-    std::cout << "Murphy log(E): " << factor_result.murphy_log_e << "\n";
-    std::cout << "Relations collected: " << factor_result.relations << "\n";
-    std::cout << "Total time: " << std::fixed << std::setprecision(2) << factor_result.time_sec
-              << " seconds\n";
-
-    if (factor_result.success) {
-        std::cout << "\n*** FACTORIZATION SUCCESSFUL! ***\n";
-        std::cout << "N = " << factor_result.n.to_string() << "\n";
-        std::cout << "p = " << factor_result.p.to_string() << "\n";
-        std::cout << "q = " << factor_result.q.to_string() << "\n";
-
-        // 验证
-        Integer check = factor_result.p.clone();
-        check *= factor_result.q;
-        std::cout << "p * q = " << check.to_string() << "\n";
-        std::cout << "Verified: " << (check.compare(n) == 0 ? "YES" : "NO") << "\n";
-
-        // 检查素性
-        int p_prime = factor_result.p.is_probable_prime(25);
-        int q_prime = factor_result.q.is_probable_prime(25);
-        std::cout << "p is prime: " << (p_prime > 0 ? "YES" : "NO") << "\n";
-        std::cout << "q is prime: " << (q_prime > 0 ? "YES" : "NO") << "\n";
-    } else {
-        std::cout << "\nFactorization did not succeed.\n";
-        std::cout << "(May need more sieving or different parameters)\n";
-    }
+    print_final_result(factor_result);
+    return factor_result;
 }
 
 int main() {
@@ -555,33 +690,48 @@ int main() {
     std::cout << "    GNFS Factorization with Kleinjung Polynomial Selection\n";
     std::cout << "================================================================\n";
 
-    // 测试 1: 小半素数 (~27 bits)
-    {
-        Integer p("10007");
-        Integer q("10009");
-        Integer n = p * q; // 100160063
-        test_factorization("Test 1: 27-bit semiprime (10007 * 10009)", n, 3);
-    }
+    struct TestCase {
+        const char* title;
+        const char* p;
+        const char* q;
+        uint32_t degree;
+    };
+    const TestCase cases[] = {
+        // Test 1: small semiprime (~27 bits), N = 100160063
+        {"Test 1: 27-bit semiprime (10007 * 10009)", "10007", "10009", 3},
+        // Test 2: medium semiprime (~40 bits), N = 1000036000099
+        {"Test 2: 40-bit semiprime (1000003 * 1000033)", "1000003", "1000033", 3},
+        // Test 3: larger semiprime (~50 bits), N = 100000980001501
+        {"Test 3: 50-bit semiprime (10000019 * 10000079)", "10000019", "10000079", 4},
+    };
 
-    // 测试 2: 中等半素数 (~40 bits)
-    {
-        Integer p("1000003");
-        Integer q("1000033");
-        Integer n = p * q; // 1000036000099
-        test_factorization("Test 2: 40-bit semiprime (1000003 * 1000033)", n, 3);
-    }
-
-    // 测试 3: 较大半素数 (~50 bits)
-    {
-        Integer p("10000019");
-        Integer q("10000079");
-        Integer n = p * q; // 100000980001501
-        test_factorization("Test 3: 50-bit semiprime (10000019 * 10000079)", n, 4);
+    int passed = 0;
+    int failed = 0;
+    for (const TestCase& tc : cases) {
+        Integer p(tc.p);
+        Integer q(tc.q);
+        Integer n = p * q;
+        try {
+            const GNFSFactorResult result = test_factorization(tc.title, n, tc.degree);
+            check_factorization(n, result);
+            std::cout << "\n" << tc.title << ": PASS\n";
+            ++passed;
+        } catch (const std::exception& error) {
+            std::cout.flush();
+            std::cerr << "\n" << tc.title << ": FAIL: " << error.what() << "\n";
+            ++failed;
+        } catch (...) {
+            std::cout.flush();
+            std::cerr << "\n" << tc.title << ": FAIL: unknown exception\n";
+            ++failed;
+        }
     }
 
     std::cout << "\n================================================================\n";
     std::cout << "                    Tests Complete\n";
     std::cout << "================================================================\n";
+    std::cout << "Results: " << passed << " passed, " << failed << " failed\n";
+    std::cout.flush();
 
-    return 0;
+    return failed > 0 ? 1 : 0;
 }
