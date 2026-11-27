@@ -61,9 +61,9 @@
 
 ## 2026-11-27 增补
 
-> 本节补记 2026-11-27 第一波合入 main 的改动和随后的核实。正文其余部分仍是 2026-11-26 的定稿，没有随之改动。
+> 本节补记 2026-11-27 第一波合入 main 的改动和随后的核实。正文其余部分仍是 2026-11-26 的定稿，只改动了一处：§六「构建缓存命中后仍重编的原因没有调查」一条的末尾加了一句指向本节。§二.9 与「你可能会问」第 10、11 问仍写着原因没有调查，那是定稿时的状态，以本节的更正为准。
 >
-> **依据。** 本节没有编译，也没有运行测试。PR 编号与标题用 `gh pr view` 逐个核对；耗时取自 `gh api repos/MaYiding/GNFS/actions/runs/<id>/jobs`，编译计数取自 `gh run view <run> --job <job> --log`；文件数取自 `git ls-tree`。「已核实的线索」里引用的函数与类型，写本节时都重新打开读过。
+> **依据。** 本节没有编译，也没有运行测试。PR 编号与标题用 `gh pr view` 逐个核对；耗时取自 `gh api repos/MaYiding/GNFS/actions/runs/<id>/jobs`，编译计数取自 `gh run view <run> --job <job> --log`，文件数取自 `git ls-tree`；`CMakeLists.txt` 的条件读的是 `e2675a09` 上的版本。「已核实的线索」里引用的函数与类型，写本节时都重新打开读过。
 
 ### 第一梯队：九个方向已合入
 
@@ -92,8 +92,10 @@
 
 ### 更正 §二.9 与 §六
 
-- 构建目录缓存从来没有省过一次编译，问题不在缓存键，§二.9 待查的「缓存不命中」可以排除。main 的 run 45967343806（提交 `e2675a09`）里，五个 POSIX 行的缓存键都精确命中，每行仍编译了 351 个源文件里的 344 至 345 个对象。原因有两条。Make 按时间戳判断新旧，恢复出来的对象不比 checkout 的源码新；macOS 行的 `brew install gmp ntl` 每次都重新安装 NTL，新装的依赖头文件同样比对象新。缓存已换成 ccache（PR #420）。
-- 同一提交上必需检查的耗时（CI 的 run 45967343806、CodeQL 的 run 45967343786）：最长的两个并行，Windows 行 47.6 分钟，`CI required` 等它结束才通过；CodeQL 的 Analyze C++ 45.0 分钟。CodeQL 里带插桩的构建 25 分钟、分析 19 分钟，工作流里没有任何缓存。e2675a09 上仓库 351 个 .cpp 里 272 个是测试。§三.23 所引的 CodeQL 68.2 分钟没有注明 run，与这次的 45.0 分钟不是同一次测量，差别的原因未确认。
+- 构建目录缓存从来没有省过一次编译，问题不在缓存键，§二.9 待查的「缓存不命中」可以排除。证据在 main 的 run 45967343806（提交 `e2675a09`）：五个 POSIX 行的缓存键都精确命中，每行仍把自己适用的源文件全部编译了一遍。四个 Linux 行各编译 338 个源文件、345 个对象。macOS 行编译 336 个 `.cpp` 加 `src/linalg/metal_spmv.mm`，共 344 个对象。每行对象比源文件多出的 7 个，来自编进多个目标的三个源文件：`src/relation/structured_reduction.cpp` 编 2 次，`tests/test_siqs_multi_a_cycle_profile.cpp` 编 3 次，`tests/support/siqs_shadow_proof_rss_campaign_slot_synthetic_child.cpp` 编 5 次。
+- `e2675a09` 上仓库有 351 个 `.cpp`，四个 Linux 行没有编译的 13 个都不在默认构建里：`bench/microbench` 的 7 个不在构建系统里；4 个 `_windows.cpp` 在 `if(WIN32)` 下；`tests/fuzz/fuzz_integer.cpp` 在默认关闭的 `GNFS_BUILD_FUZZERS` 下；`tests/test_siqs_shadow_proof_rss_holdout_probe.cpp` 标了 `EXCLUDE_FROM_ALL`。macOS 行另有 2 个没有编译：`src/linalg/metal_spmv_stub.cpp` 是非 Metal 分支，`tests/support/bounded_child_process_authenticated_supervisor.cpp` 只在 Linux 下定义。
+- 缓存不起作用的原因有两条。Make 按时间戳判断新旧，恢复出来的对象不比 checkout 的源码新；macOS 行的 `brew install gmp ntl` 每次都重新安装 NTL，新装的依赖头文件同样比对象新。缓存已换成 ccache（PR #420）。
+- 同一提交上必需检查的耗时（CI 的 run 45967343806、CodeQL 的 run 45967343786）：最长的两个并行，Windows 行 47.6 分钟，`CI required` 等它结束才通过；CodeQL 的 Analyze C++ 45.0 分钟。CodeQL 里带插桩的构建 25 分钟、分析 19 分钟，工作流里没有任何缓存。这 351 个 .cpp 里 272 个是测试。§三.23 所引的 CodeQL 68.2 分钟没有注明 run，与这次的 45.0 分钟不是同一次测量，差别的原因未确认。
 
 ## 一、过去的方向脉络
 
