@@ -520,3 +520,48 @@ terminal record 或 sealed holdout 自动启用。
 ./scripts/test.sh compare-siqs-shadow-observe
 ./scripts/test.sh changed --deep
 ```
+
+---
+
+## Method Routing Overrides (GNFS_FORCE_SIQS, GNFS_DISABLE_SIQS)
+
+这两个变量覆盖 `Pipeline::select_method()` 的自动方法选择，只用于调试和实验。
+
+### 取值与解析
+
+| 取值 | 作用 |
+|------|------|
+| `GNFS_FORCE_SIQS=1` | 超过 6 位且超过 20 位的输入一律选 SIQS，跳过 Pollard rho 与 GNFS |
+| `GNFS_DISABLE_SIQS=1` | 25 到 100 位的输入直接选 GNFS，不再选 SIQS |
+
+两个变量都只比较首字符：已设置且首字符为 `1` 即生效，其余取值（包括 `0` 和
+`true`）视为未设置。`Pipeline::select_method()` 每次调用时各读取一次。`Config::method`
+显式指定了非 `Auto` 的方法时，两个变量都被忽略。
+
+### Default 与 bit-for-bit 契约
+
+默认两个变量都未设置，选择结果完全由位数决定。两个变量都会改变实际运行的算法，
+因而不属于 bit-for-bit 开关：`GNFS_FORCE_SIQS=1` 让本会走 Pollard rho 的输入进入
+SIQS 的超时受控搜索；`GNFS_DISABLE_SIQS=1` 让 GNFS 路线跳过 SIQS 探测。
+
+### 集成点与输出
+
+- `src/api/pipeline.cpp` 的 `Pipeline::select_method()` 做路由决策，`Pipeline::run()`
+  调用它。不超过 6 位或不超过 20 位的输入在此之前已判定为试除，
+  `GNFS_FORCE_SIQS` 对它们无效。返回的 reason 字符串会带上
+  `GNFS_FORCE_SIQS=1 override` 或 `SIQS disabled via ENV`。
+- `src/api/pipeline.cpp` 的 `Pipeline::run()` 在 Phase 2 再读一次 `GNFS_DISABLE_SIQS`。
+  方法为 GNFS 且位数不超过 100 时，默认会先做一次有时限的 SIQS 探测；
+  `GNFS_DISABLE_SIQS=1` 连这次探测也跳过。
+- `scripts/sweep_full.sh` 与 `scripts/sweep_combo.sh` 的位数扫描固定注入
+  `GNFS_DISABLE_SIQS=1`，保证测的是 GNFS 而不是被 SIQS 抢先解掉。
+
+### 测试
+
+- `tests/test_method_selection.cpp` 覆盖 `GNFS_FORCE_SIQS=1` 把 12 位输入提升为 SIQS、
+  5 位的输入仍走试除、`GNFS_DISABLE_SIQS=1` 让 50 位输入选 GNFS，以及显式
+  `Config::method` 优先于 ENV。
+- `tests/test_siqs_e2e.cpp` 的 `run_force_siqs_env` 在 `GNFS_FORCE_SIQS=1` 下跑完整
+  pipeline，并断言实际使用的方法是 SIQS。
+- `tests/test_api.cpp` 的 `test_structured_filter_run_freezes_route_before_callbacks`
+  把 `GNFS_DISABLE_SIQS` 钉为 `1`，保证用例真的跑 GNFS 各阶段。

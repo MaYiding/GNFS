@@ -864,3 +864,38 @@ semi-prime cofactor 通过真实 `BrentPollardRho::split` N=1 vs N=4 per-config
   reset env cache hook / resolve helper edges / perf info probe)
 - `CMakeLists.txt` / `scripts/test.sh` — 注册 instant tier, 60s timeout,
   cofactor 模块
+
+---
+
+## ECM Brent-Suyama Extension (GNFS_ECM_BRENT_SUYAMA)
+
+`GNFS_ECM_BRENT_SUYAMA=1` 让 ECM 的 Stage 2 用 Brent-Suyama 多项式 $F(x) = x^d$ 代替
+恒等映射做大步小步比较，在 $B_1$ 与 $B_2$ 不变的前提下多出一类因子命中。默认关闭，
+使用经典 BSGS。推导与实测见
+[docs/perf/ecm-stage3-design.md](../perf/ecm-stage3-design.md)。
+
+- **取值与解析**：`ECM::apply_brent_suyama_env()` 做整串比较，只有 `1` 启用。未设置、
+  空值和其余取值下，这个变量与 `GNFS_ECM_BS_DEGREE` 都被忽略，
+  `Config::brent_suyama_degree` 保持调用方给出的值。
+- **默认值**：关闭，`brent_suyama_degree = 0`。
+- **对结果的影响**：改变 ECM 的搜索路径，同一批曲线上可能找到经典 BSGS 找不到的
+  因子，不属于 bit-for-bit 开关。次数为 $1$ 时等价于经典 BSGS。
+- **接入点**：
+  - `include/gnfs/cofactor/ecm.hpp`：`ECM::factor(n, config)` 在自动调参之后、校验之前
+    调用 `apply_brent_suyama_env()`，每次调用都重新读取；`ECM::quick_factor()` 在每个
+    线程首次调用时读取一次，并缓存在 thread-local 的 `BatchContext` 里。
+  - 带显式曲线调度的 `ECM::factor()` 重载不读取这两个变量。
+  - `src/sieve/distributed_sieve_execution_policy_environment.cpp`：分布式筛把两个取值
+    冻结进 execution policy，分类为 semantic；worker 侧由
+    `src/sieve/distributed_sieve_cofactor_runtime_config.cpp` 写入显式配置。
+- **测试**：`tests/test_ecm_brent_suyama.cpp` 的 `test_env_opt_in` 覆盖 ENV 启用与非法
+  次数回退到默认值；`tests/test_ecm_curve_plan.cpp` 的
+  `test_ambient_degree_validation_after_environment_override` 覆盖 ENV 覆盖与非法次数的
+  交互；`tests/test_distributed_sieve_execution_policy.cpp` 覆盖冻结策略里的
+  `ecm_brent_suyama` 与 `ecm_bs_degree` 键。
+
+### GNFS_ECM_BS_DEGREE
+
+Brent-Suyama 多项式次数 $d$，只在 `GNFS_ECM_BRENT_SUYAMA=1` 时生效。`std::strtoul` 按
+十进制解析，取值必须是 $1$、$2$、$6$、$12$、$30$ 之一；未设置、空值、没有解析出数字
+或不在列表里时使用默认的 $12$。解析到数字之后的多余字符被忽略。
