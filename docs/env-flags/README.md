@@ -86,11 +86,11 @@ W7–W15 期间落地的一组 opt-in 并行 dispatcher,共享同一 ENV-gate + 
 | `GNFS_COUVEIGNES_VERBOSE` | 未设置 | 向 stderr 打印一行 Couveignes 指标（诊断） | [sqrt.md](sqrt.md#couveignes-telemetry-gnfs_couveignes_verbose) |
 | `GNFS_DEBUG_BL_CKPT` | 未设置 | 每次 Block Lanczos checkpoint 保存后打印一行（诊断） | [linalg.md](linalg.md#block-lanczos-checkpoint-trace-gnfs_debug_bl_ckpt) |
 | `GNFS_DEBUG_GAUSSIAN` | 未设置 | Gaussian elimination 结束后打印一行统计（诊断） | [linalg.md](linalg.md#gaussian-elimination-trace-gnfs_debug_gaussian) |
-| `GNFS_DISABLE_SIQS` | 未设置 | 路由与 GNFS 路线都跳过 SIQS（调试） | [siqs.md](siqs.md#method-routing-overrides-gnfs_force_siqs-gnfs_disable_siqs) |
+| `GNFS_DISABLE_SIQS` | 未设置 | 跳过整个 SIQS 阶段，显式 `--method siqs` 也落入 GNFS（调试） | [siqs.md](siqs.md#method-routing-overrides-gnfs_force_siqs-gnfs_disable_siqs) |
 | `GNFS_ECM_BRENT_SUYAMA` | 关闭 | ECM Stage 2 启用 Brent-Suyama 多项式扩展 | [cofactor.md](cofactor.md#ecm-brent-suyama-extension-gnfs_ecm_brent_suyama) |
 | `GNFS_ECM_BS_DEGREE` | `12`（需启用扩展） | Brent-Suyama 次数，取 1、2、6、12 或 30 | [cofactor.md](cofactor.md#gnfs_ecm_bs_degree) |
 | `GNFS_FORCE_COUVEIGNES` | 未设置 | 跳过 Hensel lifting，只走 Couveignes（测试） | [sqrt.md](sqrt.md#couveignes-only-square-root-gnfs_force_couveignes) |
-| `GNFS_FORCE_SIQS` | 未设置 | 试除判定之后的输入一律选 SIQS（调试） | [siqs.md](siqs.md#method-routing-overrides-gnfs_force_siqs-gnfs_disable_siqs) |
+| `GNFS_FORCE_SIQS` | 未设置 | 只影响路由：试除判定之后的输入选 SIQS，显式 `--method` 优先（调试） | [siqs.md](siqs.md#method-routing-overrides-gnfs_force_siqs-gnfs_disable_siqs) |
 | `GNFS_LATTICE_LLL` | `LLL` | `0` 或 `gauss` 改用 Lagrange-Gauss 约化 | [sieve.md](sieve.md#lattice-basis-reduction-method-gnfs_lattice_lll) |
 | `GNFS_LATTICE_SKEW` | 关闭 | skewness 不为 1 时把 LLL 升级为 SkewLLL | [sieve.md](sieve.md#skew-aware-lattice-reduction-gnfs_lattice_skew) |
 | `GNFS_LINALG_MMAP` | `off` | Block Wiedemann 的矩阵落盘：`on` 强制，`auto` 按大小 | [linalg.md](linalg.md#linear-algebra-matrix-mmap-policy-gnfs_linalg_mmap) |
