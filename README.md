@@ -572,7 +572,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release + 调试信息
 
 欢迎贡献。请遵循以下流程：
 
-1. Fork 仓库并创建特性分支：`feat/YYMMDD-描述`（日期前缀格式见 [CLAUDE.md](CLAUDE.md#分支规范)）
+1. Fork 仓库并创建特性分支，命名格式 `<type>/YYMMDD-描述`，例如 `feat/260519-bucket-sieve`
 2. 确保测试通过：`./scripts/test.sh gate`（合并门禁，约 20 秒）
 3. 遵循约定：C++20 风格、`snake_case` 函数、`PascalCase` 类型
 4. 提交 PR 并附清晰描述

@@ -583,7 +583,7 @@ The build system auto-detects GMP (required), NTL when enabled (optional), Metal
 
 Contributions are welcome. Please follow this workflow:
 
-1. Fork the repository and create a feature branch named `feat/YYMMDD-description`. The date prefix format appears in [CLAUDE.md](CLAUDE.md#分支规范).
+1. Fork the repository and create a feature branch named `<type>/YYMMDD-description`, for example `feat/260519-bucket-sieve`.
 2. Verify the merge gate passes: `./scripts/test.sh gate` (about 20 seconds).
 3. Follow the project conventions: C++20 style, `snake_case` functions, and `PascalCase` types.
 4. Open a pull request with a clear description.
