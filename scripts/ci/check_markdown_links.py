@@ -189,9 +189,11 @@ def heading_text(markup: str) -> str:
 def slugify(text: str) -> str:
     """Derive the GitHub anchor from plain heading text.
 
-    Lowercase, drop everything except word characters and hyphens, and turn
-    each space into a hyphen. Word characters keep letters (Chinese included),
-    digits, combining marks, and connector punctuation such as ``_``.
+    Lowercase, drop everything except word characters, hyphens, and spaces,
+    and turn each space into a hyphen. A line break inside the heading text is
+    dropped rather than turned into a hyphen. Word characters keep letters
+    (Chinese included), digits, combining marks, and connector punctuation
+    such as ``_``.
     """
     slug: list[str] = []
     for char in text.lower():
@@ -238,7 +240,9 @@ def iter_headings(text: str) -> list[tuple[int, str]]:
             # The underline closes the paragraph only at its own container
             # depth (CommonMark 4.6).
             if paragraph and depth == paragraph_depth:
-                headings.append((paragraph_offset, " ".join(paragraph)))
+                # GitHub keeps the line break in the heading text and then
+                # drops it from the anchor, so the lines are not joined by a space.
+                headings.append((paragraph_offset, "\n".join(paragraph)))
                 paragraph = []
                 continue
             if underline.group(1)[0] == "-":
@@ -424,7 +428,7 @@ def run_self_test() -> None:
             "---",
             "",
             "<h2>",
-            "多行 HTML 标题",
+            "  多行 HTML 标题",
             "</h2>",
             "",
             "## GNFS",
@@ -463,13 +467,13 @@ def run_self_test() -> None:
             "- [显式 name](docs/flags.md#named)",
             "- [引用块](docs/flags.md#引用里的标题)",
             "- [列表里的标题](docs/flags.md#列表里的标题)",
-            "- [Setext](docs/flags.md#跨行的-setext-标题)",
+            "- [Setext](docs/flags.md#跨行的setext-标题)",
             "- [引用块里的 Setext](docs/flags.md#引用里的段落二)",
             "- [行内 HTML](docs/flags.md#行内标签-段落)",
             "- [HTML 标题](docs/flags.md#gnfs)",
             "- [HTML 标题之后的重复](docs/flags.md#gnfs-1)",
             "- [HTML 实体](docs/flags.md#qa)",
-            "- [多行 HTML 标题](docs/flags.md#多行-html-标题)",
+            "- [多行 HTML 标题](docs/flags.md#--多行-html-标题)",
             "- [开头的横线](docs/thematic.md#标题)",
             "- [横线后的标题](docs/rule.md#第一个标题)",
             "- [省略号后的标题](docs/rule.md#第二个标题)",
@@ -509,6 +513,8 @@ def run_self_test() -> None:
             "[代码里的显式锚点](docs/flags.md#in-code)",
             "[HTML 重复错位](docs/flags.md#gnfs-2)",
             "[HTML 块里的横线](docs/flags.md#qa-1)",
+            "[跨行 Setext 的连字符](docs/flags.md#跨行的-setext-标题)",
+            "[去掉缩进的 HTML 标题](docs/flags.md#多行-html-标题)",
             "[被改写的代码](docs/flags.md#使用-stdvector-与-x)",
             "[文件缺失](docs/missing.md#anchor)",
             "",
@@ -540,10 +546,12 @@ def run_self_test() -> None:
             "broken.md:14: missing link anchor: docs/flags.md#in-code",
             "broken.md:15: missing link anchor: docs/flags.md#gnfs-2",
             "broken.md:16: missing link anchor: docs/flags.md#qa-1",
-            "broken.md:17: missing link anchor: docs/flags.md#使用-stdvector-与-x",
-            "broken.md:18: missing local link target: docs/missing.md#anchor",
-            "broken.md:22: missing link anchor: docs/flags.md#概述-3",
-            "broken.md:26: missing link anchor: docs/flags.md#概述-4",
+            "broken.md:17: missing link anchor: docs/flags.md#跨行的-setext-标题",
+            "broken.md:18: missing link anchor: docs/flags.md#多行-html-标题",
+            "broken.md:19: missing link anchor: docs/flags.md#使用-stdvector-与-x",
+            "broken.md:20: missing local link target: docs/missing.md#anchor",
+            "broken.md:24: missing link anchor: docs/flags.md#概述-3",
+            "broken.md:28: missing link anchor: docs/flags.md#概述-4",
         ]
         failures = scan(root, sources)
         if failures != expected:
