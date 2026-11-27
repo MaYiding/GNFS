@@ -34,4 +34,6 @@ jobs:
           persist-credentials: false
 
       - name: Check local links
-        run: python3 scripts/ci/check_markdown_links.py
+        run: |
+          python3 scripts/ci/check_markdown_links.py --self-test
+          python3 scripts/ci/check_markdown_links.py
