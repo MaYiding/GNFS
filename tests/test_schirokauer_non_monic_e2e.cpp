@@ -10,12 +10,18 @@
 //   sieve → cofactorization → filtering → matrix with Schirokauer columns →
 //   SGE → dependencies → rational and algebraic square root → GCD
 //
-// Fixtures. Both satisfy f(m) = N = 100160063 = 10007 * 10009, the 27-bit
-// semiprime of RegressionGate level 2, and both are irreducible over Q with
-// a squarefree discriminant:
-//   unsplit  3x^3 - 53x^2 - 2x + 15,    m = 328   f mod 2 = x^3 + x^2 + 1
-//   split    15x^3 + 14x^2 - 26x + 55,  m = 188   f mod 2 = (x + 1)(x^2 + x + 1)
+// Fixtures. Both are irreducible over Q with a squarefree discriminant and
+// satisfy f(m) ≡ 0 (mod N) for N = 100160063 = 10007 * 10009, the 27-bit
+// semiprime of RegressionGate level 2:
+//   unsplit  3x^3 + 55x^2 + 14x + 71,  m = 316   f(m) = N    f mod 2 = x^3 + x^2 + 1
+//   split    3x^3 - 82x^2 + 54x + 41,  m = 415   f(m) = 2N   f mod 2 = (x + 1)(x^2 + x + 1)
 // The same polynomials drive the unit tests in tests/test_linalg.cpp.
+//
+// Both have leading coefficient 3, and f mod 3 has no root, so the factor base
+// holds only the projective entry above 3. Each entry above a prime that
+// divides the leading coefficient costs a factor of two in the share of
+// dependencies whose product is a square, so these fixtures keep that share
+// near one half and the test does not depend on luck across dependencies.
 //
 // The flow mirrors tests/test_regression_gate.cpp. Only the polynomial is
 // fixed instead of being selected, with the default skewness of 1.0.
@@ -70,8 +76,8 @@ struct NonMonicFixture {
 };
 
 constexpr NonMonicFixture kFixtures[] = {
-    {"unsplit mod 2: 3x^3 - 53x^2 - 2x + 15, m = 328", {15, -2, -53, 3}, 328},
-    {"split mod 2: 15x^3 + 14x^2 - 26x + 55, m = 188", {55, -26, 14, 15}, 188},
+    {"unsplit mod 2: 3x^3 + 55x^2 + 14x + 71, m = 316", {71, 14, 55, 3}, 316},
+    {"split mod 2: 3x^3 - 82x^2 + 54x + 41, m = 415", {41, 54, -82, 3}, 415},
 };
 
 PolynomialContext make_non_monic_context(const NonMonicFixture& fixture, const Integer& n) {

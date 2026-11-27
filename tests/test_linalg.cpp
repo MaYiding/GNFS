@@ -1566,30 +1566,30 @@ struct NonMonicSchirokauerRow {
 // (100, 13), (-1000, 999), (0, 1), (-60, 1), (-60, 3), (-58, 3) and (-196, 1).
 // Before it, in that order, the unsplit fixture produced {1, 0, 0}, {0, 0, 0},
 // {1, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 1}, {1, 0, 0} and the split fixture
-// produced {0, 1, 1}, {1, 0, 1}, {0, 1, 1}, {0, 1, 1}, {1, 0, 1}, {0, 1, 0},
-// {0, 1, 1}. All other rows keep their columns.
+// produced {1, 0, 1}, {0, 1, 1}, {1, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 0, 0},
+// {1, 0, 1}. All other rows keep their columns.
 constexpr NonMonicSchirokauerRow kNonMonicSchirokauerRows[] = {
     {1, 2, {0, 1, 0}, {1, 0, 1}},
     {3, 2, {1, 1, 0}, {0, 1, 1}},
     {-5, 2, {1, 1, 0}, {0, 1, 1}},
     {7, 16, {1, 0, 0}, {1, 1, 0}},
     {-33, 64, {1, 0, 0}, {1, 1, 0}},
-    {100, 13, {0, 0, 0}, {0, 1, 0}},
+    {100, 13, {0, 0, 0}, {1, 0, 0}},
     {255, 256, {1, 0, 0}, {1, 1, 0}},
-    {-1000, 999, {1, 0, 0}, {1, 0, 0}},
+    {-1000, 999, {1, 0, 0}, {0, 1, 0}},
     {1000003, 1000034, {1, 1, 0}, {0, 1, 1}},
-    {0, 1, {0, 0, 0}, {0, 1, 0}},
+    {0, 1, {0, 0, 0}, {1, 0, 0}},
     {5, 0, {0, 0, 0}, {0, 0, 0}},
     {-1, 2, {1, 1, 0}, {0, 1, 1}},
-    {-60, 1, {0, 0, 0}, {0, 1, 0}},
-    {-60, 3, {1, 0, 0}, {1, 0, 0}},
-    {-58, 3, {1, 1, 1}, {0, 1, 1}},
-    {-196, 1, {0, 0, 0}, {0, 1, 0}},
+    {-60, 1, {0, 0, 0}, {1, 0, 0}},
+    {-60, 3, {1, 0, 0}, {0, 1, 0}},
+    {-58, 3, {1, 1, 1}, {1, 0, 1}},
+    {-196, 1, {0, 0, 0}, {1, 0, 0}},
 };
 
-// Both fixtures have leading coefficient ≡ 3 (mod 4) and satisfy f(m) = N for
-// N = 100160063 = 10007 * 10009. Both are irreducible over Q with a squarefree
-// discriminant (8975137 and -23198899).
+// Both fixtures have leading coefficient 3 and satisfy f(m) ≡ 0 (mod N) for
+// N = 100160063 = 10007 * 10009, with f(m) = N and f(m) = 2N. Both are
+// irreducible over Q with a squarefree discriminant (-44963311 and 97929893).
 void check_non_monic_schirokauer(const char* label, const std::vector<int64_t>& coefficients,
                                  int64_t m, uint64_t expected_lead_inverse, bool expect_split) {
     std::cout << "Testing " << label << "..." << std::endl;
@@ -1694,20 +1694,20 @@ void check_non_monic_schirokauer(const char* label, const std::vector<int64_t>& 
     std::cout << "  " << label << ": PASSED" << std::endl;
 }
 
-// f(x) = 3x^3 - 53x^2 - 2x + 15 with m = 328: f mod 2 = x^3 + x^2 + 1 is
+// f(x) = 3x^3 + 55x^2 + 14x + 71 with m = 316: f mod 2 = x^3 + x^2 + 1 is
 // irreducible, so the map takes the unsplit path with the normalized modulus
-// x^3 + 153x^2 + 170x + 5 (3^{-1} = 171 modulo 256).
+// x^3 + 189x^2 + 90x + 109 (3^{-1} = 171 modulo 256).
 void test_schirokauer_non_monic_unsplit() {
     check_non_monic_schirokauer("Schirokauer map with a non-monic unsplit polynomial",
-                                {15, -2, -53, 3}, 328, 171, false);
+                                {71, 14, 55, 3}, 316, 171, false);
 }
 
-// f(x) = 15x^3 + 14x^2 - 26x + 55 with m = 188: f mod 2 = (x + 1)(x^2 + x + 1),
+// f(x) = 3x^3 - 82x^2 + 54x + 41 with m = 415: f mod 2 = (x + 1)(x^2 + x + 1),
 // so the split path reduces by a Hensel-lifted quadratic factor
-// (15^{-1} = 239 modulo 256).
+// (3^{-1} = 171 modulo 256).
 void test_schirokauer_non_monic_split_quadratic() {
     check_non_monic_schirokauer("Schirokauer map with a non-monic split polynomial",
-                                {55, -26, 14, 15}, 188, 239, true);
+                                {41, 54, -82, 3}, 415, 171, true);
 }
 
 // Degenerate Schirokauer rows (all-zero map vectors) are counted in
@@ -1718,9 +1718,9 @@ void test_matrix_builder_counts_degenerate_schirokauer_rows() {
     using core::Integer;
     using core::PolynomialContext;
 
-    // 3x^3 - 53x^2 - 2x + 15 with m = 328: unsplit mod 2, same fixture as above.
-    const std::vector<Integer> coefficients = {Integer(15), Integer(-2), Integer(-53), Integer(3)};
-    const PolynomialContext ctx(Integer("100160063"), coefficients, Integer(328));
+    // 3x^3 + 55x^2 + 14x + 71 with m = 316: unsplit mod 2, same fixture as above.
+    const std::vector<Integer> coefficients = {Integer(71), Integer(14), Integer(55), Integer(3)};
+    const PolynomialContext ctx(Integer("100160063"), coefficients, Integer(316));
     factor_base::FactorBase fb;
     std::vector<core::Relation> relations;
     // Five relations with a non-zero Schirokauer vector.
