@@ -430,7 +430,7 @@ flowchart LR
 | 7. Square root | Nguyen Hybrid primary path and Couveignes fallback | K small primes with Hensel lift and CRT, 200 times faster than a large-prime CRT |
 | 8. GCD | gcd(a ± b, N) | Falls back to additional dependencies if needed |
 
-> Detailed algorithm notes and recent engineering trade-offs (V0 and V3 cascade, thin BW solve, Schirokauer maps) live in [CLAUDE.md](CLAUDE.md).
+> Detailed algorithm notes and recent engineering trade-offs (V0 and V3 cascade, thin BW solve, Schirokauer maps) live in [relation.md](docs/env-flags/relation.md), [linalg.md](docs/env-flags/linalg.md), and the [V3 cascade design](docs/perf/v3-cascade-design.md); the correctness invariants are in [AGENTS.md](AGENTS.md).
 
 ### Code Conventions
 

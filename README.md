@@ -414,7 +414,7 @@ flowchart LR
 | ⑦ 平方根 | Nguyen Hybrid（主） + Couveignes（备选） | K 小素数 + Hensel + CRT，比大素数 CRT 快 200 倍 |
 | ⑧ GCD | gcd(a ± b, N) | 多依赖回退 |
 
-> 算法细节与最新工程权衡（V0/V3 cascade、thin BW 解、Schirokauer maps）记录于 [CLAUDE.md](CLAUDE.md)。
+> 算法细节与最新工程权衡（V0/V3 cascade、thin BW 解、Schirokauer maps）记录于 [relation.md](docs/env-flags/relation.md)、[linalg.md](docs/env-flags/linalg.md) 与 [V3 cascade 设计](docs/perf/v3-cascade-design.md)；正确性约定见 [AGENTS.md](AGENTS.md)。
 
 ### 代码约定
 
