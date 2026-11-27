@@ -59,6 +59,45 @@
 - 所以「BlockWiedemann 通过」只覆盖 Block Wiedemann 自己的代码和瘦矩阵情形，覆盖不到高斯路径。高斯路径靠走完整流水线、矩阵有盈余的测试（RegressionGate、GNFS_E2E、FactorWithKleinjung）或专门的 `test_block_lanczos*`；各测试是否真走高斯路径取决于各自矩阵的形状，本次修订没有逐个核对。`tests/test_block_wiedemann.cpp:609` 也调用了 `BlockLanczos`，用途本次修订没有读，未确认。
 - §四.24 的「30 秒的 SIQS 探测」和 §三.13 的「SIQS 分支超时下限 60 秒」是同一个 `if` 里的两个分支（`src/api/pipeline.cpp:4322-4356`）。方法本身是 SIQS（含自动选路选到 SIQS）时，超时按十进制位数取 60 秒到 7200 秒；方法被强制为 GNFS 但位数不超过十进制 100 位时，先做一次 SIQS 探测，十进制 50 位以内给 30 秒。
 
+## 2026-11-27 增补
+
+> 本节补记 2026-11-27 第一波合入 main 的改动和随后的核实。正文其余部分仍是 2026-11-26 的定稿，只改动了一处：§六「构建缓存命中后仍重编的原因没有调查」一条的末尾加了一句指向本节。§二.9 与「你可能会问」第 10、11 问仍写着原因没有调查，那是定稿时的状态；本节记了之后查到的证据，原因本身是推断。
+>
+> **依据。** 本节没有编译，也没有运行测试。PR 编号与标题用 `gh pr view` 逐个核对；耗时取自 `gh api repos/MaYiding/GNFS/actions/runs/<id>/jobs`，编译计数取自 `gh run view <run> --job <job> --log`，文件数取自 `git ls-tree`；`CMakeLists.txt` 的条件读的是 `e2675a09` 上的版本。「已核实的线索」里引用的函数与类型，写本节时都重新打开读过。
+
+### 第一梯队：九个方向已合入
+
+九个方向都经集成 PR #423 合入 main，合并提交是 `86d7005c`。
+
+| 方向 | PR | 改了什么 |
+|---|---|---|
+| 1 | #415 | Schirokauer 模多项式在归一化后才用于约化，并统计退化行 |
+| 2 | #416 | 特征素数选在因子基、special-q 区间与大素数界之上 |
+| 3 | #417 | 高斯消元与 SpMV 转置在 `submit` 抛出时排干已提交任务 |
+| 4、5 | #418 | 矩阵阶段对未通过校验的依赖留痕并剔除；平方根失败按依赖写日志 |
+| 6 | #419 | `test_factor_with_kleinjung` 求解前裁剪，并做 Release 下生效的断言 |
+| 7、9 | #420 | macOS 的 CI 行跑三个 WaveMergeCommit 分片；构建目录缓存换成 ccache，Windows 行缓存 vcpkg 二进制包 |
+| 8 | #421、#422 | 开关台账补齐并加防回归检查；链接检查器加锚点校验并修掉悬空锚点 |
+
+八个 PR 都只经 #423 进入 main：各自的合并提交都在集成分支里，没有一个单独合并到 main。§七 建议方向 2 单独合并，这一点没有照做。#416 的说明写明它不单独合并：120 bit 门禁的矩阵身份随特征素数改变，新基线在集成分支上采集。
+
+### 已核实的线索
+
+线索由一名核实员读码、一名复核员换人复核，全程没有编译。第一条的裁决范围写本节时按代码收窄，第二个缺口换成了 PR #415 说明的写法，出处写在各条里。
+
+- §六「分歧与指标素数只按范数赋值记一列」对单根不成立。$f\bmod p$ 的每个根是一个因子基条目（`src/factor_base/builder.cpp`）；因子基列与大素数列都按 $(p,r)$ 键建，大素数列用的是 `include/gnfs/linalg/matrix_builder.hpp` 的 `PrimeIdealKey`。
+- 对投影根它成立，这是一处还没有解决的缺口。整除首项系数的素数各只有一个投影根条目（`src/factor_base/builder.cpp`）。试除在 $p\mid b$ 时匹配这个条目，并把范数的整个 $p$ 进赋值记给它（`include/gnfs/cofactor/trial_division.hpp`）；大素数遇到 $p\mid b$ 时根也记为投影根（`include/gnfs/cofactor/cofactorizer.hpp`）。
+- 对重根它只在一种情形下是缺口。求根只返回不同的根，重根因此只有一个条目（`src/factor_base/builder.cpp`），这只是列数。重根本身不构成缺口：$p$ 不整除指标 $[\mathcal{O}_K:\mathbb{Z}[\alpha]]$ 时，$(p,\alpha-r)$ 是一次素理想，互素的 $(a,b)$ 只落进根为 $a/b$ 的那一个素理想，范数的 $p$ 进赋值就等于该素理想处的赋值。构成缺口的是 $p$ 整除指标的情形：$\mathbb{Z}[\alpha]$ 在 $p$ 处不是极大阶，一个 $(p,r)$ 可以对应 $\mathcal{O}_K$ 的多个素理想，列只约束它们赋值的加权和。代码里没有计算指标的逻辑，这类素数的出现频率与损失都没有数据。这一条是数学推导，不是读码结论。
+- 由此带出两个约束缺口。一是首项系数不是平方数时，依赖的对数奇偶没有约束；对数指依赖里 $(a,b)$ 对的个数。二是首项系数的素因子上方，范数的整个 $p$ 进赋值进同一个条目，一部分依赖因此不是平方。另外，首项系数为偶数时，Schirokauer 列成了非同态的噪声约束：`include/gnfs/linalg/schirokauer.hpp` 的归一化要乘首项系数模 $\ell^k$ 的逆，偶数首项系数没有逆，这一支保留旧行为。PR #415 的说明把这三处列为没有覆盖。
+- 三者都只降低成功率，不会算出错误因子。Hensel 与 Couveignes 的返回值都做了 $Y$ 的平方的校验：`include/gnfs/sqrt/hensel_sqrt.hpp` 的 `verify_and_return`、`include/gnfs/sqrt/couveignes.hpp` 的 `verify_current`。流水线按两个因子都非平凡且乘积等于 $N$ 收口（`src/api/pipeline.cpp` 的 `try_factor`）。
+
+### 更正 §二.9 与 §六
+
+- 在 main 的 run 45967343806（提交 `e2675a09`）里，构建目录缓存没有省过一次编译，问题不在缓存键：这一 run 里 §二.9 待查的「缓存不命中」没有出现。只查了这一次 run。「从来没有省过一次」是 PR #420 说明的结论，本节没有查别的 run，也没有查 PR #420 之后的 run。五个 POSIX 行的缓存键都精确命中，每行仍把自己适用的源文件全部编译了一遍。四个 Linux 行各编译 338 个源文件、345 个对象。macOS 行编译 336 个 `.cpp` 加 `src/linalg/metal_spmv.mm`，共 344 个对象。每行对象比源文件多出的 7 个，来自编进多个目标的三个源文件：`src/relation/structured_reduction.cpp` 编 2 次，`tests/test_siqs_multi_a_cycle_profile.cpp` 编 3 次，`tests/support/siqs_shadow_proof_rss_campaign_slot_synthetic_child.cpp` 编 5 次。
+- `e2675a09` 上仓库有 351 个 `.cpp`，四个 Linux 行没有编译的 13 个都不在默认构建里：`bench/microbench` 的 7 个不在构建系统里；4 个 `_windows.cpp` 在 `if(WIN32)` 下；`tests/fuzz/fuzz_integer.cpp` 在默认关闭的 `GNFS_BUILD_FUZZERS` 下；`tests/test_siqs_shadow_proof_rss_holdout_probe.cpp` 标了 `EXCLUDE_FROM_ALL`。macOS 行另有 2 个没有编译：`src/linalg/metal_spmv_stub.cpp` 是非 Metal 分支，`tests/support/bounded_child_process_authenticated_supervisor.cpp` 只在 Linux 下定义。
+- 原因是推断，没有实测：没有查看恢复出来的目录里的时间戳，也没有做对照 run。推断的内容是：Make 靠时间戳判断新旧，恢复出来的对象若不比 checkout 的源码和新装的依赖头文件新，就会全部重编。macOS 行这一次的日志里，`brew install gmp ntl` 对 gmp 报已安装，对 ntl 是新装；「每次都重新安装 NTL」同样是推断。缓存已换成 ccache（PR #420）。
+- 同一提交上必需检查的耗时（CI 的 run 45967343806、CodeQL 的 run 45967343786）：最长的两个并行，Windows 行 47.6 分钟，`CI required` 等它结束才通过；CodeQL 的 Analyze C++ 45.0 分钟。CodeQL 里带插桩的构建 25 分钟、分析 19 分钟，工作流里没有任何缓存。这 351 个 .cpp 里 272 个是测试。§三.23 所引的 CodeQL 68.2 分钟没有注明 run，与这次的 45.0 分钟不是同一次测量，差别的原因未确认。
+
 ## 一、过去的方向脉络
 
 2026 年 3 月至 4 月的提交时间戳是按固定节距回放的，这两个月只有顺序可信。「回放」指这些提交的时间戳不是真实的工作时刻，而是按固定间隔生成的。修订时用 `git log --no-merges --format='%ci'` 按 3 至 5 月分段抽查：2026-04-15 当天依次是 16:18:45、15:30:00、14:41:15、13:52:30、13:03:45，2026-04-22 当天是 22:00:00、21:16:40、20:33:20、19:50:00，间隔固定；2026-05-11 当天是 19:23:15、19:15:49、19:11:25、19:05:09、18:54:14、18:51:12，间隔不规则。因此表内落在 3 至 4 月的行只能按提交顺序看，「4 月做内核性能」这类月内划分的可信度低于 5 月以后按日期的划分。
@@ -373,7 +412,7 @@
 - Block Wiedemann 的亚二次 lingen（lingen 指由 Krylov 序列求线性递推的那一步，亚二次指用低于二次复杂度的算法实现它）：仓库里还没有规模走到那一步，没有列入。
 - Workbench（macOS 应用）自身的方向没有调研。
 - 各项「实际损失」都没有统计：非首一多项式在默认路径上的出现频率、Schirokauer 退化发生率、特征列记 0 让多少依赖失败、十进制 60 位在任何路径下的表现。
-- 构建缓存命中后仍重编的原因没有调查。
+- 构建缓存命中后仍重编的原因没有调查。构建目录缓存已换成 ccache，原因的推断见「2026-11-27 增补」。
 - CodeQL 时长、部分矩阵行的编译计数来自核实；原稿作者只亲自核对了同一 run 的 job、step 时长和 macOS 行的编译计数。
 - `bench/microbench` 的 7 个 .cpp 不受构建系统管理，与 helper 裁决无关，没有归入任何方向。
 - macOS CLI 发布包没有就绪作业，发布冒烟覆盖不到。

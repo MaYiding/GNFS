@@ -2992,6 +2992,17 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SchirokauerNonMonicE2E COMMAND test_schirokauer_non_monic_e2e)
     set_tests_properties(SchirokauerNonMonicE2E PROPERTIES LABELS "slow" TIMEOUT 300)
 
+    # Non-monic matrix constraints end to end: one pair-parity column when the
+    # leading coefficient is not a square, and no Schirokauer column when 2
+    # divides it. The even 2x^2 + x + 1 fixture factors 407 and the odd
+    # non-square 7x^3 fixture factors the 27-bit semiprime 100160063.
+    add_executable(test_non_monic_matrix_constraints_e2e
+        tests/test_non_monic_matrix_constraints_e2e.cpp
+    )
+    target_link_libraries(test_non_monic_matrix_constraints_e2e PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME NonMonicMatrixConstraintsE2E COMMAND test_non_monic_matrix_constraints_e2e)
+    set_tests_properties(NonMonicMatrixConstraintsE2E PROPERTIES LABELS "slow" TIMEOUT 300)
+
     # API 层测试
     add_executable(test_api
         tests/test_api.cpp

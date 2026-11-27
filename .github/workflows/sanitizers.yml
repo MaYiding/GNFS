@@ -32,7 +32,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
+        bash scripts/ci/apt_update.sh
         sudo apt-get install -y libgmp-dev libntl-dev zsh
 
     - name: Configure with sanitizers
@@ -72,7 +72,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
+        bash scripts/ci/apt_update.sh
         sudo apt-get install -y clang libgmp-dev libntl-dev zsh
 
     - name: Run narrow concurrency lane under ThreadSanitizer
@@ -96,7 +96,7 @@ jobs:
     - name: Install diagnostic dependencies
       run: |
         libc_version=$(dpkg-query -W -f='${Version}' libc6)
-        sudo apt-get update
+        bash scripts/ci/apt_update.sh
         sudo apt-get install -y libgmp-dev libntl-dev zsh strace gdb "libc6-dbg=${libc_version}"
 
     - name: Record source and toolchain

@@ -18,10 +18,9 @@
 // The same polynomials drive the unit tests in tests/test_linalg.cpp.
 //
 // Both have leading coefficient 3, and f mod 3 has no root, so the factor base
-// holds only the projective entry above 3. Each entry above a prime that
-// divides the leading coefficient costs a factor of two in the share of
-// dependencies whose product is a square, so these fixtures keep that share
-// near one half and the test does not depend on luck across dependencies.
+// holds only the projective entry above 3. The leading coefficient is not a
+// square, so MatrixBuilder adds the pair-parity column that forces every
+// dependency to contain an even number of (a, b) pairs.
 //
 // The flow mirrors tests/test_regression_gate.cpp. Only the polynomial is
 // fixed instead of being selected, with the default skewness of 1.0.

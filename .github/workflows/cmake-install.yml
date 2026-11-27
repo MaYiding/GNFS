@@ -48,7 +48,7 @@ jobs:
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          bash scripts/ci/apt_update.sh
           sudo apt-get install -y libgmp-dev libntl-dev
 
       - name: Install dependencies (macOS)

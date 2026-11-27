@@ -30,7 +30,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          bash scripts/ci/apt_update.sh
           sudo apt-get install -y zsh libgmp-dev libntl-dev
 
       - name: Run Release thorough regression
@@ -65,7 +65,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          bash scripts/ci/apt_update.sh
           sudo apt-get install -y zsh libgmp-dev libntl-dev
 
       - name: Run structured 120-bit route gate
@@ -100,7 +100,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          bash scripts/ci/apt_update.sh
           sudo apt-get install -y zsh libgmp-dev libntl-dev
 
       - name: Compare bounded 50-digit production routes

@@ -144,10 +144,23 @@ modulo 4: one is unsplit modulo 2, the other splits into a linear and a
 quadratic factor. Companion-matrix reference values and hard-coded columns
 check both, and a matrix-builder case pins the count of degenerate Schirokauer
 rows.
+Two further matrix-builder cases cover the non-monic constraints. One checks
+the pair-parity column for leading coefficients 3, 7, and 12, its absence for
+1, 4, 9, and 36, the row value of merged relations, and that a merged row is
+still the XOR of its constituents in every column. The other checks that an
+even leading coefficient yields no Schirokauer column while the compensated
+quadratic-character count stays in place, with odd leading coefficients as
+controls. Both compare the in-memory and streaming builds.
 `SchirokauerNonMonicE2E` is a `slow` end-to-end contract on the same two
 polynomials. Each one must factor the 27-bit semiprime 100160063 through sieve,
 filtering, matrix, dependencies, and square root. The Linux Release deep gate
 runs it.
+`NonMonicMatrixConstraintsE2E` is a `slow` end-to-end contract for the same
+constraints. The even quadratic `2x^2 + x + 1` with `m = 14` must factor 407,
+and the odd non-square cubic `7x^3 + 58x^2 + 213x + 143` with `m = 240` must
+factor 100160063. Each matrix must carry the pair-parity column, and the even
+fixture must also have no Schirokauer column. The Linux Release deep gate runs
+it.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,

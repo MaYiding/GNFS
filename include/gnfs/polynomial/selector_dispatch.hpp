@@ -105,8 +105,14 @@ public:
         // BaseMSelector 路径
         auto poly_result = BaseMSelector::select(n, degree);
         if (!poly_result.success) {
-            throw std::runtime_error("Polynomial selection failed for " + std::to_string(bits) +
-                                     "-bit N");
+            std::string message = "Polynomial selection failed for ";
+            message += std::to_string(bits);
+            message += "-bit N";
+            if (!poly_result.error.empty()) {
+                message += ": ";
+                message += poly_result.error;
+            }
+            throw std::runtime_error(message);
         }
 
         return BaseMSelector::create_context(n, poly_result);
