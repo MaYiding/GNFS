@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -237,10 +238,9 @@ public:
         }
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
-            // QC primes must be above algebraic FB bound to avoid Legendre=0 corruption
-            const uint32_t alg_bound = fb.params().algebraic_bound;
-            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count,
-                                                   static_cast<uint64_t>(alg_bound) + 1U);
+            // QC primes must clear every prime that can divide a relation
+            // norm: the factor base, the special-Q range, and the large primes.
+            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count, qc_prime_min(fb));
         }
 
         // 第三步：计算类群（如果启用）
@@ -441,9 +441,9 @@ public:
         }
         std::vector<std::pair<uint32_t, uint32_t>> qc_prime_roots;
         if (config_.include_qc_columns) {
-            const uint32_t alg_bound = fb.params().algebraic_bound;
-            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count,
-                                                   static_cast<uint64_t>(alg_bound) + 1U);
+            // Same lower bound as the vector path: the two builds must agree on
+            // the QC columns bit for bit.
+            qc_prime_roots = select_qc_prime_roots(ctx, effective_qc_count, qc_prime_min(fb));
         }
 
         // 第三步：类群
@@ -644,10 +644,36 @@ private:
         return info;
     }
 
+    /// Exclusive lower bound for QC primes.
+    ///
+    /// Column (q, r) records the Legendre symbol of a - b*r modulo q. That
+    /// symbol is 0 whenever q divides the algebraic norm of a - b*alpha, so q
+    /// must exceed every prime that such a norm can contain:
+    ///   - the algebraic factor-base bound,
+    ///   - the special-Q range, and
+    ///   - the large-prime bound.
+    /// FactorBaseParams does not store the special-Q range. The builder appends
+    /// its prime ideals as algebraic entries beyond the sieve prefix, and
+    /// SpecialQGenerator yields special-Q ideals only from those entries, so the
+    /// largest algebraic entry bounds them. Scanning the whole span also covers
+    /// a hand-built base whose sieve prefix reaches past algebraic_bound.
+    [[nodiscard]] static uint64_t qc_prime_min(const FactorBase& fb) {
+        const core::FactorBaseParams& params = fb.params();
+        uint64_t bound = std::max<uint64_t>(params.algebraic_bound, params.large_prime_bound);
+        for (const auto& prime : fb.algebraic()) {
+            bound = std::max(bound, static_cast<uint64_t>(prime.p));
+        }
+        // UINT64_MAX has no representable successor. Pass it through unchanged;
+        // select_qc_prime_roots rejects it against the uint32_t range.
+        return bound < std::numeric_limits<uint64_t>::max() ? bound + 1U : bound;
+    }
+
     /// 选择二次特征素数——Per-root QC (Briggs 2004)
     /// Select SPLIT primes where f(x) has roots mod p, returning (prime, root) pairs.
     /// Each (p, r) pair becomes one QC column: Legendre symbol ((a - b*r) / p).
     /// This gives d independent bits per fully-split prime (vs 1 bit for norm-based QC).
+    /// `min_prime` is exclusive: the first candidate is the next prime above
+    /// max(config_.qc_prime_start, min_prime).
     [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>>
     select_qc_prime_roots(const PolynomialContext& ctx, size_t num_columns,
                           uint64_t min_prime = 0) const {
@@ -661,9 +687,14 @@ private:
         // QC primes MUST be above the factor base algebraic bound.
         // If primes are inside FB, many relations have (a-b*r) ≡ 0 (mod q),
         // giving Legendre symbol = 0 (undefined), corrupting the GF(2) constraints.
+        // Callers pass qc_prime_min(fb), which also covers the special-Q range and
+        // the large-prime bound: a special-Q prime ideal is recorded as an
+        // algebraic large prime of every relation sieved with it, so it collides
+        // with a QC column in exactly the same way.
         const uint64_t start = std::max<uint64_t>(config_.qc_prime_start, min_prime);
         if (start > std::numeric_limits<uint32_t>::max()) {
-            throw std::out_of_range("MatrixBuilder: algebraic bound leaves no uint32 QC prime");
+            throw std::out_of_range(
+                "MatrixBuilder: factor-base and large-prime bounds leave no uint32 QC prime");
         }
         uint32_t p = static_cast<uint32_t>(start);
 

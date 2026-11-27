@@ -927,6 +927,103 @@ void test_matrix_builder_rejects_unrepresentable_qc_start() {
     std::cout << "  Unrepresentable QC start rejected: PASSED" << std::endl;
 }
 
+// Regression: a QC column (q, r) is undefined on any relation whose algebraic
+// norm q divides, and compute_legendre_bit records 0 there. QC primes must
+// therefore stay above the algebraic factor-base bound, the special-Q range,
+// and the large-prime bound. The old rule used only the first, so a small
+// algebraic bound let it pick special-Q primes.
+void test_matrix_builder_qc_primes_stay_above_relation_norm_primes() {
+    std::cout << "Testing MatrixBuilder QC prime lower bound..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+    using factor_base::FactorBase;
+    using factor_base::FactorBaseBuilder;
+
+    // f(x) = x - 1 has the single root 1 modulo every prime, so the QC pairs
+    // are exactly (q, 1) for the first primes above the lower bound.
+    std::vector<Integer> coeffs = {Integer(-1), Integer(1)};
+    PolynomialContext ctx(Integer(143), std::move(coeffs), Integer(2), 1.0);
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = true;
+    config.include_class_group = false;
+    config.include_schirokauer = false;
+    config.num_qc_primes = 6;
+    // The previous rule searched from max(qc_prime_start, algebraic_bound + 1).
+    // With the first fixture below it began at 101, a special-Q prime of that
+    // base.
+    config.qc_prime_start = 100;
+    MatrixBuilder builder(config);
+
+    // A relation sieved with the special-Q ideal (101, 1). The cofactorizer
+    // records that ideal as an algebraic large prime, and a = 102 makes a - b*r
+    // divisible by 101, so the old QC column (101, 1) was undefined here.
+    core::Relation special_q_relation(102, 1);
+    special_q_relation.algebraic_large_prime.push_back({101, 1, 1});
+    const std::vector<core::Relation> rows{special_q_relation};
+    const std::vector<core::Relation> no_rows;
+
+    // f(x) = x - 1 gives every QC prime the root 1, so a QC selection is fully
+    // described by its primes.
+    struct Expectation {
+        const std::vector<core::Relation>& relations;
+        std::vector<uint32_t> primes;
+    };
+    const auto expect_pairs = [&](const FactorBase& fb, const Expectation& expectation) {
+        std::vector<std::pair<uint32_t, uint32_t>> expected;
+        for (uint32_t q : expectation.primes) {
+            expected.emplace_back(q, 1u);
+        }
+        const auto vector = builder.build_with_qc(expectation.relations, fb, ctx);
+        const auto streaming =
+            builder.build_with_qc_streaming(VectorRelationSource(expectation.relations), fb, ctx);
+        for (const auto* result : {&vector, &streaming}) {
+            GNFS_TEST_CHECK(result->mapping.num_qc_columns == expected.size());
+            GNFS_TEST_CHECK(result->mapping.qc_prime_roots == expected);
+        }
+    };
+
+    // The first six primes above 1000. Every QC column must be defined on the
+    // special-Q relation.
+    const std::vector<uint32_t> primes_above_1000{1009, 1013, 1019, 1021, 1031, 1033};
+    const Expectation special_q_rows{rows, primes_above_1000};
+
+    struct Bounds {
+        uint32_t algebraic_bound;
+        uint32_t special_q_bound;
+        uint64_t large_prime_bound;
+    };
+    // Each row makes a different term of the lower bound dominate. The second
+    // one reaches 997 through the largest algebraic entry, not through a bound.
+    // A zero special_q_bound gives the base no special-Q range at all.
+    const Bounds cases[]{
+        {10, 100, 1'000}, // large-prime bound
+        {10, 1'000, 500}, // special-Q range
+        {1'000, 0, 500},  // algebraic bound
+    };
+    for (const auto& bounds : cases) {
+        FactorBaseBuilder::Options options;
+        options.rational_bound = 10;
+        options.algebraic_bound = bounds.algebraic_bound;
+        options.special_q_bound = bounds.special_q_bound;
+        options.large_prime_bound = bounds.large_prime_bound;
+        options.parallel = false;
+        expect_pairs(FactorBaseBuilder::build(ctx, options), special_q_rows);
+    }
+
+    // A hand-built base can end far below algebraic_bound.
+    FactorBase sparse(core::FactorBaseParams{10, 1'000, 500});
+    sparse.add_algebraic(101, 1, 1);
+    expect_pairs(sparse, special_q_rows);
+
+    // A default-constructed base declares no bounds, so the configured search
+    // start applies on its own.
+    expect_pairs(FactorBase{}, Expectation{no_rows, {101, 103, 107, 109, 113, 127}});
+
+    std::cout << "  QC prime lower bound: PASSED" << std::endl;
+}
+
 // Test matrix stats
 // Thin matrix test (m < n) — BACKLOG #80 step 7 — confirm BW/BL can find
 // left-kernel of M when rows < cols. Synthetic: 3 rows × 4 cols, all rows
@@ -2131,6 +2228,7 @@ int main() {
     test_default_schirokauer_primes();
     test_matrix_builder_rejects_non_gf2_schirokauer_prime();
     test_matrix_builder_rejects_unrepresentable_qc_start();
+    test_matrix_builder_qc_primes_stay_above_relation_norm_primes();
     test_ramified_index_square_dependency();
     test_find_dependencies();
     test_thin_matrix_dependencies();
