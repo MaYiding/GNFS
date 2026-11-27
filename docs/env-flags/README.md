@@ -8,16 +8,18 @@
 
 | 模块 | 开关数 | 文档 | 主题 |
 |------|-------:|------|------|
-| relation | 13 | [relation.md](relation.md) | structured filter、filter merge (V0/V3)、OOC、LP key dedup、radix sort |
-| linalg | 15 | [linalg.md](linalg.md) | BW Krylov、SpMV/GF(2) SIMD、SGE、转置、进度遥测 |
-| cofactor | 11 | [cofactor.md](cofactor.md) | batch trial、ECM stage 并行/cache、survival predictor、Brent rho |
-| polynomial | 9 | [polynomial.md](polynomial.md) | Karatsuba / NTT / HGCD / squaring / mod-p SIMD |
-| sieve | 16 | [sieve.md](sieve.md) | checkpoint、cache tile、prefetch、raw target multiplier、distributed route/watchdog、lattice SIMD、E-core QoS |
-| siqs | 1 | [siqs.md](siqs.md) | default-off shadow proof observe / explicit prefer |
+| relation | 14 | [relation.md](relation.md) | structured filter、filter merge (V0/V3)、OOC、LP key dedup、radix sort、3LP 接受 |
+| linalg | 23 | [linalg.md](linalg.md) | BW Krylov、SpMV/GF(2) SIMD、SGE、转置、进度遥测、算法选择与矩阵落盘 |
+| cofactor | 15 | [cofactor.md](cofactor.md) | batch trial、ECM stage 并行/cache、survival predictor、Brent rho、Brent-Suyama 扩展 |
+| polynomial | 13 | [polynomial.md](polynomial.md) | Karatsuba / NTT / HGCD / squaring / mod-p SIMD、选择器开关与 alpha 缓存 |
+| sieve | 21 | [sieve.md](sieve.md) | checkpoint、cache tile、prefetch、raw target multiplier、distributed route/watchdog、lattice SIMD、E-core QoS、格基约化 |
+| siqs | 3 | [siqs.md](siqs.md) | default-off shadow proof observe / explicit prefer、方法路由覆盖 |
 | util | 6 | [util.md](util.md) | Integer scratch pool、批量 GMP `mpz_*` 并行 |
-| sqrt | 2 | [sqrt.md](sqrt.md) | Hensel lift 并行、Couveignes pattern search 并行 |
+| sqrt | 4 | [sqrt.md](sqrt.md) | Hensel lift 并行、Couveignes pattern search 并行、Couveignes-only 开关与遥测 |
 | factor_base | 1 | [factor_base.md](factor_base.md) | Cantor-Zassenhaus 求根并行 |
 | workbench | 1 | [workbench.md](workbench.md) | macOS workbench 的引擎路径覆盖与环境隔离 |
+
+开关数按各页有独立小节标题或 `**ENV` 引入段的开关计，一节记载多个开关时逐个计。
 
 ## 通用设计约定
 
@@ -62,7 +64,7 @@ W7–W15 期间落地的一组 opt-in 并行 dispatcher,共享同一 ENV-gate + 
 
 ## 新增开关
 
-新增 `GNFS_*` 开关 / helper 时,**详细设计写到本目录对应模块文件**,并在 [CLAUDE.md ENV 调优开关总览](../../CLAUDE.md#env-调优开关总览)表加一行。完整规范见 [CLAUDE.md → 设计细节文档化规范](../../CLAUDE.md#设计细节文档化规范强制)。
+新增 `GNFS_*` 开关 / helper 时,**详细设计写到本目录对应模块文件**,并同步上方「模块导航」表中该模块的开关数（新模块加一行）。完整规范见 [AGENTS.md → Documentation Placement](../../AGENTS.md#documentation-placement)。
 
 ---
 
