@@ -3540,6 +3540,18 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
         std::fprintf(stderr, "%s\n", buf);
     }
 
+    // Rows whose Schirokauer vector is all zero. The map returns all-zero
+    // columns when its ℓ-adic precision is insufficient, but a genuine kernel
+    // element yields the same vector, so read this as an upper bound on the
+    // number of precision fallbacks. Reported before any trimming.
+    {
+        char degenerate_buf[128];
+        std::snprintf(degenerate_buf, sizeof(degenerate_buf),
+                      "schirokauer degenerate rows: %zu/%zu",
+                      build_result.schirokauer_degenerate_rows, matrix_stats.num_rows);
+        emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(degenerate_buf));
+    }
+
     if (solve_dependencies && !matrix_stats.has_excess()) {
         // BACKLOG #80 step 7 (2026-05-17): thin matrix (m ≤ n) now solved by
         // block_wiedemann_thin_solve, which uses B'=M^T·M and recovers via
@@ -3643,6 +3655,15 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                 diag2.low_weight_cols, diag2.max_col_weight, diag2.avg_col_weight);
             emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(buf));
             std::fprintf(stderr, "%s\n", buf);
+        }
+        // Re-emit the degenerate Schirokauer count for the trimmed matrix that
+        // is handed to SGE and the solver.
+        {
+            char degenerate_buf[128];
+            std::snprintf(degenerate_buf, sizeof(degenerate_buf),
+                          "schirokauer degenerate rows post-trim: %zu/%zu",
+                          build_result.schirokauer_degenerate_rows, matrix_stats.num_rows);
+            emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(degenerate_buf));
         }
     }
 

@@ -1710,6 +1710,80 @@ void test_schirokauer_non_monic_split_quadratic() {
                                 {55, -26, 14, 15}, 188, 239, true);
 }
 
+// Degenerate Schirokauer rows (all-zero map vectors) are counted in
+// MatrixBuildResult. Only the count is new; no matrix bit changes.
+void test_matrix_builder_counts_degenerate_schirokauer_rows() {
+    std::cout << "Testing MatrixBuilder degenerate Schirokauer row count..." << std::endl;
+
+    using core::Integer;
+    using core::PolynomialContext;
+
+    // 3x^3 - 53x^2 - 2x + 15 with m = 328: unsplit mod 2, same fixture as above.
+    const std::vector<Integer> coefficients = {Integer(15), Integer(-2), Integer(-53), Integer(3)};
+    const PolynomialContext ctx(Integer("100160063"), coefficients, Integer(328));
+    factor_base::FactorBase fb;
+    std::vector<core::Relation> relations;
+    // Five relations with a non-zero Schirokauer vector.
+    const std::pair<int64_t, uint64_t> regular_pairs[] = {
+        {1, 2}, {3, 2}, {-5, 2}, {7, 16}, {-33, 64},
+    };
+    for (const auto& [a, b] : regular_pairs)
+        relations.emplace_back(a, b);
+    // Precision fallback: γ = 256 - 128x has coefficients (0, 128) modulo 256.
+    // Stripping their common factor 2^7 leaves fewer than two ℓ-adic bits.
+    relations.emplace_back(256, 128);
+    // Both coefficients vanish modulo 2^8.
+    relations.emplace_back(512, 256);
+    relations.emplace_back(0, 0);
+
+    MatrixBuilderConfig config;
+    config.include_qc_columns = false;
+    config.include_schirokauer = true;
+    config.schirokauer_primes = {2};
+    MatrixBuilder builder(config);
+    const auto vector = builder.build_with_qc(relations, fb, ctx);
+    const auto streaming =
+        builder.build_with_qc_streaming(VectorRelationSource(relations), fb, ctx);
+
+    // Independent count: rows without any set bit in the Schirokauer column range.
+    const auto count_zero_rows = [](const MatrixBuildResult& result) {
+        size_t count = 0;
+        const uint32_t first = static_cast<uint32_t>(result.mapping.schirokauer_start());
+        const uint32_t count_columns =
+            static_cast<uint32_t>(result.mapping.num_schirokauer_columns);
+        for (size_t row = 0; row < result.matrix.num_rows(); ++row) {
+            bool any = false;
+            for (uint32_t column = first; column < first + count_columns; ++column)
+                any = any || result.matrix.row(row).test(column);
+            if (!any)
+                ++count;
+        }
+        return count;
+    };
+    for (const auto* result : {&vector, &streaming}) {
+        GNFS_TEST_CHECK(result->mapping.num_schirokauer_columns == 3);
+        GNFS_TEST_CHECK(result->matrix.num_rows() == 8);
+        GNFS_TEST_CHECK(count_zero_rows(*result) == 3);
+        GNFS_TEST_CHECK(result->schirokauer_degenerate_rows == 3);
+    }
+    for (size_t row = 0; row < relations.size(); ++row) {
+        GNFS_TEST_CHECK(vector.matrix.row(row).indices() == streaming.matrix.row(row).indices());
+    }
+    // λ(1, 2) = {0, 1, 0} from the fixture table.
+    const uint32_t first = static_cast<uint32_t>(vector.mapping.schirokauer_start());
+    GNFS_TEST_CHECK(!vector.matrix.row(0).test(first));
+    GNFS_TEST_CHECK(vector.matrix.row(0).test(first + 1));
+    GNFS_TEST_CHECK(!vector.matrix.row(0).test(first + 2));
+
+    // Without Schirokauer columns there is nothing to count.
+    config.include_schirokauer = false;
+    const auto disabled = MatrixBuilder(config).build_with_qc(relations, fb, ctx);
+    GNFS_TEST_CHECK(disabled.mapping.num_schirokauer_columns == 0);
+    GNFS_TEST_CHECK(disabled.schirokauer_degenerate_rows == 0);
+
+    std::cout << "  Degenerate Schirokauer row count: PASSED" << std::endl;
+}
+
 // Regression test: parallel Block Lanczos produces same results as Gaussian
 // for a medium-sized matrix (verifies parallelization correctness)
 void test_parallel_block_lanczos_correctness() {
@@ -2392,6 +2466,7 @@ int main() {
     test_schirokauer_wide_public_map();
     test_schirokauer_non_monic_unsplit();
     test_schirokauer_non_monic_split_quadratic();
+    test_matrix_builder_counts_degenerate_schirokauer_rows();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();
