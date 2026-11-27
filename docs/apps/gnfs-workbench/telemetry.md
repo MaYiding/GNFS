@@ -41,6 +41,7 @@ Workbench resolves the engine executable before removing inherited `GNFS_*` vari
 - `candidates_statistics_complete: false` means the candidate count is unavailable, including distributed workers that do not report it. The legacy numeric field remains present for schema compatibility.
 - SIQS statistics describe retained relations after merging and trimming, processed polynomials, and resolved sieve workers. They are separate from GNFS relations. If SIQS returns without statistics, the new SIQS fields are `null`, not measured zeroes.
 - `non_gnfs_s` measures preliminary checks and non-GNFS algorithms. `sqrt_s` excludes the measured GCD extraction work recorded in `extract_s`. `dependencies_tried` includes attempted XOR combinations. Phase timings need not sum exactly to total wall time because setup, callbacks, and final validation also take time.
+- `dependencies_found` counts only solver dependencies whose selected rows XOR to zero over the final matrix. The matrix phase drops every other dependency and emits a `WARN` log for each one.
 - Complete-mode counters and phase times sum across splits. Worker counts use the maximum. Matrix rows, columns, weight, and excess come from the same matrix: the one with the largest row count, retaining the first on ties.
 - Cancelled and failed runs preserve elapsed time at termination, even if the last progress event was much earlier. Only an accepted, verified successful result sets the GUI phase to Done.
 

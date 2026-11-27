@@ -442,6 +442,49 @@ std::optional<std::vector<bool>> detail::xor_dependency_pair_checked(const std::
     return combined;
 }
 
+// Verify a dependency (XOR of selected rows = zero) against the final matrix.
+// Uses uint8_t per-column parity (XOR), 8× more cache-friendly than size_t counter.
+bool detail::verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
+    if (dep.size() != mat.num_rows())
+        return false;
+    std::vector<uint8_t> col_parity(mat.num_cols(), 0);
+    for (size_t row = 0; row < mat.num_rows(); ++row) {
+        if (row < dep.size() && dep[row]) {
+            for (uint32_t col : mat.row(row).indices()) {
+                if (static_cast<size_t>(col) >= mat.num_cols()) {
+                    return false;
+                }
+                col_parity[col] ^= 1; // XOR in GF(2)
+            }
+        }
+    }
+    for (size_t c = 0; c < col_parity.size(); ++c) {
+        if (col_parity[c])
+            return false;
+    }
+    return true;
+}
+
+std::vector<std::vector<bool>>
+detail::retain_verified_dependencies(std::vector<std::vector<bool>> dependencies,
+                                     const SparseMatrix& matrix,
+                                     const DependencyRejectionSink& on_rejected) {
+    std::vector<std::vector<bool>> verified;
+    verified.reserve(dependencies.size());
+    for (size_t index = 0; index < dependencies.size(); ++index) {
+        if (detail::verify_dependency(matrix, dependencies[index])) {
+            verified.push_back(std::move(dependencies[index]));
+            continue;
+        }
+        char message[192];
+        std::snprintf(message, sizeof(message),
+                      "Dropped dependency %zu/%zu: not a null vector of the %zux%zu matrix",
+                      index + 1, dependencies.size(), matrix.num_rows(), matrix.num_cols());
+        on_rejected(LogLevel::Warn, Phase::LinearAlgebra, message);
+    }
+    return verified;
+}
+
 detail::StructuredOOCGenerationPaths
 detail::StructuredOOCRunPaths::generation_paths(uint64_t logical_generation) const {
     if (logical_generation == 0) {
@@ -3789,6 +3832,15 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
     dependencies = detail::expand_solver_dependencies_checked(sge_result, dependencies,
                                                               build_result.matrix.num_rows());
 
+    // Extraction rejects a dependency that is not a null vector of the final
+    // matrix. Drop such dependencies here, before they are published or
+    // counted, and leave a trace for each one instead of losing it silently.
+    dependencies = detail::retain_verified_dependencies(
+        std::move(dependencies), build_result.matrix,
+        [this](LogLevel level, Phase phase, const std::string& message) {
+            emit_log(level, phase, message);
+        });
+
     stats_.dependencies_found = dependencies.size();
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -3814,29 +3866,6 @@ static linalg::BitVector to_bitvector(const std::vector<bool>& vec) {
             bv.set(i);
     }
     return bv;
-}
-
-// Helper: verify dependency (XOR of selected rows = zero)
-// Uses uint8_t per-column parity (XOR), 8× more cache-friendly than size_t counter.
-static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
-    if (dep.size() != mat.num_rows())
-        return false;
-    std::vector<uint8_t> col_parity(mat.num_cols(), 0);
-    for (size_t row = 0; row < mat.num_rows(); ++row) {
-        if (row < dep.size() && dep[row]) {
-            for (uint32_t col : mat.row(row).indices()) {
-                if (static_cast<size_t>(col) >= mat.num_cols()) {
-                    return false;
-                }
-                col_parity[col] ^= 1; // XOR in GF(2)
-            }
-        }
-    }
-    for (size_t c = 0; c < col_parity.size(); ++c) {
-        if (col_parity[c])
-            return false;
-    }
-    return true;
 }
 
 FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase& fb,
@@ -3959,7 +3988,7 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
 
     const auto try_matrix_dependency = [&](const std::vector<bool>& dependency) -> bool {
         // Always validate in matrix coordinates before mapping or materializing.
-        if (!verify_dependency(mr.matrix, dependency)) {
+        if (!detail::verify_dependency(mr.matrix, dependency)) {
             return false;
         }
 

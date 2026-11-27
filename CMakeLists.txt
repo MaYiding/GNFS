@@ -3009,6 +3009,14 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME I18N COMMAND test_i18n)
     set_tests_properties(I18N PROPERTIES LABELS "instant" TIMEOUT 10)
 
+    # Rejected solver dependencies are dropped with a log instead of silently.
+    add_executable(test_dependency_diagnostics
+        tests/test_dependency_diagnostics.cpp
+    )
+    target_link_libraries(test_dependency_diagnostics PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME DependencyDiagnostics COMMAND test_dependency_diagnostics)
+    set_tests_properties(DependencyDiagnostics PROPERTIES LABELS "instant" TIMEOUT 30)
+
     # SIQS (Self-Initializing Quadratic Sieve) 测试
     add_executable(test_siqs
         tests/test_siqs.cpp
