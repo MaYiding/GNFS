@@ -86,8 +86,9 @@
 线索由一名核实员读码、一名复核员换人复核，全程没有编译。第一条的裁决范围写本节时按代码收窄，第二个缺口换成了 PR #415 说明的写法，出处写在各条里。
 
 - §六「分歧与指标素数只按范数赋值记一列」对单根不成立。$f\bmod p$ 的每个根是一个因子基条目（`src/factor_base/builder.cpp`）；因子基列与大素数列都按 $(p,r)$ 键建，大素数列用的是 `include/gnfs/linalg/matrix_builder.hpp` 的 `PrimeIdealKey`。
-- 它对投影根与重根成立，这两处是还没有解决的缺口。整除首项系数的素数各只有一个投影根条目，匹配条件是 $p\mid b$（`src/factor_base/builder.cpp`）。试除把范数的整个 $p$ 进赋值记给匹配到的那个条目（`include/gnfs/cofactor/trial_division.hpp`）；大素数遇到 $p\mid b$ 时根也记为投影根（`include/gnfs/cofactor/cofactorizer.hpp`）。求根只返回不同的根，重根因此只有一个条目（`src/factor_base/builder.cpp`）。
-- 由此带出两个约束缺口。一是首项系数不是平方数时，依赖的对数奇偶没有约束；对数指依赖里 $(a,b)$ 对的个数。二是首项系数的素因子上方，范数的整个 $p$ 进赋值进同一个条目，一部分依赖因此不是平方。另外，首项系数为偶数时，Schirokauer 列成了非同态的噪声约束：`include/gnfs/linalg/schirokauer.hpp` 的归一化要乘首项系数模 $\ell^k$ 的逆，偶数首项系数没有逆，这一支保留旧行为。PR #415 的说明把这三处列为没有覆盖；重根的情形它没有提到。
+- 对投影根它成立，这是一处还没有解决的缺口。整除首项系数的素数各只有一个投影根条目，匹配条件是 $p\mid b$（`src/factor_base/builder.cpp`）。试除把范数的整个 $p$ 进赋值记给匹配到的那个条目（`include/gnfs/cofactor/trial_division.hpp`）；大素数遇到 $p\mid b$ 时根也记为投影根（`include/gnfs/cofactor/cofactorizer.hpp`）。
+- 对重根它只在一种情形下是缺口。求根只返回不同的根，重根因此只有一个条目（`src/factor_base/builder.cpp`），这只是列数。重根本身不构成缺口：$p$ 不整除指标 $[\mathcal{O}_K:\mathbb{Z}[\alpha]]$ 时，$(p,\alpha-r)$ 是一次素理想，互素的 $(a,b)$ 只落进根为 $a/b$ 的那一个素理想，范数的 $p$ 进赋值就等于该素理想处的赋值。构成缺口的是 $p$ 整除指标的情形：$\mathbb{Z}[\alpha]$ 在 $p$ 处不是极大阶，一个 $(p,r)$ 可以对应 $\mathcal{O}_K$ 的多个素理想，列只约束它们赋值的加权和。代码里没有计算指标的逻辑，这类素数的出现频率与损失都没有数据。这一条是数学推导，不是读码结论。
+- 由此带出两个约束缺口。一是首项系数不是平方数时，依赖的对数奇偶没有约束；对数指依赖里 $(a,b)$ 对的个数。二是首项系数的素因子上方，范数的整个 $p$ 进赋值进同一个条目，一部分依赖因此不是平方。另外，首项系数为偶数时，Schirokauer 列成了非同态的噪声约束：`include/gnfs/linalg/schirokauer.hpp` 的归一化要乘首项系数模 $\ell^k$ 的逆，偶数首项系数没有逆，这一支保留旧行为。PR #415 的说明把这三处列为没有覆盖。
 - 三者都只降低成功率，不会算出错误因子。Hensel 与 Couveignes 的返回值都做了 $Y$ 的平方的校验：`include/gnfs/sqrt/hensel_sqrt.hpp` 的 `verify_and_return`、`include/gnfs/sqrt/couveignes.hpp` 的 `verify_current`。流水线按两个因子都非平凡且乘积等于 $N$ 收口（`src/api/pipeline.cpp` 的 `try_factor`）。
 
 ### 更正 §二.9 与 §六
