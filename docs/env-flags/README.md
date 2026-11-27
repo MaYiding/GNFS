@@ -62,10 +62,6 @@ W7–W15 期间落地的一组 opt-in 并行 dispatcher,共享同一 ENV-gate + 
 - **sieve**(sieve):`GNFS_LATTICE_COORDS_SIMD`、`GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD`、`GNFS_SIEVE_SATURATED_SUB_SIMD`
 - **cofactor**(cofactor):`GNFS_TRIAL_DIV_SIMD`
 
-## 新增开关
-
-新增 `GNFS_*` 开关 / helper 时,**详细设计写到本目录对应模块文件**,并同步上方「模块导航」表中该模块的开关数（新模块加一行）。完整规范见 [AGENTS.md → Documentation Placement](../../AGENTS.md#documentation-placement)。
-
 ---
 
 ## 补充台账速查表
@@ -108,3 +104,7 @@ W7–W15 期间落地的一组 opt-in 并行 dispatcher,共享同一 ENV-gate + 
 | `GNFS_SGE_STREAMING` | 关闭 | legacy 路线流式构建矩阵，`auto` 跟随 OOC 与续跑 | [linalg.md](linalg.md#streaming-matrix-build-gnfs_sge_streaming) |
 | `GNFS_SIEVE_NO_TINY_SIMD` | 未设置 | 关闭 lattice sieve 小素数写入的 SIMD 路径，只有 `0` 能重新启用 | [sieve.md](sieve.md#tiny-prime-simd-gate-gnfs_sieve_no_tiny_simd) |
 | `GNFS_TOPK_ALPHA` | 关闭 | Stage 2 候选按 lognorm 加廉价 alpha 排序 | [polynomial.md](polynomial.md#top-k-alpha-ranking-gnfs_topk_alpha) |
+
+## 新增开关
+
+新增 `GNFS_*` 开关 / helper 时,**详细设计写到本目录对应模块文件**,并同步上方「模块导航」表中该模块的开关数（新模块加一行）。完整规范见 [AGENTS.md → Documentation Placement](../../AGENTS.md#documentation-placement)。
