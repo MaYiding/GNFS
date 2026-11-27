@@ -17,6 +17,7 @@
 | util | 6 | [util.md](util.md) | Integer scratch pool、批量 GMP `mpz_*` 并行 |
 | sqrt | 2 | [sqrt.md](sqrt.md) | Hensel lift 并行、Couveignes pattern search 并行 |
 | factor_base | 1 | [factor_base.md](factor_base.md) | Cantor-Zassenhaus 求根并行 |
+| workbench | 1 | [workbench.md](workbench.md) | macOS workbench 的引擎路径覆盖与环境隔离 |
 
 ## 通用设计约定
 
@@ -83,6 +84,7 @@ W7–W15 期间落地的一组 opt-in 并行 dispatcher,共享同一 ENV-gate + 
 | `GNFS_ADAPTIVE_LATTICE_SEED` | `0` | 重筛斜切方向的种子，非零时与 special-q 混合 | [sieve.md](sieve.md#gnfs_adaptive_lattice_seed) |
 | `GNFS_ADAPTIVE_LATTICE_THRESHOLD` | `0.5` | 触发重筛的命中密度阈值，范围 $(0, 100]$ | [sieve.md](sieve.md#gnfs_adaptive_lattice_threshold) |
 | `GNFS_BW_ALGORITHM` | block 路径 | `scalar` 强制 Block Wiedemann 走 scalar Berlekamp-Massey（调试） | [linalg.md](linalg.md#block-wiedemann-algorithm-selection-gnfs_bw_algorithm) |
+| `GNFS_CLI_PATH` | 未设置 | workbench 优先用它指定的可执行文件当引擎，其次是内置的 `gnfs` | [workbench.md](workbench.md#engine-executable-override-gnfs_cli_path) |
 | `GNFS_COUVEIGNES_VERBOSE` | 未设置 | 向 stderr 打印一行 Couveignes 指标（诊断） | [sqrt.md](sqrt.md#couveignes-telemetry-gnfs_couveignes_verbose) |
 | `GNFS_DEBUG_BL_CKPT` | 未设置 | 每次 Block Lanczos checkpoint 保存后打印一行（诊断） | [linalg.md](linalg.md#block-lanczos-checkpoint-trace-gnfs_debug_bl_ckpt) |
 | `GNFS_DEBUG_GAUSSIAN` | 未设置 | Gaussian elimination 结束后打印一行统计（诊断） | [linalg.md](linalg.md#gaussian-elimination-trace-gnfs_debug_gaussian) |
