@@ -213,6 +213,11 @@ The PR CI intentionally has three layers:
      invocation is the CI witness for the Apple-only same-OFD lock, fork
      rejection, and cleanup-intent conversion path; unsupported hosts execute
      only the platform stub.
+   - macOS Release also runs the three Apple-only shards of
+     `test_distributed_sieve_wave_merge_commit` (`--suite core`,
+     `--suite commit-crash`, and `--suite protection`) as targeted
+     `scripts/test.sh run` steps. They are `slow` entries, so the label filter
+     does not select them.
    - Windows Release runs `instant` plus the targeted fast
      `BWKrylovMmapIntegration` contract. This required end-to-end witness
      exercises the real Win32 raw-mapping and compressed positioned-I/O paths
@@ -1025,7 +1030,10 @@ justify a narrower tier. Their timeouts bound each logical shard rather than
 classify its expected duration. CTest does not register the aggregate because
 that would duplicate the complete matrix. The script runner catalogs the
 physical no-argument binary as `slow` with a five-minute timeout; the aggregate
-runs all supported-host shards for direct changed-file validation.
+runs all supported-host shards for direct changed-file validation. The macOS
+Release CI row runs the three Apple shards as separate targeted steps, each
+through `scripts/test.sh run` with its `--suite` argument, because the
+cross-platform label filter excludes `slow`.
 
 `test_distributed_sieve_resume` is also the dedicated M2j-A receipt-gated
 launcher contract.
