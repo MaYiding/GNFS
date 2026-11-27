@@ -15,6 +15,7 @@
 #include "sparse_matrix.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -142,6 +143,12 @@ struct MatrixBuildResult {
     SparseMatrix matrix;                 // 构建的矩阵
     ColumnMapping mapping;               // 列映射信息
     std::vector<size_t> row_to_relation; // 行索引 -> 原始关系索引的映射
+    // Rows whose Schirokauer vector is identically zero (degenerate rows).
+    // compute_unsplit / compute_split fall back to zero columns when the
+    // ℓ-adic precision is insufficient. A genuine element of the kernel of λ
+    // yields the same zero vector, so this count is an upper bound on the
+    // number of precision fallbacks. Diagnostics only: no matrix bit changes.
+    size_t schirokauer_degenerate_rows = 0;
 };
 
 /// 矩阵构建配置
@@ -334,6 +341,10 @@ public:
         // 元素互不冲突;build_row_with_qc / class_group->compute_binary_characters /
         // schirokauer->compute_flat 全部 const,无内部状态修改。
         // SchirokauerMap::compute_flat 1M+ relations 是热点。
+        // Degenerate Schirokauer rows are counted per thread. Only the final
+        // sum is read, after parallel_for_index has joined every worker.
+        std::atomic<size_t> degenerate_schirokauer_rows{0};
+        const bool count_degenerate_schirokauer = schirokauer && schirokauer->num_columns() > 0;
         gnfs::util::ThreadPool pool(0);
         pool.parallel_for_index(0, relations.size(), [&](size_t i) {
             build_row_with_qc(result.matrix.row(i), relations[i], fb, ctx, result.mapping);
@@ -372,15 +383,22 @@ public:
                 }
 
                 size_t sm_start = result.mapping.schirokauer_start();
+                bool any_schirokauer_bit = false;
                 for (size_t j = 0; j < sm_values.size(); ++j) {
                     if (sm_values[j] % 2 == 1) {
                         result.matrix.row(i).set(static_cast<uint32_t>(sm_start + j));
+                        any_schirokauer_bit = true;
                     }
+                }
+                if (count_degenerate_schirokauer && !any_schirokauer_bit) {
+                    degenerate_schirokauer_rows.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
             result.row_to_relation[i] = i;
         });
+        result.schirokauer_degenerate_rows =
+            degenerate_schirokauer_rows.load(std::memory_order_relaxed);
 
         return result;
     }
@@ -520,6 +538,10 @@ public:
         // local deserialize) and VectorRelationSource (const access) satisfy
         // this. The relation goes out of scope at the end of each lambda
         // invocation — no accumulation in any shared structure.
+        // Degenerate Schirokauer rows are counted per thread. Only the final
+        // sum is read, after parallel_for_index has joined every worker.
+        std::atomic<std::size_t> degenerate_schirokauer_rows{0};
+        const bool count_degenerate_schirokauer = schirokauer && schirokauer->num_columns() > 0;
         gnfs::util::ThreadPool pool(0);
         pool.parallel_for_index(0, n, [&](std::size_t i) {
             Relation rel = source.read(i);
@@ -550,10 +572,15 @@ public:
                     }
                 }
                 std::size_t sm_start = result.mapping.schirokauer_start();
+                bool any_schirokauer_bit = false;
                 for (std::size_t j = 0; j < sm_values.size(); ++j) {
                     if (sm_values[j] % 2 == 1) {
                         result.matrix.row(i).set(static_cast<uint32_t>(sm_start + j));
+                        any_schirokauer_bit = true;
                     }
+                }
+                if (count_degenerate_schirokauer && !any_schirokauer_bit) {
+                    degenerate_schirokauer_rows.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
@@ -564,6 +591,8 @@ public:
             }
             // rel destroyed here — RAM not accumulating.
         });
+        result.schirokauer_degenerate_rows =
+            degenerate_schirokauer_rows.load(std::memory_order_relaxed);
 
         return result;
     }

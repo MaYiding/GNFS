@@ -359,6 +359,7 @@ ALL_TEST_BINARIES=(
     test_threshold_scan_simd
     test_saturated_sub_simd
     test_regression_gate
+    test_schirokauer_non_monic_e2e
     test_stress
     test_3lp_cofactor
     test_3lp_merge
@@ -511,6 +512,7 @@ MODULE_SLOW_TESTS=(
     sieve          "test_lattice_sieve"
     cofactor       "test_ecm_brent_suyama_bench"
     relation       "test_structured_ooc_scale test_structured_filter_pipeline_120bit"
+    linalg         "test_schirokauer_non_monic_e2e"
     api            "test_api test_full_resume"
     siqs           "test_siqs_e2e"
 )
@@ -709,6 +711,7 @@ TEST_TIMEOUT=(
     test_mmap_csr            10
     test_bucket_sieve        120
     test_regression_gate     240
+    test_schirokauer_non_monic_e2e 300
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
@@ -970,6 +973,7 @@ TEST_TIER=(
     test_mmap_csr            "instant"
     test_bucket_sieve        "fast"
     test_regression_gate     "gate"
+    test_schirokauer_non_monic_e2e "slow"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
     test_stress              "stress"
