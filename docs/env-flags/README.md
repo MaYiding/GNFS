@@ -2,7 +2,7 @@
 
 本目录收录所有 `GNFS_*` 运行时调优开关 / helper 的**详细设计文档**(算法、ENV 解析规则、bit-for-bit 保证、ROI 与定位、集成点、测试清单),按代码模块组织。
 
-顶层一句话速查表见 [ENV 调优开关总览](README.md)。新增开关的文档化规范见 [AGENTS.md → Documentation Placement](../../AGENTS.md#documentation-placement)。
+各模块的开关数与文档入口见下文「模块导航」表。新增开关的文档化规范见 [AGENTS.md → Documentation Placement](../../AGENTS.md#documentation-placement)。
 
 ## 模块导航
 
@@ -61,4 +61,4 @@ W7–W15 期间落地的一组 opt-in 并行 dispatcher,共享同一 ENV-gate + 
 
 ## 新增开关
 
-新增 `GNFS_*` 开关 / helper 时,**详细设计写到本目录对应模块文件**,并在 [ENV 调优开关总览](README.md)表加一行。完整规范见 [AGENTS.md → Documentation Placement](../../AGENTS.md#documentation-placement)。
+新增 `GNFS_*` 开关 / helper 时,**详细设计写到本目录对应模块文件**,并同步上方「模块导航」表中该模块的开关数（新模块加一行）。完整规范见 [AGENTS.md → Documentation Placement](../../AGENTS.md#documentation-placement)。

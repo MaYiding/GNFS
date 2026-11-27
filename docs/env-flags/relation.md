@@ -2,7 +2,7 @@
 
 > 本文档收录 `relation` 模块所有 `GNFS_*` 运行时调优开关 / helper 的详细设计(算法、ENV 解析、bit-for-bit 保证、ROI、集成点、测试)。
 >
-> 返回: [ENV 开关总览](README.md) · [ENV 调优开关总览表](README.md)
+> 返回: [ENV 开关模块导航](README.md)
 
 ---
 
