@@ -51,6 +51,14 @@ label so the existing Debug, sanitizer, coverage, and platform lanes still
 execute every contract. CTest allows 60 seconds for the aggregate so the shell
 and Python processes can finish when other tests share the runner.
 
+`MarkdownLinkCheckerSelfTest` is the `instant` script contract for the
+Markdown link checker. It runs `scripts/ci/check_markdown_links.py
+--self-test` over a temporary directory, so it needs no build product, and
+CTest allows it 10 seconds. `scripts/test.sh` maps the checker to `util`, so
+`changed` runs the contract after an edit to the checker. Docs Integrity and
+Script Checks run the same self-test, and Docs Integrity also scans the
+tracked Markdown.
+
 ### Local Change Selection
 
 The local `scripts/test.sh gate --quick` builds the binaries in

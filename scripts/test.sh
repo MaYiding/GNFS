@@ -519,7 +519,7 @@ MODULE_SLOW_TESTS=(
 typeset -A MODULE_CTEST_CONTRACTS
 MODULE_CTEST_CONTRACTS=(
     api "^CLIReplConfig$"
-    util "^(ProcessSupervisor|HarnessProcessTreeTimeout)$"
+    util "^(ProcessSupervisor|HarnessProcessTreeTimeout|MarkdownLinkCheckerSelfTest)$"
 )
 SMOKE_CTEST_CONTRACT="^ProcessSupervisor$"
 
@@ -1121,7 +1121,7 @@ path_to_module() {
         done
     fi
     case "$path" in
-        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
+        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|scripts/ci/check_markdown_links.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_primes.cpp|tests/test_timer.cpp|tests/test_mpz_powm_parallel.cpp|tests/test_mpz_mod_parallel.cpp|tests/test_mpz_gcd_parallel.cpp|tests/test_mpz_mul_parallel.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
@@ -8583,6 +8583,7 @@ do_list() {
     echo "${BOLD}非二进制 CTest 合同:${RESET}"
     echo "  ${BULLET} ${CYAN}ProcessSupervisor${RESET} — instant, 15s, cross-platform"
     echo "  ${BULLET} ${CYAN}HarnessProcessTreeTimeout${RESET} — fast, 20s, POSIX + zsh"
+    echo "  ${BULLET} ${CYAN}MarkdownLinkCheckerSelfTest${RESET} — instant, 10s, 跨平台"
 
     echo ""
     echo "${BOLD}特殊测试:${RESET}"
