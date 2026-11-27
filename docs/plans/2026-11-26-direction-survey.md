@@ -61,7 +61,7 @@
 
 ## 2026-11-27 增补
 
-> 本节补记 2026-11-27 第一波合入 main 的改动和随后的核实。正文其余部分仍是 2026-11-26 的定稿，只改动了一处：§六「构建缓存命中后仍重编的原因没有调查」一条的末尾加了一句指向本节。§二.9 与「你可能会问」第 10、11 问仍写着原因没有调查，那是定稿时的状态，以本节的更正为准。
+> 本节补记 2026-11-27 第一波合入 main 的改动和随后的核实。正文其余部分仍是 2026-11-26 的定稿，只改动了一处：§六「构建缓存命中后仍重编的原因没有调查」一条的末尾加了一句指向本节。§二.9 与「你可能会问」第 10、11 问仍写着原因没有调查，那是定稿时的状态；本节记了之后查到的证据，原因本身是推断。
 >
 > **依据。** 本节没有编译，也没有运行测试。PR 编号与标题用 `gh pr view` 逐个核对；耗时取自 `gh api repos/MaYiding/GNFS/actions/runs/<id>/jobs`，编译计数取自 `gh run view <run> --job <job> --log`，文件数取自 `git ls-tree`；`CMakeLists.txt` 的条件读的是 `e2675a09` 上的版本。「已核实的线索」里引用的函数与类型，写本节时都重新打开读过。
 
@@ -79,22 +79,22 @@
 | 7、9 | #420 | macOS 的 CI 行跑三个 WaveMergeCommit 分片；构建目录缓存换成 ccache，Windows 行缓存 vcpkg 二进制包 |
 | 8 | #421、#422 | 开关台账补齐并加防回归检查；链接检查器加锚点校验并修掉悬空锚点 |
 
-#416 只经 #423 合入，没有单独合并。它的说明写了原因：120 bit 门禁的矩阵身份随特征素数改变，新基线在集成分支上采集。
+八个 PR 都只经 #423 进入 main：各自的合并提交都在集成分支里，没有一个单独合并到 main。§七 建议方向 2 单独合并，这一点没有照做。#416 的说明写明它不单独合并：120 bit 门禁的矩阵身份随特征素数改变，新基线在集成分支上采集。
 
 ### 已核实的线索
 
-每条由一名核实员读码、一名复核员换人复核，全程没有编译。
+线索由一名核实员读码、一名复核员换人复核，全程没有编译。第一条的裁决范围写本节时按代码收窄，第二个缺口换成了 PR #415 说明的写法，出处写在各条里。
 
-- §六「分歧与指标素数只按范数赋值记一列」不成立。代数侧的因子基列与大素数列都按 $(p,r)$ 键建。因子基里 $f\bmod p$ 的每个根是一个条目（`src/factor_base/builder.cpp`）；大素数列用 `include/gnfs/linalg/matrix_builder.hpp` 的 `PrimeIdealKey`。
-- 由此带出两个真实的约束缺口。一是首项系数不是平方数时，依赖的对数奇偶没有约束；对数指依赖里 $(a,b)$ 对的个数。二是指标素数处的列值带剩余次数的权重。
-- 另外，首项系数为偶数时，Schirokauer 列成了非同态的噪声约束。`include/gnfs/linalg/schirokauer.hpp` 的归一化要乘首项系数模 $\ell^k$ 的逆；偶数首项系数没有逆，这一支保留旧行为。PR #415 的说明把这三处列为没有覆盖。
+- §六「分歧与指标素数只按范数赋值记一列」对单根不成立。$f\bmod p$ 的每个根是一个因子基条目（`src/factor_base/builder.cpp`）；因子基列与大素数列都按 $(p,r)$ 键建，大素数列用的是 `include/gnfs/linalg/matrix_builder.hpp` 的 `PrimeIdealKey`。
+- 它对投影根与重根成立，这两处是还没有解决的缺口。整除首项系数的素数各只有一个投影根条目，匹配条件是 $p\mid b$（`src/factor_base/builder.cpp`）。试除把范数的整个 $p$ 进赋值记给匹配到的那个条目（`include/gnfs/cofactor/trial_division.hpp`）；大素数遇到 $p\mid b$ 时根也记为投影根（`include/gnfs/cofactor/cofactorizer.hpp`）。求根只返回不同的根，重根因此只有一个条目（`src/factor_base/builder.cpp`）。
+- 由此带出两个约束缺口。一是首项系数不是平方数时，依赖的对数奇偶没有约束；对数指依赖里 $(a,b)$ 对的个数。二是首项系数的素因子上方，范数的整个 $p$ 进赋值进同一个条目，一部分依赖因此不是平方。另外，首项系数为偶数时，Schirokauer 列成了非同态的噪声约束：`include/gnfs/linalg/schirokauer.hpp` 的归一化要乘首项系数模 $\ell^k$ 的逆，偶数首项系数没有逆，这一支保留旧行为。PR #415 的说明把这三处列为没有覆盖；重根的情形它没有提到。
 - 三者都只降低成功率，不会算出错误因子。Hensel 与 Couveignes 的返回值都做了 $Y$ 的平方的校验：`include/gnfs/sqrt/hensel_sqrt.hpp` 的 `verify_and_return`、`include/gnfs/sqrt/couveignes.hpp` 的 `verify_current`。流水线按两个因子都非平凡且乘积等于 $N$ 收口（`src/api/pipeline.cpp` 的 `try_factor`）。
 
 ### 更正 §二.9 与 §六
 
-- 构建目录缓存从来没有省过一次编译，问题不在缓存键，§二.9 待查的「缓存不命中」可以排除。证据在 main 的 run 45967343806（提交 `e2675a09`）：五个 POSIX 行的缓存键都精确命中，每行仍把自己适用的源文件全部编译了一遍。四个 Linux 行各编译 338 个源文件、345 个对象。macOS 行编译 336 个 `.cpp` 加 `src/linalg/metal_spmv.mm`，共 344 个对象。每行对象比源文件多出的 7 个，来自编进多个目标的三个源文件：`src/relation/structured_reduction.cpp` 编 2 次，`tests/test_siqs_multi_a_cycle_profile.cpp` 编 3 次，`tests/support/siqs_shadow_proof_rss_campaign_slot_synthetic_child.cpp` 编 5 次。
+- 在 main 的 run 45967343806（提交 `e2675a09`）里，构建目录缓存没有省过一次编译，问题不在缓存键：这一 run 里 §二.9 待查的「缓存不命中」没有出现。只查了这一次 run。「从来没有省过一次」是 PR #420 说明的结论，本节没有查别的 run，也没有查 PR #420 之后的 run。五个 POSIX 行的缓存键都精确命中，每行仍把自己适用的源文件全部编译了一遍。四个 Linux 行各编译 338 个源文件、345 个对象。macOS 行编译 336 个 `.cpp` 加 `src/linalg/metal_spmv.mm`，共 344 个对象。每行对象比源文件多出的 7 个，来自编进多个目标的三个源文件：`src/relation/structured_reduction.cpp` 编 2 次，`tests/test_siqs_multi_a_cycle_profile.cpp` 编 3 次，`tests/support/siqs_shadow_proof_rss_campaign_slot_synthetic_child.cpp` 编 5 次。
 - `e2675a09` 上仓库有 351 个 `.cpp`，四个 Linux 行没有编译的 13 个都不在默认构建里：`bench/microbench` 的 7 个不在构建系统里；4 个 `_windows.cpp` 在 `if(WIN32)` 下；`tests/fuzz/fuzz_integer.cpp` 在默认关闭的 `GNFS_BUILD_FUZZERS` 下；`tests/test_siqs_shadow_proof_rss_holdout_probe.cpp` 标了 `EXCLUDE_FROM_ALL`。macOS 行另有 2 个没有编译：`src/linalg/metal_spmv_stub.cpp` 是非 Metal 分支，`tests/support/bounded_child_process_authenticated_supervisor.cpp` 只在 Linux 下定义。
-- 缓存不起作用的原因有两条。Make 按时间戳判断新旧，恢复出来的对象不比 checkout 的源码新；macOS 行的 `brew install gmp ntl` 每次都重新安装 NTL，新装的依赖头文件同样比对象新。缓存已换成 ccache（PR #420）。
+- 原因是推断，没有实测：没有查看恢复出来的目录里的时间戳，也没有做对照 run。推断的内容是：Make 靠时间戳判断新旧，恢复出来的对象若不比 checkout 的源码和新装的依赖头文件新，就会全部重编。macOS 行这一次的日志里，`brew install gmp ntl` 对 gmp 报已安装，对 ntl 是新装；「每次都重新安装 NTL」同样是推断。缓存已换成 ccache（PR #420）。
 - 同一提交上必需检查的耗时（CI 的 run 45967343806、CodeQL 的 run 45967343786）：最长的两个并行，Windows 行 47.6 分钟，`CI required` 等它结束才通过；CodeQL 的 Analyze C++ 45.0 分钟。CodeQL 里带插桩的构建 25 分钟、分析 19 分钟，工作流里没有任何缓存。这 351 个 .cpp 里 272 个是测试。§三.23 所引的 CodeQL 68.2 分钟没有注明 run，与这次的 45.0 分钟不是同一次测量，差别的原因未确认。
 
 ## 一、过去的方向脉络
@@ -411,7 +411,7 @@
 - Block Wiedemann 的亚二次 lingen（lingen 指由 Krylov 序列求线性递推的那一步，亚二次指用低于二次复杂度的算法实现它）：仓库里还没有规模走到那一步，没有列入。
 - Workbench（macOS 应用）自身的方向没有调研。
 - 各项「实际损失」都没有统计：非首一多项式在默认路径上的出现频率、Schirokauer 退化发生率、特征列记 0 让多少依赖失败、十进制 60 位在任何路径下的表现。
-- 构建缓存命中后仍重编的原因没有调查。原因已查明，构建目录缓存也已换成 ccache，见「2026-11-27 增补」。
+- 构建缓存命中后仍重编的原因没有调查。构建目录缓存已换成 ccache，原因的推断见「2026-11-27 增补」。
 - CodeQL 时长、部分矩阵行的编译计数来自核实；原稿作者只亲自核对了同一 run 的 job、step 时长和 macOS 行的编译计数。
 - `bench/microbench` 的 7 个 .cpp 不受构建系统管理，与 helper 裁决无关，没有归入任何方向。
 - macOS CLI 发布包没有就绪作业，发布冒烟覆盖不到。
