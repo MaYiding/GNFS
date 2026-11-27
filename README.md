@@ -487,14 +487,14 @@ GNFS/
 
 ## 运行时配置
 
-所有实验性策略以环境变量开关暴露，默认 OFF 即标准生产路径，确保零回归风险。各开关的设计动机、实测数据与触发条件详见 [CLAUDE.md](CLAUDE.md) 对应章节。
+实验性策略以环境变量开关暴露，未设置时走标准生产路径。例外是两个按尺寸决定的开关：`GNFS_OOC_RELATIONS` 与 `GNFS_V0_BFS`。二者在 `lp_bits ≥ 22` 时默认开启，在 `lp_bits < 22` 时默认关闭。各开关的设计动机、实测数据与触发条件详见 [docs/env-flags/](docs/env-flags/README.md)。
 
 **过滤合并策略**
 
 | 环境变量 | 取值 | 作用 |
 |---|---|---|
 | `GNFS_CASCADE_V3` | `1` / `auto` / unset | V3 BFS spanning tree 合并 weight ≥ 3 LP 键；`auto` 仅 Round 2+ 启用 |
-| `GNFS_V0_BFS` | `1` | V0 主路径替换为 BFS chain merge（自动 size-gated，lp\_bits ≤ 20 时 fallback） |
+| `GNFS_V0_BFS` | unset / `0` / `1` | V0 主路径替换为 BFS chain merge；未设置时 `lp_bits ≥ 22` 默认开启、否则默认关闭；`1` 在 `lp_bits < 22` 时回退到 V0 standard；`0` 关闭 |
 | `GNFS_V0_WEIGHT3` | `1` | V0 Phase 2 合并 weight = 3 LP 键的前 2 partials |
 | `GNFS_DROP_RESIDUAL` | `1` | 丢弃合并后含残留 LP 的关系（50 d β plateau 实验） |
 | `GNFS_WEIGHT_CUTOFF` | `N` | 丢弃 LP 键 weight > N 的关系（CADO-NFS purge.c 思路） |
@@ -503,7 +503,7 @@ GNFS/
 
 | 环境变量 | 取值 | 作用 |
 |---|---|---|
-| `GNFS_OOC_RELATIONS` | `1` | 关系流式写盘（`.reldata` / `.relidx`），50 d Round 2 OOM 缓解 |
+| `GNFS_OOC_RELATIONS` | unset / `0` / `1` | 关系流式写盘（`.reldata` / `.relidx`），50 d Round 2 OOM 缓解；未设置时 `lp_bits ≥ 22` 默认开启；`0` 关闭，启用 resume 时除外 |
 | `GNFS_OOC_BASE_PATH` | `<path>` | 覆盖 OOC 文件路径前缀 |
 | `GNFS_SIEVE_RESUME` | `<base_path>` | 筛 mid-flight 检查点 + OOC 续写，支持 hours 级 sieve 崩溃恢复 |
 | `GNFS_DISTRIBUTED_SIEVE_WORKERS` | `1–64` | 启用 POSIX 多进程 special-Q wave；不能与 resume 变量同时设置 |
@@ -536,15 +536,7 @@ GNFS/
 ./scripts/test.sh list                  # 查看全部测试、分级、超时
 ```
 
-| 分级 | 超时 | 数量 | 范围 |
-|---|---|:---:|---|
-| `instant` | 10–60 s | 118 | 纯单元 / helper correctness，进入跨平台 PR、sanitizer、coverage |
-| `fast` | 60–180 s | 16 | 中速集成 / 资源敏感 helper，进入 Release PR 快矩阵 |
-| `gate` | 240 s | 1 | 17/27/40/81 bit 回归门禁，进入 Linux Release 深门禁 |
-| `slow` | 120–900 s | 8 | 真实 GNFS / API pipeline，进入 Linux Release 深门禁和 nightly |
-| `heavy` | 600–3600 s | 2 | Kleinjung large、25 位基准；渐进 L3–L5 属手动 heavy 路径 |
-| `bench` | 120–300 s | 3 | informational micro-benchmark，不阻塞 PR |
-| `stress` | 43200 s | 1 | 50 位（L1） + 60 位（L2） |
+测试按 `instant`、`fast`、`gate`、`slow`、`heavy`、`bench`、`stress` 分级。各级的超时、数量与范围随代码变动，本文不抄录，以 `./scripts/test.sh list` 的实时输出为准。
 
 完整测试与 CI 分层规范见 [docs/testing-ci-policy.md](docs/testing-ci-policy.md)。
 首个版本采用 exact-SHA 两阶段发布，操作与安全边界见

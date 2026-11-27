@@ -503,14 +503,14 @@ GNFS/
 
 ## Runtime Configuration
 
-All experimental strategies hide behind environment variable switches. The default off state preserves the standard production path and guarantees zero regression risk. Design rationale, empirical data, and trigger conditions for each switch appear in [CLAUDE.md](CLAUDE.md).
+Experimental strategies are exposed through environment variable switches, and an unset switch leaves the standard production path in place. Two size-aware switches are the exception: `GNFS_OOC_RELATIONS` and `GNFS_V0_BFS`. Both default to on when `lp_bits` is at least 22 and to off when it is below 22. Design rationale, empirical data, and trigger conditions for each switch appear in [docs/env-flags/](docs/env-flags/README.md).
 
 **Filter and merge strategy**
 
 | Variable | Values | Effect |
 |---|---|---|
 | `GNFS_CASCADE_V3` | `1` / `auto` / unset | Activates the V3 BFS spanning-tree merge for LP keys of weight three or higher; `auto` enables it only from Round 2 onwards |
-| `GNFS_V0_BFS` | `1` | Replaces the V0 main path with BFS chain merge; automatically falls back when lp\_bits is at most 20 |
+| `GNFS_V0_BFS` | unset / `0` / `1` | Replaces the V0 main path with BFS chain merge; when unset it defaults to on if `lp_bits` is at least 22 and to off below that; `1` still falls back to V0 standard when `lp_bits` is below 22; `0` turns it off |
 | `GNFS_V0_WEIGHT3` | `1` | V0 Phase 2 merges the first two partials of weight-three LP keys |
 | `GNFS_DROP_RESIDUAL` | `1` | Drops relations that retain residual large primes after merging (the 50-digit beta plateau experiment) |
 | `GNFS_WEIGHT_CUTOFF` | `N` | Drops relations whose LP key weight exceeds N (the CADO-NFS purge.c approach) |
@@ -519,7 +519,7 @@ All experimental strategies hide behind environment variable switches. The defau
 
 | Variable | Values | Effect |
 |---|---|---|
-| `GNFS_OOC_RELATIONS` | `1` | Streams relations to `.reldata` and `.relidx` files, which mitigates the 50-digit Round 2 OOM |
+| `GNFS_OOC_RELATIONS` | unset / `0` / `1` | Streams relations to `.reldata` and `.relidx` files, which mitigates the 50-digit Round 2 OOM; when unset it defaults to on if `lp_bits` is at least 22; `0` turns it off unless a resume path is active |
 | `GNFS_OOC_BASE_PATH` | `<path>` | Overrides the OOC file prefix |
 | `GNFS_SIEVE_RESUME` | `<base_path>` | Saves mid-flight sieve checkpoints and resumes OOC append, supporting recovery from multi-hour sieve crashes |
 | `GNFS_BW_KRYLOV_MMAP` | `1` | mmaps the Block Wiedemann Phase 1 Krylov sequence to disk and saves about 144 MB at n=1M for the 60-digit case |
@@ -547,15 +547,7 @@ The project uses `scripts/test.sh`, which wraps compilation, per-test timeout, t
 ./scripts/test.sh list                  # show all tests, tiers, and timeouts
 ```
 
-| Tier | Timeout | Count | Scope |
-|---|---|:---:|---|
-| `instant` | 10–60 s | 118 | Unit and helper correctness tests for cross-platform PR, sanitizer, and coverage jobs |
-| `fast` | 60–180 s | 16 | Medium integration and resource-sensitive helper tests for the Release PR matrix |
-| `gate` | 240 s | 1 | 17, 27, 40, and 81-bit regression gate for the Linux Release deep gate |
-| `slow` | 120–900 s | 8 | Real GNFS and API pipeline tests for the Linux Release deep gate and nightly workflow |
-| `heavy` | 600–3600 s | 2 | Kleinjung large and 25-digit benchmark; progressive L3 to L5 is a manual heavy path |
-| `bench` | 120–300 s | 3 | Informational micro-benchmarks that do not block PRs |
-| `stress` | 43200 s | 1 | 50-digit (L1) and 60-digit (L2) |
+Tests are tiered as `instant`, `fast`, `gate`, `slow`, `heavy`, `bench`, and `stress`. Timeouts, counts, and scope change with the code, so this README does not copy them; `./scripts/test.sh list` is the live source.
 
 The full test and CI tiering policy appears in [docs/testing-ci-policy.md](docs/testing-ci-policy.md).
 The exact-SHA, two-phase publication procedure appears in
