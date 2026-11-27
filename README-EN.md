@@ -48,7 +48,7 @@ This project is not an academic prototype. It targets reproducible execution, ob
 
 1. **Correctness first, speed second.** Every mathematical subroutine ships with a cross-size regression gate (17, 27, 40, and 81 bits). Implementations that pass only at small sizes do not merge to main.
 2. **Memory is a first-class resource.** At 50 decimal digits and above, memory pressure dominates before the CPU becomes the bottleneck. The project therefore provides a full out-of-core path that includes streaming relation persistence, Krylov sequence mmap, and sieve mid-flight checkpointing.
-3. **Runtime control over algorithm variants.** All experimental strategies hide behind environment variable switches that default to off. This avoids combinatorial algorithm branching and guarantees zero regression risk on the production path.
+3. **Runtime control over algorithm variants.** Experimental strategies hide behind environment variable switches, and an unset switch leaves the standard production path in place, which avoids combinatorial algorithm branching. The two exceptions are `GNFS_V0_BFS` and `GNFS_OOC_RELATIONS`, which default to on once `lp_bits` reaches 22 (see Runtime Configuration).
 
 ## Performance
 
