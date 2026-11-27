@@ -6,9 +6,15 @@
 //      order, and reports every rejected dependency exactly once.
 //   2. A batch without a rejected dependency is returned unchanged and
 //      produces no report.
+//   3. Pipeline::extract_factors reports a failed rational or algebraic
+//      square root as one WARN log that names the dependency and the reason.
 
 #include <gnfs/api/pipeline.hpp>
 #include <gnfs/api/progress.hpp>
+#include <gnfs/core/integer.hpp>
+#include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/core/relation.hpp>
+#include <gnfs/factor_base/factor_base.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 
 #include "support/test_check.hpp"
@@ -19,10 +25,15 @@
 
 namespace {
 
+using gnfs::api::LogEntry;
 using gnfs::api::LogLevel;
 using gnfs::api::Phase;
+using gnfs::api::Pipeline;
 using gnfs::api::detail::DependencyRejectionSink;
 using gnfs::api::detail::retain_verified_dependencies;
+using gnfs::core::Integer;
+using gnfs::core::Relation;
+using gnfs::factor_base::FactorBase;
 using gnfs::linalg::SparseMatrix;
 
 // One report as a Pipeline log callback receives it.
@@ -136,6 +147,116 @@ void test_out_of_range_column_is_dropped_and_reported() {
     std::cout << "  PASSED\n";
 }
 
+// Whether a log entry has exactly this level, phase, and message.
+bool is_log(const LogEntry& entry, LogLevel level, Phase phase, const char* message) {
+    return entry.level == level && entry.phase == phase && entry.message == message;
+}
+
+// A relation whose rational value a - b*m equals 1, so its rational side is
+// a square that needs no factor-base entry.
+Relation unit_rational_relation(const gnfs::core::PolynomialContext& ctx) {
+    return Relation(ctx.m().to_int64() + 1, 1);
+}
+
+void test_rational_sqrt_failure_is_logged() {
+    std::cout << "Testing rational sqrt failure is logged...\n";
+
+    Pipeline pipeline(Integer(143));
+    const auto ctx = pipeline.select_polynomial();
+    std::vector<LogEntry> logs;
+    pipeline.set_log_callback([&](const LogEntry& entry) { logs.push_back(entry); });
+
+    // The dependency selects the only row, which has no columns. The relation
+    // names a rational factor-base entry that the empty factor base lacks.
+    Relation relation = unit_rational_relation(ctx);
+    relation.rational_factors = {0};
+    Pipeline::MatrixResult matrix_result;
+    matrix_result.matrix = SparseMatrix(1, 0);
+    matrix_result.dependencies = {{true}};
+    matrix_result.relations = {relation};
+    const FactorBase empty_factor_base;
+
+    const auto result = pipeline.extract_factors(matrix_result, empty_factor_base, ctx);
+
+    GNFS_TEST_CHECK(!result.success);
+    GNFS_TEST_CHECK(result.factors.empty());
+    GNFS_TEST_CHECK(logs.size() == 2);
+    GNFS_TEST_CHECK(is_log(logs[0], LogLevel::Warn, Phase::SquareRoot,
+                           "Rational sqrt failed for dependency 1/1: "
+                           "Rational sqrt: factor-base index out of range"));
+    GNFS_TEST_CHECK(
+        is_log(logs[1], LogLevel::Warn, Phase::FactorExtraction, "No non-trivial factor found"));
+    std::cout << "  PASSED\n";
+}
+
+void test_algebraic_sqrt_failure_is_logged() {
+    std::cout << "Testing algebraic sqrt failure is logged...\n";
+
+    Pipeline pipeline(Integer(143));
+    const auto ctx = pipeline.select_polynomial();
+    std::vector<LogEntry> logs;
+    pipeline.set_log_callback([&](const LogEntry& entry) { logs.push_back(entry); });
+
+    // The rational side is the unit. The relation names one algebraic
+    // factor-base entry once, so the algebraic product is not a square.
+    Relation relation = unit_rational_relation(ctx);
+    relation.algebraic_factors = {0};
+    Pipeline::MatrixResult matrix_result;
+    matrix_result.matrix = SparseMatrix(1, 0);
+    matrix_result.dependencies = {{true}};
+    matrix_result.relations = {relation};
+    const FactorBase empty_factor_base;
+
+    const auto result = pipeline.extract_factors(matrix_result, empty_factor_base, ctx);
+
+    GNFS_TEST_CHECK(!result.success);
+    GNFS_TEST_CHECK(result.factors.empty());
+    GNFS_TEST_CHECK(logs.size() == 2);
+    GNFS_TEST_CHECK(is_log(logs[0], LogLevel::Warn, Phase::SquareRoot,
+                           "Algebraic sqrt failed for dependency 1/1, using algebraic value 1 "
+                           "instead: Algebraic ideal powers parity check failed"));
+    GNFS_TEST_CHECK(
+        is_log(logs[1], LogLevel::Warn, Phase::FactorExtraction, "No non-trivial factor found"));
+    std::cout << "  PASSED\n";
+}
+
+void test_xor_dependency_failure_is_logged() {
+    std::cout << "Testing XOR dependency failure is logged...\n";
+
+    Pipeline pipeline(Integer(143));
+    const auto ctx = pipeline.select_polynomial();
+    std::vector<LogEntry> logs;
+    pipeline.set_log_callback([&](const LogEntry& entry) { logs.push_back(entry); });
+
+    // Two rows without columns: each dependency selects one row and their XOR
+    // selects both, so all three attempts pass the matrix verification.
+    Relation relation = unit_rational_relation(ctx);
+    relation.rational_factors = {0};
+    Pipeline::MatrixResult matrix_result;
+    matrix_result.matrix = SparseMatrix(2, 0);
+    matrix_result.dependencies = {{true, false}, {false, true}};
+    matrix_result.relations = {relation, relation};
+    const FactorBase empty_factor_base;
+
+    const auto result = pipeline.extract_factors(matrix_result, empty_factor_base, ctx);
+
+    GNFS_TEST_CHECK(!result.success);
+    GNFS_TEST_CHECK(result.stats.dependencies_tried == 3);
+    GNFS_TEST_CHECK(logs.size() == 4);
+    GNFS_TEST_CHECK(is_log(logs[0], LogLevel::Warn, Phase::SquareRoot,
+                           "Rational sqrt failed for dependency 1/2: "
+                           "Rational sqrt: factor-base index out of range"));
+    GNFS_TEST_CHECK(is_log(logs[1], LogLevel::Warn, Phase::SquareRoot,
+                           "Rational sqrt failed for dependency 2/2: "
+                           "Rational sqrt: factor-base index out of range"));
+    GNFS_TEST_CHECK(is_log(logs[2], LogLevel::Warn, Phase::SquareRoot,
+                           "Rational sqrt failed for XOR dependency 3: "
+                           "Rational sqrt: factor-base index out of range"));
+    GNFS_TEST_CHECK(
+        is_log(logs[3], LogLevel::Warn, Phase::FactorExtraction, "No non-trivial factor found"));
+    std::cout << "  PASSED\n";
+}
+
 } // namespace
 
 int main() {
@@ -145,6 +266,9 @@ int main() {
     test_verified_batch_is_silent();
     test_length_mismatch_is_dropped_and_reported();
     test_out_of_range_column_is_dropped_and_reported();
+    test_rational_sqrt_failure_is_logged();
+    test_algebraic_sqrt_failure_is_logged();
+    test_xor_dependency_failure_is_logged();
 
     std::cout << "\n=== All dependency diagnostics tests PASSED ===\n";
     return 0;

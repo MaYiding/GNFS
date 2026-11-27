@@ -3964,16 +3964,29 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         }
     }
 
-    const auto try_relation_dependency =
-        [&](const linalg::BitVector& dependency,
-            const std::vector<Relation>& dependency_relations) -> bool {
+    // A failed square root wastes the attempt, so report which dependency
+    // failed and why before moving on.
+    const auto try_relation_dependency = [&](const linalg::BitVector& dependency,
+                                             const std::vector<Relation>& dependency_relations,
+                                             const std::string& label) -> bool {
         auto rat_result =
             sqrt::compute_rational_sqrt(dependency, dependency_relations, fb, n_, ctx.m());
         if (!rat_result.success) {
+            char message[512];
+            std::snprintf(message, sizeof(message), "Rational sqrt failed for %s: %s",
+                          label.c_str(), rat_result.error.c_str());
+            emit_log(LogLevel::Warn, Phase::SquareRoot, message);
             return false;
         }
 
         auto alg_result = sqrt::compute_algebraic_sqrt(dependency, dependency_relations, ctx);
+        if (!alg_result.success) {
+            char message[512];
+            std::snprintf(message, sizeof(message),
+                          "Algebraic sqrt failed for %s, using algebraic value 1 instead: %s",
+                          label.c_str(), alg_result.error.c_str());
+            emit_log(LogLevel::Warn, Phase::SquareRoot, message);
+        }
         Integer alg_value = alg_result.success ? alg_result.value : Integer(1); // copy ctor
 
         if (try_factor(rat_result.value, alg_value)) {
@@ -3986,14 +3999,15 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         return try_factor(rat_result.value, alg_neg);
     };
 
-    const auto try_matrix_dependency = [&](const std::vector<bool>& dependency) -> bool {
+    const auto try_matrix_dependency = [&](const std::vector<bool>& dependency,
+                                           const std::string& label) -> bool {
         // Always validate in matrix coordinates before mapping or materializing.
         if (!detail::verify_dependency(mr.matrix, dependency)) {
             return false;
         }
 
         if (structured_corpus == nullptr) {
-            return try_relation_dependency(to_bitvector(dependency), mr.relations);
+            return try_relation_dependency(to_bitvector(dependency), mr.relations, label);
         }
 
         const auto selection = linalg::dependency_to_relation_selection(
@@ -4006,7 +4020,7 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
         for (size_t index = 0; index < selected_relations.size(); ++index) {
             local_dependency.set(index);
         }
-        return try_relation_dependency(local_dependency, selected_relations);
+        return try_relation_dependency(local_dependency, selected_relations, label);
     };
 
     // Try each dependency
@@ -4019,7 +4033,10 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
                           std::to_string(mr.dependencies.size()),
                       static_cast<double>(dep_idx) / static_cast<double>(mr.dependencies.size()));
 
-        if (try_matrix_dependency(dep)) {
+        char attempt_label[80];
+        std::snprintf(attempt_label, sizeof(attempt_label), "dependency %zu/%zu", dep_idx + 1,
+                      mr.dependencies.size());
+        if (try_matrix_dependency(dep, attempt_label)) {
             break;
         }
     }
@@ -4042,7 +4059,10 @@ FactorResult Pipeline::extract_factors(const MatrixResult& mr, const FactorBase&
                 ++stats_.dependencies_tried;
                 emit_progress(Phase::FactorExtraction,
                               "Trying XOR dependency " + std::to_string(stats_.dependencies_tried));
-                if (try_matrix_dependency(*combined)) {
+                char attempt_label[64];
+                std::snprintf(attempt_label, sizeof(attempt_label), "XOR dependency %zu",
+                              stats_.dependencies_tried);
+                if (try_matrix_dependency(*combined, attempt_label)) {
                     break;
                 }
             }

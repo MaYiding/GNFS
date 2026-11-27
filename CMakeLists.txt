@@ -3009,7 +3009,8 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME I18N COMMAND test_i18n)
     set_tests_properties(I18N PROPERTIES LABELS "instant" TIMEOUT 10)
 
-    # Rejected solver dependencies are dropped with a log instead of silently.
+    # Matrix-phase failure diagnostics: rejected solver dependencies and
+    # square-root failure logs.
     add_executable(test_dependency_diagnostics
         tests/test_dependency_diagnostics.cpp
     )
