@@ -242,21 +242,26 @@ final class GNFSWorkbenchUITests: XCTestCase {
   }
 
   /// Scrolls the document toward its bottom until its visible part holds `element`, and
-  /// reports `false` after `scrolls` attempts without recording a second failure there.
+  /// reports `false` after `scrolls` scrolls. The frames are read first, so an element that
+  /// is already visible costs no wait.
   @discardableResult
   private func revealInDocument(
     _ element: XCUIElement, document: XCUIElement, scrolls: Int = 3,
     file: StaticString = #filePath, line: UInt = #line
   ) -> Bool {
-    for _ in 0...scrolls {
-      if waitUntilLiesInside(element, document, timeout: 6) { return true }
+    var inside = reportedFrameLiesInside(element, document)
+    for _ in 0..<scrolls where !inside {
       document.scroll(byDeltaX: 0, deltaY: -600)
+      inside = waitUntilLiesInside(element, document, timeout: 6)
     }
-    XCTFail(
-      "The element did not come into the visible part of the document, "
-        + NSStringFromRect(document.frame) + ", within \(scrolls) scrolls.",
-      file: file, line: line)
-    return false
+    guard inside else {
+      XCTFail(
+        "The element did not come into the visible part of the document, "
+          + NSStringFromRect(document.frame) + ", within \(scrolls) scrolls.",
+        file: file, line: line)
+      return false
+    }
+    return true
   }
 
   /// Waits until the interface reports the frame of `inner` inside the frame of `outer`.
@@ -303,6 +308,9 @@ final class GNFSWorkbenchUITests: XCTestCase {
 
   func testReadingOlderLogsPausesFollowingAndLatestResumesIt() {
     continueAfterFailure = false
+    // Every read of the interface takes seconds on a busy runner, and the test makes about
+    // thirty of them, so the default allowance of two minutes is too short there.
+    executionTimeAllowance = 240
     let app = launchApp(streamLogs: true)
     XCTAssertTrue(app.buttons["startRunButton"].waitForExistence(timeout: 4))
     app.buttons["startRunButton"].click()
