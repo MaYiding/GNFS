@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
+#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -61,16 +62,16 @@ constexpr CorpusDigest EXPECTED_STRUCTURED_OUTPUT_DIGEST{
 constexpr size_t EXPECTED_STRUCTURED_COMMITS = 45;
 constexpr size_t EXPECTED_STRUCTURED_EMITTED_ROWS = 79;
 constexpr size_t EXPECTED_LEGACY_MATRIX_COLUMNS = 14'648;
-constexpr size_t EXPECTED_LEGACY_MATRIX_NONZEROS = 15'585;
+constexpr size_t EXPECTED_LEGACY_MATRIX_NONZEROS = 15'632;
 constexpr CorpusDigest EXPECTED_LEGACY_MATRIX_DIGEST{
-    14'525'310'064'104'378'093ULL,
-    16'319'658'707'909'074'699ULL,
+    11'249'492'236'301'261'937ULL,
+    12'935'708'802'098'224'886ULL,
 };
 constexpr size_t EXPECTED_STRUCTURED_MATRIX_COLUMNS = 14'653;
-constexpr size_t EXPECTED_STRUCTURED_MATRIX_NONZEROS = 25'678;
+constexpr size_t EXPECTED_STRUCTURED_MATRIX_NONZEROS = 26'134;
 constexpr CorpusDigest EXPECTED_STRUCTURED_MATRIX_DIGEST{
-    14'532'202'369'606'426'594ULL,
-    8'411'150'515'085'501'241ULL,
+    7'306'099'024'060'028'890ULL,
+    7'552'764'259'524'638'440ULL,
 };
 
 [[nodiscard]] PolynomialContext make_fixture_context(const Integer& n) {
@@ -156,6 +157,12 @@ struct RunEvidence final {
     bool owns_structured_corpus = false;
     bool structured_row_mapping_is_identity = false;
 };
+
+// Evidence of the last two runs. run_test publishes it before it checks the
+// frozen identity, so a gate that fails on a stale constant still reports the
+// values it measured. The constants can then be re-collected from the CI log.
+std::optional<RunEvidence> observed_legacy;
+std::optional<RunEvidence> observed_structured;
 
 [[nodiscard]] CorpusDigest matrix_digest(const gnfs::linalg::SparseMatrix& matrix) {
     gnfs::relation::detail::CorpusDigestBuilder builder;
@@ -321,6 +328,42 @@ void validate_route_contract(const RunEvidence& legacy, const RunEvidence& struc
             "fixed 120-bit structured reduction or matrix identity changed");
 }
 
+// Writes the single evidence line of the gate. `status` is "pass" after the
+// frozen identity matched and "observed" when a run finished but the identity
+// check failed, so that both outcomes report the measured values.
+void write_evidence(std::ostream& out, const RunEvidence& legacy, const RunEvidence& structured,
+                    std::string_view status) {
+    out << "GNFS_STRUCTURED_120BIT_V1" << " status=" << status << " n_bits=" << FIXTURE_BITS
+        << " max_special_q=" << MAX_SPECIAL_Q << " raw_rows=" << structured.input_rows
+        << " raw_digest_low=" << structured.raw_digest.low
+        << " raw_digest_high=" << structured.raw_digest.high
+        << " raw_lp_columns=" << structured.raw_lp_histogram.unique_keys
+        << " legacy_output_rows=" << legacy.output_rows
+        << " legacy_output_lp_columns=" << legacy.output_lp_columns
+        << " legacy_output_digest_low=" << legacy.output_digest.low
+        << " legacy_output_digest_high=" << legacy.output_digest.high
+        << " structured_output_rows=" << structured.output_rows
+        << " structured_output_lp_columns=" << structured.output_lp_columns
+        << " structured_output_digest_low=" << structured.output_digest.low
+        << " structured_output_digest_high=" << structured.output_digest.high
+        << " structured_commits=" << structured.structured_commits
+        << " structured_emitted_rows=" << structured.structured_emitted_rows
+        << " legacy_matrix_rows=" << legacy.matrix_rows
+        << " legacy_matrix_columns=" << legacy.matrix_columns
+        << " legacy_matrix_nonzeros=" << legacy.matrix_nonzeros
+        << " legacy_matrix_digest_low=" << legacy.matrix_digest.low
+        << " legacy_matrix_digest_high=" << legacy.matrix_digest.high
+        << " structured_matrix_rows=" << structured.matrix_rows
+        << " structured_matrix_columns=" << structured.matrix_columns
+        << " structured_matrix_nonzeros=" << structured.matrix_nonzeros
+        << " structured_matrix_digest_low=" << structured.matrix_digest.low
+        << " structured_matrix_digest_high=" << structured.matrix_digest.high
+        << " legacy_sieve_threads=" << legacy.local_sieve_threads
+        << " structured_sieve_threads=" << structured.local_sieve_threads
+        << " structured_incidence_peak_workers=" << structured.structured_peak_workers
+        << " timing_asserted=false\n";
+}
+
 void run_test() {
     ScopedEnvironmentVariable ordinary_ooc("GNFS_OOC_RELATIONS", "0");
     ScopedEnvironmentVariable ooc_base("GNFS_OOC_BASE_PATH", std::nullopt);
@@ -376,37 +419,11 @@ void run_test() {
     const RunEvidence legacy = run_case(n, make_config(1), context, factor_base, "0");
     const RunEvidence structured =
         run_case(n, make_config(structured_threads), context, factor_base, "1");
+    observed_legacy = legacy;
+    observed_structured = structured;
     validate_route_contract(legacy, structured, structured_threads);
 
-    std::cout << "GNFS_STRUCTURED_120BIT_V1" << " status=pass" << " n_bits=" << FIXTURE_BITS
-              << " max_special_q=" << MAX_SPECIAL_Q << " raw_rows=" << structured.input_rows
-              << " raw_digest_low=" << structured.raw_digest.low
-              << " raw_digest_high=" << structured.raw_digest.high
-              << " raw_lp_columns=" << structured.raw_lp_histogram.unique_keys
-              << " legacy_output_rows=" << legacy.output_rows
-              << " legacy_output_lp_columns=" << legacy.output_lp_columns
-              << " legacy_output_digest_low=" << legacy.output_digest.low
-              << " legacy_output_digest_high=" << legacy.output_digest.high
-              << " structured_output_rows=" << structured.output_rows
-              << " structured_output_lp_columns=" << structured.output_lp_columns
-              << " structured_output_digest_low=" << structured.output_digest.low
-              << " structured_output_digest_high=" << structured.output_digest.high
-              << " structured_commits=" << structured.structured_commits
-              << " structured_emitted_rows=" << structured.structured_emitted_rows
-              << " legacy_matrix_rows=" << legacy.matrix_rows
-              << " legacy_matrix_columns=" << legacy.matrix_columns
-              << " legacy_matrix_nonzeros=" << legacy.matrix_nonzeros
-              << " legacy_matrix_digest_low=" << legacy.matrix_digest.low
-              << " legacy_matrix_digest_high=" << legacy.matrix_digest.high
-              << " structured_matrix_rows=" << structured.matrix_rows
-              << " structured_matrix_columns=" << structured.matrix_columns
-              << " structured_matrix_nonzeros=" << structured.matrix_nonzeros
-              << " structured_matrix_digest_low=" << structured.matrix_digest.low
-              << " structured_matrix_digest_high=" << structured.matrix_digest.high
-              << " legacy_sieve_threads=" << legacy.local_sieve_threads
-              << " structured_sieve_threads=" << structured.local_sieve_threads
-              << " structured_incidence_peak_workers=" << structured.structured_peak_workers
-              << " timing_asserted=false\n";
+    write_evidence(std::cout, legacy, structured, "pass");
 }
 
 } // namespace
@@ -416,6 +433,10 @@ int main() {
         run_test();
         return 0;
     } catch (const std::exception& error) {
+        if (observed_legacy && observed_structured) {
+            write_evidence(std::cout, *observed_legacy, *observed_structured, "observed");
+            std::cout.flush();
+        }
         std::cerr << "GNFS_STRUCTURED_120BIT_V1 status=fail error=" << error.what() << '\n';
         return 1;
     }

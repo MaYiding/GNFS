@@ -282,6 +282,14 @@ static bool factorize(const RegressionLevel& tc) {
     MatrixBuilder mb(mc);
     auto br = mb.build_with_qc(relations, fb, ctx);
 
+    // A QC column is undefined where a - b*r is 0 modulo its prime. QC primes
+    // are selected above the factor base, the special-Q range, and the large
+    // primes, so no relation of a real corpus may hit that case.
+    if (br.qc_zero_legendre_count != 0) {
+        std::cerr << "  QC zero Legendre count: " << br.qc_zero_legendre_count << "\n";
+        return false;
+    }
+
     auto sge_result = linalg::SGE::preprocess(br.matrix);
 
     BlockLanczos solver;
