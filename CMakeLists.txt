@@ -2800,6 +2800,17 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME LinalgSpmvSimd COMMAND test_spmv_simd)
     set_tests_properties(LinalgSpmvSimd PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Launch failure in the hand-written submit loops of Gaussian elimination
+    # and SpMV transpose. The binary replaces operator new and fails allocations
+    # of the calling thread; a parked MatrixView task shows whether transpose
+    # returns before the tasks it already submitted have finished.
+    add_executable(test_linalg_launch_failure
+        tests/test_linalg_launch_failure.cpp
+    )
+    target_link_libraries(test_linalg_launch_failure PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LinalgLaunchFailure COMMAND test_linalg_launch_failure)
+    set_tests_properties(LinalgLaunchFailure PROPERTIES LABELS "instant" TIMEOUT 60)
+
     # Cache-blocked GF(2) matrix transpose helper (correctness).
     # Exercises the naive scalar reference path, the 64x64 tile-blocked
     # path, and the ENV-gated dispatcher across a battery of edge sizes
