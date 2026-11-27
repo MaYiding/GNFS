@@ -387,26 +387,59 @@ jobs:
       group: ci-${{ github.ref }}-linux-release-gate
       cancel-in-progress: true
     timeout-minutes: 75
+    env:
+      # ccache, laid out like the POSIX matrix rows above. The directory stays
+      # inside the workspace so actions/cache can persist it, and the same size
+      # cap keeps this job's entry well inside the 10 GB that all caches of
+      # this repository share.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         persist-credentials: false
 
+    # This job uses the same runner image, compiler, and build type as Linux
+    # x86_64 (gcc, Release), so without "deepgate" its key would be the key of
+    # that row and the two jobs would restore and save the same entries. As in
+    # the matrix, restore-keys takes the newest entry of this job when the
+    # source hash is new.
+    - name: Restore ccache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-deepgate-ubuntu-24.04-${{ runner.arch }}-g++-Release-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**', 'tests/**') }}
+        restore-keys: |
+          ccache-deepgate-ubuntu-24.04-${{ runner.arch }}-g++-Release-
+
     - name: Install dependencies
       run: |
         bash scripts/ci/apt_update.sh
-        sudo apt-get install -y libgmp-dev libntl-dev
+        sudo apt-get install -y ccache libgmp-dev libntl-dev
 
     - name: Configure CMake
       run: |
+        # The restored directory also carries older counters; start at zero so
+        # the statistics printed after the build describe this run.
+        ccache --zero-stats
         cmake -B build-gate \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_CXX_COMPILER=g++ \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
           -DGNFS_ENABLE_NATIVE_ARCH=OFF
 
     - name: Build
+      id: build
       run: cmake --build build-gate --parallel "$(nproc)"
+
+    # Hits, misses, and cache size for this run. Skipped when the build did
+    # not run, for example after an earlier step failed.
+    - name: Report ccache statistics
+      if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
+      run: |
+        ccache --version
+        ccache --show-stats
 
     - name: Run gate and slow tests
       working-directory: build-gate
