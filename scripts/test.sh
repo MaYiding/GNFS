@@ -445,6 +445,7 @@ ALL_TEST_BINARIES=(
     test_lp_key_hash
     test_merger_parallel
     test_method_selection
+    test_dependency_diagnostics
     test_mmap_csr
     test_ooc_relations
     test_root_property_cache
@@ -721,6 +722,7 @@ TEST_TIMEOUT=(
     test_cli_event_stream    60
     test_i18n                10
     test_method_selection    60
+    test_dependency_diagnostics 30
     test_clique_merger       10
     test_clique_merger_50d_synthetic 60
     test_3lp_cofactor        30
@@ -984,6 +986,7 @@ TEST_TIER=(
     test_cli_event_stream    "instant"
     test_i18n                "instant"
     test_method_selection    "instant"
+    test_dependency_diagnostics "instant"
     test_siqs                "fast"
     test_siqs_budget_admission "fast"
     test_siqs_multiplier_coordinator "fast"
