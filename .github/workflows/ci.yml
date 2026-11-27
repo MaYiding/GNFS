@@ -106,6 +106,22 @@ jobs:
         restore-keys: |
           ccache-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-${{ matrix.build_type }}-
 
+    # vcpkg writes its binary packages here (VCPKG_BINARY_SOURCES in the
+    # install step). The key names the pinned vcpkg commit and the MSYS2
+    # package revision patched into the GMP port; change it together with
+    # the checkout and install steps. vcpkg's package ABI also covers the
+    # detected compiler, so an entry goes stale when the runner image
+    # changes. The commit suffix lets a rebuilt archive be saved under a new
+    # key, and restore-keys still picks the newest entry of this pin.
+    - name: Restore vcpkg binary cache (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .vcpkg-binary-cache
+        key: vcpkg-gmp-${{ matrix.os }}-${{ runner.arch }}-e12aaf7336cc1e348c43a1244f348451b534c0a9-autoconf2.71-2.71-4-${{ github.sha }}
+        restore-keys: |
+          vcpkg-gmp-${{ matrix.os }}-${{ runner.arch }}-e12aaf7336cc1e348c43a1244f348451b534c0a9-autoconf2.71-2.71-4-
+
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
       run: |
@@ -156,6 +172,14 @@ jobs:
           $gmpPortfile,
           $portfile,
           [System.Text.UTF8Encoding]::new($false))
+
+        # Store vcpkg's binary packages in the directory that actions/cache
+        # restores above; "clear" drops the default cache under LOCALAPPDATA.
+        $binaryCache = Join-Path $env:GITHUB_WORKSPACE ".vcpkg-binary-cache"
+        if (!(Test-Path -LiteralPath $binaryCache -PathType Container)) {
+          New-Item -ItemType Directory -Path $binaryCache | Out-Null
+        }
+        $env:VCPKG_BINARY_SOURCES = "clear;files,${binaryCache},readwrite"
 
         echo "VCPKG_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
         & "$vcpkgRoot\vcpkg.exe" install gmp:x64-windows
