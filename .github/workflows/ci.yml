@@ -125,7 +125,7 @@ jobs:
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
       run: |
-        sudo apt-get update
+        bash scripts/ci/apt_update.sh
         sudo apt-get install -y ccache clang libgmp-dev libntl-dev zsh
 
     - name: Install dependencies (macOS)
@@ -395,7 +395,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
+        bash scripts/ci/apt_update.sh
         sudo apt-get install -y libgmp-dev libntl-dev
 
     - name: Configure CMake

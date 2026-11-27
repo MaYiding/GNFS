@@ -44,7 +44,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          bash scripts/ci/apt_update.sh
           sudo apt-get install -y clang clang-tidy libgmp-dev libntl-dev
 
       - name: Configure compile database
@@ -109,7 +109,7 @@ jobs:
 
       - name: Install yamllint
         run: |
-          sudo apt-get update
+          bash scripts/ci/apt_update.sh
           sudo apt-get install -y yamllint
 
       - name: Lint GitHub YAML
