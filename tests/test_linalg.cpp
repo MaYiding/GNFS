@@ -1588,8 +1588,8 @@ constexpr NonMonicSchirokauerRow kNonMonicSchirokauerRows[] = {
 };
 
 // Both fixtures have leading coefficient ≡ 3 (mod 4) and satisfy f(m) = N for
-// N = 100160063 = 10007 * 10009. Their discriminants are squarefree
-// (8975137 and -23198899), so Z[α] is the full ring of integers.
+// N = 100160063 = 10007 * 10009. Both are irreducible over Q with a squarefree
+// discriminant (8975137 and -23198899).
 void check_non_monic_schirokauer(const char* label, const std::vector<int64_t>& coefficients,
                                  int64_t m, uint64_t expected_lead_inverse, bool expect_split) {
     std::cout << "Testing " << label << "..." << std::endl;

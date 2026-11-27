@@ -11,8 +11,8 @@
 //   SGE → dependencies → rational and algebraic square root → GCD
 //
 // Fixtures. Both satisfy f(m) = N = 100160063 = 10007 * 10009, the 27-bit
-// semiprime of RegressionGate level 2, and both have a squarefree
-// discriminant, so Z[α] is the full ring of integers:
+// semiprime of RegressionGate level 2, and both are irreducible over Q with
+// a squarefree discriminant:
 //   unsplit  3x^3 - 53x^2 - 2x + 15,    m = 328   f mod 2 = x^3 + x^2 + 1
 //   split    15x^3 + 14x^2 - 26x + 55,  m = 188   f mod 2 = (x + 1)(x^2 + x + 1)
 // The same polynomials drive the unit tests in tests/test_linalg.cpp.
