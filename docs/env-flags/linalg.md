@@ -326,7 +326,7 @@ N=hw_concurrency 严格 assert).
 
 `MatrixBuilder` 在 $f_d$ 不是有理数平方时追加一列：行值是该关系所含对数的奇偶，即 `1 + extra_ab_pairs.size()` 模 2；位置在 Schirokauer 列之后，偏移量由 `ColumnMapping::pair_parity_start()` 给出，列数记在 `num_pair_parity_columns`。$f_d$ 是完全平方数（含 1）时不加这一列，首一夹具与 120 bit 门禁的矩阵逐位不变。平方判断用 `Integer` 的精确整数开方，不经过浮点。不带 `PolynomialContext` 的 `build()` 不加这一列。
 
-- 验证：`LinearAlgebra` 检查首项 3、7、12 有这一列且行值正确（含合并关系），首项 1、4、9、36 没有，内存版与流式版列数一致。
+- 验证：`LinearAlgebra` 检查首项 3、7、12 有这一列且行值正确（含合并关系），首项 1、4、9、36 没有，内存版与流式版列数一致；`NonMonicMatrixConstraintsE2E` 用首项 2 的二次多项式和首项 7 的三次多项式各分解出一个非平凡因子。
 
 ---
 

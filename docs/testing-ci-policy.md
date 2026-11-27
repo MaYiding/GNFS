@@ -155,6 +155,12 @@ controls. Both compare the in-memory and streaming builds.
 polynomials. Each one must factor the 27-bit semiprime 100160063 through sieve,
 filtering, matrix, dependencies, and square root. The Linux Release deep gate
 runs it.
+`NonMonicMatrixConstraintsE2E` is a `slow` end-to-end contract for the same
+constraints. The even quadratic `2x^2 + x + 1` with `m = 14` must factor 407,
+and the odd non-square cubic `7x^3 + 58x^2 + 213x + 143` with `m = 240` must
+factor 100160063. Each matrix must carry the pair-parity column, and the even
+fixture must also have no Schirokauer column. The Linux Release deep gate runs
+it.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,
