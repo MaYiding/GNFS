@@ -15,8 +15,10 @@
 #include <gnfs/linalg/sparse_matrix.hpp>
 #include <gnfs/relation/filter.hpp>
 #include <gnfs/sqrt/number_field.hpp>
+#include <gnfs/util/primes.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace gnfs;
@@ -1313,6 +1316,8 @@ void test_schirokauer_overflow_guards() {
 
     // Integer::mod uses truncating division in this project, so normalize
     // negative coefficients back to the non-negative fdiv_ui residue range.
+    // The polynomial is monic, so the leading-coefficient normalization in
+    // precompute_for_prime leaves f_mod unchanged.
     {
         std::vector<Integer> signed_coeffs = {Integer(-1), Integer(0), Integer(1)};
         PolynomialContext signed_ctx(Integer(1), std::move(signed_coeffs), Integer(0), 1.0);
@@ -1462,6 +1467,247 @@ void test_schirokauer_wide_public_map() {
         check_schirokauer_lift_product(factors, coefficients, modulus);
     }
     std::cout << "  Public Schirokauer maps with wide lift moduli: PASSED" << std::endl;
+}
+
+// ---------------------------------------------------------------------------
+// Schirokauer maps of non-monic polynomials
+//
+// FastPoly::reduce_inplace cancels the leading term with coefficient 1, so it
+// is only valid for a monic modulus. precompute_for_prime scales f mod ℓ^k by
+// the inverse of the leading coefficient before anything else uses it. The
+// reference values below never call FastPoly::power or
+// FastPoly::reduce_inplace: the companion matrix C of the monic modulus
+// represents multiplication by α, γ = a - bα acts as aI - bC, and the
+// coefficient vector of γ^e is the first column of (aI - bC)^e. The
+// extraction copies the production convention: subtract 1 from coefficient 0,
+// then divide by ℓ modulo ℓ.
+// ---------------------------------------------------------------------------
+
+using ModulusMatrix = std::vector<std::vector<uint64_t>>;
+
+ModulusMatrix multiply_mod(const ModulusMatrix& lhs, const ModulusMatrix& rhs, uint64_t modulus) {
+    const size_t n = lhs.size();
+    ModulusMatrix product(n, std::vector<uint64_t>(n, 0));
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t t = 0; t < n; ++t) {
+            for (size_t j = 0; j < n; ++j) {
+                const uint64_t term = gnfs::util::mul_mod_u64(lhs[i][t], rhs[t][j], modulus);
+                product[i][j] = gnfs::util::add_mod_u64(product[i][j], term, modulus);
+            }
+        }
+    }
+    return product;
+}
+
+// Reference Schirokauer columns of γ = a - bα for one monic modulus over
+// Z/ℓ^k (`monic`, low degree first). `exponent` is ℓ^deg(monic) - 1. γ must
+// be an ℓ-adic unit: no ℓ-adic stripping is modelled here.
+std::vector<uint32_t> schirokauer_companion_reference(const std::vector<uint64_t>& monic,
+                                                      uint32_t ell, uint32_t k, int64_t a,
+                                                      uint64_t b, uint64_t exponent) {
+    const uint64_t modulus = GFPolyOps::checked_power_u64(ell, k);
+    const size_t degree = monic.size() - 1;
+
+    // Companion matrix of multiplication by α in the basis 1, α, ..., α^(degree-1).
+    ModulusMatrix companion(degree, std::vector<uint64_t>(degree, 0));
+    for (size_t j = 0; j + 1 < degree; ++j)
+        companion[j + 1][j] = 1;
+    for (size_t i = 0; i < degree; ++i)
+        companion[i][degree - 1] = (modulus - monic[i] % modulus) % modulus;
+
+    int64_t a_mod = a % static_cast<int64_t>(modulus);
+    if (a_mod < 0)
+        a_mod += static_cast<int64_t>(modulus);
+    const uint64_t a_residue = static_cast<uint64_t>(a_mod);
+    const uint64_t neg_b = (modulus - b % modulus) % modulus;
+
+    // aI - bC, written with the non-negative residue of -b.
+    ModulusMatrix gamma(degree, std::vector<uint64_t>(degree, 0));
+    for (size_t i = 0; i < degree; ++i) {
+        for (size_t j = 0; j < degree; ++j)
+            gamma[i][j] = gnfs::util::mul_mod_u64(neg_b, companion[i][j], modulus);
+        gamma[i][i] = gnfs::util::add_mod_u64(gamma[i][i], a_residue, modulus);
+    }
+
+    ModulusMatrix power(degree, std::vector<uint64_t>(degree, 0));
+    for (size_t i = 0; i < degree; ++i)
+        power[i][i] = 1;
+    ModulusMatrix base = gamma;
+    uint64_t remaining = exponent;
+    while (remaining > 0) {
+        if (remaining & 1)
+            power = multiply_mod(power, base, modulus);
+        base = multiply_mod(base, base, modulus);
+        remaining >>= 1;
+    }
+
+    std::vector<uint32_t> columns;
+    columns.reserve(degree);
+    for (size_t i = 0; i < degree; ++i) {
+        uint64_t coeff = power[i][0];
+        if (i == 0)
+            coeff = (coeff >= 1) ? (coeff - 1) : (modulus - 1);
+        columns.push_back(static_cast<uint32_t>((coeff / ell) % ell));
+    }
+    return columns;
+}
+
+struct NonMonicSchirokauerRow {
+    int64_t a;
+    uint64_t b;
+    std::array<uint32_t, 3> unsplit_columns;
+    std::array<uint32_t, 3> split_columns;
+};
+
+// Columns expected for the two fixtures below (ℓ = 2, ℓ^k = 256), computed
+// with the companion-matrix reference and with exact integer arithmetic.
+// Every pair has a and b of opposite parity, so γ stays a 2-adic unit and no
+// ℓ-adic stripping occurs. The normalization changes the columns of
+// (100, 13), (-1000, 999), (0, 1), (-60, 1), (-60, 3), (-58, 3) and (-196, 1).
+// Before it, in that order, the unsplit fixture produced {1, 0, 0}, {0, 0, 0},
+// {1, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 1}, {1, 0, 0} and the split fixture
+// produced {0, 1, 1}, {1, 0, 1}, {0, 1, 1}, {0, 1, 1}, {1, 0, 1}, {0, 1, 0},
+// {0, 1, 1}. All other rows keep their columns.
+constexpr NonMonicSchirokauerRow kNonMonicSchirokauerRows[] = {
+    {1, 2, {0, 1, 0}, {1, 0, 1}},
+    {3, 2, {1, 1, 0}, {0, 1, 1}},
+    {-5, 2, {1, 1, 0}, {0, 1, 1}},
+    {7, 16, {1, 0, 0}, {1, 1, 0}},
+    {-33, 64, {1, 0, 0}, {1, 1, 0}},
+    {100, 13, {0, 0, 0}, {0, 1, 0}},
+    {255, 256, {1, 0, 0}, {1, 1, 0}},
+    {-1000, 999, {1, 0, 0}, {1, 0, 0}},
+    {1000003, 1000034, {1, 1, 0}, {0, 1, 1}},
+    {0, 1, {0, 0, 0}, {0, 1, 0}},
+    {5, 0, {0, 0, 0}, {0, 0, 0}},
+    {-1, 2, {1, 1, 0}, {0, 1, 1}},
+    {-60, 1, {0, 0, 0}, {0, 1, 0}},
+    {-60, 3, {1, 0, 0}, {1, 0, 0}},
+    {-58, 3, {1, 1, 1}, {0, 1, 1}},
+    {-196, 1, {0, 0, 0}, {0, 1, 0}},
+};
+
+// Both fixtures have leading coefficient ≡ 3 (mod 4) and satisfy f(m) = N for
+// N = 100160063 = 10007 * 10009. Their discriminants are squarefree
+// (8975137 and -23198899), so Z[α] is the full ring of integers.
+void check_non_monic_schirokauer(const char* label, const std::vector<int64_t>& coefficients,
+                                 int64_t m, uint64_t expected_lead_inverse, bool expect_split) {
+    std::cout << "Testing " << label << "..." << std::endl;
+    using core::Integer;
+    using core::PolynomialContext;
+
+    const Integer n("100160063");
+    std::vector<Integer> integer_coefficients;
+    for (int64_t coefficient : coefficients)
+        integer_coefficients.emplace_back(coefficient);
+    const PolynomialContext ctx(n.clone(), integer_coefficients, Integer(m), 1.0);
+    GNFS_TEST_CHECK(ctx.verify());
+    GNFS_TEST_CHECK(ctx.degree() == 3);
+    GNFS_TEST_CHECK(coefficients.back() % 4 == 3);
+
+    // Independent normalization of f modulo 256: brute-force lead^{-1}, then scale.
+    constexpr uint64_t modulus = 256;
+    const uint64_t lead = static_cast<uint64_t>(coefficients.back());
+    uint64_t lead_inverse = 0;
+    for (uint64_t candidate = 1; candidate < modulus; ++candidate) {
+        if (lead * candidate % modulus == 1) {
+            lead_inverse = candidate;
+            break;
+        }
+    }
+    GNFS_TEST_CHECK(lead_inverse == expected_lead_inverse);
+    std::vector<uint64_t> normalized;
+    for (int64_t coefficient : coefficients) {
+        int64_t raw = coefficient % static_cast<int64_t>(modulus);
+        if (raw < 0)
+            raw += static_cast<int64_t>(modulus);
+        normalized.push_back(static_cast<uint64_t>(raw) * lead_inverse % modulus);
+    }
+    GNFS_TEST_CHECK(normalized.back() == 1);
+
+    SchirokaurConfig config;
+    config.primes = {2};
+    config.exponent_k = 8;
+    const SchirokaurMap smap(ctx, config);
+    GNFS_TEST_CHECK(smap.prime_info_.size() == 1);
+    const auto& info = smap.prime_info_[0];
+    GNFS_TEST_CHECK(info.ell_k == modulus);
+    GNFS_TEST_CHECK(info.is_split == expect_split);
+    for (uint32_t i = 0; i <= ctx.degree(); ++i)
+        GNFS_TEST_CHECK(info.f_mod[i] == normalized[i]);
+
+    // Reference moduli: the normalized polynomial itself, or the monic factors
+    // that GFPolyOps::hensel_lift_all lifts from it.
+    std::vector<std::pair<std::vector<uint64_t>, uint64_t>> reference_moduli;
+    if (!info.is_split) {
+        GNFS_TEST_CHECK(info.exponent == 7); // 2^3 - 1
+        reference_moduli.emplace_back(normalized, info.exponent);
+    } else {
+        std::vector<uint64_t> f_mod_2;
+        for (uint64_t coefficient : normalized)
+            f_mod_2.push_back(coefficient % 2);
+        const auto irreducible = GFPolyOps::factor(f_mod_2, 2);
+        // Sorted by degree: x + 1 first, then x^2 + x + 1.
+        const GFPolyOps::Poly expected_factors[] = {{1, 1}, {1, 1, 1}};
+        GNFS_TEST_CHECK(irreducible.size() == 2);
+        for (size_t idx = 0; idx < 2; ++idx)
+            GNFS_TEST_CHECK(irreducible[idx] == expected_factors[idx]);
+        const auto lifted = GFPolyOps::hensel_lift_all(normalized, irreducible, 2, 8);
+        std::vector<Integer> normalized_integers;
+        for (uint64_t coefficient : normalized)
+            normalized_integers.emplace_back(coefficient);
+        // Monic lifts that multiply back to the normalized polynomial.
+        check_schirokauer_lift_product(lifted, normalized_integers, modulus);
+        GNFS_TEST_CHECK(info.factors.size() == lifted.size());
+        for (size_t idx = 0; idx < lifted.size(); ++idx) {
+            const uint64_t degree = lifted[idx].size() - 1;
+            GNFS_TEST_CHECK(info.factors[idx].degree == degree);
+            GNFS_TEST_CHECK(info.factors[idx].exponent == (uint64_t{1} << degree) - 1);
+            for (size_t i = 0; i < lifted[idx].size(); ++i)
+                GNFS_TEST_CHECK(info.factors[idx].f_mod[i] == lifted[idx][i]);
+            reference_moduli.emplace_back(lifted[idx], info.factors[idx].exponent);
+        }
+    }
+
+    for (const auto& row : kNonMonicSchirokauerRows) {
+        const auto maps = smap.compute(row.a, row.b);
+        GNFS_TEST_CHECK(maps.size() == 1);
+        std::vector<uint32_t> reference;
+        for (const auto& [monic, exponent] : reference_moduli) {
+            const auto columns =
+                schirokauer_companion_reference(monic, 2, 8, row.a, row.b, exponent);
+            reference.insert(reference.end(), columns.begin(), columns.end());
+        }
+        const auto& expected = expect_split ? row.split_columns : row.unsplit_columns;
+        GNFS_TEST_CHECK(maps[0] == reference);
+        GNFS_TEST_CHECK(maps[0].size() == expected.size());
+        for (size_t i = 0; i < expected.size(); ++i)
+            GNFS_TEST_CHECK(maps[0][i] == expected[i]);
+    }
+
+    // Stripping the 2-part recovers the same unit: λ(2a, 2b) = λ(a, b).
+    const std::pair<int64_t, uint64_t> unit_pairs[] = {{1, 3}, {5, 7}, {-9, 11}};
+    for (const auto& [a, b] : unit_pairs) {
+        GNFS_TEST_CHECK(smap.compute(2 * a, 2 * b) == smap.compute(a, b));
+        GNFS_TEST_CHECK(smap.compute(4 * a, 4 * b) == smap.compute(a, b));
+    }
+    std::cout << "  " << label << ": PASSED" << std::endl;
+}
+
+// f(x) = 3x^3 - 53x^2 - 2x + 15 with m = 328: f mod 2 = x^3 + x^2 + 1 is
+// irreducible, so the map takes the unsplit path with the normalized modulus
+// x^3 + 153x^2 + 170x + 5 (3^{-1} = 171 modulo 256).
+void test_schirokauer_non_monic_unsplit() {
+    check_non_monic_schirokauer("Schirokauer map with a non-monic unsplit polynomial",
+                                {15, -2, -53, 3}, 328, 171, false);
+}
+
+// f(x) = 15x^3 + 14x^2 - 26x + 55 with m = 188: f mod 2 = (x + 1)(x^2 + x + 1),
+// so the split path reduces by a Hensel-lifted quadratic factor
+// (15^{-1} = 239 modulo 256).
+void test_schirokauer_non_monic_split_quadratic() {
+    check_non_monic_schirokauer("Schirokauer map with a non-monic split polynomial",
+                                {55, -26, 14, 15}, 188, 239, true);
 }
 
 // Regression test: parallel Block Lanczos produces same results as Gaussian
@@ -2144,6 +2390,8 @@ int main() {
     test_schirokauer_overflow_guards();
     test_schirokauer_lift_residues();
     test_schirokauer_wide_public_map();
+    test_schirokauer_non_monic_unsplit();
+    test_schirokauer_non_monic_split_quadratic();
     test_parallel_block_lanczos_correctness();
     test_ensure_all_sorted();
     test_sge_weight1();

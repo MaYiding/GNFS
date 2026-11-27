@@ -302,9 +302,20 @@ N=hw_concurrency 严格 assert).
 - `include/gnfs/linalg/schirokauer_parallel.hpp` — `schirokauer_threads()` env
   reader with `std::once_flag` cache + `compute_schirokauer_flat_batch<ABPair>`
   template dispatcher + `schirokauer_threads_reset_env_cache_for_testing()`
-- `include/gnfs/linalg/schirokauer.hpp` — 未改动 (核心算法保持 bit-identical)
+- `include/gnfs/linalg/schirokauer.hpp` — 并行化时未改动；2026-11-27 加入下面的首一化
 - `tests/test_schirokauer_parallel.cpp` — 7 个测试 (baseline + 2 parity +
   env parsing + empty + single + perf info)
+
+### 模多项式首一化
+
+`SchirokaurMap::precompute_for_prime` 把 $f(x)$ 的系数取模 $\ell^k$ 存入 `info.f_mod` 后，若首项系数模 $\ell$ 可逆，就乘上它的逆元（模 $\ell^k$），使 `f_mod` 首一。
+
+原因：`FastPoly::reduce_inplace` 只以系数 1 消去最高次项。模多项式不首一时，它等于在「把 $f$ 的首项系数换成 1」的多项式下做 reductions，算出的列不是 $f$ 的 Schirokauer 映射。首项系数 $f_d$ 是 $\ell^k$ 的单位时，$(f)$ 与 $(f / f_d)$ 在 $\mathbb{Z}/\ell^k$ 上是同一个理想，商环不变，所以按首一模多项式算出的列就是 $f$ 的 Schirokauer 映射。split 路径的 `f_pk` 取自同一个 `f_mod`，Hensel 提升出的因子因此全部首一。
+
+- 生效条件：$\ell \nmid f_d$。`MatrixBuilder` 固定用 $\ell = 2$，即 $f_d$ 为奇数。
+- 首一多项式不受影响：$f_d = 1$ 时逆元为 1，每一位都不变。
+- 未解决：$\ell \mid f_d$ 时逆元不存在，`f_mod` 保持原始系数，行为与归一化之前相同，列值仍不是 $f$ 的 Schirokauer 映射。
+- 验证：`LinearAlgebra` 的非首一用例以伴随矩阵为参照，`SchirokauerNonMonicE2E` 用首项系数模 4 余 3 的多项式走完整条流水线。
 
 ---
 

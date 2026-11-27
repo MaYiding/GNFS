@@ -1031,6 +1031,27 @@ private:
             info.f_mod[i] = remainder.to_uint64();
         }
 
+        // FastPoly::reduce_inplace assumes a monic modulus: it cancels the
+        // leading term with coefficient 1 instead of the leading coefficient
+        // of f. Scale f mod ℓ^k by the inverse of its leading coefficient so
+        // that f_mod is monic. The leading coefficient is a unit modulo ℓ^k,
+        // so (f) and (f/lead) generate the same ideal over Z/ℓ^k and the
+        // quotient ring is unchanged. The split path copies f_mod into f_pk,
+        // so every Hensel-lifted factor is monic as well.
+        const uint64_t lead_inverse =
+            core::mod_inverse(Integer(info.f_mod[degree_]), modulus).to_uint64();
+        if (lead_inverse != 0) {
+            for (uint32_t i = 0; i <= degree_; ++i) {
+                info.f_mod[i] = gnfs::util::mul_mod_u64(info.f_mod[i], lead_inverse, info.ell_k);
+            }
+        }
+        // Limitation: when ℓ divides the leading coefficient, no inverse exists
+        // modulo ℓ^k and f_mod keeps its raw coefficients. reduce_inplace then
+        // reduces modulo the polynomial whose leading coefficient is replaced
+        // by 1, so the columns for such a polynomial are not the Schirokauer
+        // map of f. This branch preserves the previous behavior; it is not
+        // covered by the normalization above.
+
         // Full Rabin irreducibility test (not just "no roots")
         // For degree > 3, "no roots" ≠ "irreducible"
         std::vector<uint64_t> f_mod_ell(degree_ + 1);
