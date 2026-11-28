@@ -107,8 +107,8 @@ void test_metrics_populated() {
     TEST_ASSERT(m.character_filter_rejects == 0 &&
                 "metrics.character_filter_rejects == 0 when num_characters=0");
 
-    std::cout << "  metrics populated: PASSED"
-              << " (primes_checked=" << m.primes_checked << " primes_used=" << m.primes_used
+    std::cout << "  metrics populated: PASSED" << " (primes_checked=" << m.primes_checked
+              << " primes_used=" << m.primes_used
               << " sign_patterns_tried=" << m.sign_patterns_tried
               << " full_verifications=" << m.full_verifications
               << " found_sqrt=" << (m.found_sqrt ? 1 : 0) << ")" << std::endl;

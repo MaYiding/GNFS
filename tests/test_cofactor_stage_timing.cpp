@@ -413,9 +413,9 @@ static void test_perf_timer_overhead() {
     const auto t1_on = std::chrono::steady_clock::now();
     const double on_ms = std::chrono::duration<double, std::milli>(t1_on - t0_on).count();
 
-    std::cout << "  [perf info] " << N << " StageTimer scopes: "
-              << "OFF=" << off_ms << "ms, ON=" << on_ms
-              << "ms, overhead per scope = " << ((on_ms - off_ms) * 1e6 / N) << " ns\n";
+    std::cout << "  [perf info] " << N << " StageTimer scopes: " << "OFF=" << off_ms
+              << "ms, ON=" << on_ms << "ms, overhead per scope = " << ((on_ms - off_ms) * 1e6 / N)
+              << " ns\n";
     // Sanity: both should finish well under 10 seconds.
     TEST_ASSERT(off_ms < 10000.0);
     TEST_ASSERT(on_ms < 10000.0);

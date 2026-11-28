@@ -233,9 +233,8 @@ void test_speedup_measurement() {
     TEST_ASSERT(v4 > 0);
 
     double speedup = ms_k1 / ms_k4;
-    std::cout << "  K=1: " << ms_k1 << " ms (" << c1 << " deps)"
-              << " | K=4: " << ms_k4 << " ms (" << c4 << " deps)"
-              << " | speedup: " << speedup << "x" << std::endl;
+    std::cout << "  K=1: " << ms_k1 << " ms (" << c1 << " deps)" << " | K=4: " << ms_k4 << " ms ("
+              << c4 << " deps)" << " | speedup: " << speedup << "x" << std::endl;
     std::cout << "  PASS (informational)" << std::endl;
 }
 

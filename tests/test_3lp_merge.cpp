@@ -89,8 +89,7 @@ void test_3lp_enters_pool() {
     CHECK(stats.components_with_excess >= 1, "expected ≥1 component with excess");
     // residual_emitted depends on GNFS_DROP_RESIDUAL.
     // Without drop_residual the merged residual partial is emitted.
-    std::cout << "OK ("
-              << "fp=" << stats.full_produced << " res=" << stats.residual_emitted
+    std::cout << "OK (" << "fp=" << stats.full_produced << " res=" << stats.residual_emitted
               << " dropped=" << stats.residual_dropped << " rejects=" << stats.lp_cancel_rejections
               << ")" << std::endl;
     ::unsetenv("GNFS_3LP");
@@ -117,8 +116,7 @@ void test_3lp_triangle_fully_cancels() {
     auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
     CHECK(stats.input_3lp_plus == 3, "expected input_3lp_plus=3, got " << stats.input_3lp_plus);
     CHECK(stats.components_with_excess >= 1, "expected ≥1 component");
-    std::cout << "OK ("
-              << "fp=" << stats.full_produced << " res=" << stats.residual_emitted << ")"
+    std::cout << "OK (" << "fp=" << stats.full_produced << " res=" << stats.residual_emitted << ")"
               << std::endl;
     ::unsetenv("GNFS_3LP");
 }
@@ -151,8 +149,7 @@ void test_mixed_lp_pool() {
     CHECK(stats.input_3lp_plus == 1, "expected 3lp+=1, got " << stats.input_3lp_plus);
     // At least the 1LP pair (r1, r2) should produce a full relation.
     CHECK(stats.full_produced >= 1, "expected ≥1 full from 1LP pair, got " << stats.full_produced);
-    std::cout << "OK ("
-              << "fp=" << stats.full_produced << " res=" << stats.residual_emitted << ")"
+    std::cout << "OK (" << "fp=" << stats.full_produced << " res=" << stats.residual_emitted << ")"
               << std::endl;
     ::unsetenv("GNFS_3LP");
 }
