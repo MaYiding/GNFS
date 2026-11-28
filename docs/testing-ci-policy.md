@@ -258,6 +258,14 @@ discriminant identities, active in Release builds.
 The `LPBloom` instant contract keeps environment parsing and clamping, exact
 unique-count parity, no-false-negative membership, bounded false-positive
 rate, and constructor and storage boundaries active in Release builds.
+The `LadderDiagnostics` instant contract keeps the helpers behind the
+diagnostics of the GNFS evidence ladder active in Release builds: the F2
+polynomial classification, which an exhaustive sweep of every monic
+polynomial of degree 1 through 8 compares with brute-force references; the
+classification of the square-root failure logs on the texts that the pipeline
+and the square root emit; the tracking of the attempts that fail without a
+log; the comparison of two polynomial selections; and the UTF-8 cut of a
+message sample.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
@@ -498,7 +506,9 @@ JSON object fails the step or counts as a failed rung. The object carries:
   dependencies that fail in the square root: a record shows which step
   rejected each failed dependency, or that the pipeline logged nothing for
   it, how the polynomial factors modulo 2, and whether one dependency or an
-  XOR pair produced the factors.
+  XOR pair produced the factors. `test_ladder_diagnostics` checks the helpers
+  behind them on every pull request; the ladder itself asserts nothing about
+  them.
 
 The failure categories overlap. `algebraic_sqrt_failed` and
 `rational_sqrt_failed` count every failed square root, while
