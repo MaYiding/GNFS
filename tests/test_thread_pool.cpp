@@ -1,6 +1,6 @@
 #include "gnfs/util/thread_pool.hpp"
-#include "gnfs/util/timer.hpp"
 #include "support/test_check.hpp"
+#include "support/timer.hpp"
 
 #include <atomic>
 #include <chrono>

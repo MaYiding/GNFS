@@ -71,6 +71,7 @@ jobs:
           python3 -m py_compile \
             .claude/hooks/project-guard.py \
             scripts/ci/check_markdown_links.py \
+            scripts/ci/check_header_reachability.py \
             scripts/check_distributed_sieve_policy.py \
             scripts/check_harness.py \
             scripts/check_stdout_contract.py \
@@ -112,3 +113,8 @@ jobs:
 
       - name: Check Markdown link checker
         run: python3 scripts/ci/check_markdown_links.py --self-test
+
+      - name: Check header reachability
+        run: |
+          python3 scripts/ci/check_header_reachability.py --self-test
+          python3 scripts/ci/check_header_reachability.py

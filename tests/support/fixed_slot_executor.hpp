@@ -3,7 +3,7 @@
 /// @file fixed_slot_executor.hpp
 /// @brief Static-partition parallel execution with canonical slot results.
 
-#include "joining_thread.hpp"
+#include <gnfs/util/joining_thread.hpp>
 
 #include <algorithm>
 #include <atomic>

@@ -1,8 +1,9 @@
 // Canonical sparse-wide SIQS row wire and independent arithmetic oracle.
 
+#include "support/post_merge_row_wire.hpp"
+
 #include <gnfs/core/integer.hpp>
 #include <gnfs/siqs/post_merge_row.hpp>
-#include <gnfs/siqs/post_merge_row_wire.hpp>
 
 #include <algorithm>
 #include <array>

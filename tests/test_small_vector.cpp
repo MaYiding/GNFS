@@ -1,4 +1,4 @@
-#include "gnfs/util/small_vector.hpp"
+#include "support/small_vector.hpp"
 #include "support/test_check.hpp"
 
 #include <cstddef>

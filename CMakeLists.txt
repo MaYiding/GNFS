@@ -596,6 +596,14 @@ if(GNFS_BUILD_TESTS)
             LABELS "instant" TIMEOUT 10
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+        add_test(NAME HeaderReachabilityCheckerSelfTest
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci/check_header_reachability.py
+                --self-test)
+        set_tests_properties(HeaderReachabilityCheckerSelfTest PROPERTIES
+            LABELS "instant" TIMEOUT 10
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
         add_test(NAME DistributedSievePolicyInventory
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_distributed_sieve_policy.py
