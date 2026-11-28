@@ -45,6 +45,8 @@ Longest measured enabled tests:
 
 Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Windows, and high CTest parallelism can change runtime by an order of magnitude.
 
+One test is a documented exception to the `fast` definition. `SchirokauerPrecisionE2E` is a complete forced-GNFS factorization of an 81-bit semiprime through `Pipeline::run()`, which the table places in `slow` by kind. It carries the `fast` label on purpose, so that all three Release PR lanes run it, Linux gcc on Ubuntu 24.04 and 22.04 and macOS clang, while a `slow` test without its own platform lane reaches the PR workflow only through the Linux Release deep gate. The exception is confined to that placement. CTest runs `fast` on Release builds only, so CI never exercises the Debug target of the tier on it, and a local `./scripts/test.sh module linalg` or `changed` run, which builds Debug by default, pays the Debug cost of the pipeline inside the 180-second budget. Keep the exception to this one test: a new real-pipeline test belongs in `slow` unless a cross-platform PR lane is its point, and then it needs a paragraph here.
+
 The four GNFS evidence ladder CTests also carry the `ladder` label, which is
 not a tier. `unit` and `full` select every CTest with `ctest -R '.*'` and pass
 `--label-exclude ladder`, so the ladder runs only where a job selects it by
@@ -195,9 +197,10 @@ the unsplit columns hard-coded in `LinearAlgebra` for `k = 8` must hold
 unchanged.
 `SchirokauerPrecisionE2E` is a `fast` end-to-end contract on the 25-digit
 semiprime 1869045589843040925386929, whose selected polynomial has a linear
-factor modulo 2. `Pipeline::run()` must recover both primes and report zero
-precision fallbacks. The test also prints the degenerate-row count of the
-matrix phase.
+factor modulo 2. It is the one exception to the `fast` definition, recorded
+under Tier Rules. `Pipeline::run()` must recover both primes, select a
+polynomial with exactly one linear factor modulo 2, and report zero precision
+fallbacks. The test also prints the degenerate-row count of the matrix phase.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,

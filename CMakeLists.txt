@@ -3045,7 +3045,8 @@ if(GNFS_BUILD_TESTS)
 
     # Production Pipeline::run() on a 25-digit semiprime whose selected
     # polynomial has a linear factor modulo 2. The factors must be recovered
-    # with zero Schirokauer precision fallbacks.
+    # with zero Schirokauer precision fallbacks. The fast label is a documented
+    # exception to the tier rules in docs/testing-ci-policy.md.
     add_executable(test_schirokauer_precision_e2e
         tests/test_schirokauer_precision_e2e.cpp
     )
