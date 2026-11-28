@@ -488,14 +488,35 @@ JSON object fails the step or counts as a failed rung. The object carries:
 - `relations` (raw relations collected), `relations_after_filter`,
   `sieve_rounds_completed`, `sieve_stop_reason`, `matrix_rows`,
   `matrix_cols`, `matrix_nonzeros`, `matrix_excess`, `dependencies_found`,
-  `dependencies_tried`, and the lifetime `peak_rss_bytes`.
+  `dependencies_tried`, and the lifetime `peak_rss_bytes`;
+- `sqrt_failure_counts` with `sqrt_failure_samples` (the `Warn` and `Error`
+  logs of the square root stage counted by category, with up to 20 distinct
+  message texts), `polynomial_mod2` (the type of the selected polynomial
+  modulo 2), and `pairwise_xor_attempted`, `pairwise_xor_dependencies_tried`,
+  and `dependencies_succeeded_before_pairwise_xor`. They exist to diagnose the
+  dependencies that fail in the square root: a record shows which step
+  rejected each failed dependency, how the polynomial factors modulo 2, and
+  whether one dependency or an XOR pair produced the factors.
+
+The failure categories overlap. `algebraic_sqrt_failed` and
+`rational_sqrt_failed` count every failed square root, while
+`ideal_parity_precheck_failed`, `rational_parity_failed`, `couveignes_failed`,
+and `hensel_related` count the reasons. `hensel_related` includes every
+Couveignes failure of a run that does not set `GNFS_FORCE_COUVEIGNES=1`,
+because the algebraic square root reaches Couveignes only after Hensel lifting
+returns no root. The type in `polynomial_mod2` comes from a second
+`select_polynomial()` call with the `Config` of the run, made before the
+measured interval, and its `matches_run` is `true` only when `Pipeline::run()`
+logged the same root `m`. When the two selections differ, the properties are
+`null` and `m` is the root that `Pipeline::run()` logged.
 
 Statistics are `null` when `Pipeline::run()` threw before it published them;
-the stage timings, the structured-route counts, and the peak RSS stay in the
-record. A timeout kills the process before it prints, so a missing line means
-that the rung never finished. The time budgets are provisional until the first
-nightly runs report stage wall times. The `TIMEOUT` property of each CTest is
-the effective budget; `ctest --timeout` does not override it.
+the stage timings, the structured-route counts, the square-root evidence, and
+the peak RSS stay in the record. A timeout kills the process before it prints,
+so a missing line means that the rung never finished. The time budgets are
+provisional until the first nightly runs report stage wall times. The
+`TIMEOUT` property of each CTest is the effective budget; `ctest --timeout`
+does not override it.
 
 To add a rung, append the fixture to `kFixtures` in
 `tests/test_gnfs_e2e_ladder.cpp`, register its CTest with its tier, the
