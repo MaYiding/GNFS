@@ -161,8 +161,8 @@ odd-prime configurations separately from the GF(2) matrix prime policy.
 Its non-monic cases use cubics whose leading coefficient is congruent to 3
 modulo 4: one is unsplit modulo 2, the other splits into a linear and a
 quadratic factor. Companion-matrix reference values and hard-coded columns
-check both, and a matrix-builder case pins the count of degenerate Schirokauer
-rows.
+check both, and a matrix-builder case pins the counts of degenerate
+Schirokauer rows and precision fallbacks at the default precision.
 Two further matrix-builder cases cover the non-monic constraints. One checks
 the pair-parity column for leading coefficients 3, 7, and 12, its absence for
 1, 4, 9, and 36, the row value of merged relations, and that a merged row is

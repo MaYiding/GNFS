@@ -235,7 +235,9 @@ public:
         auto lp_info = collect_large_primes(relations);
 
         // 第二步：选择二次特征素数
-        // If Schirokauer will be unavailable (f reducible mod 2), use extra QC primes
+        // The ℓ = 2 Schirokauer columns leave local characters unchecked when f
+        // is reducible mod 2 (see SchirokaurMap). Add QC primes to compensate for
+        // the characters that are missing there.
         size_t effective_qc_count = config_.num_qc_primes;
         bool can_use_schirokauer =
             config_.include_schirokauer && ctx.degree() <= FastPoly::MAX_DEGREE;
@@ -255,7 +257,7 @@ public:
             }
             bool f_irred_mod2 = sqrt::ModularPoly::is_irreducible(f_mod2, 2);
             if (!f_irred_mod2) {
-                // Compensate: more QC primes to replace missing Schirokauer
+                // Compensate: more QC primes for the characters the ℓ = 2 map misses
                 effective_qc_count = std::max(
                     effective_qc_count, config_.num_qc_primes + static_cast<size_t>(d_check) * 8);
             }

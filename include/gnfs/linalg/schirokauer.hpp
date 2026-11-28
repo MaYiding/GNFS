@@ -538,12 +538,34 @@ struct GFPolyOps {
 /// Schirokauer map configuration
 struct SchirokaurConfig {
     std::vector<uint32_t> primes = {2}; // Primes for Schirokauer maps (usually just 2)
-    uint32_t exponent_k = 8;            // Exponent k (use ℓ^k), larger = more accurate.
-                                        // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2 bits of ℓ-adic
-                                        // precision after stripping v ℓ-factors.
-                                        // Inputs with strip_v ≥ k-1 (e.g. γ = a - b·r
-                                        // hitting Hensel root in split-degree-1 path)
-                                        // silently fall back to zero columns.
+    // Exponent k: the map is computed modulo ℓ^k.
+    //
+    // A column is ((u - 1)/ℓ) mod ℓ, where u is the unit part of γ = a - bα
+    // after its ℓ-part of valuation v is stripped, so u must be known modulo
+    // ℓ^2. The lift knows γ only modulo ℓ^k and u only modulo ℓ^(k-v). A pair
+    // with v > k - 2 therefore gets zero columns in place of its character.
+    // That is a precision fallback: the compute overloads that take a fallback
+    // counter count it, and the pipeline reports the count and warns when it is
+    // not zero.
+    //
+    // When f has a linear factor modulo 2, the column of that factor is bit
+    // v+1 of a - b·r, with r the root of the factor lifted modulo 2^k, and
+    // v = v₂(a - b·r) is unbounded: a coprime pair with a ≡ b·r (mod 2^v)
+    // exists for every v. With k = 8 every pair with v ≥ 7 lost that column,
+    // about 1% of the relations of real relation sets, and half of those
+    // carried a wrong constraint. The unsplit path and the quadratic and
+    // higher-degree paths strip a common factor of a and b first, which a
+    // coprime pair does not have, so they never fall back.
+    //
+    // k = 40 gives every pair with v ≤ 37 its exact column. A larger v needs
+    // a ≡ b·r (mod 2^38); with |a| and |b| at most 2^37 that leaves at most
+    // two values of a for each odd b, about a 2^-38 share of the pairs in that
+    // box. A pair that still reaches it is counted and reported.
+    //
+    // The cap is 62: the hot paths reduce the signed a modulo (int64_t)ell_k,
+    // so precompute_for_prime rejects 2^k above INT64_MAX. mul_mod_u64 is exact
+    // for every 64-bit operand below that modulus.
+    uint32_t exponent_k = 40;
     bool verbose = false;
 };
 
@@ -663,15 +685,27 @@ public:
 
 /// Schirokauer map computation for GNFS
 ///
-/// Schirokauer maps provide additional constraints to ensure the algebraic
-/// product is a square in the number field. For each prime ℓ, we get deg(f)
-/// additional columns in the matrix.
+/// The maps supply deg(f) additional columns per prime ℓ. Together with the
+/// factor-base, large-prime, sign, and quadratic-character columns they serve
+/// to make the algebraic product of a dependency a square in the number field;
+/// on their own they do not ensure that.
 ///
 /// For an element γ = a - bα in the number field K = Q(α):
 ///   λ_ℓ(γ) = (γ^(ℓ^d - 1) - 1) / ℓ mod ℓ
 ///   where d = deg(f) and ℓ^d - 1 is the group order |F_{ℓ^d}^×|
 ///
 /// For a product Πγ_i to be an ℓ-th power, we need Σλ_ℓ(γ_i) ≡ 0 mod ℓ
+///
+/// The matrix uses ℓ = 2 only. With that one prime, each unramified prime P
+/// above 2 leaves exactly one local character, (·, 2)_P, unchecked. When 2 is
+/// inert in K, the product formula puts that character in the span of the
+/// factor-base and large-prime columns. When 2 splits into m primes, m - 1
+/// bits are missing, and the quadratic-character columns that MatrixBuilder
+/// adds for every f that is reducible modulo 2 compensate for them. When f
+/// has repeated roots or is a perfect power modulo 2, the columns are
+/// incomplete or not a homomorphism (see factorize_and_setup): they are
+/// constraints without a guarantee behind them, and again the quadratic
+/// characters compensate.
 ///
 /// Precondition: no configured prime ℓ may divide the leading coefficient of
 /// f. Such an ℓ makes f degenerate modulo ℓ, and the columns computed for it
@@ -1140,9 +1174,11 @@ private:
 
     /// Factorize f mod ℓ using DDF+EDF and Hensel lift factors to mod ℓ^k.
     /// Handles three cases:
-    ///   1. f is a perfect power mod ℓ → zero-fill all Schirokauer columns
+    ///   1. f is a perfect power mod ℓ → fall back to the unsplit formula,
+    ///      which is not a homomorphism in this case
     ///   2. f is squarefree mod ℓ → standard multi-factor Hensel lift
-    ///   3. f has repeated roots mod ℓ → lift only multiplicity-1 factors, zero-pad rest
+    ///   3. f has repeated roots mod ℓ → lift only multiplicity-1 factors,
+    ///      zero-pad the columns of the others
     void factorize_and_setup(PrimeInfo& info, uint32_t ell,
                              const std::vector<uint64_t>& f_mod_ell) {
         // Factor the squarefree part of f mod ℓ into irreducible factors
@@ -1154,9 +1190,13 @@ private:
         }
 
         // Case 1: f is a perfect power mod ℓ — no squarefree factors found
-        // Fall back to unsplit mode: use γ^(ℓ^d-1) mod (f, ℓ^k).
-        // Zero-filling would remove all Schirokauer constraints from the matrix,
-        // causing ALL dependencies to give trivial factors.
+        // Fall back to the unsplit formula γ^(ℓ^d-1) mod (f, ℓ^k), so the
+        // matrix keeps its deg(f) columns. That formula is a homomorphism only
+        // for f irreducible mod ℓ. On a perfect power it is not: in an exact
+        // experiment on a perfect cube most products failed additivity. The
+        // columns are constraints without a guarantee behind them, and the
+        // quadratic-character columns compensate (MatrixBuilder adds them for
+        // every f that is reducible modulo 2).
         if (irred_factors.empty()) {
             info.is_split = false;
             info.factors.clear();
@@ -1191,8 +1231,11 @@ private:
         // Case 3: f has repeated roots mod ℓ (deg_sum < degree_ or single factor)
         // Only multiplicity-1 factors can be Hensel-lifted (coprime with cofactor).
         // Multiplicity > 1 factors share roots with their cofactor, making Hensel
-        // lifting impossible. Those columns are zero-padded — fewer constraints
-        // but still correct (just slightly less efficient).
+        // lifting impossible. The columns of those factors are zero-padded, so
+        // the primes above ℓ that they describe get no character at all. The
+        // columns that remain are valid where they are computed, but they are
+        // not enough to make a dependency an ℓ-th power, and the
+        // quadratic-character columns compensate for what is missing.
         info.factors.clear();
 
         GFPolyOps::Poly f_ell =
@@ -1243,9 +1286,9 @@ private:
             info.factors.push_back(fi);
         }
 
-        // If no multiplicity-1 factors survived, fall back to unsplit mode.
-        // Zero-padding all columns removes Schirokauer constraints entirely,
-        // which makes ALL dependencies trivial (same failure as Case 1).
+        // If no multiplicity-1 factors survived, fall back to the unsplit
+        // formula, as in Case 1: its columns are not a homomorphism here
+        // either, and the quadratic-character columns compensate.
         if (info.factors.empty()) {
             info.is_split = false;
             info.exponent = GFPolyOps::checked_power_u64(ell, degree_) - 1;

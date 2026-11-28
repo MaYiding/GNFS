@@ -1246,10 +1246,13 @@ void test_schirokauer_large_ell_edge_cases() {
     auto ctx = BaseMSelector::create_context(n, poly_result);
     uint32_t degree = ctx.degree();
 
-    // Test 1: ℓ=3 → values in [0,3)
+    // Test 1: ℓ=3 → values in [0,3). k = 8 is explicit: 3^40 exceeds the
+    // int64_t range that SchirokaurMap accepts, so the default k = 40 is for
+    // ℓ = 2 only.
     {
         SchirokaurConfig cfg;
         cfg.primes = {3};
+        cfg.exponent_k = 8;
         SchirokaurMap sm(ctx, cfg);
         TEST_ASSERT(sm.num_columns() == degree);
 
@@ -1268,6 +1271,7 @@ void test_schirokauer_large_ell_edge_cases() {
     {
         SchirokaurConfig cfg;
         cfg.primes = {5};
+        cfg.exponent_k = 8;
         SchirokaurMap sm(ctx, cfg);
         auto maps = sm.compute(7, 2);
         TEST_ASSERT(maps.size() == 1);
@@ -1280,6 +1284,7 @@ void test_schirokauer_large_ell_edge_cases() {
     {
         SchirokaurConfig cfg;
         cfg.primes = {2, 3};
+        cfg.exponent_k = 8;
         SchirokaurMap sm(ctx, cfg);
         TEST_ASSERT(sm.num_columns() == 2 * degree);
 
@@ -1318,6 +1323,7 @@ void test_schirokauer_large_ell_edge_cases() {
     {
         SchirokaurConfig cfg;
         cfg.primes = {3};
+        cfg.exponent_k = 8;
         SchirokaurMap sm(ctx, cfg);
         auto m1 = sm.compute(13, 5);
         auto m2 = sm.compute(13, 5);
