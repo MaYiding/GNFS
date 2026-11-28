@@ -123,7 +123,7 @@
 - **第 15 项（exponent_k 与偶数首项系数）**：偶数首项系数已随 #426 处理；`exponent_k` 从 8 提到 40，另开一个方向做。依据见[下一小节](#ℓ2-的两条线索)。
 - **第 16 项（空输入返回 1、平方根失败的处理）**：契约不变（`tests/test_sqrt.cpp:1815-1817`）；平方根失败已经写 Warn 日志（#418，`src/api/pipeline.cpp:4006`、`:4016`）。
 - **第 17 项（十进制 50 位端到端）**：见第 1 项。接受 Nightly 多占时间，50 位作业允许失败。
-- **第 18 项（开关总览表）**：按 #421 的做法，放在 `docs/env-flags` 的模块页，由 `scripts/ci/check_env_flag_docs.py` 核对。
+- **第 18 项（开关总览表）**：沿用 #421 的做法。总览速查表在 `docs/env-flags/README.md` 的「补充台账速查表」，逐项的解析方式、默认值、对结果的影响与测试在各模块页的小节里；新的总览行加在那张速查表，由 `scripts/ci/check_env_flag_docs.py` 核对。
 - **第 19、20 项（launch guard 的形态、平方根失败统计）**：公开 `FutureLaunchGuard`（#417，`include/gnfs/util/thread_pool.hpp:76`）；不加统计字段，先用日志。
 - **表外一条：测试断言必须在 Release 下生效。** 依据：main `80895f08` 上，按 `git grep -E '(^|[^A-Za-z0-9_])assert[[:space:]]*\('` 数，`tests/` 有 56 个文件、共 2,578 行用到 `assert(...)`，不含 `static_assert`；只有 7 个文件写了 `#undef NDEBUG`，匹配的是 `#[[:space:]]*undef[[:space:]]+NDEBUG`，其中 3 个写作 `#  undef`；按决定时的统计，34 个文件（1,228 处）没有任何 Release 下生效的检查，这个数的口径没有记录，本节未能复现。跑测试的通道里，`CI` 的六行矩阵只有一行是 Debug，而且只跑 instant（`.github/workflows/ci.yml:44-47`），其余五行与 deep gate 都是 Release；Sanitizers 与 Coverage 也以 Debug 构建，但只跑 instant 标签（`.github/workflows/sanitizers.yml:41`、`:58`，`.github/workflows/coverage.yml:50`、`:61`）。做法是 `tests/support/test_assert.hpp` 的 `TEST_ASSERT`，加一条 Script Checks 检查（PR #434）。
 
@@ -139,7 +139,7 @@
   - 范围：81 bit 门禁（RegressionGate 的 81 bit 一档，`tests/test_regression_gate.cpp:65`）的多项式模 2 不可约，不受影响。核实列出的受影响测试输入是 $N=10800$、$96091$、$100000980001501$、$1000000016000000063$、$2000072000198$。
   - 测试里的调用点（写本节时读码分开的，五个输入本身出自核实）：
     - 前三个输入有开着 Schirokauer 列建矩阵的调用点。$N=10800$ 与 $N=96091$ 走 `tests/test_gnfs_e2e.cpp` 的 `factor_gnfs`（输入在 `:962`、`:998`，建矩阵在 `:434-441`）。$N=96091$ 还在 `tests/test_regression_gate.cpp:62` 与 `tests/test_gnfs_progressive.cpp:156`（建矩阵分别在 `:278-283`、`:556-563`），以及直接走 split 路径的 `tests/test_schirokauer_strip.cpp:239-241`。$N=100000980001501$ 在 `tests/test_gnfs_progressive.cpp:163` 与 `tests/test_factor_with_kleinjung.cpp:704`（建矩阵在 `:443-448`）。
-    - 后两个输入按字面检索只出现在建不了 Schirokauer 列的调用点。$N=1000000016000000063$ 只用于自动选路的 `factorize`（`tests/test_method_selection.cpp:199`）、选多项式（`tests/test_base_m.cpp:46-47`、`tests/test_kleinjung.cpp:148-150`）与 SIQS（`tests/test_siqs.cpp:1148`）。$N=2000072000198$ 只用于 `tests/test_api.cpp:1579` 与 `tests/test_cli_event_stream.cpp:530`，两处都是自动选路。自动选路在十进制位数不超过 24 或 bit 数不超过 80 时选 Pollard rho（`src/api/pipeline.cpp:1246-1250`），在 GNFS 之前就返回（`:4330-4338`）。所以现有测试覆盖不到后两个输入的回退。
+    - 后两个输入按字面检索只出现在建不了 Schirokauer 列的调用点。$N=1000000016000000063$ 只用于自动选路的 `factorize`（`tests/test_method_selection.cpp:199`）、选多项式（`tests/test_base_m.cpp:46-47`、`tests/test_kleinjung.cpp:148-150`）与 SIQS（`tests/test_siqs.cpp:1148`）。$N=2000072000198$ 按字面检索出现在三处，都是自动选路：`tests/test_api.cpp:1579`、`tests/test_cli_event_stream.cpp:530`，以及工作台测试 `apps/macos/GNFSWorkbench/GNFSWorkbenchTests/ProcessGNFSRunnerTests.swift:131`（它用默认配置跑真实的 CLI，并断言方法为 rho）。自动选路在十进制位数不超过 24 或 bit 数不超过 80 时选 Pollard rho（`src/api/pipeline.cpp:1246-1250`），在 GNFS 之前就返回（`:4330-4338`）。所以现有测试覆盖不到后两个输入的回退。
   - 改法与探测：$k\ge 20$ 回退消失，且不回退的行逐位不变，120 bit 夹具的矩阵身份不变；第 15 项取的 40 高于这个下限。现在矩阵里的 `schirokauer_degenerate_rows` 统计的是整段向量为 0 的行（`matrix_builder.hpp:412-414`、`:601-603`），回退只把对应的那一列置 0，它看不见，不能当探测器。
 - **完备性（低）。** 每个未分歧素点恰好漏掉一个局部特征。
   - 两种情形：2 惰性时，漏掉的特征落在已有因子基与大素数列的张成里，加列零收益；2 分裂成 $m$ 个素点时缺 $m-1$ 位，由二次特征列补偿。
