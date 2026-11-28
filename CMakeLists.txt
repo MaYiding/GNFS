@@ -624,6 +624,12 @@ target_link_libraries(gnfs PRIVATE
     gnfs_core
     Threads::Threads
 )
+if(MINGW)
+    # The CLI entry point is wmain, which converts the UTF-16 command line to
+    # UTF-8 so that paths do not depend on the system code page. MinGW needs
+    # the matching CRT startup; MSVC selects it on its own.
+    target_link_options(gnfs PRIVATE -municode)
+endif()
 # The product takes part in LTO; see "Link-Time Optimization (LTO)".
 gnfs_enable_lto(gnfs)
 
@@ -699,6 +705,14 @@ if(GNFS_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci/check_markdown_links.py
                 --self-test)
         set_tests_properties(MarkdownLinkCheckerSelfTest PROPERTIES
+            LABELS "instant" TIMEOUT 10
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+        add_test(NAME HeaderReachabilityCheckerSelfTest
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/ci/check_header_reachability.py
+                --self-test)
+        set_tests_properties(HeaderReachabilityCheckerSelfTest PROPERTIES
             LABELS "instant" TIMEOUT 10
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -3088,6 +3102,31 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
     set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 240)
 
+    # Digit-banded evidence ladder. Each CTest forces one complete GNFS
+    # factorization through Pipeline::run() above the 25-digit regression
+    # level. The heavy and stress labels keep them out of pull-request CI.
+    # The ladder label keeps them out of "ctest -R .*", which the unit and
+    # full runner modes run; the Nightly workflow selects them by name.
+    add_executable(test_gnfs_e2e_ladder
+        tests/test_gnfs_e2e_ladder.cpp
+    )
+    target_link_libraries(test_gnfs_e2e_ladder PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME GNFS_E2E_Ladder30 COMMAND test_gnfs_e2e_ladder
+        --digits 30 --route default
+        --expect 448956057488011 427415244035077)
+    add_test(NAME GNFS_E2E_Ladder35 COMMAND test_gnfs_e2e_ladder
+        --digits 35 --route default
+        --expect 508252685067849079 76762190200241549)
+    add_test(NAME GNFS_E2E_Ladder40 COMMAND test_gnfs_e2e_ladder
+        --digits 40 --route default
+        --expect 82171657662667870721 77484034867236456113)
+    add_test(NAME GNFS_E2E_50d COMMAND test_gnfs_e2e_ladder
+        --digits 50 --route structured
+        --expect 9428841820209577086544469 5036760558219709199288957)
+    set_tests_properties(GNFS_E2E_Ladder30 GNFS_E2E_Ladder35 GNFS_E2E_Ladder40
+        PROPERTIES LABELS "heavy;ladder" TIMEOUT 1800)
+    set_tests_properties(GNFS_E2E_50d PROPERTIES LABELS "stress;ladder" TIMEOUT 14400)
+
     # Schirokauer end-to-end with non-monic polynomials (leading coefficient
     # congruent to 3 mod 4): the 27-bit pipeline on an unsplit and a split
     # (linear times quadratic) fixture, each required to find a factor of N.
@@ -3816,6 +3855,7 @@ if(GNFS_BUILD_TESTS)
     # of LTO silently.
     set(GNFS_LTO_TEST_TARGETS
         test_gnfs_e2e
+        test_gnfs_e2e_ladder
         test_regression_gate
         test_factor_with_kleinjung
         test_api

@@ -3,9 +3,9 @@
 #include "gnfs/core/integer.hpp"
 #include "gnfs/polynomial/int_polynomial.hpp"
 #include "gnfs/polynomial/murphy_evaluator.hpp"
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::polynomial;
 using namespace gnfs::core;
 
@@ -41,7 +42,7 @@ void test_dickman_rho() {
     // compute_alpha 应该返回一个有限值
     double alpha = evaluator.compute_alpha(f);
     std::cout << "  Alpha for x^2+1: " << alpha << std::endl;
-    assert(std::isfinite(alpha));
+    TEST_ASSERT(std::isfinite(alpha));
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -113,7 +114,7 @@ void test_alpha_golden_values() {
         const double expected = -2.34813918493;
         std::cout << "  alpha(x^5-x+1, bound=100) = " << alpha << " (expected " << expected << ")"
                   << std::endl;
-        assert(std::abs(alpha - expected) < 1e-9);
+        TEST_ASSERT(std::abs(alpha - expected) < 1e-9);
     }
 
     // f = x^4 + 1(cyclotomic,有简单结构)
@@ -129,7 +130,7 @@ void test_alpha_golden_values() {
         const double expected = -1.94061743447;
         std::cout << "  alpha(x^4+1, bound=100) = " << alpha << " (expected " << expected << ")"
                   << std::endl;
-        assert(std::abs(alpha - expected) < 1e-9);
+        TEST_ASSERT(std::abs(alpha - expected) < 1e-9);
     }
 
     std::cout << "  PASSED" << std::endl;
@@ -157,7 +158,7 @@ void test_alpha_computation() {
     std::cout << "  Alpha for x^5-1: " << alpha << std::endl;
 
     // alpha should be finite; sign depends on alpha_bound and root distribution
-    assert(std::isfinite(alpha));
+    TEST_ASSERT(std::isfinite(alpha));
     std::cout << "  PASSED (alpha=" << alpha << ")" << std::endl;
 }
 
@@ -197,14 +198,14 @@ void test_score_consistency() {
     std::cout << "  Alpha_g: " << score1.alpha_g << std::endl;
 
     // 分数应该是有限的
-    assert(std::isfinite(score1.e_score));
-    assert(std::isfinite(score2.e_score));
+    TEST_ASSERT(std::isfinite(score1.e_score));
+    TEST_ASSERT(std::isfinite(score2.e_score));
 
     // 两次评分应该接近（采样有随机性但同一输入应相似）
     if (score1.e_score > 0.0 && score2.e_score > 0.0) {
         double ratio = score1.e_score / score2.e_score;
-        assert(ratio > 0.5 && ratio < 2.0 &&
-               "Two Murphy E-score evaluations on same input should be within 2x");
+        TEST_ASSERT(ratio > 0.5 && ratio < 2.0 &&
+                    "Two Murphy E-score evaluations on same input should be within 2x");
     }
 
     std::cout << "  PASSED" << std::endl;
@@ -212,7 +213,7 @@ void test_score_consistency() {
 
 /// Regression: Murphy scoring must remain defined for polynomials above the
 /// fixed-size stack fast path. Release builds used to index those arrays past
-/// the end because the only guard was an assert(max_deg <= 16).
+/// the end because the only guard was an assert on max_deg <= 16.
 void test_high_degree_score_uses_dynamic_powers() {
     std::cout << "Testing high-degree Murphy score uses dynamic power buffers..." << std::endl;
 
@@ -273,8 +274,8 @@ void test_skewness_optimization() {
     std::cout << "  Optimal skewness: " << optimal_skew << std::endl;
 
     // skewness 应该在合理范围内
-    assert(optimal_skew > 0);
-    assert(std::isfinite(optimal_skew));
+    TEST_ASSERT(optimal_skew > 0);
+    TEST_ASSERT(std::isfinite(optimal_skew));
 
     // 估计 skewness ~ (c_0 / c_5)^{1/5} = (1000000 / 1)^{0.2} ≈ 15.85
     double expected_skew = std::pow(1000000.0, 0.2);
@@ -304,7 +305,7 @@ void test_quick_compare() {
     // f2 应该更好（系数更小）
     bool f2_is_better = quick_polynomial_compare(f2, 100.0, f1, 100.0);
     std::cout << "  f2 is better than f1: " << (f2_is_better ? "yes" : "no") << std::endl;
-    assert(f2_is_better);
+    TEST_ASSERT(f2_is_better);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -349,8 +350,8 @@ void test_concurrent_evaluation() {
 
     // 所有线程应得到完全相同的结果（相同 seed → 相同采样）
     for (size_t t = 1; t < NUM_THREADS; ++t) {
-        assert(results[t].log_e_score == results[0].log_e_score);
-        assert(results[t].alpha_f == results[0].alpha_f);
+        TEST_ASSERT(results[t].log_e_score == results[0].log_e_score);
+        TEST_ASSERT(results[t].alpha_f == results[0].alpha_f);
     }
 
     std::cout << "  " << NUM_THREADS << " threads, all scores identical: " << results[0].log_e_score
@@ -410,9 +411,9 @@ void test_compute_alpha_parallel_equals_sequential() {
     // Floating-point sum order may differ slightly across reduction strategies,
     // so allow tiny relative tolerance (10 ULP for doubles ≈ 2e-15).
     const double tol = 1e-10;
-    assert(std::abs(alpha_seq - alpha_par4) < tol);
-    assert(std::abs(alpha_seq - alpha_par8) < tol);
-    assert(std::isfinite(alpha_seq));
+    TEST_ASSERT(std::abs(alpha_seq - alpha_par4) < tol);
+    TEST_ASSERT(std::abs(alpha_seq - alpha_par8) < tol);
+    TEST_ASSERT(std::isfinite(alpha_seq));
     std::cout << "  PASSED (all values within " << tol << " tolerance)" << std::endl;
 }
 
@@ -516,22 +517,29 @@ void test_alpha_thread_env_boundaries() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Murphy Evaluator Tests ===" << std::endl << std::endl;
 
-    test_dickman_rho();
-    test_nan_alpha_bound_uses_minimum_valid_bound();
-    test_alpha_with_modular_degree_reduction();
-    test_alpha_golden_values();
-    test_alpha_computation();
-    test_score_consistency();
-    test_high_degree_score_uses_dynamic_powers();
-    test_skewness_optimization();
-    test_quick_compare();
-    test_concurrent_evaluation();
-    test_compute_alpha_parallel_equals_sequential();
-    test_alpha_sign_invariance();
-    test_alpha_projective_root_coefficient_domains();
-    test_alpha_thread_env_boundaries();
+    failed += !run_case(test_dickman_rho);
+    failed += !run_case(test_nan_alpha_bound_uses_minimum_valid_bound);
+    failed += !run_case(test_alpha_with_modular_degree_reduction);
+    failed += !run_case(test_alpha_golden_values);
+    failed += !run_case(test_alpha_computation);
+    failed += !run_case(test_score_consistency);
+    failed += !run_case(test_high_degree_score_uses_dynamic_powers);
+    failed += !run_case(test_skewness_optimization);
+    failed += !run_case(test_quick_compare);
+    failed += !run_case(test_concurrent_evaluation);
+    failed += !run_case(test_compute_alpha_parallel_equals_sequential);
+    failed += !run_case(test_alpha_sign_invariance);
+    failed += !run_case(test_alpha_projective_root_coefficient_domains);
+    failed += !run_case(test_alpha_thread_env_boundaries);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "All Murphy evaluator tests passed!" << std::endl;
     return 0;

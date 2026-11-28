@@ -6,7 +6,6 @@
 #include "gnfs/util/bit_intrin.hpp"
 #include "gnfs/util/cpu_intrin.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 
@@ -14,18 +13,15 @@ using namespace gnfs::util;
 
 static int failures = 0;
 
-#define EXPECT_EQ(a, b)                                                        \
-    do {                                                                        \
-        auto _av = (a);                                                         \
-        auto _bv = (b);                                                         \
-        if (_av != _bv) {                                                       \
-            std::fprintf(stderr,                                                \
-                         "FAIL %s:%d: %s != %s (lhs=%lld rhs=%lld)\n",          \
-                         __FILE__, __LINE__, #a, #b,                            \
-                         static_cast<long long>(_av),                           \
-                         static_cast<long long>(_bv));                          \
-            ++failures;                                                         \
-        }                                                                       \
+#define EXPECT_EQ(a, b)                                                                            \
+    do {                                                                                           \
+        auto _av = (a);                                                                            \
+        auto _bv = (b);                                                                            \
+        if (_av != _bv) {                                                                          \
+            std::fprintf(stderr, "FAIL %s:%d: %s != %s (lhs=%lld rhs=%lld)\n", __FILE__, __LINE__, \
+                         #a, #b, static_cast<long long>(_av), static_cast<long long>(_bv));        \
+            ++failures;                                                                            \
+        }                                                                                          \
     } while (0)
 
 static void test_ctz32() {

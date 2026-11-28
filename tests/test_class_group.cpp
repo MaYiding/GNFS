@@ -3,7 +3,6 @@
 #include "gnfs/sqrt/class_group.hpp"
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <iostream>

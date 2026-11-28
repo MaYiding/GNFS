@@ -28,9 +28,10 @@
 #include <gnfs/util/temp_path.hpp>
 #include <gnfs/util/utf8_path.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib> // setenv/unsetenv for V3 cascade test
@@ -53,6 +54,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::api;
 using gnfs::core::Integer;
 
@@ -96,7 +98,7 @@ static int fail_count = 0;
 
 #define TEST(name)                                                                                 \
     std::cout << "  " << #name << "... " << std::flush;                                            \
-    if (test_##name()) {                                                                           \
+    if (run_case([&] { return test_##name(); })) {                                                 \
         ++pass_count;                                                                              \
         std::cout << "OK\n";                                                                       \
     } else {                                                                                       \
@@ -237,8 +239,8 @@ bool has_closed_structured_stage_schema(std::string_view record) {
 bool test_config_auto_detect() {
     auto cfg = Config::auto_detect();
     // All fields should be empty (nullopt)
-    assert(!cfg.degree.has_value());
-    assert(!cfg.rational_bound.has_value());
+    TEST_ASSERT(!cfg.degree.has_value());
+    TEST_ASSERT(!cfg.rational_bound.has_value());
     if (cfg.max_special_q.has_value()) {
         return false;
     }
@@ -248,7 +250,7 @@ bool test_config_auto_detect() {
     if (cfg.max_local_sieve_threads.has_value()) {
         return false;
     }
-    assert(!cfg.verbose.has_value());
+    TEST_ASSERT(!cfg.verbose.has_value());
     return true;
 }
 
@@ -261,8 +263,8 @@ bool test_config_builder() {
                    .set_max_local_sieve_threads(3)
                    .set_verbose(true);
 
-    assert(cfg.degree.has_value() && *cfg.degree == 4);
-    assert(cfg.rational_bound.has_value() && *cfg.rational_bound == 50000);
+    TEST_ASSERT(cfg.degree.has_value() && *cfg.degree == 4);
+    TEST_ASSERT(cfg.rational_bound.has_value() && *cfg.rational_bound == 50000);
     if (!cfg.max_special_q.has_value() || *cfg.max_special_q != 17) {
         return false;
     }
@@ -272,7 +274,7 @@ bool test_config_builder() {
     if (!cfg.max_local_sieve_threads.has_value() || *cfg.max_local_sieve_threads != 3) {
         return false;
     }
-    assert(cfg.verbose.has_value() && *cfg.verbose == true);
+    TEST_ASSERT(cfg.verbose.has_value() && *cfg.verbose == true);
 
     bool zero_rejected = false;
     try {
@@ -373,8 +375,8 @@ bool test_config_merge() {
     override_cfg.verbose = true;
 
     auto merged = base.merge(override_cfg);
-    assert(*merged.degree == 4);            // overridden
-    assert(*merged.rational_bound == 5000); // from base
+    TEST_ASSERT(*merged.degree == 4);            // overridden
+    TEST_ASSERT(*merged.rational_bound == 5000); // from base
     if (!merged.max_special_q.has_value() || *merged.max_special_q != 11) {
         return false;
     }
@@ -385,7 +387,7 @@ bool test_config_merge() {
     if (!merged.max_local_sieve_threads.has_value() || *merged.max_local_sieve_threads != 5) {
         return false;
     }
-    assert(*merged.verbose == true); // overridden
+    TEST_ASSERT(*merged.verbose == true); // overridden
 
     Config false_override;
     false_override.verbose = false;
@@ -407,8 +409,8 @@ bool test_config_apply_to() {
     Integer n("1000036000099"); // ~40-bit
     auto params = cfg.apply_to(n);
 
-    assert(params.degree == 4);
-    assert(params.rational_bound == 99999);
+    TEST_ASSERT(params.degree == 4);
+    TEST_ASSERT(params.rational_bound == 99999);
     if (params.max_special_q != 13) {
         return false;
     }
@@ -419,7 +421,7 @@ bool test_config_apply_to() {
         return false;
     }
     // Other params should be auto-computed
-    assert(params.bits > 0);
+    TEST_ASSERT(params.bits > 0);
 
     Config invalid;
     invalid.max_special_q = 0;
@@ -489,8 +491,8 @@ bool test_config_from_file() {
     }
 
     auto cfg = Config::from_file(path);
-    assert(cfg.degree.has_value() && *cfg.degree == 4);
-    assert(cfg.rational_bound.has_value() && *cfg.rational_bound == 12345);
+    TEST_ASSERT(cfg.degree.has_value() && *cfg.degree == 4);
+    TEST_ASSERT(cfg.rational_bound.has_value() && *cfg.rational_bound == 12345);
     if (!cfg.max_special_q.has_value() || *cfg.max_special_q != 19) {
         return false;
     }
@@ -500,7 +502,7 @@ bool test_config_from_file() {
     if (!cfg.max_local_sieve_threads.has_value() || *cfg.max_local_sieve_threads != 6) {
         return false;
     }
-    assert(cfg.verbose.has_value() && *cfg.verbose == true);
+    TEST_ASSERT(cfg.verbose.has_value() && *cfg.verbose == true);
 
     // Cleanup
     std::remove(path.c_str());
@@ -668,11 +670,11 @@ bool test_config_from_file_invalid() {
         }
         try {
             auto cfg = Config::from_file(path);
-            assert(!cfg.degree.has_value());
+            TEST_ASSERT(!cfg.degree.has_value());
         } catch (const std::exception& e) {
             std::cerr << "  Unexpected throw on comments+blanks: " << e.what() << "\n";
             std::remove(path.c_str());
-            assert(false);
+            TEST_ASSERT(false);
         }
         std::remove(path.c_str());
     }
@@ -762,8 +764,8 @@ bool test_config_to_string() {
     cfg.max_special_q_batch_workers = 3;
     cfg.max_local_sieve_threads = 6;
     auto s = cfg.to_string();
-    assert(s.find("degree = 5") != std::string::npos);
-    assert(s.find("rational_bound = 10000") != std::string::npos);
+    TEST_ASSERT(s.find("degree = 5") != std::string::npos);
+    TEST_ASSERT(s.find("rational_bound = 10000") != std::string::npos);
     if (s.find("max_special_q = 29") == std::string::npos) {
         return false;
     }
@@ -850,11 +852,11 @@ bool test_config_apply_to_rejects_invalid_ranges() {
 bool test_phase_names() {
     // Default language is ZH, so check both
     i18n::set_lang("en");
-    assert(std::string(phase_name(Phase::Sieving)) == "Sieving");
+    TEST_ASSERT(std::string(phase_name(Phase::Sieving)) == "Sieving");
     i18n::set_lang("zh");
-    assert(std::string(phase_name(Phase::Sieving)) == "\xe7\xad\x9b\xe6\xb3\x95"); // 筛法
-    assert(std::string(phase_tag(Phase::LinearAlgebra)) == "linalg");
-    assert(std::string(log_level_name(LogLevel::Error)) == "ERROR");
+    TEST_ASSERT(std::string(phase_name(Phase::Sieving)) == "\xe7\xad\x9b\xe6\xb3\x95"); // 筛法
+    TEST_ASSERT(std::string(phase_tag(Phase::LinearAlgebra)) == "linalg");
+    TEST_ASSERT(std::string(log_level_name(LogLevel::Error)) == "ERROR");
     return true;
 }
 
@@ -873,9 +875,9 @@ bool test_result_to_text() {
     r.stats.timings.total_s = 0.5;
 
     auto text = r.to_text();
-    assert(text.find("143") != std::string::npos);
-    assert(text.find("11") != std::string::npos);
-    assert(text.find("13") != std::string::npos);
+    TEST_ASSERT(text.find("143") != std::string::npos);
+    TEST_ASSERT(text.find("11") != std::string::npos);
+    TEST_ASSERT(text.find("13") != std::string::npos);
     return true;
 }
 
@@ -1001,9 +1003,9 @@ bool test_result_to_report() {
     r.stats.candidate_batch_after_release_current_rss_bytes = 345678;
 
     auto report = r.to_report();
-    assert(report.find("GNFS Factorization Report") != std::string::npos);
-    assert(report.find("SUCCESS") != std::string::npos);
-    assert(report.find("Timing Breakdown") != std::string::npos);
+    TEST_ASSERT(report.find("GNFS Factorization Report") != std::string::npos);
+    TEST_ASSERT(report.find("SUCCESS") != std::string::npos);
+    TEST_ASSERT(report.find("Timing Breakdown") != std::string::npos);
     if (report.find("Special-Q batch worker limit: 2") == std::string::npos) {
         return false;
     }
@@ -1029,13 +1031,13 @@ bool test_result_to_report() {
 
 bool test_factorize_small() {
     auto result = factorize(Integer(143));
-    assert(result.success);
-    assert(result.factors.size() == 2);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.factors.size() == 2);
 
     // Sort and verify
     Integer product = result.factors[0].clone();
     product *= result.factors[1];
-    assert(product.compare(Integer(143)) == 0);
+    TEST_ASSERT(product.compare(Integer(143)) == 0);
     return true;
 }
 
@@ -1061,12 +1063,12 @@ bool test_factorize_string() {
         return false;
     }
     auto result = factorize(std::string("9991"));
-    assert(result.success);
-    assert(result.factors.size() == 2);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.factors.size() == 2);
 
     Integer product = result.factors[0].clone();
     product *= result.factors[1];
-    assert(product.compare(Integer(9991)) == 0);
+    TEST_ASSERT(product.compare(Integer(9991)) == 0);
     return true;
 }
 
@@ -1074,8 +1076,8 @@ bool test_factorize_with_config() {
     Config cfg;
     cfg.verbose = false;
     auto result = factorize(Integer(10403), cfg);
-    assert(result.success);
-    assert(result.factors.size() == 2);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.factors.size() == 2);
     return true;
 }
 
@@ -1092,7 +1094,7 @@ bool test_factorize_with_progress() {
     cfg.verbose = false;
     auto result = factorize(Integer(143), cfg, cb);
 
-    assert(result.success);
+    TEST_ASSERT(result.success);
     // N=143 (8 bit) routes to TrialDivision fast path, which emits log
     // messages but no progress callbacks (progress is reserved for the
     // GNFS pipeline phases). The test verifies the callback interface
@@ -1105,8 +1107,8 @@ bool test_factorize_prime_input() {
     // Primes should fail gracefully (not crash)
     Integer prime_n(127);
     auto result = factorize(prime_n);
-    assert(!result.success);
-    assert(result.factors.empty());
+    TEST_ASSERT(!result.success);
+    TEST_ASSERT(result.factors.empty());
     return true;
 }
 
@@ -1323,11 +1325,11 @@ bool test_pipeline_step_by_step() {
     Pipeline pipeline(n, cfg);
 
     auto ctx = pipeline.select_polynomial();
-    assert(ctx.degree() >= 3);
+    TEST_ASSERT(ctx.degree() >= 3);
 
     auto fb = pipeline.build_factor_base(ctx);
-    assert(fb.rational_count() > 0);
-    assert(fb.algebraic_count() > 0);
+    TEST_ASSERT(fb.rational_count() > 0);
+    TEST_ASSERT(fb.algebraic_count() > 0);
 
     auto reduction = pipeline.sieve_and_collect(ctx, fb);
     if (pipeline.stats().relations_after_filter != reduction.stats.output_relations ||
@@ -1338,15 +1340,15 @@ bool test_pipeline_step_by_step() {
         return false;
     }
 
-    assert(!reduction.empty());
+    TEST_ASSERT(!reduction.empty());
     if (reduction.generation == 0) {
         std::cout << "(sieve reduction generation was zero) ";
         return false;
     }
     // sieve_and_collect updates stats_.relations_found; this is the only
     // instant-tier assertion that exercises the GNFS-side counters.
-    assert(pipeline.stats().relations_found > 0 &&
-           "Pipeline::stats().relations_found should be set after sieving");
+    TEST_ASSERT(pipeline.stats().relations_found > 0 &&
+                "Pipeline::stats().relations_found should be set after sieving");
     if (pipeline.stats().local_sieve_thread_budget != 1 ||
         pipeline.stats().special_q_batch_peak_assigned_threads != 1 ||
         pipeline.stats().special_q_worker_peak_sieve_threads != 1 ||
@@ -1382,7 +1384,7 @@ bool test_pipeline_step_by_step() {
     // dependency-only materialization and corpus lifetime through sqrt.
     reduction.stats.strategy = gnfs::relation::ReductionStrategy::Structured;
     auto mr = pipeline.solve_matrix(std::move(reduction), fb, ctx);
-    assert(!mr.dependencies.empty());
+    TEST_ASSERT(!mr.dependencies.empty());
     if (!mr.owns_relation_corpus() || !mr.relations.empty() ||
         mr.structured_row_to_relation().size() != mr.matrix.num_rows() ||
         mr.relation_count() != mr.matrix.num_rows()) {
@@ -1390,10 +1392,10 @@ bool test_pipeline_step_by_step() {
         return false;
     }
     // solve_matrix updates stats_.dependencies_found and matrix dimensions.
-    assert(pipeline.stats().dependencies_found > 0 &&
-           "Pipeline::stats().dependencies_found should be set after solve");
-    assert(pipeline.stats().matrix_rows > 0 && pipeline.stats().matrix_cols > 0 &&
-           "Pipeline::stats() matrix dimensions should be recorded");
+    TEST_ASSERT(pipeline.stats().dependencies_found > 0 &&
+                "Pipeline::stats().dependencies_found should be set after solve");
+    TEST_ASSERT(pipeline.stats().matrix_rows > 0 && pipeline.stats().matrix_cols > 0 &&
+                "Pipeline::stats() matrix dimensions should be recorded");
 
     auto result = pipeline.extract_factors(mr, fb, ctx);
     if (!result.success || result.factors.size() != 2) {
@@ -1604,13 +1606,13 @@ bool test_pipeline_stats() {
     Pipeline pipeline(n, cfg);
     auto result = pipeline.run();
 
-    assert(result.success);
-    assert(result.stats.n_bits == 8);
-    assert(result.stats.timings.total_s > 0);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.stats.n_bits == 8);
+    TEST_ASSERT(result.stats.timings.total_s > 0);
     // N=143 takes the TrialDivision fast path; GNFS-specific counters
     // (relations_found, dependencies_found) stay at zero. Verify method
     // selection instead.
-    assert(result.stats.method_used == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(result.stats.method_used == FactorizationMethod::TrialDivision);
     return true;
 }
 
@@ -2443,7 +2445,7 @@ bool test_v3_cascade_pipeline_integration() {
 
     unsetenv("GNFS_CASCADE_V3");
 
-    assert(!rels.empty() && "sieve_and_collect should produce relations");
+    TEST_ASSERT(!rels.empty() && "sieve_and_collect should produce relations");
 
     // Verify Pipeline still works with V3 cascade ON (no regression).
     // V3 cascade may or may not contribute relations depending on weight
@@ -2477,8 +2479,8 @@ bool test_v3_cascade_head_to_head_real_pipeline() {
     auto rels_v3 = p_v3.sieve_and_collect(ctx_v3, fb_v3);
     unsetenv("GNFS_CASCADE_V3");
 
-    assert(!rels_v0.empty() && "V0 baseline should produce relations");
-    assert(!rels_v3.empty() && "V0+V3 should produce relations");
+    TEST_ASSERT(!rels_v0.empty() && "V0 baseline should produce relations");
+    TEST_ASSERT(!rels_v3.empty() && "V0+V3 should produce relations");
 
     // V3 cascade should never reduce relation count (V3 adds to V0 output,
     // deduped — strictly >= V0 alone). At 40-bit lp_bits=17, V3 commonly
@@ -2506,7 +2508,7 @@ bool test_v3_cascade_disabled_by_default() {
     auto fb = pipeline.build_factor_base(ctx);
     auto rels = pipeline.sieve_and_collect(ctx, fb);
 
-    assert(!rels.empty());
+    TEST_ASSERT(!rels.empty());
 
     // Note: cascade fires inside emit_log which uses log_cb_. We didn't
     // register a callback, so messages are dropped — but the v3_cascade
@@ -2536,7 +2538,7 @@ bool test_v3_cascade_auto_mode() {
 
     unsetenv("GNFS_CASCADE_V3");
 
-    assert(!rels.empty() && "sieve_and_collect should produce relations in auto mode");
+    TEST_ASSERT(!rels.empty() && "sieve_and_collect should produce relations in auto mode");
 
     return true;
 }
@@ -6103,8 +6105,8 @@ bool test_pipeline_progress_callback() {
 
     // After driving three GNFS phases, the callback should have observed
     // at least PolynomialSelection, FactorBase, and Sieving.
-    assert(phases_seen.size() >= 3 &&
-           "Pipeline progress callback should fire on each phase transition");
+    TEST_ASSERT(phases_seen.size() >= 3 &&
+                "Pipeline progress callback should fire on each phase transition");
     return true;
 }
 

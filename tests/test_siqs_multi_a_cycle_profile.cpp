@@ -3,13 +3,13 @@
 #include "fixtures/siqs_multi_a_cycle_profile_v2.hpp"
 #include "fixtures/siqs_multi_a_proof_profile_v4.hpp"
 #include "fixtures/siqs_multi_a_scale_profile_v3.hpp"
+#include "support/fixed_slot_executor.hpp"
 #include "support/siqs_scale_row_snapshot.hpp"
 
 #include <gnfs/siqs/post_merge_dependency.hpp>
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/siqs/shadow_matrix.hpp>
 #include <gnfs/siqs/siqs.hpp>
-#include <gnfs/util/fixed_slot_executor.hpp>
 #include <gnfs/util/native_random_access_file.hpp>
 #include <gnfs/util/process_memory.hpp>
 

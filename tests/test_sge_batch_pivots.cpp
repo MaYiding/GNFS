@@ -19,13 +19,13 @@
 // sequential path could appear at position 2 in the batched path. The
 // canonical comparison flattens that distinction.
 
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 #include <gnfs/linalg/sge.hpp>
 #include <gnfs/linalg/sge_batch_pivots.hpp>
 #include <gnfs/linalg/sparse_matrix.hpp>
 
 #include <algorithm>
-#include <cassert>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -34,6 +34,7 @@
 #include <string>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::linalg;
 
 namespace {
@@ -165,16 +166,16 @@ void test_baseline_n1_shape() {
     m.set(4, 5);
 
     auto r = run_with_batch(m, 1);
-    assert(r.original_rows == 5);
-    assert(r.original_cols == 6);
+    TEST_ASSERT(r.original_rows == 5);
+    TEST_ASSERT(r.original_cols == 6);
     // The fixed point should be reachable in a single pass: w1 columns 4
     // (only row 3) and the cascading reductions retire several rows. We
     // assert the surviving shape is non-empty and bounded — exact values
     // depend on tiebreaks but the path is stable for a fixed seed-free
     // construction.
-    assert(r.reduced_matrix.num_rows() <= 5);
-    assert(r.reduced_matrix.num_cols() <= 6);
-    assert(r.passes >= 1);
+    TEST_ASSERT(r.reduced_matrix.num_rows() <= 5);
+    TEST_ASSERT(r.reduced_matrix.num_cols() <= 6);
+    TEST_ASSERT(r.passes >= 1);
     std::cout << "  Reduced shape (N=1): " << r.reduced_matrix.num_rows() << "x"
               << r.reduced_matrix.num_cols() << " (w1=" << r.weight1_eliminated
               << ", w2=" << r.weight2_merged << ")\n";
@@ -225,7 +226,7 @@ void test_parity_n8_handcrafted() {
                   << " comp_groups=" << cs.compositions_sorted.size() << "\n";
         std::cerr << "    bat: " << cb.num_rows << "x" << cb.num_cols
                   << " comp_groups=" << cb.compositions_sorted.size() << "\n";
-        assert(false && "N=8 must produce canonical form equal to N=1");
+        TEST_ASSERT(false && "N=8 must produce canonical form equal to N=1");
     }
 
     std::cout << "  N=1: " << seq.reduced_matrix.num_rows() << "x" << seq.reduced_matrix.num_cols()
@@ -253,7 +254,7 @@ void test_parity_n32_random_large() {
     std::string diff;
     if (!canonical_eq(cs, cb, &diff)) {
         std::cerr << "  FAIL: " << diff << "\n";
-        assert(false && "N=32 must produce canonical form equal to N=1");
+        TEST_ASSERT(false && "N=32 must produce canonical form equal to N=1");
     }
 
     std::cout << "  N=1: " << seq.reduced_matrix.num_rows() << "x" << seq.reduced_matrix.num_cols()
@@ -272,35 +273,35 @@ void test_env_parsing() {
 
     // "0" → clamped to default sequential (kSGEBatchPivotsDefault=1)
     set_env_and_reload("0");
-    assert(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
+    TEST_ASSERT(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
 
     // "1" → exact 1 (default)
     set_env_and_reload("1");
-    assert(sge_batch_pivots_size() == 1);
+    TEST_ASSERT(sge_batch_pivots_size() == 1);
 
     // "16" → exact 16
     set_env_and_reload("16");
-    assert(sge_batch_pivots_size() == 16);
+    TEST_ASSERT(sge_batch_pivots_size() == 16);
 
     // unset → default 1
     set_env_and_reload(nullptr);
-    assert(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
+    TEST_ASSERT(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
 
     // "garbage" → default 1
     set_env_and_reload("garbage");
-    assert(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
+    TEST_ASSERT(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
 
     // "999" → clamped to kSGEBatchPivotsMax (64)
     set_env_and_reload("999");
-    assert(sge_batch_pivots_size() == kSGEBatchPivotsMax);
+    TEST_ASSERT(sge_batch_pivots_size() == kSGEBatchPivotsMax);
 
     // negative → default
     set_env_and_reload("-5");
-    assert(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
+    TEST_ASSERT(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
 
     // empty string → default
     set_env_and_reload("");
-    assert(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
+    TEST_ASSERT(sge_batch_pivots_size() == kSGEBatchPivotsDefault);
 
     // restore default for subsequent tests
     set_env_and_reload(nullptr);
@@ -317,17 +318,17 @@ void test_empty_matrix() {
     auto r1 = run_with_batch(empty, 1);
     auto r8 = run_with_batch(empty, 8);
 
-    assert(r1.reduced_matrix.num_rows() == 0);
-    assert(r1.reduced_matrix.num_cols() == 0);
-    assert(r1.original_rows == 0);
-    assert(r1.original_cols == 0);
-    assert(r1.passes == 0);
+    TEST_ASSERT(r1.reduced_matrix.num_rows() == 0);
+    TEST_ASSERT(r1.reduced_matrix.num_cols() == 0);
+    TEST_ASSERT(r1.original_rows == 0);
+    TEST_ASSERT(r1.original_cols == 0);
+    TEST_ASSERT(r1.passes == 0);
 
-    assert(r8.reduced_matrix.num_rows() == 0);
-    assert(r8.reduced_matrix.num_cols() == 0);
-    assert(r8.original_rows == 0);
-    assert(r8.original_cols == 0);
-    assert(r8.passes == 0);
+    TEST_ASSERT(r8.reduced_matrix.num_rows() == 0);
+    TEST_ASSERT(r8.reduced_matrix.num_cols() == 0);
+    TEST_ASSERT(r8.original_rows == 0);
+    TEST_ASSERT(r8.original_cols == 0);
+    TEST_ASSERT(r8.passes == 0);
 
     // Rows-only and cols-only edge cases.
     SparseMatrix rows_only(5, 0);
@@ -341,8 +342,8 @@ void test_empty_matrix() {
 
     SparseMatrix cols_only(0, 5);
     auto r_co = run_with_batch(cols_only, 8);
-    assert(r_co.reduced_matrix.num_rows() == 0);
-    assert(r_co.reduced_matrix.num_cols() == 0);
+    TEST_ASSERT(r_co.reduced_matrix.num_rows() == 0);
+    TEST_ASSERT(r_co.reduced_matrix.num_cols() == 0);
 
     std::cout << "  Empty matrix paths preserve unconstrained rows." << std::endl;
     std::cout << "  PASSED" << std::endl;
@@ -390,12 +391,12 @@ void test_single_pivot_chain() {
         std::cerr << "  FAIL: " << diff << "\n";
         std::cerr << "    N=1 shape: " << cs.num_rows << "x" << cs.num_cols << "\n";
         std::cerr << "    N=8 shape: " << cb.num_rows << "x" << cb.num_cols << "\n";
-        assert(false && "Single-pivot chain must produce identical canonical form");
+        TEST_ASSERT(false && "Single-pivot chain must produce identical canonical form");
     }
 
     // Both paths terminate without exceeding max_passes.
-    assert(r1.passes < 100);
-    assert(r8.passes < 100);
+    TEST_ASSERT(r1.passes < 100);
+    TEST_ASSERT(r8.passes < 100);
 
     std::cout << "  N=1 passes=" << r1.passes << ", N=8 passes=" << r8.passes << "\n";
     std::cout << "  PASSED" << std::endl;
@@ -417,7 +418,7 @@ void test_parity_random_sweep() {
             if (!canonical_eq(cs, cb, &diff)) {
                 std::cerr << "  FAIL: seed=0x" << std::hex << seed << std::dec << " N=" << N
                           << " — " << diff << "\n";
-                assert(false && "random-sweep parity failed");
+                TEST_ASSERT(false && "random-sweep parity failed");
             }
         }
     }
@@ -456,8 +457,10 @@ void test_config_overrides_env() {
     auto ccfg = canonicalize(r_cfg1);
 
     std::string diff;
-    assert(canonical_eq(cs1, ccfg, &diff) && "explicit cfg.batch_pivots=1 must match N=1 baseline");
-    assert(canonical_eq(cs1, cse, &diff) && "cfg.batch_pivots=0 + ENV=8 must match N=1 baseline");
+    TEST_ASSERT(canonical_eq(cs1, ccfg, &diff) &&
+                "explicit cfg.batch_pivots=1 must match N=1 baseline");
+    TEST_ASSERT(canonical_eq(cs1, cse, &diff) &&
+                "cfg.batch_pivots=0 + ENV=8 must match N=1 baseline");
 
     set_env_and_reload(nullptr);
     std::cout << "  config override and ENV delegation both produce parity." << std::endl;
@@ -465,18 +468,25 @@ void test_config_overrides_env() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "==================================================\n"
               << "SGE batch-pivot (GNFS_SGE_BATCH_PIVOTS) tests\n"
               << "==================================================\n";
 
-    test_baseline_n1_shape();
-    test_parity_n8_handcrafted();
-    test_parity_n32_random_large();
-    test_env_parsing();
-    test_empty_matrix();
-    test_single_pivot_chain();
-    test_parity_random_sweep();
-    test_config_overrides_env();
+    failed += !run_case(test_baseline_n1_shape);
+    failed += !run_case(test_parity_n8_handcrafted);
+    failed += !run_case(test_parity_n32_random_large);
+    failed += !run_case(test_env_parsing);
+    failed += !run_case(test_empty_matrix);
+    failed += !run_case(test_single_pivot_chain);
+    failed += !run_case(test_parity_random_sweep);
+    failed += !run_case(test_config_overrides_env);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\n=== All SGE batch-pivot tests PASSED ===" << std::endl;
     return 0;

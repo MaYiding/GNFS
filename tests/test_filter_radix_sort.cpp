@@ -11,9 +11,9 @@
 
 #include "gnfs/relation/collector.hpp"
 #include "gnfs/relation/radix_sort.hpp"
+#include "support/test_assert.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +21,7 @@
 #include <random>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::relation;
 using gnfs::core::PrimePower;
 using gnfs::core::Relation;
@@ -95,13 +96,13 @@ void run_parity(const std::vector<Relation>& seed_relations, const char* label) 
     };
 
     set_env_and_reload(nullptr);
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
     auto std_sorted = clone();
     sort_relations(std_sorted);
     auto std_dedup = filter_duplicates(std::move(std_sorted));
 
     set_env_and_reload("1");
-    assert(filter_radix_sort_enabled());
+    TEST_ASSERT(filter_radix_sort_enabled());
     auto radix_sorted = clone();
     sort_relations(radix_sorted);
     auto radix_dedup = filter_duplicates(std::move(radix_sorted));
@@ -118,7 +119,7 @@ void run_parity(const std::vector<Relation>& seed_relations, const char* label) 
                       << " radix=(" << radix_dedup[i].a << "," << radix_dedup[i].b << ")\n";
         }
     }
-    assert(vectors_equal(std_dedup, radix_dedup));
+    TEST_ASSERT(vectors_equal(std_dedup, radix_dedup));
 }
 
 } // namespace
@@ -148,7 +149,7 @@ void test_already_sorted() {
             rels.push_back(make_relation(a, b, tag++));
         }
     }
-    assert(rels.size() == 10);
+    TEST_ASSERT(rels.size() == 10);
     run_parity(rels, "already_sorted");
     std::cout << "  PASS" << std::endl;
 }
@@ -163,7 +164,7 @@ void test_reverse_sorted() {
             rels.push_back(make_relation(a, b, tag++));
         }
     }
-    assert(rels.size() == 10);
+    TEST_ASSERT(rels.size() == 10);
     run_parity(rels, "reverse_sorted");
     std::cout << "  PASS" << std::endl;
 }
@@ -235,19 +236,19 @@ void test_duplicates_dedup_stable() {
     set_env_and_reload(nullptr);
 
     // Expect 3 distinct (a, b) keys after dedup: (0,1), (1,2), (-3,4).
-    assert(dedup_radix.size() == 3);
+    TEST_ASSERT(dedup_radix.size() == 3);
     // The (1, 2) cluster must survive with tag=0 (first insertion),
     // proving the radix sort is stable and dedup picks the same
     // representative as the std::sort path.
     bool found_tag0_for_1_2 = false;
     for (const auto& r : dedup_radix) {
         if (r.a == 1 && r.b == 2) {
-            assert(!r.rational_factors.empty());
-            assert(r.rational_factors[0] == 0);
+            TEST_ASSERT(!r.rational_factors.empty());
+            TEST_ASSERT(r.rational_factors[0] == 0);
             found_tag0_for_1_2 = true;
         }
     }
-    assert(found_tag0_for_1_2);
+    TEST_ASSERT(found_tag0_for_1_2);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -260,19 +261,19 @@ void test_default_sort_preserves_first_duplicate_payload() {
     relations.push_back(make_relation(3, 5, 303));
 
     set_env_and_reload(nullptr);
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
     sort_relations(relations);
     auto deduplicated = filter_duplicates(std::move(relations));
 
     bool found_first_payload = false;
     for (const auto& relation : deduplicated) {
         if (relation.a == 7 && relation.b == 11) {
-            assert(relation.rational_factors.size() == 1);
-            assert(relation.rational_factors.front() == 101);
+            TEST_ASSERT(relation.rational_factors.size() == 1);
+            TEST_ASSERT(relation.rational_factors.front() == 101);
             found_first_payload = true;
         }
     }
-    assert(found_first_payload);
+    TEST_ASSERT(found_first_payload);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -280,46 +281,53 @@ void test_env_parsing() {
     std::cout << "Testing ENV parsing matrix..." << std::endl;
 
     set_env_and_reload(nullptr);
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
 
     set_env_and_reload("0");
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
 
     set_env_and_reload("1");
-    assert(filter_radix_sort_enabled());
+    TEST_ASSERT(filter_radix_sort_enabled());
 
     set_env_and_reload("garbage");
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
 
     set_env_and_reload("2");
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
 
     set_env_and_reload("true");
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
 
     // Empty string is treated as "not 1" → OFF.
     set_env_and_reload("");
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
 
     // Restore default for the rest of the suite.
     set_env_and_reload(nullptr);
-    assert(!filter_radix_sort_enabled());
+    TEST_ASSERT(!filter_radix_sort_enabled());
 
     std::cout << "  PASS" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Phase 0 Radix-Sort Parity Tests ===" << std::endl;
 
-    test_empty_input();
-    test_single_relation();
-    test_already_sorted();
-    test_reverse_sorted();
-    test_random_100();
-    test_random_10000();
-    test_duplicates_dedup_stable();
-    test_default_sort_preserves_first_duplicate_payload();
-    test_env_parsing();
+    failed += !run_case(test_empty_input);
+    failed += !run_case(test_single_relation);
+    failed += !run_case(test_already_sorted);
+    failed += !run_case(test_reverse_sorted);
+    failed += !run_case(test_random_100);
+    failed += !run_case(test_random_10000);
+    failed += !run_case(test_duplicates_dedup_stable);
+    failed += !run_case(test_default_sort_preserves_first_duplicate_payload);
+    failed += !run_case(test_env_parsing);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

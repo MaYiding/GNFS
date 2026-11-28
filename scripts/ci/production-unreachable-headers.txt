@@ -1,0 +1,69 @@
+# Headers under include/gnfs that no source outside tests/ and bench/ reaches.
+#
+# One repository-relative path per line, followed by a comment that names the
+# GNFS_ gate the header answers to. scripts/ci/check_header_reachability.py
+# fails when an unreachable header is missing here and when a listed header is
+# reached, moved, or deleted. A new header goes into production, or into this
+# list with the gate that guards it.
+
+# cofactor
+include/gnfs/cofactor/batch_inversion.hpp  # GNFS_ECM_BATCH_INV
+include/gnfs/cofactor/batch_trial.hpp  # GNFS_COFACTOR_BATCH_SIZE
+include/gnfs/cofactor/brent_pollard_rho_parallel.hpp  # GNFS_BRENT_POLLARD_RHO_THREADS
+include/gnfs/cofactor/ecm_curve_pool.hpp  # GNFS_ECM_CURVE_POOL
+include/gnfs/cofactor/ecm_prime_cache.hpp  # GNFS_ECM_B1_CACHE_SIZE
+include/gnfs/cofactor/ecm_stage1_parallel.hpp  # GNFS_ECM_STAGE1_PARALLEL_THREADS
+include/gnfs/cofactor/ecm_stage2_parallel.hpp  # GNFS_ECM_STAGE2_PARALLEL
+include/gnfs/cofactor/result_cache.hpp  # GNFS_COFACTOR_RESULT_CACHE_SIZE
+include/gnfs/cofactor/sigma_seed_pool.hpp  # GNFS_ECM_SIGMA_POOL_SIZE
+include/gnfs/cofactor/stage_timing.hpp  # GNFS_COFACTOR_TIMING_ENABLE
+include/gnfs/cofactor/trial_div_simd.hpp  # GNFS_TRIAL_DIV_SIMD
+
+# linalg
+include/gnfs/linalg/detail/and_popcnt_simd.hpp  # GNFS_GF2_AND_POPCNT_SIMD
+include/gnfs/linalg/detail/and_words_simd.hpp  # GNFS_GF2_AND_WORDS_SIMD
+include/gnfs/linalg/detail/popcount_simd.hpp  # GNFS_GF2_POPCNT_SIMD
+include/gnfs/linalg/detail/row_popcount_simd.hpp  # GNFS_GF2_ROW_POPCOUNT_SIMD
+include/gnfs/linalg/detail/transpose_blocked.hpp  # GNFS_MATRIX_TRANSPOSE_BLOCKED
+include/gnfs/linalg/detail/xor_popcnt_simd.hpp  # GNFS_GF2_XOR_POPCNT_SIMD
+include/gnfs/linalg/detail/xor_words_simd.hpp  # GNFS_GF2_ROW_XOR_SIMD
+include/gnfs/linalg/progress_telemetry.hpp  # GNFS_LINALG_PROGRESS_INTERVAL
+include/gnfs/linalg/schirokauer_parallel.hpp  # GNFS_SCHIROKAUER_THREADS
+
+# polynomial
+include/gnfs/polynomial/add_mod_simd.hpp  # GNFS_POLY_ADD_MOD_SIMD
+include/gnfs/polynomial/divrem_subquadratic.hpp  # GNFS_POLY_DIVREM_SUBQUADRATIC
+include/gnfs/polynomial/half_gcd.hpp  # GNFS_POLY_HGCD
+include/gnfs/polynomial/horner_batch_simd.hpp  # GNFS_POLY_HORNER_BATCH_SIMD
+include/gnfs/polynomial/horner_mod_simd.hpp  # GNFS_POLY_HORNER_MOD_SIMD
+include/gnfs/polynomial/karatsuba_mul.hpp  # GNFS_POLY_KARATSUBA_THRESHOLD
+include/gnfs/polynomial/ntt_mul.hpp  # GNFS_POLY_NTT
+include/gnfs/polynomial/poly_square.hpp  # GNFS_POLY_SQUARE_KARATSUBA_THRESHOLD, GNFS_POLY_SQUARE_OPT
+
+# relation
+include/gnfs/relation/lp_bloom.hpp  # GNFS_FILTER_LP_BLOOM_BITS
+include/gnfs/relation/lp_key_hash.hpp  # GNFS_FILTER_LP_HASH_MIX
+include/gnfs/relation/merger_parallel.hpp  # GNFS_FILTER_MERGE_THREADS
+
+# sieve
+include/gnfs/sieve/apply_tile_parallel.hpp  # GNFS_SIEVE_APPLY_TILE_THREADS
+include/gnfs/sieve/lattice_basis_parallel.hpp  # GNFS_LATTICE_BASIS_PARALLEL_THREADS
+include/gnfs/sieve/lattice_coords_simd.hpp  # GNFS_LATTICE_COORDS_SIMD
+include/gnfs/sieve/norm_tile.hpp  # GNFS_SIEVE_NORM_TILE_BITS
+include/gnfs/sieve/region_tile.hpp  # GNFS_SIEVE_REGION_TILE_BITS
+include/gnfs/sieve/saturated_sub_simd.hpp  # GNFS_SIEVE_SATURATED_SUB_SIMD
+include/gnfs/sieve/threshold_scan_simd.hpp  # GNFS_SIEVE_COUNT_ABOVE_THRESHOLD_SIMD
+
+# siqs
+include/gnfs/siqs/shadow_proof_rss_policy_record.hpp  # GNFS_SIQS_SHADOW_PROOF_RSS_POLICY_V3
+
+# sqrt
+include/gnfs/sqrt/couveignes_parallel.hpp  # GNFS_COUVEIGNES_PARALLEL_THREADS
+
+# util
+include/gnfs/util/integer_scratch_pool.hpp  # GNFS_INTEGER_SCRATCH_POOL
+include/gnfs/util/mpz_gcd_parallel.hpp  # GNFS_MPZ_GCD_BATCH_THREADS
+include/gnfs/util/mpz_invert_parallel.hpp  # GNFS_MPZ_INVERT_BATCH_THREADS
+include/gnfs/util/mpz_mod_parallel.hpp  # GNFS_MPZ_MOD_BATCH_THREADS
+include/gnfs/util/mpz_mul_parallel.hpp  # GNFS_MPZ_MUL_BATCH_THREADS
+include/gnfs/util/mpz_powm_parallel.hpp  # GNFS_MPZ_POWM_BATCH_THREADS

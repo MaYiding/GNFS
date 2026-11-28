@@ -27,10 +27,10 @@
 #include "gnfs/sieve/lattice_basis.hpp"
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/sieve/special_q.hpp"
+#include "support/test_assert.hpp"
 
 #include <array>
 #include <atomic>
-#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -42,6 +42,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::sieve;
 
 namespace {
@@ -180,10 +181,10 @@ void test_config_default_off() {
     std::cout << "test_config_default_off ... ";
     clear_env();
     auto cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.enabled == false);
-    assert(cfg.density_threshold == 0.5);
-    assert(cfg.max_retries == 2);
-    assert(cfg.perturb_seed == 0);
+    TEST_ASSERT(cfg.enabled == false);
+    TEST_ASSERT(cfg.density_threshold == 0.5);
+    TEST_ASSERT(cfg.max_retries == 2);
+    TEST_ASSERT(cfg.perturb_seed == 0);
     std::cout << "PASS\n";
 }
 
@@ -206,23 +207,23 @@ void test_config_env_on() {
     clear_env();
     setenv("GNFS_ADAPTIVE_LATTICE", "1", 1);
     auto cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.enabled == true);
+    TEST_ASSERT(cfg.enabled == true);
     clear_env();
 
     setenv("GNFS_ADAPTIVE_LATTICE", "on", 1);
     cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.enabled == true);
+    TEST_ASSERT(cfg.enabled == true);
     clear_env();
 
     setenv("GNFS_ADAPTIVE_LATTICE", "true", 1);
     cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.enabled == true);
+    TEST_ASSERT(cfg.enabled == true);
     clear_env();
 
     // "0" must remain off
     setenv("GNFS_ADAPTIVE_LATTICE", "0", 1);
     cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.enabled == false);
+    TEST_ASSERT(cfg.enabled == false);
     clear_env();
     std::cout << "PASS\n";
 }
@@ -233,21 +234,21 @@ void test_config_custom_threshold() {
     setenv("GNFS_ADAPTIVE_LATTICE", "1", 1);
     setenv("GNFS_ADAPTIVE_LATTICE_THRESHOLD", "1.5", 1);
     auto cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.enabled == true);
-    assert(cfg.density_threshold == 1.5);
+    TEST_ASSERT(cfg.enabled == true);
+    TEST_ASSERT(cfg.density_threshold == 1.5);
     clear_env();
 
     // out-of-range threshold ignored
     setenv("GNFS_ADAPTIVE_LATTICE", "1", 1);
     setenv("GNFS_ADAPTIVE_LATTICE_THRESHOLD", "-0.5", 1);
     cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.density_threshold == 0.5); // default preserved
+    TEST_ASSERT(cfg.density_threshold == 0.5); // default preserved
     clear_env();
 
     // garbage ignored
     setenv("GNFS_ADAPTIVE_LATTICE_THRESHOLD", "abc", 1);
     cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.density_threshold == 0.5);
+    TEST_ASSERT(cfg.density_threshold == 0.5);
     clear_env();
     std::cout << "PASS\n";
 }
@@ -259,19 +260,19 @@ void test_config_custom_retries_and_seed() {
     setenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "5", 1);
     setenv("GNFS_ADAPTIVE_LATTICE_SEED", "12345", 1);
     auto cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.max_retries == 5);
-    assert(cfg.perturb_seed == 12345);
+    TEST_ASSERT(cfg.max_retries == 5);
+    TEST_ASSERT(cfg.perturb_seed == 12345);
     clear_env();
 
     // out-of-range retries ignored
     setenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "999", 1);
     cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.max_retries == 2); // default
+    TEST_ASSERT(cfg.max_retries == 2); // default
     clear_env();
 
     setenv("GNFS_ADAPTIVE_LATTICE_MAX_RETRIES", "-1", 1);
     cfg = AdaptiveLatticeConfig::from_env();
-    assert(cfg.max_retries == 2);
+    TEST_ASSERT(cfg.max_retries == 2);
     clear_env();
     std::cout << "PASS\n";
 }
@@ -280,11 +281,11 @@ void test_config_custom_retries_and_seed() {
 
 void test_density_estimation() {
     std::cout << "test_density_estimation ... ";
-    assert(detail::compute_density(0, 0) == 0.0);
-    assert(detail::compute_density(0, 100) == 0.0);
-    assert(detail::compute_density(50, 100) == 0.5);
-    assert(detail::compute_density(100, 100) == 1.0);
-    assert(detail::compute_density(300, 100) == 3.0);
+    TEST_ASSERT(detail::compute_density(0, 0) == 0.0);
+    TEST_ASSERT(detail::compute_density(0, 100) == 0.0);
+    TEST_ASSERT(detail::compute_density(50, 100) == 0.5);
+    TEST_ASSERT(detail::compute_density(100, 100) == 1.0);
+    TEST_ASSERT(detail::compute_density(300, 100) == 3.0);
     std::cout << "PASS\n";
 }
 
@@ -370,14 +371,14 @@ void test_perturbation_valid_lattice() {
         SpecialQ sq{c.q, c.r, 0};
         LatticeBasis base = mgr.get_initial(sq, 1.0, 0);
         // Initial basis must be LLL-strict.
-        assert(basis_is_lll(base));
+        TEST_ASSERT(basis_is_lll(base));
 
         for (int retry = 0; retry < 4; ++retry) {
             auto opt = mgr.try_perturb_and_rereduce(base, 0, 1000, retry);
-            assert(opt.has_value());
+            TEST_ASSERT(opt.has_value());
             // Perturbed basis must be a legal L_q basis (det = ±q, verify_ab)
             // but need not be LLL-canonical.
-            assert(basis_is_valid(*opt));
+            TEST_ASSERT(basis_is_valid(*opt));
         }
     }
     std::cout << "PASS\n";
@@ -393,15 +394,15 @@ void test_no_perturb_when_dense() {
 
     // density = 1000/1000 = 1.0 >= threshold 0.5
     auto opt = mgr.try_perturb_and_rereduce(base, 1000, 1000, 0);
-    assert(!opt.has_value());
+    TEST_ASSERT(!opt.has_value());
 
     // density = 600/1000 = 0.6 >= 0.5
     opt = mgr.try_perturb_and_rereduce(base, 600, 1000, 0);
-    assert(!opt.has_value());
+    TEST_ASSERT(!opt.has_value());
 
     // density = exact threshold 0.5 — still NOT perturbed (>= 0.5)
     opt = mgr.try_perturb_and_rereduce(base, 500, 1000, 0);
-    assert(!opt.has_value());
+    TEST_ASSERT(!opt.has_value());
 
     std::cout << "PASS\n";
 }
@@ -415,13 +416,13 @@ void test_perturb_when_low_density() {
     LatticeBasis base = mgr.get_initial(sq);
 
     auto opt = mgr.try_perturb_and_rereduce(base, 100, 1000, 0);
-    assert(opt.has_value());
-    assert(basis_is_valid(*opt));
+    TEST_ASSERT(opt.has_value());
+    TEST_ASSERT(basis_is_valid(*opt));
 
     // perturbed should differ from original (otherwise no rescue possible)
     bool different = (opt->e0 != base.e0) || (opt->e1 != base.e1) || (opt->f0 != base.f0) ||
                      (opt->f1 != base.f1);
-    assert(different);
+    TEST_ASSERT(different);
 
     std::cout << "PASS\n";
 }
@@ -435,16 +436,16 @@ void test_retry_budget_respected() {
     LatticeBasis base = mgr.get_initial(sq);
 
     // retry_count < max_retries → returns basis
-    assert(mgr.try_perturb_and_rereduce(base, 10, 1000, 0).has_value());
-    assert(mgr.try_perturb_and_rereduce(base, 10, 1000, 1).has_value());
+    TEST_ASSERT(mgr.try_perturb_and_rereduce(base, 10, 1000, 0).has_value());
+    TEST_ASSERT(mgr.try_perturb_and_rereduce(base, 10, 1000, 1).has_value());
     // retry_count == max_retries → nullopt
-    assert(!mgr.try_perturb_and_rereduce(base, 10, 1000, 2).has_value());
+    TEST_ASSERT(!mgr.try_perturb_and_rereduce(base, 10, 1000, 2).has_value());
     // retry_count > max_retries → nullopt
-    assert(!mgr.try_perturb_and_rereduce(base, 10, 1000, 5).has_value());
+    TEST_ASSERT(!mgr.try_perturb_and_rereduce(base, 10, 1000, 5).has_value());
 
     // max_retries = 0 → no perturbation ever
     AdaptiveBasisManager mgr0(AdaptiveLatticeConfig{true, 0.5, 0, 0});
-    assert(!mgr0.try_perturb_and_rereduce(base, 0, 1000, 0).has_value());
+    TEST_ASSERT(!mgr0.try_perturb_and_rereduce(base, 0, 1000, 0).has_value());
 
     std::cout << "PASS\n";
 }
@@ -466,12 +467,12 @@ void test_telemetry_counts() {
     mgr.mark_low_density_skipped();
 
     auto snap = mgr.stats().snapshot();
-    assert(snap.total_hits == 300);
-    assert(snap.total_cells == 2000);
-    assert(snap.special_qs_processed == 2);
-    assert(snap.retries_attempted == 1);
-    assert(snap.rescues_succeeded == 1);
-    assert(snap.low_density_skipped == 1);
+    TEST_ASSERT(snap.total_hits == 300);
+    TEST_ASSERT(snap.total_cells == 2000);
+    TEST_ASSERT(snap.special_qs_processed == 2);
+    TEST_ASSERT(snap.retries_attempted == 1);
+    TEST_ASSERT(snap.rescues_succeeded == 1);
+    TEST_ASSERT(snap.low_density_skipped == 1);
 
     std::cout << "PASS\n";
 }
@@ -504,16 +505,16 @@ void test_concurrent_telemetry() {
         th.join();
 
     auto snap = mgr.stats().snapshot();
-    assert(snap.total_hits == N_THREADS * ITERS);
-    assert(snap.total_cells == N_THREADS * ITERS * 10);
-    assert(snap.special_qs_processed == N_THREADS * ITERS);
+    TEST_ASSERT(snap.total_hits == N_THREADS * ITERS);
+    TEST_ASSERT(snap.total_cells == N_THREADS * ITERS * 10);
+    TEST_ASSERT(snap.special_qs_processed == N_THREADS * ITERS);
 
     // i%3 == 0 yields ceil(ITERS / 3) per thread = (ITERS+2)/3
     uint64_t expected_retries = static_cast<uint64_t>(N_THREADS) * ((ITERS + 2) / 3);
-    assert(snap.retries_attempted == expected_retries);
+    TEST_ASSERT(snap.retries_attempted == expected_retries);
 
     uint64_t expected_rescues = static_cast<uint64_t>(N_THREADS) * ((ITERS + 4) / 5);
-    assert(snap.rescues_succeeded == expected_rescues);
+    TEST_ASSERT(snap.rescues_succeeded == expected_rescues);
 
     std::cout << "PASS\n";
 }
@@ -528,12 +529,12 @@ void test_disabled_mode_zero_cost() {
 
     // get_initial still works (returns standard LLL basis identical to compute_lattice_basis).
     LatticeBasis expected = compute_lattice_basis(sq);
-    assert(base.e0 == expected.e0 && base.e1 == expected.e1);
-    assert(base.f0 == expected.f0 && base.f1 == expected.f1);
+    TEST_ASSERT(base.e0 == expected.e0 && base.e1 == expected.e1);
+    TEST_ASSERT(base.f0 == expected.f0 && base.f1 == expected.f1);
 
     // try_perturb_and_rereduce → nullopt even with zero hits
     auto opt = mgr.try_perturb_and_rereduce(base, 0, 1000, 0);
-    assert(!opt.has_value());
+    TEST_ASSERT(!opt.has_value());
 
     // record / mark helpers no-op
     mgr.record_hit_stats(base, 999, 999);
@@ -543,12 +544,12 @@ void test_disabled_mode_zero_cost() {
     mgr.mark_low_density_skipped();
 
     auto snap = mgr.stats().snapshot();
-    assert(snap.total_hits == 0);
-    assert(snap.total_cells == 0);
-    assert(snap.special_qs_processed == 0);
-    assert(snap.retries_attempted == 0);
-    assert(snap.rescues_succeeded == 0);
-    assert(snap.low_density_skipped == 0);
+    TEST_ASSERT(snap.total_hits == 0);
+    TEST_ASSERT(snap.total_cells == 0);
+    TEST_ASSERT(snap.special_qs_processed == 0);
+    TEST_ASSERT(snap.retries_attempted == 0);
+    TEST_ASSERT(snap.rescues_succeeded == 0);
+    TEST_ASSERT(snap.low_density_skipped == 0);
 
     std::cout << "PASS\n";
 }
@@ -562,12 +563,12 @@ void test_determinant_preserved() {
     for (uint32_t q : qs) {
         SpecialQ sq{q, q / 2, 0};
         LatticeBasis base = mgr.get_initial(sq);
-        assert(abs_det(base) == static_cast<int64_t>(q));
+        TEST_ASSERT(abs_det(base) == static_cast<int64_t>(q));
 
         for (int retry = 0; retry < 4; ++retry) {
             auto opt = mgr.try_perturb_and_rereduce(base, 0, 1000, retry);
-            assert(opt.has_value());
-            assert(abs_det(*opt) == static_cast<int64_t>(q));
+            TEST_ASSERT(opt.has_value());
+            TEST_ASSERT(abs_det(*opt) == static_cast<int64_t>(q));
         }
     }
     std::cout << "PASS\n";
@@ -583,16 +584,16 @@ void test_verify_ab_preserved() {
 
     for (int retry = 0; retry < 4; ++retry) {
         auto opt = mgr.try_perturb_and_rereduce(base, 0, 1000, retry);
-        assert(opt.has_value());
+        TEST_ASSERT(opt.has_value());
         const LatticeBasis& pb = *opt;
         // Both basis vectors must satisfy a - b*r ≡ 0 (mod q)
-        assert(pb.verify_ab(pb.e0, pb.f0));
-        assert(pb.verify_ab(pb.e1, pb.f1));
+        TEST_ASSERT(pb.verify_ab(pb.e0, pb.f0));
+        TEST_ASSERT(pb.verify_ab(pb.e1, pb.f1));
         // Sample some lattice combos: to_ab(i,j) should always satisfy verify_ab
         for (int i = -10; i <= 10; ++i) {
             for (int j = 1; j <= 10; ++j) {
                 auto [a, b] = pb.to_ab(i, j);
-                assert(pb.verify_ab(a, b));
+                TEST_ASSERT(pb.verify_ab(a, b));
             }
         }
     }
@@ -613,13 +614,13 @@ void test_distinct_perturbations() {
 
     for (int retry = 0; retry < 4; ++retry) {
         auto opt = mgr.try_perturb_and_rereduce(base, 0, 1000, retry);
-        assert(opt.has_value());
+        TEST_ASSERT(opt.has_value());
         seen.insert({opt->e0, opt->f0});
         seen.insert({opt->e1, opt->f1});
     }
     // At least 3 distinct basis vector pairs across 4 retries (rotational symmetry
     // may produce duplicates between k=+/-k after LLL re-reduction; require ≥3).
-    assert(seen.size() >= 3);
+    TEST_ASSERT(seen.size() >= 3);
 
     std::cout << "PASS\n";
 }
@@ -753,12 +754,12 @@ void test_integration_smoke() {
 
         // off mode should never enter retry path
         auto opt = off_mgr.try_perturb_and_rereduce(base, 50, 1000, 0);
-        assert(!opt.has_value());
+        TEST_ASSERT(!opt.has_value());
     }
     auto off_snap = off_mgr.stats().snapshot();
     // Disabled → telemetry untouched
-    assert(off_snap.special_qs_processed == 0);
-    assert(off_snap.total_hits == 0);
+    TEST_ASSERT(off_snap.special_qs_processed == 0);
+    TEST_ASSERT(off_snap.total_hits == 0);
 
     // Mode B: adaptive ON, threshold 0.1 (so 50/1000 = 0.05 triggers)
     AdaptiveBasisManager on_mgr(AdaptiveLatticeConfig{true, 0.1, 2, 0});
@@ -777,7 +778,7 @@ void test_integration_smoke() {
             auto opt = on_mgr.try_perturb_and_rereduce(basis, hits, cells, retry_count);
             if (!opt.has_value())
                 break;
-            assert(basis_is_valid(*opt));
+            TEST_ASSERT(basis_is_valid(*opt));
             basis = *opt;
             on_mgr.mark_retry_attempted();
             ++retry_count;
@@ -799,14 +800,14 @@ void test_integration_smoke() {
             ++rescues;
     }
     auto on_snap = on_mgr.stats().snapshot();
-    assert(on_snap.special_qs_processed == sizeof(qs) / sizeof(qs[0]));
-    assert(on_snap.retries_attempted == on_snap.special_qs_processed); // 1 retry each
-    assert(on_snap.rescues_succeeded == on_snap.special_qs_processed); // all rescued
-    assert(rescues == static_cast<int>(on_snap.rescues_succeeded));
+    TEST_ASSERT(on_snap.special_qs_processed == sizeof(qs) / sizeof(qs[0]));
+    TEST_ASSERT(on_snap.retries_attempted == on_snap.special_qs_processed); // 1 retry each
+    TEST_ASSERT(on_snap.rescues_succeeded == on_snap.special_qs_processed); // all rescued
+    TEST_ASSERT(rescues == static_cast<int>(on_snap.rescues_succeeded));
 
     // Sanity: ON mode collected real hits, OFF mode collected zero (gating).
-    assert(on_snap.total_hits > 0);
-    assert(off_snap.total_hits == 0);
+    TEST_ASSERT(on_snap.total_hits > 0);
+    TEST_ASSERT(off_snap.total_hits == 0);
 
     std::cout << "PASS (qs=" << on_snap.special_qs_processed
               << " retries=" << on_snap.retries_attempted
@@ -834,9 +835,9 @@ void test_lattice_sieve_integration() {
     Integer n("1000036000099");
     uint32_t degree = 3;
     auto poly_result = BaseMSelector::select(n, degree);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
-    assert(ctx.verify());
+    TEST_ASSERT(ctx.verify());
 
     FactorBaseBuilder::Options fb_opts;
     fb_opts.rational_bound = 5000;
@@ -868,7 +869,7 @@ void test_lattice_sieve_integration() {
         sieve::LatticeSieve sieve(ctx, fb, sieve_params);
         sieve.set_region(region);
         // Confirm manager is disabled (no ENV).
-        assert(!sieve.adaptive_manager().config().enabled);
+        TEST_ASSERT(!sieve.adaptive_manager().config().enabled);
 
         sieve::SpecialQGenerator gen(fb, sq_range);
         for (size_t i = 0; i < NUM_SQ && gen.has_next(); ++i) {
@@ -894,8 +895,8 @@ void test_lattice_sieve_integration() {
     {
         sieve::LatticeSieve sieve(ctx, fb, sieve_params);
         sieve.set_region(region);
-        assert(sieve.adaptive_manager().config().enabled);
-        assert(sieve.adaptive_manager().config().density_threshold == 0.02);
+        TEST_ASSERT(sieve.adaptive_manager().config().enabled);
+        TEST_ASSERT(sieve.adaptive_manager().config().density_threshold == 0.02);
 
         sieve::SpecialQGenerator gen(fb, sq_range);
         for (size_t i = 0; i < NUM_SQ && gen.has_next(); ++i) {
@@ -919,12 +920,12 @@ void test_lattice_sieve_integration() {
     // Invariant 1: total candidates not degraded (>= 95% of baseline).
     // Adaptive only ADOPTS a retry result when it improves hits, so this should
     // hold by construction.
-    assert(on_total >= off_total * 95 / 100);
+    TEST_ASSERT(on_total >= off_total * 95 / 100);
 
     // Invariant 2: telemetry consistent with config. Duplicate checks are
     // intentionally per-SQ above because different SQ lattices may overlap.
-    assert(on_snap.special_qs_processed == NUM_SQ);
-    assert(on_snap.retries_attempted > 0); // threshold is so low retries will fire
+    TEST_ASSERT(on_snap.special_qs_processed == NUM_SQ);
+    TEST_ASSERT(on_snap.retries_attempted > 0); // threshold is so low retries will fire
 
     std::cout << "PASS (off=" << off_total << " on=" << on_total
               << " sqs=" << on_snap.special_qs_processed << " retries=" << on_snap.retries_attempted
@@ -1147,33 +1148,40 @@ void test_explicit_sieve_parallel_preserves_execution_config() {
 // ── main ────────────────────────────────────────────────────────────────
 
 int main() {
+    int failed = 0;
+
     std::cout << "===========================================" << std::endl;
     std::cout << "  Adaptive Lattice Basis Re-reduction Tests" << std::endl;
     std::cout << "===========================================" << std::endl;
 
-    test_config_default_off();
-    test_explicit_sieve_execution_config_defaults();
-    test_config_env_on();
-    test_config_custom_threshold();
-    test_config_custom_retries_and_seed();
-    test_density_estimation();
-    test_exact_adaptive_norm_ordering();
-    test_exact_adaptive_perturbation_ordering();
-    test_perturbation_valid_lattice();
-    test_no_perturb_when_dense();
-    test_perturb_when_low_density();
-    test_retry_budget_respected();
-    test_telemetry_counts();
-    test_concurrent_telemetry();
-    test_disabled_mode_zero_cost();
-    test_determinant_preserved();
-    test_verify_ab_preserved();
-    test_distinct_perturbations();
-    test_seed_zero_exact_retry_sequence_is_repeatable();
-    test_explicit_manager_ignores_environment_changes();
-    test_integration_smoke();
-    test_lattice_sieve_integration();
-    test_explicit_sieve_parallel_preserves_execution_config();
+    failed += !run_case(test_config_default_off);
+    failed += !run_case(test_explicit_sieve_execution_config_defaults);
+    failed += !run_case(test_config_env_on);
+    failed += !run_case(test_config_custom_threshold);
+    failed += !run_case(test_config_custom_retries_and_seed);
+    failed += !run_case(test_density_estimation);
+    failed += !run_case(test_exact_adaptive_norm_ordering);
+    failed += !run_case(test_exact_adaptive_perturbation_ordering);
+    failed += !run_case(test_perturbation_valid_lattice);
+    failed += !run_case(test_no_perturb_when_dense);
+    failed += !run_case(test_perturb_when_low_density);
+    failed += !run_case(test_retry_budget_respected);
+    failed += !run_case(test_telemetry_counts);
+    failed += !run_case(test_concurrent_telemetry);
+    failed += !run_case(test_disabled_mode_zero_cost);
+    failed += !run_case(test_determinant_preserved);
+    failed += !run_case(test_verify_ab_preserved);
+    failed += !run_case(test_distinct_perturbations);
+    failed += !run_case(test_seed_zero_exact_retry_sequence_is_repeatable);
+    failed += !run_case(test_explicit_manager_ignores_environment_changes);
+    failed += !run_case(test_integration_smoke);
+    failed += !run_case(test_lattice_sieve_integration);
+    failed += !run_case(test_explicit_sieve_parallel_preserves_execution_config);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "===========================================" << std::endl;
     std::cout << "  All adaptive lattice tests passed!" << std::endl;

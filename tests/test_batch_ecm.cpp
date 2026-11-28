@@ -4,9 +4,9 @@
 #include <gnfs/cofactor/ecm.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -16,6 +16,7 @@
 
 using gnfs::cofactor::ECM;
 using gnfs::core::Integer;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -90,36 +91,36 @@ void test_prepare_batch_basic() {
     auto ctx = ECM::prepare_batch(cfg, /*sigma_seed=*/12345);
 
     // primes_cache: π(2000) = 303 primes
-    assert(ctx.primes_cache.size() == 303);
-    assert(ctx.primes_cache.front() == 2);
-    assert(ctx.primes_cache.back() == 1999);
+    TEST_ASSERT(ctx.primes_cache.size() == 303);
+    TEST_ASSERT(ctx.primes_cache.front() == 2);
+    TEST_ASSERT(ctx.primes_cache.back() == 1999);
 
     // prime_powers parallel to primes_cache
-    assert(ctx.prime_powers.size() == ctx.primes_cache.size());
+    TEST_ASSERT(ctx.prime_powers.size() == ctx.primes_cache.size());
 
     // pk = max p^e <= B1, so e.g. p=2, B1=2000 → pk = 1024 (2^10)
-    assert(ctx.prime_powers[0] == 1024); // 2^10 = 1024, 2^11 = 2048 > 2000
-    assert(ctx.prime_powers[1] == 729);  // 3^6 = 729,  3^7 = 2187 > 2000
-    assert(ctx.prime_powers[2] == 625);  // 5^4 = 625,  5^5 = 3125 > 2000
+    TEST_ASSERT(ctx.prime_powers[0] == 1024); // 2^10 = 1024, 2^11 = 2048 > 2000
+    TEST_ASSERT(ctx.prime_powers[1] == 729);  // 3^6 = 729,  3^7 = 2187 > 2000
+    TEST_ASSERT(ctx.prime_powers[2] == 625);  // 5^4 = 625,  5^5 = 3125 > 2000
     // Larger primes: pk = p (because p^2 > B1)
     for (size_t i = 0; i < ctx.primes_cache.size(); ++i) {
         uint64_t p = ctx.primes_cache[i];
         if (p > 44) { // sqrt(2000) ≈ 44.7
-            assert(ctx.prime_powers[i] == p);
+            TEST_ASSERT(ctx.prime_powers[i] == p);
         }
     }
 
     // sigma_pool size matches num_curves
-    assert(ctx.sigma_pool.size() == 10);
+    TEST_ASSERT(ctx.sigma_pool.size() == 10);
 
     // All sigmas >= 6 (Suyama parametrization requirement)
     for (uint64_t s : ctx.sigma_pool) {
-        assert(s >= 6);
+        TEST_ASSERT(s >= 6);
     }
 
     // num_curves() and empty() helpers
-    assert(ctx.num_curves() == 10);
-    assert(!ctx.empty());
+    TEST_ASSERT(ctx.num_curves() == 10);
+    TEST_ASSERT(!ctx.empty());
 
     std::cout << "  prepare_batch basics: PASSED" << std::endl;
 }
@@ -140,9 +141,9 @@ void test_prepare_batch_determinism() {
     auto ctx2 = ECM::prepare_batch(cfg, /*sigma_seed=*/42);
 
     // Same seed → identical sigma sequence
-    assert(ctx1.sigma_pool.size() == ctx2.sigma_pool.size());
+    TEST_ASSERT(ctx1.sigma_pool.size() == ctx2.sigma_pool.size());
     for (size_t i = 0; i < ctx1.sigma_pool.size(); ++i) {
-        assert(ctx1.sigma_pool[i] == ctx2.sigma_pool[i]);
+        TEST_ASSERT(ctx1.sigma_pool[i] == ctx2.sigma_pool[i]);
     }
 
     // Different seeds → different sequence (with high probability)
@@ -154,7 +155,7 @@ void test_prepare_batch_determinism() {
             break;
         }
     }
-    assert(any_diff);
+    TEST_ASSERT(any_diff);
 
     std::cout << "  prepare_batch determinism: PASSED" << std::endl;
 }
@@ -178,7 +179,7 @@ void test_factor_with_batch_self_consistency() {
         if (!valid_factor(n, r)) {
             std::cerr << "FAIL: factor_with_batch returned trivial factor " << opt_str(r)
                       << " for n=" << c.n << std::endl;
-            assert(false);
+            TEST_ASSERT(false);
         }
     }
 
@@ -207,13 +208,13 @@ void test_factor_batch_equivalence_single() {
         seq_results.push_back(ECM::factor_with_batch(n, ctx));
     }
 
-    assert(batch_results.size() == seq_results.size());
+    TEST_ASSERT(batch_results.size() == seq_results.size());
     for (size_t i = 0; i < batch_results.size(); ++i) {
         // Both nullopt or both have value
-        assert(batch_results[i].has_value() == seq_results[i].has_value());
+        TEST_ASSERT(batch_results[i].has_value() == seq_results[i].has_value());
         if (batch_results[i]) {
             // Same factor (deterministic sigma_pool → same first hit)
-            assert(batch_results[i]->compare(*seq_results[i]) == 0);
+            TEST_ASSERT(batch_results[i]->compare(*seq_results[i]) == 0);
         }
     }
 
@@ -253,13 +254,13 @@ void test_factor_batch_scaling() {
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        assert(rs.size() == ns.size());
+        TEST_ASSERT(rs.size() == ns.size());
 
         // Every result should be either nullopt (composite still composite)
         // or a non-trivial divisor.
         size_t found = 0;
         for (size_t i = 0; i < rs.size(); ++i) {
-            assert(valid_factor(ns[i], rs[i]));
+            TEST_ASSERT(valid_factor(ns[i], rs[i]));
             if (rs[i])
                 ++found;
         }
@@ -280,13 +281,13 @@ void test_empty_batch_context() {
     ECM::BatchContext empty_ctx;
     Integer n("1234567891");
     auto r = ECM::factor_with_batch(n, empty_ctx);
-    assert(!r.has_value());
+    TEST_ASSERT(!r.has_value());
 
     std::vector<Integer> ns = {Integer("15347"), Integer("100895598169")};
     auto rs = ECM::factor_batch(ns, empty_ctx);
-    assert(rs.size() == 2);
-    assert(!rs[0].has_value());
-    assert(!rs[1].has_value());
+    TEST_ASSERT(rs.size() == 2);
+    TEST_ASSERT(!rs[0].has_value());
+    TEST_ASSERT(!rs[1].has_value());
 
     std::cout << "  empty BatchContext defensive: PASSED" << std::endl;
 }
@@ -327,11 +328,11 @@ void test_skip_invalid_inputs() {
 
     // n=1: should return nullopt immediately
     Integer one("1");
-    assert(!ECM::factor_with_batch(one, ctx).has_value());
+    TEST_ASSERT(!ECM::factor_with_batch(one, ctx).has_value());
 
     // n=prime: should return nullopt
     Integer prime("1000000007");
-    assert(!ECM::factor_with_batch(prime, ctx).has_value());
+    TEST_ASSERT(!ECM::factor_with_batch(prime, ctx).has_value());
 
     // Mixed batch
     std::vector<Integer> ns = {
@@ -340,11 +341,11 @@ void test_skip_invalid_inputs() {
         Integer("15347"),      // 103 * 149 (composite)
     };
     auto rs = ECM::factor_batch(ns, ctx);
-    assert(rs.size() == 3);
-    assert(!rs[0].has_value()); // n=1 skipped
-    assert(!rs[1].has_value()); // prime skipped
+    TEST_ASSERT(rs.size() == 3);
+    TEST_ASSERT(!rs[0].has_value()); // n=1 skipped
+    TEST_ASSERT(!rs[1].has_value()); // prime skipped
     if (rs[2]) {
-        assert(valid_factor(ns[2], rs[2]));
+        TEST_ASSERT(valid_factor(ns[2], rs[2]));
     }
 
     std::cout << "  skip n=1 and primes: PASSED" << std::endl;
@@ -392,19 +393,26 @@ void test_batch_vs_factor_success_parity() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "═════════════════════════════════════════════" << std::endl;
     std::cout << "  Batch ECM Unit Tests" << std::endl;
     std::cout << "═════════════════════════════════════════════" << std::endl << std::endl;
 
-    test_prepare_batch_basic();
-    test_prepare_batch_determinism();
-    test_empty_batch_context();
-    test_malformed_batch_context();
-    test_skip_invalid_inputs();
-    test_factor_with_batch_self_consistency();
-    test_factor_batch_equivalence_single();
-    test_factor_batch_scaling();
-    test_batch_vs_factor_success_parity();
+    failed += !run_case(test_prepare_batch_basic);
+    failed += !run_case(test_prepare_batch_determinism);
+    failed += !run_case(test_empty_batch_context);
+    failed += !run_case(test_malformed_batch_context);
+    failed += !run_case(test_skip_invalid_inputs);
+    failed += !run_case(test_factor_with_batch_self_consistency);
+    failed += !run_case(test_factor_batch_equivalence_single);
+    failed += !run_case(test_factor_batch_scaling);
+    failed += !run_case(test_batch_vs_factor_success_parity);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl;
     std::cout << "═════════════════════════════════════════════" << std::endl;

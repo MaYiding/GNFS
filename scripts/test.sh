@@ -24,6 +24,7 @@
 #
 # 集成 & E2E:
 #   ./scripts/test.sh e2e                 # E2E 测试 (N=143 完整流水线)
+#   ./scripts/test.sh gnfs-e2e-ladder     # 强制 GNFS 完整分解阶梯 (30/35/40 位)
 #   ./scripts/test.sh integration         # 跨模块集成测试
 #   ./scripts/test.sh pipeline            # 完整流水线: 每阶段分别验证
 #
@@ -361,6 +362,7 @@ ALL_TEST_BINARIES=(
     test_regression_gate
     test_schirokauer_non_monic_e2e
     test_non_monic_matrix_constraints_e2e
+    test_gnfs_e2e_ladder
     test_stress
     test_3lp_cofactor
     test_3lp_merge
@@ -524,7 +526,7 @@ MODULE_SLOW_TESTS=(
 typeset -A MODULE_CTEST_CONTRACTS
 MODULE_CTEST_CONTRACTS=(
     api "^CLIReplConfig$"
-    util "^(ProcessSupervisor|HarnessProcessTreeTimeout|MarkdownLinkCheckerSelfTest)$"
+    util "^(ProcessSupervisor|HarnessProcessTreeTimeout|MarkdownLinkCheckerSelfTest|HeaderReachabilityCheckerSelfTest)$"
 )
 SMOKE_CTEST_CONTRACT="^ProcessSupervisor$"
 
@@ -716,6 +718,7 @@ TEST_TIMEOUT=(
     test_regression_gate     240
     test_schirokauer_non_monic_e2e 300
     test_non_monic_matrix_constraints_e2e 300
+    test_gnfs_e2e_ladder 1800
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
@@ -981,6 +984,7 @@ TEST_TIER=(
     test_regression_gate     "gate"
     test_schirokauer_non_monic_e2e "slow"
     test_non_monic_matrix_constraints_e2e "slow"
+    test_gnfs_e2e_ladder "heavy"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
     test_stress              "stress"
@@ -1134,7 +1138,8 @@ path_to_module() {
         done
     fi
     case "$path" in
-        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|scripts/ci/check_markdown_links.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
+        CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|scripts/ci/check_markdown_links.py|scripts/ci/check_header_reachability.py|scripts/ci/production-unreachable-headers.txt|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
+        tests/support/fixed_slot_executor.hpp|tests/support/logger.hpp|tests/support/small_vector.hpp|tests/support/timer.hpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_primes.cpp|tests/test_timer.cpp|tests/test_mpz_powm_parallel.cpp|tests/test_mpz_mod_parallel.cpp|tests/test_mpz_gcd_parallel.cpp|tests/test_mpz_mul_parallel.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
@@ -1143,7 +1148,7 @@ path_to_module() {
         tests/test_structured*.cpp) echo "relation" ;;
         tests/test_krylov_sequence_mmap.cpp|tests/test_bw_krylov_mmap_integration.cpp|tests/test_krylov_compress.cpp|tests/test_krylov_compression.cpp) echo "linalg" ;;
         tests/test_api.cpp|tests/test_event_stream.cpp|tests/test_cli_event_stream.cpp|tests/test_cli_repl_config.cmake|tests/test_i18n.cpp|tests/test_method_selection.cpp|*api/*|src/cli/*|apps/macos/GNFSWorkbench/*) echo "api" ;;
-        tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
+        tests/support/post_merge_row_wire.hpp|tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
         tests/test_sieve_basic.cpp|tests/test_sieve_checkpoint.cpp|tests/test_distributed_sieve.cpp|tests/test_distributed_sieve_worker_entry.cpp|tests/test_distributed_sieve_worker_writer_authority.cpp|tests/test_distributed_sieve_worker_execution.cpp|tests/test_distributed_sieve_worker_process.cpp|tests/test_distributed_sieve_wave_store_windows.cpp|tests/test_distributed_sieve_work_identity_codec.cpp|tests/test_distributed_sieve_work_package_codec.cpp|tests/test_distributed_sieve_worker_cleanup_codec.cpp|tests/test_distributed_sieve_merge_writer_codec.cpp|tests/test_distributed_sieve_merge_writer.cpp|tests/test_distributed_sieve_merge_writer_authority.cpp|tests/test_distributed_sieve_wave_merge_commit.cpp|tests/test_distributed_sieve_worker_cleanup_tail.cpp|tests/test_distributed_sieve_worker_cleanup_authorization_publisher.cpp|tests/test_distributed_sieve_worker_cleanup_orchestrator.cpp|tests/test_distributed_sieve_wave_result.cpp|tests/support/distributed_sieve_wave_merge_commit_fixture.hpp|tests/test_distributed_sieve_worker_work_package_file.cpp|tests/test_distributed_sieve_execution_policy.cpp|tests/test_distributed_sieve_seed_v2.cpp|tests/test_distributed_sieve_resume.cpp) echo "sieve" ;;
         *core/*)       echo "core" ;;
         *util/*)       echo "util" ;;
@@ -7627,18 +7632,23 @@ do_smoke() {
 
 do_ctest() {
     log_header "CTest 单元测试"
-    run_ctest_contract_group "unit" ".*"
+    # 阶梯档 (heavy/stress) 只由 Nightly 按名选择。-R '.*' 不得把 50 位实验档
+    # 和三档 1800 秒的阶梯带进本地单元测试。
+    run_ctest_contract_group "unit" ".*" "ladder"
 }
 
+# 第三个参数可选: 用 --label-exclude 排除的标签。
 run_ctest_contract_group() {
     local name="$1"
     local regex="$2"
+    local exclude_labels="${3:-}"
     local start_ms exit_code=0
     start_ms=$(timer_start_ms)
     (( TOTAL_TESTS += 1 ))
 
     local ctest_args=(--test-dir "$BUILD_DIR" --output-on-failure --no-tests=error
         -C "$BUILD_TYPE" -R "$regex")
+    if [[ -n "$exclude_labels" ]]; then ctest_args+=(--label-exclude "$exclude_labels"); fi
     if (( FAIL_FAST )); then ctest_args+=(--stop-on-failure); fi
     if (( VERBOSE )); then ctest_args+=(--verbose); fi
     if (( QUIET )); then ctest_args+=(--quiet); fi
@@ -7872,6 +7882,69 @@ do_e2e() {
     log_info "含 5 个子测试，tier=slow, timeout=${TEST_TIMEOUT[test_gnfs_e2e]}s"
     echo ""
     run_single_test test_gnfs_e2e || true
+}
+
+# ============================================================
+# 模式: GNFS 端到端证据阶梯
+# ============================================================
+
+# 提取上一次运行打印的 GNFS_E2E_LADDER 记录行。成功时 run_single_test 不展示输出，
+# 而阶梯的证据就是这一行；失败时 run_single_test 已经回显了输出尾部。
+gnfs_e2e_ladder_record() {
+    printf '%s\n' "$RUN_OUTPUT" | awk '/^GNFS_E2E_LADDER / { print }'
+}
+
+# 记录合同: 恰好一行 "GNFS_E2E_LADDER " 前缀加一个 JSON 对象。只按前缀复制会放过
+# 拼接错误的记录，所以先交给 GNFS_TEST_PYTHON 解析，再当作证据交付。
+gnfs_e2e_ladder_record_is_json() {
+    "$GNFS_TEST_PYTHON" -c '
+import json, sys
+lines = sys.stdin.read().splitlines()
+if len(lines) != 1 or not lines[0].startswith("GNFS_E2E_LADDER "):
+    sys.exit("expected exactly one GNFS_E2E_LADDER line, found " + str(len(lines)))
+try:
+    value = json.loads(lines[0][len("GNFS_E2E_LADDER "):])
+except ValueError as error:
+    sys.exit("GNFS_E2E_LADDER record is not JSON: " + str(error))
+if not isinstance(value, dict):
+    sys.exit("GNFS_E2E_LADDER record is not a JSON object")
+'
+}
+
+# 每档一个独立进程，强制 GNFS 完整分解。只跑默认归约路线的前三档；
+# 50 位 structured 档由 Nightly 的 GNFS_E2E_50d 单独运行。
+do_gnfs_e2e_ladder() {
+    log_header "GNFS 端到端证据阶梯 (30/35/40 位)"
+    log_info "强制 GNFS 完整分解: 默认归约路线，每档一个独立进程"
+    log_info "含 3 个子测试，tier=heavy, timeout=${TEST_TIMEOUT[test_gnfs_e2e_ladder]}s"
+    echo ""
+
+    local -a ladder_rows=(
+        "30 448956057488011 427415244035077"
+        "35 508252685067849079 76762190200241549"
+        "40 82171657662667870721 77484034867236456113"
+    )
+    local ladder_row ladder_digits ladder_p ladder_q ladder_status ladder_record
+    for ladder_row in "${ladder_rows[@]}"; do
+        read -r ladder_digits ladder_p ladder_q <<< "$ladder_row"
+        ladder_status=0
+        run_single_test test_gnfs_e2e_ladder --digits "$ladder_digits" \
+            --route default --expect "$ladder_p" "$ladder_q" || ladder_status=$?
+        if (( ladder_status != 0 )); then
+            continue
+        fi
+        ladder_record="$(gnfs_e2e_ladder_record)"
+        if printf '%s\n' "$ladder_record" | gnfs_e2e_ladder_record_is_json; then
+            print -r -- "$ladder_record"
+        else
+            log_fail "${ladder_digits} 位档通过了测试，但 GNFS_E2E_LADDER 记录不是恰好一行 JSON 对象"
+            if ! reclassify_last_pass_as_contract_failure test_gnfs_e2e_ladder \
+                    ladder_record_contract; then
+                log_fail "阶梯记录合同失败且无法保持报告计数一致"
+                exit 1
+            fi
+        fi
+    done
 }
 
 # ============================================================
@@ -8597,6 +8670,7 @@ do_list() {
     echo "  ${BULLET} ${CYAN}ProcessSupervisor${RESET} — instant, 15s, cross-platform"
     echo "  ${BULLET} ${CYAN}HarnessProcessTreeTimeout${RESET} — fast, 20s, POSIX + zsh"
     echo "  ${BULLET} ${CYAN}MarkdownLinkCheckerSelfTest${RESET} — instant, 10s, 跨平台"
+    echo "  ${BULLET} ${CYAN}HeaderReachabilityCheckerSelfTest${RESET} — instant, 10s, 跨平台"
 
     echo ""
     echo "${BOLD}特殊测试:${RESET}"
@@ -8604,6 +8678,8 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_gnfs_progressive${RESET}  — 渐进式 L1-L5 (8-61 bit)"
     echo "  ${BULLET} ${CYAN}test_25digit${RESET}           — 25-digit 性能基准 (81 bit)"
     echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
+    echo "  ${BULLET} ${CYAN}test_gnfs_e2e_ladder${RESET}  — 强制 GNFS 的按位数完整分解阶梯 (30/35/40/50 位)"
+    echo "  ${BULLET} ${CYAN}gnfs-e2e-ladder${RESET} — 依次运行默认归约路线的 30/35/40 位阶梯"
     echo "  ${BULLET} ${CYAN}test_structured_ooc_50d_probe${RESET} — 有界 50 位 production OOC 前缀探针"
     echo "  ${BULLET} ${CYAN}check-50d-contracts${RESET} — 不运行真实 50 位流水线的 CLI/schema 合同"
     echo "  ${BULLET} ${CYAN}structured-ooc-dense-stage <1|4>${RESET} — Release-only cardinality-anchor stage/read replay"
@@ -8875,6 +8951,20 @@ case "$MODE" in
     e2e)
         do_build
         do_e2e
+        show_summary
+        ;;
+
+    gnfs-e2e-ladder)
+        # 阶梯是证据: 未显式指定构建类型时用 Release，与其它测量模式一致。
+        if (( ! BUILD_TYPE_EXPLICIT )); then
+            BUILD_TYPE="Release"
+        fi
+        do_build test_gnfs_e2e_ladder gnfs_test_process_supervisor
+        if [[ ! -x "${BUILD_DIR}/test_gnfs_e2e_ladder" ]]; then
+            log_fail "阶梯二进制不存在: ${BUILD_DIR}/test_gnfs_e2e_ladder"
+            exit 1
+        fi
+        do_gnfs_e2e_ladder
         show_summary
         ;;
 

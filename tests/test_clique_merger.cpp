@@ -1,10 +1,11 @@
 // Unit tests for V3 CliqueRelationMerger (backup merge via spanning tree)
 #include "gnfs/relation/clique_merger.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <cstdlib>
 #include <iostream>
 
+using gnfs::test::run_case;
 using namespace gnfs::relation;
 using gnfs::core::PrimePower;
 using gnfs::core::Relation;
@@ -39,8 +40,8 @@ void test_empty() {
     std::cout << "Testing CliqueRelationMerger empty input..." << std::endl;
     CliqueStats stats;
     auto out = CliqueRelationMerger::merge_cliques({}, &stats);
-    assert(out.empty());
-    assert(stats.input_relations == 0);
+    TEST_ASSERT(out.empty());
+    TEST_ASSERT(stats.input_relations == 0);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -52,10 +53,10 @@ void test_1lp_2clique() {
     rels.push_back(make_1rat(2, 1, 101));
     CliqueStats stats;
     auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
-    assert(stats.input_1lp == 2);
-    assert(stats.components_with_excess == 1);
-    assert(stats.full_produced == 1);
-    assert(out.size() == 1);
+    TEST_ASSERT(stats.input_1lp == 2);
+    TEST_ASSERT(stats.components_with_excess == 1);
+    TEST_ASSERT(stats.full_produced == 1);
+    TEST_ASSERT(out.size() == 1);
     std::cout << "  PASS (full=" << stats.full_produced << ")" << std::endl;
 }
 
@@ -74,10 +75,10 @@ void test_1lp_4clique() {
     rels.push_back(make_1rat(4, 1, 101));
     CliqueStats stats;
     auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
-    assert(stats.input_1lp == 4);
+    TEST_ASSERT(stats.input_1lp == 4);
     // Result varies: at least 1 full, ideally 2.
     // Conservative assertion: ≥ 1 full.
-    assert(stats.full_produced >= 1);
+    TEST_ASSERT(stats.full_produced >= 1);
     std::cout << "  PASS (full=" << stats.full_produced << ", components=" << stats.components_found
               << ")" << std::endl;
 }
@@ -95,8 +96,8 @@ void test_2lp_triangle() {
     // Component: {R1, R2, R3}
     CliqueStats stats;
     auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
-    assert(stats.input_2lp == 3);
-    assert(stats.components_with_excess == 1);
+    TEST_ASSERT(stats.input_2lp == 3);
+    TEST_ASSERT(stats.components_with_excess == 1);
     // Either 1 full (triangle cancels all) or 0 if residual LPs prevent
     // BFS from completing — depends on traversal order.
     std::cout << "  PASS (full=" << stats.full_produced << ", residual=" << stats.residual_emitted
@@ -111,9 +112,9 @@ void test_no_overlap() {
     rels.push_back(make_1rat(2, 1, 103));
     CliqueStats stats;
     auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
-    assert(stats.components_with_excess == 0);
-    assert(stats.full_produced == 0);
-    assert(out.empty());
+    TEST_ASSERT(stats.components_with_excess == 0);
+    TEST_ASSERT(stats.full_produced == 0);
+    TEST_ASSERT(out.empty());
     std::cout << "  PASS" << std::endl;
 }
 
@@ -162,9 +163,9 @@ void test_3lp_filtered() {
     rels.push_back(std::move(r));
     CliqueStats stats;
     auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
-    assert(stats.input_3lp_plus == 1);
-    assert(stats.input_1lp == 0);
-    assert(stats.input_2lp == 0);
+    TEST_ASSERT(stats.input_3lp_plus == 1);
+    TEST_ASSERT(stats.input_1lp == 0);
+    TEST_ASSERT(stats.input_2lp == 0);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -175,11 +176,11 @@ void test_single_partial() {
     rels.push_back(make_1rat(1, 1, 101));
     CliqueStats stats;
     auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
-    assert(stats.input_relations == 1);
-    assert(stats.input_1lp == 1);
-    assert(stats.components_with_excess == 0);
-    assert(stats.full_produced == 0);
-    assert(out.empty());
+    TEST_ASSERT(stats.input_relations == 1);
+    TEST_ASSERT(stats.input_1lp == 1);
+    TEST_ASSERT(stats.components_with_excess == 0);
+    TEST_ASSERT(stats.full_produced == 0);
+    TEST_ASSERT(out.empty());
     std::cout << "  PASS" << std::endl;
 }
 
@@ -198,12 +199,12 @@ void test_all_3lp_filtered() {
     }
     CliqueStats stats;
     auto out = CliqueRelationMerger::merge_cliques(std::move(rels), &stats);
-    assert(stats.input_relations == 3);
-    assert(stats.input_3lp_plus == 3);
-    assert(stats.input_1lp == 0);
-    assert(stats.input_2lp == 0);
-    assert(stats.components_with_excess == 0);
-    assert(out.empty());
+    TEST_ASSERT(stats.input_relations == 3);
+    TEST_ASSERT(stats.input_3lp_plus == 3);
+    TEST_ASSERT(stats.input_1lp == 0);
+    TEST_ASSERT(stats.input_2lp == 0);
+    TEST_ASSERT(stats.components_with_excess == 0);
+    TEST_ASSERT(out.empty());
     std::cout << "  PASS" << std::endl;
 }
 
@@ -221,28 +222,35 @@ void test_stats_to_string() {
     s.fast_path_rejects = 198;
     s.heavy_path_rejects = 2;
     auto str = s.to_string();
-    assert(str.find("in=100") != std::string::npos);
-    assert(str.find("1lp=60") != std::string::npos);
-    assert(str.find("full=15") != std::string::npos);
-    assert(str.find("fast=198") != std::string::npos);
-    assert(str.find("heavy=2") != std::string::npos);
+    TEST_ASSERT(str.find("in=100") != std::string::npos);
+    TEST_ASSERT(str.find("1lp=60") != std::string::npos);
+    TEST_ASSERT(str.find("full=15") != std::string::npos);
+    TEST_ASSERT(str.find("fast=198") != std::string::npos);
+    TEST_ASSERT(str.find("heavy=2") != std::string::npos);
     std::cout << "  " << str << std::endl;
     std::cout << "  PASS" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== CliqueRelationMerger Unit Tests ===" << std::endl;
 
-    test_empty();
-    test_single_partial();
-    test_1lp_2clique();
-    test_1lp_4clique();
-    test_2lp_triangle();
-    test_no_overlap();
-    test_component_output_order_is_deterministic();
-    test_3lp_filtered();
-    test_all_3lp_filtered();
-    test_stats_to_string();
+    failed += !run_case(test_empty);
+    failed += !run_case(test_single_partial);
+    failed += !run_case(test_1lp_2clique);
+    failed += !run_case(test_1lp_4clique);
+    failed += !run_case(test_2lp_triangle);
+    failed += !run_case(test_no_overlap);
+    failed += !run_case(test_component_output_order_is_deterministic);
+    failed += !run_case(test_3lp_filtered);
+    failed += !run_case(test_all_3lp_filtered);
+    failed += !run_case(test_stats_to_string);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll CliqueRelationMerger tests passed!" << std::endl;
     return 0;

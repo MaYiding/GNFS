@@ -13,9 +13,9 @@
 #include "gnfs/core/integer.hpp"
 #include "gnfs/sieve/lattice_basis.hpp"
 #include "gnfs/sieve/special_q.hpp"
+#include "support/test_assert.hpp"
 
 #include <array>
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::sieve;
 
 namespace {
@@ -577,16 +578,16 @@ void test_lll_basic() {
         auto basis = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
 
         // determinant invariant
-        assert(det_equals_q(basis));
+        TEST_ASSERT(det_equals_q(basis));
         // both basis vectors must satisfy a - b*r ≡ 0 (mod q)
-        assert(basis.verify_ab(basis.e0, basis.f0));
-        assert(basis.verify_ab(basis.e1, basis.f1));
+        TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+        TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
         // caller API: e0 = shorter
-        assert(e0_is_shorter(basis));
+        TEST_ASSERT(e0_is_shorter(basis));
         // size-reduced
-        assert(is_size_reduced(basis));
+        TEST_ASSERT(is_size_reduced(basis));
         // Lovasz (delta=1, 2D optimal)
-        assert(satisfies_lovasz(basis));
+        TEST_ASSERT(satisfies_lovasz(basis));
     }
 
     std::cout << "  PASS (10 small primes, all invariants hold)" << std::endl;
@@ -612,12 +613,12 @@ void test_lll_large_q() {
         SpecialQ sq = make_sq(q, r);
         auto basis = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
 
-        assert(det_equals_q(basis));
-        assert(basis.verify_ab(basis.e0, basis.f0));
-        assert(basis.verify_ab(basis.e1, basis.f1));
-        assert(e0_is_shorter(basis));
-        assert(is_size_reduced(basis));
-        assert(satisfies_lovasz(basis));
+        TEST_ASSERT(det_equals_q(basis));
+        TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+        TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
+        TEST_ASSERT(e0_is_shorter(basis));
+        TEST_ASSERT(is_size_reduced(basis));
+        TEST_ASSERT(satisfies_lovasz(basis));
 
         // |b0|^2 should be O(q), not O(q^2). For ideal LLL, |b0| ~ sqrt(q).
         const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
@@ -660,8 +661,8 @@ void test_lll_asymmetric_r() {
             auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
 
             // Both must be valid
-            assert(det_equals_q(lll));
-            assert(det_equals_q(gauss));
+            TEST_ASSERT(det_equals_q(lll));
+            TEST_ASSERT(det_equals_q(gauss));
 
             const Integer lll_total = exact_norm_sq(lll.e0, lll.f0) + exact_norm_sq(lll.e1, lll.f1);
             const Integer gauss_total =
@@ -684,7 +685,7 @@ void test_lll_asymmetric_r() {
                 std::cerr << " lll=";
                 print_exact(lll_total);
                 std::cerr << " (LLL is worse)" << std::endl;
-                assert(false && "LLL produced worse basis than Gauss");
+                TEST_ASSERT(false && "LLL produced worse basis than Gauss");
             }
         }
     }
@@ -708,15 +709,15 @@ void test_lll_boundary_cases() {
         {
             SpecialQ sq = make_sq(q, 0);
             auto basis = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
-            assert(det_equals_q(basis));
-            assert(basis.verify_ab(basis.e0, basis.f0));
-            assert(basis.verify_ab(basis.e1, basis.f1));
-            assert(e0_is_shorter(basis));
-            assert(is_size_reduced(basis));
-            assert(satisfies_lovasz(basis));
+            TEST_ASSERT(det_equals_q(basis));
+            TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+            TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
+            TEST_ASSERT(e0_is_shorter(basis));
+            TEST_ASSERT(is_size_reduced(basis));
+            TEST_ASSERT(satisfies_lovasz(basis));
             // For r=0, optimal |b0|^2 = 1 (the (0, 1) vector).
             const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
-            assert(n0 == 1);
+            TEST_ASSERT(n0 == 1);
         }
 
         // Case r = 1: lattice is { (a, b) : a ≡ b (mod q) }
@@ -724,15 +725,15 @@ void test_lll_boundary_cases() {
         {
             SpecialQ sq = make_sq(q, 1);
             auto basis = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
-            assert(det_equals_q(basis));
-            assert(basis.verify_ab(basis.e0, basis.f0));
-            assert(basis.verify_ab(basis.e1, basis.f1));
-            assert(e0_is_shorter(basis));
-            assert(is_size_reduced(basis));
-            assert(satisfies_lovasz(basis));
+            TEST_ASSERT(det_equals_q(basis));
+            TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+            TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
+            TEST_ASSERT(e0_is_shorter(basis));
+            TEST_ASSERT(is_size_reduced(basis));
+            TEST_ASSERT(satisfies_lovasz(basis));
             // For r=1, |b0|^2 should be very small (= 2 for (1,1) vector).
             const Integer n0 = exact_norm_sq(basis.e0, basis.f0);
-            assert(n0 <= Integer(4)); // (1,1) → 2, or some near-equivalent
+            TEST_ASSERT(n0 <= Integer(4)); // (1,1) → 2, or some near-equivalent
         }
 
         // Case r = q-1: known to oscillate in legacy Gauss path (BACKLOG P2).
@@ -741,16 +742,16 @@ void test_lll_boundary_cases() {
             SpecialQ sq = make_sq(q, q - 1);
             auto basis = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
             // Determinant must hold (it is the strongest mathematical invariant)
-            assert(det_equals_q(basis));
+            TEST_ASSERT(det_equals_q(basis));
             // Caller API: shorter first
-            assert(e0_is_shorter(basis));
+            TEST_ASSERT(e0_is_shorter(basis));
             // Lattice membership (a - b*r ≡ 0 mod q)
-            assert(basis.verify_ab(basis.e0, basis.f0));
-            assert(basis.verify_ab(basis.e1, basis.f1));
+            TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+            TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
             // size-reduction + Lovasz must hold for LLL (this is the
             // critical improvement over Gauss for r=q-1)
-            assert(is_size_reduced(basis));
-            assert(satisfies_lovasz(basis));
+            TEST_ASSERT(is_size_reduced(basis));
+            TEST_ASSERT(satisfies_lovasz(basis));
         }
     }
 
@@ -804,7 +805,7 @@ void test_lll_dominates_gauss() {
                 std::cerr << " lll=";
                 print_exact(lll_total);
                 std::cerr << " (LLL is worse)" << std::endl;
-                assert(false && "LLL must dominate Gauss");
+                TEST_ASSERT(false && "LLL must dominate Gauss");
             }
         }
     }
@@ -827,10 +828,10 @@ void test_lll_env_gate() {
         auto basis_default = compute_lattice_basis(sq);
         auto basis_lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
         // Should be byte-identical (same algorithm)
-        assert(basis_default.e0 == basis_lll.e0);
-        assert(basis_default.f0 == basis_lll.f0);
-        assert(basis_default.e1 == basis_lll.e1);
-        assert(basis_default.f1 == basis_lll.f1);
+        TEST_ASSERT(basis_default.e0 == basis_lll.e0);
+        TEST_ASSERT(basis_default.f0 == basis_lll.f0);
+        TEST_ASSERT(basis_default.e1 == basis_lll.e1);
+        TEST_ASSERT(basis_default.f1 == basis_lll.f1);
     }
 
     // GNFS_LATTICE_LLL=0 -> Gauss
@@ -838,10 +839,10 @@ void test_lll_env_gate() {
     {
         auto basis_env_gauss = compute_lattice_basis(sq);
         auto basis_gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
-        assert(basis_env_gauss.e0 == basis_gauss.e0);
-        assert(basis_env_gauss.f0 == basis_gauss.f0);
-        assert(basis_env_gauss.e1 == basis_gauss.e1);
-        assert(basis_env_gauss.f1 == basis_gauss.f1);
+        TEST_ASSERT(basis_env_gauss.e0 == basis_gauss.e0);
+        TEST_ASSERT(basis_env_gauss.f0 == basis_gauss.f0);
+        TEST_ASSERT(basis_env_gauss.e1 == basis_gauss.e1);
+        TEST_ASSERT(basis_env_gauss.f1 == basis_gauss.f1);
     }
 
     // GNFS_LATTICE_LLL=1 -> LLL
@@ -849,10 +850,10 @@ void test_lll_env_gate() {
     {
         auto basis_env_lll = compute_lattice_basis(sq);
         auto basis_lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
-        assert(basis_env_lll.e0 == basis_lll.e0);
-        assert(basis_env_lll.f0 == basis_lll.f0);
-        assert(basis_env_lll.e1 == basis_lll.e1);
-        assert(basis_env_lll.f1 == basis_lll.f1);
+        TEST_ASSERT(basis_env_lll.e0 == basis_lll.e0);
+        TEST_ASSERT(basis_env_lll.f0 == basis_lll.f0);
+        TEST_ASSERT(basis_env_lll.e1 == basis_lll.e1);
+        TEST_ASSERT(basis_env_lll.f1 == basis_lll.f1);
     }
 
     // Restore default
@@ -883,12 +884,12 @@ void test_lll_random_sweep() {
         SpecialQ sq = make_sq(q, r);
         auto basis = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
 
-        assert(det_equals_q(basis));
-        assert(basis.verify_ab(basis.e0, basis.f0));
-        assert(basis.verify_ab(basis.e1, basis.f1));
-        assert(e0_is_shorter(basis));
-        assert(is_size_reduced(basis));
-        assert(satisfies_lovasz(basis));
+        TEST_ASSERT(det_equals_q(basis));
+        TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+        TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
+        TEST_ASSERT(e0_is_shorter(basis));
+        TEST_ASSERT(is_size_reduced(basis));
+        TEST_ASSERT(satisfies_lovasz(basis));
         ++count;
     }
 
@@ -932,7 +933,7 @@ void test_lll_norm_quality() {
         std::cout << "  q=" << q << " avg |b0|^2+|b1|^2 (LLL)=" << avg_lll
                   << " (Gauss)=" << avg_gauss << " ratio Gauss/LLL=" << ratio << std::endl;
         // LLL never worse (ratio >= 1, with floating tolerance)
-        assert(ratio >= 0.999);
+        TEST_ASSERT(ratio >= 0.999);
     }
 
     std::cout << "  PASS (quality ratio Gauss/LLL >= 1.0 for all q)" << std::endl;
@@ -1037,9 +1038,9 @@ void test_skew_lll_boundary() {
             SpecialQ sq = make_sq(q, r);
             auto basis = compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, s);
 
-            assert(det_equals_q(basis));
-            assert(basis.verify_ab(basis.e0, basis.f0));
-            assert(basis.verify_ab(basis.e1, basis.f1));
+            TEST_ASSERT(det_equals_q(basis));
+            TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+            TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
         }
     }
 
@@ -1117,14 +1118,14 @@ void test_skew_lll_dispatch() {
     {
         auto basis = compute_lattice_basis_with_skewness(sq, 1.0);
         auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
-        assert(basis.e0 == lll.e0 && basis.e1 == lll.e1);
+        TEST_ASSERT(basis.e0 == lll.e0 && basis.e1 == lll.e1);
     }
 
     // ENV default (SKEW unset) + skewness=10.0 -> still LLL (default OFF for skew)
     {
         auto basis = compute_lattice_basis_with_skewness(sq, 10.0);
         auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
-        assert(basis.e0 == lll.e0 && basis.e1 == lll.e1);
+        TEST_ASSERT(basis.e0 == lll.e0 && basis.e1 == lll.e1);
     }
 
     // SKEW=1 + skewness=10.0 -> SkewLLL
@@ -1132,14 +1133,14 @@ void test_skew_lll_dispatch() {
     {
         auto basis = compute_lattice_basis_with_skewness(sq, 10.0);
         auto skew = compute_lattice_basis(sq, LatticeReductionMethod::SkewLLL, 10.0);
-        assert(basis.e0 == skew.e0 && basis.e1 == skew.e1);
+        TEST_ASSERT(basis.e0 == skew.e0 && basis.e1 == skew.e1);
     }
 
     // SKEW=1 + skewness=1.0 -> LLL (skew=1 degenerate)
     {
         auto basis = compute_lattice_basis_with_skewness(sq, 1.0);
         auto lll = compute_lattice_basis(sq, LatticeReductionMethod::LLL);
-        assert(basis.e0 == lll.e0 && basis.e1 == lll.e1);
+        TEST_ASSERT(basis.e0 == lll.e0 && basis.e1 == lll.e1);
     }
     unsetenv("GNFS_LATTICE_SKEW");
 
@@ -1149,7 +1150,7 @@ void test_skew_lll_dispatch() {
     {
         auto basis = compute_lattice_basis_with_skewness(sq, 10.0);
         auto gauss = compute_lattice_basis(sq, LatticeReductionMethod::Gauss);
-        assert(basis.e0 == gauss.e0 && basis.e1 == gauss.e1);
+        TEST_ASSERT(basis.e0 == gauss.e0 && basis.e1 == gauss.e1);
     }
     unsetenv("GNFS_LATTICE_LLL");
     unsetenv("GNFS_LATTICE_SKEW");
@@ -1226,24 +1227,31 @@ void test_explicit_lattice_basis_config() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "===========================================" << std::endl;
     std::cout << "  F-K 2005 LLL Lattice Reduction Tests" << std::endl;
     std::cout << "===========================================" << std::endl;
 
-    test_exact_wide_arithmetic();
-    test_checked_lattice_projection_contract();
-    test_lll_basic();
-    test_lll_large_q();
-    test_lll_asymmetric_r();
-    test_lll_boundary_cases();
-    test_lll_dominates_gauss();
-    test_lll_env_gate();
-    test_lll_random_sweep();
-    test_lll_norm_quality();
-    test_skew_lll_invariants();
-    test_skew_lll_boundary();
-    test_skew_lll_dispatch();
-    test_explicit_lattice_basis_config();
+    failed += !run_case(test_exact_wide_arithmetic);
+    failed += !run_case(test_checked_lattice_projection_contract);
+    failed += !run_case(test_lll_basic);
+    failed += !run_case(test_lll_large_q);
+    failed += !run_case(test_lll_asymmetric_r);
+    failed += !run_case(test_lll_boundary_cases);
+    failed += !run_case(test_lll_dominates_gauss);
+    failed += !run_case(test_lll_env_gate);
+    failed += !run_case(test_lll_random_sweep);
+    failed += !run_case(test_lll_norm_quality);
+    failed += !run_case(test_skew_lll_invariants);
+    failed += !run_case(test_skew_lll_boundary);
+    failed += !run_case(test_skew_lll_dispatch);
+    failed += !run_case(test_explicit_lattice_basis_config);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "===========================================" << std::endl;
     std::cout << "  All LLL lattice tests passed!" << std::endl;

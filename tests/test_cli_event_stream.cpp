@@ -1,6 +1,7 @@
 // Real-process contract tests for the versioned CLI JSON Lines protocol.
 
 #include <gnfs/util/bounded_child_process.hpp>
+#include <gnfs/util/utf8_path.hpp>
 
 #ifndef _WIN32
 #include <csignal>
@@ -644,6 +645,68 @@ void test_configured_output(const std::filesystem::path& executable,
     }
 }
 
+// Every path argument reaches the CLI as UTF-8, so a directory name outside the
+// system code page must still resolve. --event-stream rejects --output, so the
+// config path runs under the protocol and the output path runs without it.
+void test_non_ascii_paths(const std::filesystem::path& executable,
+                          const std::filesystem::path& temporary_root) {
+    // The directory name is "Chinese path" in CJK ideographs. It is spelled as
+    // UTF-8 bytes so that it does not depend on the execution character set of
+    // this source file.
+    constexpr std::string_view non_ascii_directory_name =
+        "\xe4\xb8\xad\xe6\x96\x87\xe8\xb7\xaf\xe5\xbe\x84";
+    const std::filesystem::path directory =
+        temporary_root / gnfs::util::path_from_utf8(std::string(non_ascii_directory_name));
+    CHECK_CONTEXT(std::filesystem::create_directory(directory), "create non-ASCII directory");
+
+    const std::filesystem::path config_path = directory / "settings.conf";
+    const std::filesystem::path invalid_path = directory / "invalid.conf";
+    const std::filesystem::path output_path = directory / "result.txt";
+    {
+        std::ofstream config(config_path);
+        config << "verbose = false\n";
+        CHECK_CONTEXT(static_cast<bool>(config), "write non-ASCII config");
+        std::ofstream invalid(invalid_path);
+        invalid << "missing separator\n";
+        CHECK_CONTEXT(static_cast<bool>(invalid), "write non-ASCII invalid config");
+    }
+    // The CLI receives path arguments as UTF-8 on every platform.
+    const std::string config_argument = gnfs::util::path_to_utf8(config_path);
+    const std::string invalid_argument = gnfs::util::path_to_utf8(invalid_path);
+    const std::string output_argument = gnfs::util::path_to_utf8(output_path);
+
+    (void)validate_protocol(executable, {"--event-stream", "--config", config_argument, "360"}, 0,
+                            EventKind::result, true, "non-ASCII config path");
+
+    // The parse error can only come from the content of the file at that path.
+    const auto invalid =
+        validate_protocol(executable, {"--event-stream", "--config", invalid_argument, "360"}, 1,
+                          EventKind::error, false, "non-ASCII invalid config path");
+    check_terminal_contains(invalid, "\"code\":\"config_error\"", "non-ASCII invalid config path");
+    check_terminal_contains(invalid, "line 1: missing '='", "non-ASCII invalid config path");
+
+    const auto run =
+        run_cli(executable, {"--config", config_argument, "--output", output_argument, "360"});
+    const std::string context = "non-ASCII output path: " + describe(run);
+    CHECK_CONTEXT(run.child_started, context);
+    CHECK_CONTEXT(run.stdout_eof && run.stderr_eof, context);
+    CHECK_CONTEXT(run.cleanup_complete, context);
+    CHECK_CONTEXT(run.termination.kind == BoundedChildTerminationKind::exited, context);
+    CHECK_CONTEXT(run.termination.exit_code == 0, context);
+    CHECK_CONTEXT(run.stdout_bytes.empty(), context);
+    CHECK_CONTEXT(std::filesystem::is_regular_file(output_path), context);
+    if (std::filesystem::is_regular_file(output_path)) {
+        std::ifstream output(output_path);
+        const std::string contents((std::istreambuf_iterator<char>(output)),
+                                   std::istreambuf_iterator<char>());
+        CHECK_CONTEXT(contents.find("360 =") != std::string::npos, context);
+    }
+
+    std::error_code ignored;
+    std::filesystem::remove_all(directory, ignored);
+    CHECK_CONTEXT(!std::filesystem::exists(directory), "remove non-ASCII directory");
+}
+
 #ifndef _WIN32
 constexpr std::size_t limited_stdout_bytes = 1024;
 
@@ -906,6 +969,7 @@ int main(int argc, char* argv[]) {
         test_config_read(executable, temporary.path());
         test_verbose_cases(executable, temporary.path());
         test_configured_output(executable, temporary.path());
+        test_non_ascii_paths(executable, temporary.path());
         test_output_errors(executable, test_executable, temporary.path());
 #ifndef _WIN32
         test_stdout_failure(executable, test_executable, temporary.path());

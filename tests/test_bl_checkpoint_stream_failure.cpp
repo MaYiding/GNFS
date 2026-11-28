@@ -178,12 +178,18 @@ bool test_stream_allocation_failures(const std::filesystem::path& executable) {
     const std::string path = gnfs::util::temp_path(
         "gnfs-bl-stream-failure-" + std::to_string(gnfs::util::process_id()) + ".ckpt");
     FileCleanup cleanup{path};
+    FileCleanup temporary_cleanup{Checkpoint::temporary_path(path)};
+    const auto temporary_exists = [&path] {
+        return std::filesystem::exists(std::filesystem::path(Checkpoint::temporary_path(path)));
+    };
     GNFS_TEST_CHECK(old_state.save(path));
     const auto old_bytes = read_bytes(path);
-    GNFS_TEST_CHECK(old_bytes.size() == 128);
+    // 136 fixed bytes plus the single payload word.
+    GNFS_TEST_CHECK(old_bytes.size() == 144);
     GNFS_TEST_CHECK(new_state.save(path));
     const auto new_bytes = read_bytes(path);
-    GNFS_TEST_CHECK(new_bytes.size() == 128 && new_bytes != old_bytes);
+    GNFS_TEST_CHECK(new_bytes.size() == 144 && new_bytes != old_bytes);
+    GNFS_TEST_CHECK(!temporary_exists());
 
     const auto replacement_check = run_child(executable, "replacement", "0", path);
     GNFS_TEST_CHECK(replacement_check.succeeded());
@@ -212,13 +218,16 @@ bool test_stream_allocation_failures(const std::filesystem::path& executable) {
             const auto bytes = read_bytes(path);
             if (operation != "save") {
                 GNFS_TEST_CHECK(bytes == old_bytes);
-            } else if (const auto loaded = Checkpoint::load(path)) {
-                // Failure before opening may preserve the old checkpoint;
-                // failure after a complete commit may leave the new one.
-                GNFS_TEST_CHECK(bytes == old_bytes || bytes == new_bytes);
-                GNFS_TEST_CHECK(loaded->aug == old_state.aug || loaded->aug == new_state.aug);
             } else {
-                GNFS_TEST_CHECK(!Checkpoint::exists_and_valid(path));
+                // A failed save is not allowed to cost the previous checkpoint.
+                // save() writes a temporary file and renames it into place, so
+                // the old file must stay byte for byte identical, readable, and
+                // no temporary file may remain, whichever allocation failed.
+                GNFS_TEST_CHECK(bytes == old_bytes);
+                GNFS_TEST_CHECK(Checkpoint::exists_and_valid(path));
+                const auto loaded = Checkpoint::load(path);
+                GNFS_TEST_CHECK(loaded && loaded->aug == old_state.aug);
+                GNFS_TEST_CHECK(!temporary_exists());
             }
             // Allocation failure must not poison a subsequent normal save.
             GNFS_TEST_CHECK(new_state.save(path));

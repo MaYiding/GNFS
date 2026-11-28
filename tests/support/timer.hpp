@@ -94,8 +94,7 @@ public:
         ScopedTimer& operator=(const ScopedTimer&) = delete;
 
         // 允许移动
-        ScopedTimer(ScopedTimer&& other) noexcept
-            : timer_(other.timer_), active_(other.active_) {
+        ScopedTimer(ScopedTimer&& other) noexcept : timer_(other.timer_), active_(other.active_) {
             other.active_ = false;
         }
 

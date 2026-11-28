@@ -1,8 +1,8 @@
 #pragma once
 
 #include "../fixtures/siqs_multi_a_scale_profile_v3.hpp"
+#include "post_merge_row_wire.hpp"
 
-#include <gnfs/siqs/post_merge_row_wire.hpp>
 #include <gnfs/siqs/shadow_assembly.hpp>
 #include <gnfs/util/native_random_access_file.hpp>
 

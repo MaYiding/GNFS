@@ -16,6 +16,7 @@
 #include <gnfs/api/result.hpp>
 #include <gnfs/core/integer.hpp>
 #include <gnfs/util/thread_pool.hpp>
+#include <gnfs/util/utf8_path.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -30,6 +31,18 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 using namespace gnfs::api;
 using namespace gnfs::api::i18n;
@@ -645,7 +658,13 @@ static int cli_error(bool event_stream_enabled, std::string_view code, const std
     return 1;
 }
 
-int main(int argc, char* argv[]) {
+// ============================================================
+// Entry points
+// ============================================================
+
+// Platform-independent CLI body. argv holds UTF-8 on every platform; the
+// Windows entry point below converts the UTF-16 command line before calling it.
+static int run_cli(int argc, char* argv[]) {
     // P3-1 / doctrine §7.2 第 3 条: main thread hint scheduler 优先 P-core.
     // macOS only, Linux no-op. ThreadPool worker 也会自动 set 同样 QoS.
     gnfs::util::set_current_thread_qos(gnfs::util::QoSClass::UserInitiated);
@@ -925,7 +944,10 @@ int main(int argc, char* argv[]) {
             output = result.to_text();
 
         if (!output_file.empty()) {
-            std::ofstream ofs(output_file);
+            // The path is UTF-8. On Windows the stream is opened through the wide
+            // overload, because the narrow one decodes its argument in the ANSI
+            // code page.
+            std::ofstream ofs(gnfs::util::path_from_utf8(output_file));
             if (!ofs.is_open()) {
                 return cli_error(false, "open_output_failed",
                                  std::string(TR(S::ERR_OPEN_FILE)) + " " + output_file);
@@ -949,3 +971,53 @@ int main(int argc, char* argv[]) {
         return cli_error(event_stream_enabled, "runtime_error", e.what());
     }
 }
+
+#ifdef _WIN32
+// Convert one UTF-16 argument to UTF-8. Unpaired surrogates fail instead of
+// being replaced, so a path never silently turns into a different path.
+[[nodiscard]] static bool wide_argument_to_utf8(std::wstring_view input, std::string& output) {
+    if (input.empty()) {
+        output.clear();
+        return true;
+    }
+    if (input.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    const int length = static_cast<int>(input.size());
+    const int size = ::WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, input.data(), length,
+                                           nullptr, 0, nullptr, nullptr);
+    if (size <= 0) {
+        return false;
+    }
+    output.resize(static_cast<std::size_t>(size));
+    return ::WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, input.data(), length, output.data(),
+                                 size, nullptr, nullptr) == size;
+}
+
+// Windows delivers argv as UTF-16. The narrow main() would receive bytes in the
+// system code page (GBK on Chinese systems, CP1252 on English ones), which
+// cannot represent every path and differs from the UTF-8 the rest of the CLI
+// expects. Convert every argument once here.
+int wmain(int argc, wchar_t* argv[]) {
+    std::vector<std::string> utf8_arguments;
+    utf8_arguments.reserve(static_cast<std::size_t>(argc));
+    for (int index = 0; index < argc; ++index) {
+        std::string converted;
+        if (argv[index] == nullptr || !wide_argument_to_utf8(argv[index], converted)) {
+            std::cerr << "gnfs: command-line argument " << index << " is not valid Unicode\n";
+            return 1;
+        }
+        utf8_arguments.push_back(std::move(converted));
+    }
+    // Collect the pointers afterwards: moving the strings may move their buffers.
+    std::vector<char*> pointers;
+    pointers.reserve(utf8_arguments.size());
+    for (std::string& argument : utf8_arguments)
+        pointers.push_back(argument.data());
+    return run_cli(static_cast<int>(pointers.size()), pointers.data());
+}
+#else
+int main(int argc, char* argv[]) {
+    return run_cli(argc, argv);
+}
+#endif
