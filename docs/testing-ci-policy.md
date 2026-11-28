@@ -523,14 +523,32 @@ between. Every attempt before the successful one is therefore either matched
 to a category or counted as `unlogged_failure`. `hensel_related` includes
 every Couveignes failure of a run that does not set `GNFS_FORCE_COUVEIGNES=1`,
 because the algebraic square root reaches Couveignes only after Hensel lifting
-returns no root. The type in `polynomial_mod2` comes from a second
-`select_polynomial()` call with the `Config` of the run, made before the
-measured interval, and its `matches_run` is `true` only when `Pipeline::run()`
-logged the same root `m` and published the same degree. Its `degree` is the
-degree of the integer polynomial, and `mod2_degree` is the degree after the
-reduction, which an even leading coefficient lowers. When the two selections
-differ, the properties are `null` and `m` is the root that `Pipeline::run()`
-logged.
+returns no root.
+
+`polynomial_mod2` describes the polynomial that the rung selected. Its values
+come from a second `select_polynomial()` call with the `Config` of the run,
+made before the measured interval:
+
+- `m` is the root of the polynomial as decimal text, and `degree` is the
+  degree of the integer polynomial.
+- `mod2_degree` and `coefficients` are the degree and the coefficients after
+  the reduction modulo 2, from the constant term upwards. An even leading
+  coefficient lowers `mod2_degree` below `degree`.
+- `integer_coefficients` lists the coefficients of the integer polynomial,
+  from the constant term upwards, as decimal text.
+- `squarefree` is `true` when no irreducible factor repeats. `linear_factors`
+  counts the factors x and x + 1 with multiplicity. `perfect_power` is `true`
+  when the polynomial is the power of a polynomial of lower degree.
+  `irreducible` is `true` when the reduced polynomial does not factor
+  modulo 2.
+- `matches_run` is `true` only when `Pipeline::run()` logged the same root and
+  published the same degree.
+
+When the two selections differ, the properties are `null` and `m` is the
+root that `Pipeline::run()` logged. A failed selection, or a polynomial whose
+degree drops below one modulo 2, adds an `error` key, which is absent
+otherwise.
+
 `dependencies_succeeded_before_pairwise_xor` is `false` when an XOR pair
 produced the factors and `null` when GNFS produced none.
 
