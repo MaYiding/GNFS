@@ -117,10 +117,13 @@ jobs:
       - name: Build the ladder target
         run: cmake --build build --target test_gnfs_e2e_ladder --parallel "$(nproc)"
 
+      # The budget is the TIMEOUT property of GNFS_E2E_50d (14400 seconds).
+      # ctest --timeout only applies to tests without a TIMEOUT property, so
+      # the flag is not passed here.
       - name: Run the 50-digit structured rung
         working-directory: build
         run: |
-          ctest --output-on-failure --tests-regex '^GNFS_E2E_50d$' --timeout 17100 --no-tests=error
+          ctest --output-on-failure --tests-regex '^GNFS_E2E_50d$' --no-tests=error
 
       # The record is parsed before it is published. This job stays
       # non-blocking, so a broken record is reported and the job still ends
