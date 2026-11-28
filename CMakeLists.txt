@@ -2984,8 +2984,9 @@ if(GNFS_BUILD_TESTS)
 
     # Digit-banded evidence ladder. Each CTest forces one complete GNFS
     # factorization through Pipeline::run() above the 25-digit regression
-    # level. The heavy and stress labels keep them out of pull-request CI;
-    # the Nightly workflow selects them by name.
+    # level. The heavy and stress labels keep them out of pull-request CI.
+    # The ladder label keeps them out of "ctest -R .*", which the unit and
+    # full runner modes run; the Nightly workflow selects them by name.
     add_executable(test_gnfs_e2e_ladder
         tests/test_gnfs_e2e_ladder.cpp
     )
@@ -3003,8 +3004,8 @@ if(GNFS_BUILD_TESTS)
         --digits 50 --route structured
         --expect 9428841820209577086544469 5036760558219709199288957)
     set_tests_properties(GNFS_E2E_Ladder30 GNFS_E2E_Ladder35 GNFS_E2E_Ladder40
-        PROPERTIES LABELS "heavy" TIMEOUT 1800)
-    set_tests_properties(GNFS_E2E_50d PROPERTIES LABELS "stress" TIMEOUT 14400)
+        PROPERTIES LABELS "heavy;ladder" TIMEOUT 1800)
+    set_tests_properties(GNFS_E2E_50d PROPERTIES LABELS "stress;ladder" TIMEOUT 14400)
 
     # Schirokauer end-to-end with non-monic polynomials (leading coefficient
     # congruent to 3 mod 4): the 27-bit pipeline on an unsplit and a split

@@ -7631,18 +7631,23 @@ do_smoke() {
 
 do_ctest() {
     log_header "CTest 单元测试"
-    run_ctest_contract_group "unit" ".*"
+    # 阶梯档 (heavy/stress) 只由 Nightly 按名选择。-R '.*' 不得把 50 位实验档
+    # 和三档 1800 秒的阶梯带进本地单元测试。
+    run_ctest_contract_group "unit" ".*" "ladder"
 }
 
+# 第三个参数可选: 用 --label-exclude 排除的标签。
 run_ctest_contract_group() {
     local name="$1"
     local regex="$2"
+    local exclude_labels="${3:-}"
     local start_ms exit_code=0
     start_ms=$(timer_start_ms)
     (( TOTAL_TESTS += 1 ))
 
     local ctest_args=(--test-dir "$BUILD_DIR" --output-on-failure --no-tests=error
         -C "$BUILD_TYPE" -R "$regex")
+    if [[ -n "$exclude_labels" ]]; then ctest_args+=(--label-exclude "$exclude_labels"); fi
     if (( FAIL_FAST )); then ctest_args+=(--stop-on-failure); fi
     if (( VERBOSE )); then ctest_args+=(--verbose); fi
     if (( QUIET )); then ctest_args+=(--quiet); fi
