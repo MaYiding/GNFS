@@ -24,6 +24,7 @@
 #
 # 集成 & E2E:
 #   ./scripts/test.sh e2e                 # E2E 测试 (N=143 完整流水线)
+#   ./scripts/test.sh gnfs-e2e-ladder     # 强制 GNFS 完整分解阶梯 (30/35/40 位)
 #   ./scripts/test.sh integration         # 跨模块集成测试
 #   ./scripts/test.sh pipeline            # 完整流水线: 每阶段分别验证
 #
@@ -361,6 +362,7 @@ ALL_TEST_BINARIES=(
     test_regression_gate
     test_schirokauer_non_monic_e2e
     test_non_monic_matrix_constraints_e2e
+    test_gnfs_e2e_ladder
     test_stress
     test_3lp_cofactor
     test_3lp_merge
@@ -716,6 +718,7 @@ TEST_TIMEOUT=(
     test_regression_gate     240
     test_schirokauer_non_monic_e2e 300
     test_non_monic_matrix_constraints_e2e 300
+    test_gnfs_e2e_ladder 1800
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
@@ -981,6 +984,7 @@ TEST_TIER=(
     test_regression_gate     "gate"
     test_schirokauer_non_monic_e2e "slow"
     test_non_monic_matrix_constraints_e2e "slow"
+    test_gnfs_e2e_ladder "heavy"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
     test_stress              "stress"
@@ -7875,6 +7879,41 @@ do_e2e() {
 }
 
 # ============================================================
+# 模式: GNFS 端到端证据阶梯
+# ============================================================
+
+# 回显上一次运行打印的 GNFS_E2E_LADDER JSON 记录: 成功时 run_single_test 不展示输出，
+# 而阶梯的证据就是这一行。失败时 run_single_test 已经回显了输出尾部。
+print_gnfs_e2e_ladder_records() {
+    printf '%s\n' "$RUN_OUTPUT" | awk '/^GNFS_E2E_LADDER / { print }'
+}
+
+# 每档一个独立进程，强制 GNFS 完整分解。只跑默认归约路线的前三档；
+# 50 位 structured 档由 Nightly 的 GNFS_E2E_50d 单独运行。
+do_gnfs_e2e_ladder() {
+    log_header "GNFS 端到端证据阶梯 (30/35/40 位)"
+    log_info "强制 GNFS 完整分解: 默认归约路线，每档一个独立进程"
+    log_info "含 3 个子测试，tier=heavy, timeout=${TEST_TIMEOUT[test_gnfs_e2e_ladder]}s"
+    echo ""
+
+    local -a ladder_rows=(
+        "30 448956057488011 427415244035077"
+        "35 508252685067849079 76762190200241549"
+        "40 82171657662667870721 77484034867236456113"
+    )
+    local ladder_row ladder_digits ladder_p ladder_q ladder_status
+    for ladder_row in "${ladder_rows[@]}"; do
+        read -r ladder_digits ladder_p ladder_q <<< "$ladder_row"
+        ladder_status=0
+        run_single_test test_gnfs_e2e_ladder --digits "$ladder_digits" \
+            --route default --expect "$ladder_p" "$ladder_q" || ladder_status=$?
+        if (( ladder_status == 0 )); then
+            print_gnfs_e2e_ladder_records
+        fi
+    done
+}
+
+# ============================================================
 # 模式: 集成测试 (跨模块)
 # ============================================================
 
@@ -8604,6 +8643,8 @@ do_list() {
     echo "  ${BULLET} ${CYAN}test_gnfs_progressive${RESET}  — 渐进式 L1-L5 (8-61 bit)"
     echo "  ${BULLET} ${CYAN}test_25digit${RESET}           — 25-digit 性能基准 (81 bit)"
     echo "  ${BULLET} ${CYAN}test_stress${RESET}            — 压力测试: 50/60-digit (164-197 bit)"
+    echo "  ${BULLET} ${CYAN}test_gnfs_e2e_ladder${RESET}  — 强制 GNFS 的按位数完整分解阶梯 (30/35/40/50 位)"
+    echo "  ${BULLET} ${CYAN}gnfs-e2e-ladder${RESET} — 依次运行默认归约路线的 30/35/40 位阶梯"
     echo "  ${BULLET} ${CYAN}test_structured_ooc_50d_probe${RESET} — 有界 50 位 production OOC 前缀探针"
     echo "  ${BULLET} ${CYAN}check-50d-contracts${RESET} — 不运行真实 50 位流水线的 CLI/schema 合同"
     echo "  ${BULLET} ${CYAN}structured-ooc-dense-stage <1|4>${RESET} — Release-only cardinality-anchor stage/read replay"
@@ -8875,6 +8916,20 @@ case "$MODE" in
     e2e)
         do_build
         do_e2e
+        show_summary
+        ;;
+
+    gnfs-e2e-ladder)
+        # 阶梯是证据: 未显式指定构建类型时用 Release，与其它测量模式一致。
+        if (( ! BUILD_TYPE_EXPLICIT )); then
+            BUILD_TYPE="Release"
+        fi
+        do_build test_gnfs_e2e_ladder gnfs_test_process_supervisor
+        if [[ ! -x "${BUILD_DIR}/test_gnfs_e2e_ladder" ]]; then
+            log_fail "阶梯二进制不存在: ${BUILD_DIR}/test_gnfs_e2e_ladder"
+            exit 1
+        fi
+        do_gnfs_e2e_ladder
         show_summary
         ;;
 
