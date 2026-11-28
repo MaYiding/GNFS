@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
@@ -220,8 +221,11 @@ void test_ckpt_enabled_completes_and_matches_baseline() {
     std::cout << "  baseline=" << baseline.size() << " with_ckpt=" << with_ckpt.size() << std::endl;
     GNFS_TEST_CHECK(baseline_sig == with_sig && "ckpt-enabled run must match baseline deps");
 
-    // 3. Successful completion must remove the checkpoint file.
+    // 3. Successful completion must remove the checkpoint file and must not
+    //    leave a temporary file behind.
     GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+    GNFS_TEST_CHECK(!std::filesystem::exists(
+        std::filesystem::path(BlockLanczosCheckpoint::temporary_path(base + ".bl_ckpt"))));
 
     std::cout << "  ENV-enabled run matches baseline + removes ckpt: PASS" << std::endl;
 }
@@ -743,6 +747,55 @@ void test_legacy_checkpoints_restart() {
     }
 }
 
+void test_stale_temporary_removed_at_solve_start() {
+    std::cout << "Testing stale temporary file is removed when a solve starts..." << std::endl;
+    auto mat = make_dependent_matrix();
+    const auto base = tmp_base_path("stale_temporary");
+    CkptCleanup cleanup{base + ".bl_ckpt"};
+    CkptCleanup temporary_cleanup{BlockLanczosCheckpoint::temporary_path(base + ".bl_ckpt")};
+    const std::filesystem::path temporary_path = std::filesystem::path(temporary_cleanup.path);
+
+    std::vector<std::vector<bool>> baseline;
+    {
+        EnvUnsetScope guard_a("GNFS_BL_CHECKPOINT");
+        EnvUnsetScope guard_b("GNFS_BL_CHECKPOINT_INTERVAL");
+        BlockLanczos solver;
+        baseline = solver.find_dependencies(mat, 16);
+    }
+    const auto baseline_sig = canonical(baseline);
+
+    // Leftover of a save that was interrupted: INCOMPLETE magic, so no reader
+    // would accept it, yet save() refuses to write while it exists.
+    {
+        std::ofstream stale(temporary_cleanup.path, std::ios::binary | std::ios::trunc);
+        GNFS_TEST_CHECK(stale);
+        char zero[16] = {};
+        stale.write(zero, sizeof(zero));
+    }
+
+    std::vector<std::vector<bool>> resumed;
+    std::string log;
+    {
+        EnvScope guard_a("GNFS_BL_CHECKPOINT", base);
+        EnvScope guard_b("GNFS_BL_CHECKPOINT_INTERVAL", "50");
+        CerrCapture capture;
+        BlockLanczos solver;
+        resumed = solver.find_dependencies(mat, 16);
+        log = capture.output.str();
+    }
+
+    require_test(canonical(resumed) == baseline_sig, "stale temporary file changed the deps");
+    // Saves succeed only after the stale file is gone: save() refuses to write
+    // while a temporary file exists, and the solver logs each refusal.
+    require_test(log.find("save failed") == std::string::npos,
+                 "a save failed behind the stale temporary file");
+    require_test(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"),
+                 "checkpoint survived a successful solve");
+    require_test(!std::filesystem::exists(temporary_path),
+                 "temporary file survived a successful solve");
+    std::cout << "  stale temporary file removal: PASS" << std::endl;
+}
+
 int main() {
     std::cout << "===== BlockLanczos resume integration tests =====" << std::endl;
 
@@ -755,6 +808,7 @@ int main() {
     test_matrix_fingerprint_canonical_bytes();
     test_bound_matrix_resume_and_mismatch_rejection();
     test_legacy_checkpoints_restart();
+    test_stale_temporary_removed_at_solve_start();
 
     std::cout << "\n===== All BL resume integration tests PASSED =====" << std::endl;
     return 0;

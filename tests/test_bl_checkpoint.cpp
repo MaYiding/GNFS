@@ -10,10 +10,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -90,6 +92,14 @@ static void write_file_bytes(const std::string& path, const std::vector<uint8_t>
     GNFS_TEST_CHECK(out);
 }
 
+static std::string temporary_path(const std::string& path) {
+    return BlockLanczosCheckpoint::temporary_path(path);
+}
+
+static bool temporary_exists(const std::string& path) {
+    return std::filesystem::exists(std::filesystem::path(temporary_path(path)));
+}
+
 static void append_digest(std::vector<uint8_t>& bytes, const gnfs::util::Sha256Digest& digest) {
     for (std::byte value : digest.bytes)
         bytes.push_back(std::to_integer<uint8_t>(value));
@@ -161,6 +171,8 @@ void test_roundtrip_small() {
     auto orig = make_small_state();
     require_save(orig, path);
     GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path));
+    // Publishing renames the temporary file into place; nothing is left over.
+    GNFS_TEST_CHECK(!temporary_exists(path));
 
     auto loaded_opt = BlockLanczosCheckpoint::load(path);
     GNFS_TEST_CHECK(loaded_opt.has_value());
@@ -457,6 +469,101 @@ void test_corrupt_payload_rejected() {
     std::cout << "  corrupt payload rejection: PASS" << std::endl;
 }
 
+void test_payload_word_swap_rejected() {
+    std::cout << "Testing swapped payload words rejected..." << std::endl;
+    auto path = tmp_ckpt_path("word_swap");
+    CkptCleanup cleanup{path};
+
+    require_save(make_small_state(), path);
+    auto bytes = read_file_bytes(path);
+    GNFS_TEST_CHECK(bytes.size() == 136 + 8 * 8);
+
+    // Swap the first two payload words. Every 64-bit word of the payload is
+    // still present exactly once, so a per-word XOR fold accepts this file.
+    // Only a digest that depends on the byte order can reject it.
+    std::span<uint8_t> payload(bytes.data() + BlockLanczosCheckpoint::PAYLOAD_OFFSET, 16);
+    std::swap_ranges(payload.begin(), payload.begin() + 8, payload.begin() + 8);
+    write_file_bytes(path, bytes);
+
+    GNFS_TEST_CHECK(!BlockLanczosCheckpoint::load(path).has_value());
+
+    std::cout << "  swapped payload words rejection: PASS" << std::endl;
+}
+
+void test_truncation_and_tampering_rejected() {
+    std::cout << "Testing truncation and tampering rejection..." << std::endl;
+    auto path = tmp_ckpt_path("tamper");
+    CkptCleanup cleanup{path};
+
+    require_save(make_small_state(), path);
+    const auto original = read_file_bytes(path);
+    GNFS_TEST_CHECK(original.size() == 200);
+
+    const auto rejected = [&](const char* label, const std::vector<uint8_t>& bytes) {
+        write_file_bytes(path, bytes);
+        if (BlockLanczosCheckpoint::load(path).has_value()) {
+            std::cerr << "ERROR: loader accepted a checkpoint with " << label << std::endl;
+            std::abort();
+        }
+    };
+    const auto flipped = [&original](size_t offset) {
+        std::vector<uint8_t> bytes = original;
+        bytes[offset] ^= 0x01;
+        return bytes;
+    };
+
+    // One byte short, and one byte too long.
+    std::vector<uint8_t> shortened = original;
+    shortened.pop_back();
+    rejected("one byte removed", shortened);
+    std::vector<uint8_t> extended = original;
+    extended.push_back(0);
+    rejected("one byte appended", extended);
+
+    // One changed byte in each region of the file.
+    const auto reject_changed_byte = [&](size_t offset) {
+        rejected("one byte changed", flipped(offset));
+        // The cheap probe rejects only a damaged magic or version word.
+        const bool probe_expected = offset >= 2 * sizeof(uint64_t);
+        GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path) == probe_expected);
+    };
+    reject_changed_byte(0);
+    reject_changed_byte(8);
+    reject_changed_byte(BlockLanczosCheckpoint::DIGEST_OFFSET);
+    reject_changed_byte(BlockLanczosCheckpoint::FINGERPRINT_OFFSET);
+    reject_changed_byte(BlockLanczosCheckpoint::AUG_WORD_COUNT_OFFSET);
+    reject_changed_byte(BlockLanczosCheckpoint::PAYLOAD_OFFSET);
+    reject_changed_byte(BlockLanczosCheckpoint::PAYLOAD_OFFSET + 63);
+
+    // The magic bytes.
+    std::vector<uint8_t> wrong_magic = original;
+    wrong_magic[0] = 'X';
+    rejected("a changed magic", wrong_magic);
+    GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(path));
+
+    // A version word that names an older decodable format (V1 to V3) or an
+    // unknown one (V5) must not be accepted under either parser. The probe
+    // still accepts the three decodable versions, because it only inspects
+    // the magic and the version word.
+    const auto reject_version = [&](uint64_t version, bool probe_expected) {
+        std::vector<uint8_t> reversioned = original;
+        std::fill(reversioned.begin() + 8, reversioned.begin() + 16, 0);
+        reversioned[8] = static_cast<uint8_t>(version);
+        rejected("a changed version", reversioned);
+        GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path) == probe_expected);
+    };
+    reject_version(BlockLanczosCheckpoint::VERSION_V1, true);
+    reject_version(BlockLanczosCheckpoint::VERSION_V2, true);
+    reject_version(BlockLanczosCheckpoint::VERSION_V3, true);
+    reject_version(5, false);
+
+    // Restoring the bytes makes the same file acceptable again.
+    write_file_bytes(path, original);
+    GNFS_TEST_CHECK(BlockLanczosCheckpoint::load(path).has_value());
+
+    std::cout << "  truncation and tampering rejection: PASS" << std::endl;
+}
+
 void test_fingerprint_corruption_rejected() {
     const auto path = tmp_ckpt_path("fingerprint_corruption");
     CkptCleanup cleanup{path};
@@ -485,6 +592,62 @@ void test_unbound_save_preserves_existing_file() {
     bound.matrix_fingerprint.reset();
     GNFS_TEST_CHECK(!bound.save(path));
     GNFS_TEST_CHECK(read_file_bytes(path) == original_bytes);
+    // An unusable state is rejected before any file is created.
+    GNFS_TEST_CHECK(!temporary_exists(path));
+}
+
+void test_save_refuses_foreign_temporary() {
+    std::cout << "Testing save() refuses an existing temporary file..." << std::endl;
+    const auto path = tmp_ckpt_path("foreign_temporary");
+    CkptCleanup cleanup{path};
+    CkptCleanup temporary_cleanup{temporary_path(path)};
+
+    auto updated = make_small_state();
+    updated.iteration = 42;
+    require_save(make_small_state(), path);
+    const auto original_bytes = read_file_bytes(path);
+
+    // Another writer, or an interrupted save, owns this name.
+    const std::vector<uint8_t> foreign{0x00, 0x11, 0x22, 0x33};
+    write_file_bytes(temporary_path(path), foreign);
+    GNFS_TEST_CHECK(!updated.save(path));
+    GNFS_TEST_CHECK(read_file_bytes(path) == original_bytes);
+    GNFS_TEST_CHECK(read_file_bytes(temporary_path(path)) == foreign);
+
+    // Once the foreign file is gone, saving works again and leaves no trace.
+    BlockLanczosCheckpoint::remove_temporary(path);
+    GNFS_TEST_CHECK(!temporary_exists(path));
+    GNFS_TEST_CHECK(read_file_bytes(path) == original_bytes);
+    require_save(updated, path);
+    GNFS_TEST_CHECK(!temporary_exists(path));
+    const auto loaded = BlockLanczosCheckpoint::load(path);
+    GNFS_TEST_CHECK(loaded && loaded->iteration == 42);
+
+    std::cout << "  foreign temporary file refusal: PASS" << std::endl;
+}
+
+void test_failed_publish_removes_temporary() {
+    std::cout << "Testing failed publication removes the temporary file..." << std::endl;
+    const auto path = tmp_ckpt_path("failed_publish");
+
+    // A non-empty directory at the target name makes the final rename fail on
+    // every platform, after the temporary file has been written and flushed.
+    const std::filesystem::path target(path);
+    std::error_code error;
+    std::filesystem::remove_all(target, error);
+    GNFS_TEST_CHECK(std::filesystem::create_directory(target, error));
+    const std::filesystem::path blocker = target / "blocker";
+    write_file_bytes(blocker.string(), {1});
+
+    GNFS_TEST_CHECK(!make_small_state().save(path));
+    // The failed save leaves neither a temporary file nor a changed target.
+    GNFS_TEST_CHECK(!temporary_exists(path));
+    GNFS_TEST_CHECK(std::filesystem::exists(blocker));
+
+    std::filesystem::remove_all(target, error);
+    GNFS_TEST_CHECK(!std::filesystem::exists(target));
+
+    std::cout << "  failed publication cleanup: PASS" << std::endl;
 }
 
 void test_version_mismatch_rejected() {
@@ -567,13 +730,18 @@ void test_exists_and_valid_semantics() {
 void test_remove() {
     std::cout << "Testing remove()..." << std::endl;
     auto path = tmp_ckpt_path("remove");
+    CkptCleanup temporary_cleanup{temporary_path(path)};
 
     auto orig = make_small_state();
     require_save(orig, path);
     GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path));
+    // Leftover of an interrupted save: remove() must take it away as well.
+    write_file_bytes(temporary_path(path), {0x00, 0x11, 0x22, 0x33});
+    GNFS_TEST_CHECK(temporary_exists(path));
 
     BlockLanczosCheckpoint::remove(path);
     GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(!temporary_exists(path));
 
     std::cout << "  remove: PASS" << std::endl;
 }
@@ -637,6 +805,7 @@ void test_overwrite_existing() {
     GNFS_TEST_CHECK(loaded->iteration == 999);
     GNFS_TEST_CHECK(loaded->pivot_row == 7);
     GNFS_TEST_CHECK(loaded->aug[0] == 0x1234'5678'9ABC'DEF0ULL);
+    GNFS_TEST_CHECK(!temporary_exists(path));
 
     std::cout << "  overwrite existing: PASS" << std::endl;
 }
@@ -825,7 +994,11 @@ int main() {
     test_corrupt_header_field_rejected();
     test_corrupt_payload_rejected();
     test_fingerprint_corruption_rejected();
+    test_payload_word_swap_rejected();
+    test_truncation_and_tampering_rejected();
     test_unbound_save_preserves_existing_file();
+    test_save_refuses_foreign_temporary();
+    test_failed_publish_removes_temporary();
     test_version_mismatch_rejected();
     test_truncated_file_rejected();
     test_load_nonexistent();
