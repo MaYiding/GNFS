@@ -373,6 +373,17 @@ N=hw_concurrency 严格 assert).
 
 - 验证：`LinearAlgebra` 检查首项 3、7、12 有这一列且行值正确（含合并关系），首项 1、4、9、36 没有，内存版与流式版列数一致；`NonMonicMatrixConstraintsE2E` 用首项 2 的二次多项式和首项 7 的三次多项式各分解出一个非平凡因子。
 
+### 默认精度 exponent_k 与回退计数
+
+`SchirokaurConfig::exponent_k` 的默认值从 8 提到 40（2026-11-29 起），映射在模 $\ell^k$ 下计算。列值是 $((u-1)/\ell)\bmod\ell$，其中 $u$ 是 $\gamma=a-b\alpha$ 剥去 $\ell$ 部分后的单位部分，所以 $u$ 要知道到模 $\ell^2$；提升只知道 $\gamma$ 到模 $\ell^k$，于是 $v_\ell(\gamma)>k-2$ 的对只能补 0。这算一次精度回退：真实列为 1 时该行带着错误的约束；依赖里这样的行是奇数条时乘积不是平方，要到平方根阶段才失败，代价是白跑而不是算错。
+
+- 一次因式路径：$f$ 模 2 有一次因式时，该因式的列是 $a-b\cdot r$ 的第 $v+1$ 位，$v=v_2(a-b\cdot r)$，$r$ 是提升到模 $2^k$ 的根。互素的 $(a,b)$ 在这条路径上 $v$ 没有上界，$k=8$ 时 $v\ge7$ 的对全部回退，约占关系数的 1%，其中一半带着错误的约束。unsplit、二次与更高次因式路径先剥 $a$ 与 $b$ 的公因子，互素对不会回退。
+- $k=40$ 给所有 $v\le37$ 的对算出精确的列；更大的 $v$ 需要 $a\equiv b\cdot r\pmod{2^{38}}$，仍出现时计数并告警。不回退的行对任意 $k$ 列相同，所以矩阵只在原先回退的行上变化。
+- 上限 62：热路径把带符号的 $a$ 对 `(int64_t)ell_k` 取模，`precompute_for_prime` 拒绝超过 `INT64_MAX` 的 $\ell^k$。默认的 40 只对 $\ell=2$ 有效：$3^{40}$ 已经超过 `INT64_MAX`，带更大素数的配置必须显式写更小的 `exponent_k`（$\ell=3$ 至多 39），否则构造函数抛 `std::overflow_error`。`MatrixBuilder` 固定用 $\ell=2$。
+- 回退计数：`MatrixBuildResult::schirokauer_precision_fallbacks` 在向量与流式两条路径上累加。每个 $(a,b)$ 对单独计，一次回退按受影响的因式各计一次，所以它不是行数。重根因式的结构性补 0 只取决于 $f$，不计入。`schirokauer_degenerate_rows` 保留原名，只统计整段 Schirokauer 向量为 0 的行，其中包含真实的核元素，不是精度指标。
+- 日志：矩阵阶段在裁剪前后各打一条 Info 记录 `schirokauer degenerate rows: X/Y` 与 `schirokauer precision fallbacks: F in R rows`，裁剪后的两条带 ` post-trim`。回退数大于 0 时另打一条 Warn，`Schirokauer precision fallbacks: F in R rows; a fallback writes zero Schirokauer columns in place of the character, so its row carries a wrong constraint when that character is 1`。计数不进入 `FactorStats`，只经日志回调输出。
+- 验证：`SchirokauerPrecision` 用精确 `Integer` 参照在默认精度下比对一次因式、unsplit、二次与三次因式四条路径，要求回退为 0，并与 $k=8$ 对照；`LinearAlgebra` 的矩阵构建用例在默认精度下钉住 1 行退化、1 次回退；`SchirokauerPrecisionE2E` 走完整条流水线，断言回退为 0。
+
 ---
 
 ## SGE batch-pivot 选择 (GNFS_SGE_BATCH_PIVOTS)

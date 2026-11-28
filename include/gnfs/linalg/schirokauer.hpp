@@ -562,9 +562,13 @@ struct SchirokaurConfig {
     // two values of a for each odd b, about a 2^-38 share of the pairs in that
     // box. A pair that still reaches it is counted and reported.
     //
-    // The cap is 62: the hot paths reduce the signed a modulo (int64_t)ell_k,
-    // so precompute_for_prime rejects 2^k above INT64_MAX. mul_mod_u64 is exact
-    // for every 64-bit operand below that modulus.
+    // The cap is 62 for ℓ = 2: the hot paths reduce the signed a modulo
+    // (int64_t)ell_k, so precompute_for_prime rejects ℓ^k above INT64_MAX, and
+    // mul_mod_u64 is exact for every 64-bit operand below that limit. The
+    // default of 40 is meant for ℓ = 2 only. For a larger prime it is out of
+    // range, 3^40 already exceeds INT64_MAX, and the constructor throws
+    // std::overflow_error; a configuration with such a prime has to set a
+    // smaller exponent_k, at most 39 for ℓ = 3.
     uint32_t exponent_k = 40;
     bool verbose = false;
 };
