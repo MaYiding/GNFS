@@ -77,6 +77,7 @@ jobs:
             scripts/ci/check_env_flag_docs.py \
             scripts/release_binary_contract.py \
             scripts/release_contract.py \
+            scripts/release_smoke.py \
             scripts/reproducible_archive.py \
             scripts/windows_release_runtime.py \
             scripts/windows_runtime_contract.py
@@ -86,6 +87,7 @@ jobs:
           python3 scripts/release_contract.py self-test
           python3 scripts/release_contract.py check-workflows
           python3 scripts/release_binary_contract.py self-test
+          python3 scripts/release_smoke.py --self-test
           python3 scripts/reproducible_archive.py self-test
           python3 scripts/windows_release_runtime.py self-test
           python3 scripts/windows_runtime_contract.py self-test
