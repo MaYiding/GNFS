@@ -20,8 +20,12 @@ on:
       - 'include/**'
       - 'scripts/**'
       - 'src/**'
+      - 'tests/*.cpp'
+      - 'tests/*.hpp'
       - 'tests/*.sh'
       - 'tests/*.zsh'
+      - 'tests/**/*.cpp'
+      - 'tests/**/*.hpp'
   workflow_dispatch:
 
 permissions:
@@ -75,6 +79,7 @@ jobs:
             scripts/check_harness.py \
             scripts/check_stdout_contract.py \
             scripts/ci/check_env_flag_docs.py \
+            scripts/ci/check_test_asserts.py \
             scripts/release_binary_contract.py \
             scripts/release_contract.py \
             scripts/reproducible_archive.py \
@@ -109,6 +114,11 @@ jobs:
         run: |
           python3 scripts/check_stdout_contract.py --self-test
           python3 scripts/check_stdout_contract.py
+
+      - name: Check test assertions
+        run: |
+          python3 scripts/ci/check_test_asserts.py --self-test
+          python3 scripts/ci/check_test_asserts.py
 
       - name: Check Markdown link checker
         run: python3 scripts/ci/check_markdown_links.py --self-test
