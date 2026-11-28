@@ -6,12 +6,13 @@ whenToUse: When a wave's pull requests are open and should land together, so CI
   label; merge the integration pull request, not the individual ones.
 args:
   prs:
-    type: json
-    description: Array of open pull request numbers to integrate.
+    type: string
+    description: JSON array of open pull request numbers to integrate, passed as a
+      string, for example "[429, 430]".
     required: true
   wave:
     type: string
-    description: Label for the integration branch, for example 20261126-1.
+    description: Label for the integration branch, for example 20261128-5.
     required: true
 */
 // Integration wave for GNFS: merge the branches of several open pull requests into one
@@ -52,7 +53,8 @@ interface PrInfo {
   headRefName: string;
 }
 
-const rawPrs = args.prs;
+// Arguments arrive as strings, so a JSON array has to be parsed here.
+const rawPrs = typeof args.prs === "string" ? JSON.parse(args.prs) : args.prs;
 if (!Array.isArray(rawPrs)) throw new Error("prs 必须是拉取请求编号数组");
 const prNumbers = rawPrs.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0);
 if (prNumbers.length === 0) throw new Error("prs 里没有有效的拉取请求编号");
@@ -87,6 +89,10 @@ const STATIC =
   "step 'harness'                           python3 scripts/check_harness.py\n" +
   "step 'policy self-test'                  python3 scripts/check_distributed_sieve_policy.py --self-test\n" +
   "step 'markdown links'                    python3 scripts/ci/check_markdown_links.py\n" +
+  // The two checks below arrive with the pull requests of a wave; run each one only when
+  // its script is on the integration branch, so a skipped pull request does not fail the gate.
+  "grep -q -- '--self-test' scripts/ci/check_markdown_links.py && step 'link checker self-test' python3 scripts/ci/check_markdown_links.py --self-test\n" +
+  "[ -f scripts/ci/check_env_flag_docs.py ] && step 'env flag docs' python3 scripts/ci/check_env_flag_docs.py\n" +
   "step 'test catalog'                      zsh ./scripts/test.sh list\n" +
   "exit $fail\n";
 
