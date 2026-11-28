@@ -16,13 +16,14 @@
 #include "gnfs/polynomial/murphy_evaluator.hpp"
 #include "gnfs/polynomial/polynomial_optimizer.hpp"
 #include "gnfs/polynomial/rotation_alpha.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::polynomial;
 using namespace gnfs::core;
 
@@ -66,9 +67,9 @@ void test_linear_short_circuit_constant_in_c0() {
     std::cout << "  alpha(x - (-9999))  = " << a_neg << std::endl;
 
     // Bit-for-bit equality expected because all four take the same code path
-    assert(a0 == a1);
-    assert(a0 == a_big);
-    assert(a0 == a_neg);
+    TEST_ASSERT(a0 == a1);
+    TEST_ASSERT(a0 == a_big);
+    TEST_ASSERT(a0 == a_neg);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -102,7 +103,7 @@ void test_linear_short_circuit_matches_formula() {
 
     // The short-circuit reuses log(p) computed via std::log internally; small
     // tolerance for floating-point reduction order.
-    assert(std::abs(alpha - expected) < 1e-12);
+    TEST_ASSERT(std::abs(alpha - expected) < 1e-12);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -146,7 +147,7 @@ void test_linear_short_circuit_value_correctness() {
 
     std::cout << "  monic short-circuit = " << monic_alpha << std::endl;
     std::cout << "  brute-force sum     = " << expected << std::endl;
-    assert(std::abs(monic_alpha - expected) < 1e-10);
+    TEST_ASSERT(std::abs(monic_alpha - expected) < 1e-10);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -176,7 +177,7 @@ void test_short_circuit_not_triggered_for_higher_degree() {
     std::cout << "  alpha(x^2 - 3x + 7) = " << a3 << std::endl;
 
     // At least two of three must be distinct (otherwise short-circuit fired)
-    assert(!(a1 == a2 && a2 == a3));
+    TEST_ASSERT(!(a1 == a2 && a2 == a3));
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -207,9 +208,9 @@ void test_linear_short_circuit_various_bounds() {
 
     // Each new prime contributes (1/p - 1/(p-1))*log(p) which is always
     // negative — so alpha is strictly decreasing in B.
-    assert(a100 > a1000);
-    assert(a1000 > a10000);
-    assert(std::isfinite(a100) && std::isfinite(a1000) && std::isfinite(a10000));
+    TEST_ASSERT(a100 > a1000);
+    TEST_ASSERT(a1000 > a10000);
+    TEST_ASSERT(std::isfinite(a100) && std::isfinite(a1000) && std::isfinite(a10000));
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -226,8 +227,8 @@ void test_tracker_small_primes_init() {
         {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47};
     std::cout << "  primes ≤ 50 count = " << sp.size()
               << " (expected " << expected.size() << ")" << std::endl;
-    assert(sp.size() == expected.size());
-    for (size_t i = 0; i < sp.size(); ++i) assert(sp[i] == expected[i]);
+    TEST_ASSERT(sp.size() == expected.size());
+    for (size_t i = 0; i < sp.size(); ++i) TEST_ASSERT(sp[i] == expected[i]);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -265,7 +266,7 @@ void test_tracker_cheap_alpha_matches_formula() {
 
     std::cout << "  cheap_alpha(x^2 + 1) = " << computed << std::endl;
     std::cout << "  hand-computed        = " << expected << std::endl;
-    assert(std::abs(computed - expected) < 1e-12);
+    TEST_ASSERT(std::abs(computed - expected) < 1e-12);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -288,7 +289,7 @@ void test_tracker_score_monotone_in_l2() {
 
     std::cout << "  score(f, L²=1)    = " << score_small_l2 << std::endl;
     std::cout << "  score(f, L²=1000) = " << score_big_l2 << std::endl;
-    assert(score_small_l2 < score_big_l2);
+    TEST_ASSERT(score_small_l2 < score_big_l2);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -309,12 +310,12 @@ void test_rotation_changes_only_low_coeffs() {
     //   g[0] = f[0] + 3*(-42) = -100 - 126 = -226
     //   g[1] = f[1] + 3*1     = 7 + 3 = 10
     //   g[2..5] unchanged
-    assert(g[0].to_int64() == -226);
-    assert(g[1].to_int64() == 10);
-    assert(g[2].to_int64() == f[2].to_int64());
-    assert(g[3].to_int64() == f[3].to_int64());
-    assert(g[4].to_int64() == f[4].to_int64());
-    assert(g[5].to_int64() == f[5].to_int64());
+    TEST_ASSERT(g[0].to_int64() == -226);
+    TEST_ASSERT(g[1].to_int64() == 10);
+    TEST_ASSERT(g[2].to_int64() == f[2].to_int64());
+    TEST_ASSERT(g[3].to_int64() == f[3].to_int64());
+    TEST_ASSERT(g[4].to_int64() == f[4].to_int64());
+    TEST_ASSERT(g[5].to_int64() == f[5].to_int64());
 
     std::cout << "  f = x^5 - 2x^4 + 3x^3 - x^2 + 7x - 100" << std::endl;
     std::cout << "  k = 3, m = 42" << std::endl;
@@ -342,8 +343,8 @@ void test_cheap_alpha_after_rotation() {
         const double alpha_check = tracker.cheap_alpha(f_new);
 
         std::cout << "  k=" << k << ", cheap_alpha = " << alpha << std::endl;
-        assert(std::isfinite(alpha));
-        assert(alpha == alpha_check);  // bit-identical for same input
+        TEST_ASSERT(std::isfinite(alpha));
+        TEST_ASSERT(alpha == alpha_check);  // bit-identical for same input
     }
 
     std::cout << "  PASSED" << std::endl;
@@ -366,9 +367,9 @@ void test_rotation_composition_associative() {
     auto f_single = PolynomialOptimizer::rotate_linear(f0, m, 3);
 
     // f3 and f_single must be coefficient-identical
-    assert(f3.degree() == f_single.degree());
+    TEST_ASSERT(f3.degree() == f_single.degree());
     for (uint32_t i = 0; i <= f3.degree(); ++i) {
-        assert(f3[i].to_int64() == f_single[i].to_int64());
+        TEST_ASSERT(f3[i].to_int64() == f_single[i].to_int64());
     }
 
     // Cheap alpha must also be identical
@@ -377,25 +378,32 @@ void test_rotation_composition_associative() {
     const double a_single = tracker.cheap_alpha(f_single);
     std::cout << "  chain (k=1,1,1) cheap_alpha = " << a_chain << std::endl;
     std::cout << "  single (k=3)    cheap_alpha = " << a_single << std::endl;
-    assert(a_chain == a_single);
+    TEST_ASSERT(a_chain == a_single);
 
     std::cout << "  PASSED" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Rotation-Incremental Alpha Tests ===" << std::endl << std::endl;
 
-    test_linear_short_circuit_constant_in_c0();
-    test_linear_short_circuit_matches_formula();
-    test_linear_short_circuit_value_correctness();
-    test_short_circuit_not_triggered_for_higher_degree();
-    test_linear_short_circuit_various_bounds();
-    test_tracker_small_primes_init();
-    test_tracker_cheap_alpha_matches_formula();
-    test_tracker_score_monotone_in_l2();
-    test_rotation_changes_only_low_coeffs();
-    test_cheap_alpha_after_rotation();
-    test_rotation_composition_associative();
+    failed += !run_case(test_linear_short_circuit_constant_in_c0);
+    failed += !run_case(test_linear_short_circuit_matches_formula);
+    failed += !run_case(test_linear_short_circuit_value_correctness);
+    failed += !run_case(test_short_circuit_not_triggered_for_higher_degree);
+    failed += !run_case(test_linear_short_circuit_various_bounds);
+    failed += !run_case(test_tracker_small_primes_init);
+    failed += !run_case(test_tracker_cheap_alpha_matches_formula);
+    failed += !run_case(test_tracker_score_monotone_in_l2);
+    failed += !run_case(test_rotation_changes_only_low_coeffs);
+    failed += !run_case(test_cheap_alpha_after_rotation);
+    failed += !run_case(test_rotation_composition_associative);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "All rotation-incremental tests passed!" << std::endl;
     return 0;

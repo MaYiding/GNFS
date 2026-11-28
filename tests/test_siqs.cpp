@@ -1257,7 +1257,7 @@ void test_init_poly_uint32_root_offsets() {
 void test_init_poly_handles_large_a_factor_count() {
     // The production table currently uses at most 12 A factors, but this is
     // a valid runtime shape for the public helper.  It also covers the former
-    // 16-element stack workspace, which was only protected by assert().
+    // 16-element stack workspace, which was only protected by the assert macro.
     const Integer N("1000000007");
     const auto fb = build_factor_base(N, 64);
     require_test(fb.size() >= 19, "factor base too small for A-factor boundary test");

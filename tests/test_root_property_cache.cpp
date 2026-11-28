@@ -7,7 +7,6 @@
 #include "gnfs/polynomial/root_property_cache.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>

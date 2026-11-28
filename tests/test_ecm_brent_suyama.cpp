@@ -15,7 +15,6 @@
 #include <gnfs/cofactor/ecm_brent_suyama.hpp>
 #include <gnfs/core/integer.hpp>
 
-#include <cassert>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>

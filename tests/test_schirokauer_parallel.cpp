@@ -25,7 +25,8 @@
 #include <gnfs/linalg/schirokauer.hpp>
 #include <gnfs/linalg/schirokauer_parallel.hpp>
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -41,6 +42,7 @@ using gnfs::linalg::SchirokaurMap;
 using gnfs::linalg::compute_schirokauer_flat_batch;
 using gnfs::linalg::schirokauer_threads;
 using gnfs::linalg::schirokauer_threads_reset_env_cache_for_testing;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -58,8 +60,8 @@ PolynomialContext build_test_ctx() {
     coeffs.push_back(Integer(int64_t(1)));
     Integer m(int64_t(1999999999687LL));
     PolynomialContext ctx(N.clone(), std::move(coeffs), m.clone(), 1.0);
-    assert(ctx.degree() == 4);
-    assert(ctx.verify() && "f(m) != 0 mod N");
+    TEST_ASSERT(ctx.degree() == 4);
+    TEST_ASSERT(ctx.verify() && "f(m) != 0 mod N");
     return ctx;
 }
 
@@ -180,7 +182,7 @@ void test_baseline_n1_matches_per_call() {
     // Sanity: every column ∈ {0, 1} for ℓ=2.
     for (const auto& row : batch) {
         for (uint32_t v : row) {
-            assert(v < 2 && "Schirokauer ℓ=2 column must be 0 or 1");
+            TEST_ASSERT(v < 2 && "Schirokauer ℓ=2 column must be 0 or 1");
         }
     }
     clear_env();
@@ -324,11 +326,11 @@ void test_empty_batch() {
 
     set_env("1");
     auto seq = compute_schirokauer_flat_batch(smap, empty);
-    assert(seq.empty() && "empty input should give empty output (N=1)");
+    TEST_ASSERT(seq.empty() && "empty input should give empty output (N=1)");
 
     set_env("4");
     auto par = compute_schirokauer_flat_batch(smap, empty);
-    assert(par.empty() && "empty input should give empty output (N=4)");
+    TEST_ASSERT(par.empty() && "empty input should give empty output (N=4)");
 
     clear_env();
     std::cout << "  empty batch (N=1 and N=4): PASSED" << std::endl;
@@ -350,16 +352,16 @@ void test_single_relation() {
     set_env("4");
     auto par = compute_schirokauer_flat_batch(smap, one_pair);
 
-    assert(seq.size() == 1);
-    assert(par.size() == 1);
+    TEST_ASSERT(seq.size() == 1);
+    TEST_ASSERT(par.size() == 1);
     if (seq[0] != par[0]) {
         std::cerr << "  ERROR: single-relation N=1 vs N=4 mismatch" << std::endl;
         std::abort();
     }
     // Must also match the per-call API.
     auto direct = smap.compute_flat(one_pair[0].first, one_pair[0].second);
-    assert(seq[0] == direct);
-    assert(par[0] == direct);
+    TEST_ASSERT(seq[0] == direct);
+    TEST_ASSERT(par[0] == direct);
 
     clear_env();
     std::cout << "  single-relation (N=1 and N=4 vs compute_flat): PASSED" << std::endl;
@@ -404,17 +406,24 @@ void test_perf_info() {
 }  // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Schirokauer Parallel Dispatch Tests ===" << std::endl
               << std::endl;
 
     // Tests intentionally reset the env between cases via clear_env().
-    test_baseline_n1_matches_per_call();
-    test_parity_n1_vs_n4();
-    test_parity_n1_vs_hw();
-    test_env_parsing();
-    test_empty_batch();
-    test_single_relation();
-    test_perf_info();
+    failed += !run_case(test_baseline_n1_matches_per_call);
+    failed += !run_case(test_parity_n1_vs_n4);
+    failed += !run_case(test_parity_n1_vs_hw);
+    failed += !run_case(test_env_parsing);
+    failed += !run_case(test_empty_batch);
+    failed += !run_case(test_single_relation);
+    failed += !run_case(test_perf_info);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl
               << "=== All Schirokauer Parallel Tests PASSED ===" << std::endl;

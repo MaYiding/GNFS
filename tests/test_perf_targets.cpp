@@ -13,7 +13,6 @@
 #include <gnfs/core/integer.hpp>
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <iostream>
 #include <string>

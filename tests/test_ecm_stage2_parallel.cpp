@@ -16,9 +16,10 @@
 #include <gnfs/cofactor/ecm_stage2_parallel.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -36,6 +37,7 @@ using gnfs::cofactor::ecm_stage2_parallel_reset_env_cache_for_testing;
 using gnfs::cofactor::ecm_stage2_parallel_threads;
 using gnfs::cofactor::parallel_stage2_curves;
 using gnfs::core::Integer;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -267,23 +269,23 @@ void test_env_parsing() {
 
     // Unset -> 1 (default sequential).
     apply_env(nullptr);
-    assert(ecm_stage2_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage2_parallel_threads() == 1);
 
     // Empty string -> 1.
     apply_env("");
-    assert(ecm_stage2_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage2_parallel_threads() == 1);
 
     // "0" -> 1 (invalid, non-positive).
     apply_env("0");
-    assert(ecm_stage2_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage2_parallel_threads() == 1);
 
     // "-5" -> 1 (invalid, non-positive).
     apply_env("-5");
-    assert(ecm_stage2_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage2_parallel_threads() == 1);
 
     // "1" -> 1.
     apply_env("1");
-    assert(ecm_stage2_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage2_parallel_threads() == 1);
 
     // "8" -> 8 (assuming hw*2 >= 8 on any modern machine).
     apply_env("8");
@@ -298,7 +300,7 @@ void test_env_parsing() {
 
     // "garbage" -> 1 (no numeric prefix).
     apply_env("garbage");
-    assert(ecm_stage2_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage2_parallel_threads() == 1);
 
     // "9999" -> clamp to hw*2.
     apply_env("9999");
@@ -357,7 +359,7 @@ void test_empty_curve_list() {
             std::abort();
             return std::nullopt;
         });
-    assert(seq_results.empty());
+    TEST_ASSERT(seq_results.empty());
 
     // Parallel (N=4) — same invariant. Helper must short-circuit before
     // creating ThreadPool because n == 0.
@@ -368,7 +370,7 @@ void test_empty_curve_list() {
             std::abort();
             return std::nullopt;
         });
-    assert(par_results.empty());
+    TEST_ASSERT(par_results.empty());
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -398,15 +400,15 @@ void test_single_curve_no_stall() {
     auto t1 = std::chrono::steady_clock::now();
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    assert(results.size() == 1);
-    assert(results[0].has_value());
-    assert(results[0]->to_string() == "42");
+    TEST_ASSERT(results.size() == 1);
+    TEST_ASSERT(results[0].has_value());
+    TEST_ASSERT(results[0]->to_string() == "42");
     int total_calls = calls.load(std::memory_order_relaxed);
     if (total_calls != 1) {
         std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls << std::endl;
         std::abort();
     }
-    assert(seen_index == 0);
+    TEST_ASSERT(seen_index == 0);
 
     // Single-curve must short-circuit to the sequential path (no pool
     // creation). Sanity-bound the wall-time to a small value; if the
@@ -426,14 +428,21 @@ void test_single_curve_no_stall() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== ECM Stage 2 Parallel Dispatch Tests ===" << std::endl;
 
-    test_baseline_seq_finds_factor();
-    test_parity_seq_vs_n4();
-    test_parity_seq_vs_hw();
-    test_env_parsing();
-    test_empty_curve_list();
-    test_single_curve_no_stall();
+    failed += !run_case(test_baseline_seq_finds_factor);
+    failed += !run_case(test_parity_seq_vs_n4);
+    failed += !run_case(test_parity_seq_vs_hw);
+    failed += !run_case(test_env_parsing);
+    failed += !run_case(test_empty_curve_list);
+    failed += !run_case(test_single_curve_no_stall);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All ECM Stage 2 Parallel Tests PASSED ===" << std::endl;
     return 0;

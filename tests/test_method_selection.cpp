@@ -16,13 +16,15 @@
 #include <gnfs/core/integer.hpp>
 #include <gnfs/util/temp_path.hpp>
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
 
+using gnfs::test::run_case;
 using namespace gnfs::api;
 using gnfs::core::Integer;
 
@@ -31,7 +33,7 @@ static int fail_count = 0;
 
 #define TEST(name) \
     std::cout << "  " << #name << "... " << std::flush; \
-    if (test_##name()) { ++pass_count; std::cout << "OK\n"; } \
+    if (run_case(test_##name())) { ++pass_count; std::cout << "OK\n"; } \
     else { ++fail_count; std::cout << "FAILED\n"; }
 
 // ============================================================
@@ -41,87 +43,87 @@ static int fail_count = 0;
 bool test_select_trial_small() {
     // ≤6 digits should select Trial Division
     auto [m, r] = Pipeline::select_method(17, 5);
-    assert(m == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(m == FactorizationMethod::TrialDivision);
     return true;
 }
 
 bool test_select_trial_20bit() {
     // ≤20 bits should select Trial Division
     auto [m, r] = Pipeline::select_method(20, 6);
-    assert(m == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(m == FactorizationMethod::TrialDivision);
     return true;
 }
 
 bool test_select_rho_medium() {
     // 7-24 digits should select Pollard Rho
     auto [m, r] = Pipeline::select_method(40, 12);
-    assert(m == FactorizationMethod::PollardRho);
+    TEST_ASSERT(m == FactorizationMethod::PollardRho);
 
     auto [m2, r2] = Pipeline::select_method(80, 24);
-    assert(m2 == FactorizationMethod::PollardRho);
+    TEST_ASSERT(m2 == FactorizationMethod::PollardRho);
     return true;
 }
 
 bool test_select_rho_80bit() {
     // ≤80 bits should select Pollard Rho even if digit count > 24
     auto [m, r] = Pipeline::select_method(78, 24);
-    assert(m == FactorizationMethod::PollardRho);
+    TEST_ASSERT(m == FactorizationMethod::PollardRho);
     return true;
 }
 
 bool test_select_siqs_range() {
     // 25-100 digits should select SIQS
     auto [m25, r25] = Pipeline::select_method(83, 25);
-    assert(m25 == FactorizationMethod::SIQS);
+    TEST_ASSERT(m25 == FactorizationMethod::SIQS);
 
     auto [m50, r50] = Pipeline::select_method(166, 50);
-    assert(m50 == FactorizationMethod::SIQS);
+    TEST_ASSERT(m50 == FactorizationMethod::SIQS);
 
     auto [m80, r80] = Pipeline::select_method(266, 80);
-    assert(m80 == FactorizationMethod::SIQS);
+    TEST_ASSERT(m80 == FactorizationMethod::SIQS);
 
     auto [m100, r100] = Pipeline::select_method(332, 100);
-    assert(m100 == FactorizationMethod::SIQS);
+    TEST_ASSERT(m100 == FactorizationMethod::SIQS);
     return true;
 }
 
 bool test_select_gnfs_large() {
     // >100 digits should select GNFS
     auto [m, r] = Pipeline::select_method(340, 101);
-    assert(m == FactorizationMethod::GNFS);
+    TEST_ASSERT(m == FactorizationMethod::GNFS);
 
     auto [m2, r2] = Pipeline::select_method(664, 200);
-    assert(m2 == FactorizationMethod::GNFS);
+    TEST_ASSERT(m2 == FactorizationMethod::GNFS);
     return true;
 }
 
 bool test_select_boundary_6d() {
     // 6 digits → trial, 7 digits → rho
     auto [m6, r6] = Pipeline::select_method(20, 6);
-    assert(m6 == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(m6 == FactorizationMethod::TrialDivision);
 
     auto [m7, r7] = Pipeline::select_method(24, 7);
-    assert(m7 == FactorizationMethod::PollardRho);
+    TEST_ASSERT(m7 == FactorizationMethod::PollardRho);
     return true;
 }
 
 bool test_select_boundary_24d() {
     // 24 digits → rho, 25 digits → SIQS
     auto [m24, r24] = Pipeline::select_method(80, 24);
-    assert(m24 == FactorizationMethod::PollardRho);
+    TEST_ASSERT(m24 == FactorizationMethod::PollardRho);
 
     auto [m25, r25] = Pipeline::select_method(83, 25);
-    assert(m25 == FactorizationMethod::SIQS);
+    TEST_ASSERT(m25 == FactorizationMethod::SIQS);
     return true;
 }
 
 bool test_select_boundary_100d() {
     // 100 digits → SIQS, 101 digits → GNFS
     auto [m100, r100] = Pipeline::select_method(332, 100);
-    assert(m100 == FactorizationMethod::SIQS);
+    TEST_ASSERT(m100 == FactorizationMethod::SIQS);
 
     auto [m101, r101] = Pipeline::select_method(336, 101);
-    assert(m101 == FactorizationMethod::GNFS);
+    TEST_ASSERT(m101 == FactorizationMethod::GNFS);
     return true;
 }
 
@@ -132,8 +134,8 @@ bool test_select_boundary_100d() {
 bool test_override_trial() {
     auto [m, r] = Pipeline::select_method(332, 100,
         FactorizationMethod::TrialDivision);
-    assert(m == FactorizationMethod::TrialDivision);
-    assert(r == "user specified");
+    TEST_ASSERT(m == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(r == "user specified");
     return true;
 }
 
@@ -141,8 +143,8 @@ bool test_override_siqs() {
     // Force SIQS for small N that would normally use rho
     auto [m, r] = Pipeline::select_method(40, 12,
         FactorizationMethod::SIQS);
-    assert(m == FactorizationMethod::SIQS);
-    assert(r == "user specified");
+    TEST_ASSERT(m == FactorizationMethod::SIQS);
+    TEST_ASSERT(r == "user specified");
     return true;
 }
 
@@ -150,8 +152,8 @@ bool test_override_gnfs() {
     // Force GNFS for medium N
     auto [m, r] = Pipeline::select_method(166, 50,
         FactorizationMethod::GNFS);
-    assert(m == FactorizationMethod::GNFS);
-    assert(r == "user specified");
+    TEST_ASSERT(m == FactorizationMethod::GNFS);
+    TEST_ASSERT(r == "user specified");
     return true;
 }
 
@@ -160,7 +162,7 @@ bool test_override_auto() {
     auto [m1, r1] = Pipeline::select_method(166, 50,
         FactorizationMethod::Auto);
     auto [m2, r2] = Pipeline::select_method(166, 50);
-    assert(m1 == m2);
+    TEST_ASSERT(m1 == m2);
     return true;
 }
 
@@ -171,25 +173,25 @@ bool test_override_auto() {
 bool test_factorize_trial_result() {
     // Small N with trivial factor — should report Trial Division
     auto result = factorize(Integer("143"));
-    assert(result.success);
-    assert(result.stats.method_used == FactorizationMethod::TrialDivision);
-    assert(result.factors.size() == 2);
-    assert(result.factors[0].to_string() == "11");
-    assert(result.factors[1].to_string() == "13");
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.stats.method_used == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(result.factors.size() == 2);
+    TEST_ASSERT(result.factors[0].to_string() == "11");
+    TEST_ASSERT(result.factors[1].to_string() == "13");
     return true;
 }
 
 bool test_factorize_rho_result() {
     // 13-digit semiprime, both factors > 10^6 → rho should find it
     auto result = factorize(Integer("1000036000099"));
-    assert(result.success);
-    assert(result.stats.method_used == FactorizationMethod::PollardRho
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.stats.method_used == FactorizationMethod::PollardRho
         || result.stats.method_used == FactorizationMethod::TrialDivision);
-    assert(result.factors.size() == 2);
+    TEST_ASSERT(result.factors.size() == 2);
     // Verify factors multiply back
     Integer check = result.factors[0].clone();
     check *= result.factors[1];
-    assert(check.to_string() == "1000036000099");
+    TEST_ASSERT(check.to_string() == "1000036000099");
     return true;
 }
 
@@ -197,11 +199,11 @@ bool test_factorize_siqs_result() {
     // 19-digit balanced semiprime (60 bits, factors > 10^6, trial div misses them)
     // p=1000000007, q=1000000009, N=1000000016000000063
     auto result = factorize(Integer("1000000016000000063"));
-    assert(result.success);
-    assert(result.factors.size() == 2);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.factors.size() == 2);
     Integer check = result.factors[0].clone();
     check *= result.factors[1];
-    assert(check.to_string() == "1000000016000000063");
+    TEST_ASSERT(check.to_string() == "1000000016000000063");
     // Method should be rho or siqs (rho might catch it with enough iters)
     return true;
 }
@@ -212,17 +214,17 @@ bool test_factorize_with_method_override() {
     cfg.method = FactorizationMethod::SIQS;
     auto result = factorize(Integer("143"), cfg);
     // Trial still runs first and catches the small factor
-    assert(result.success);
-    assert(result.stats.method_used == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.stats.method_used == FactorizationMethod::TrialDivision);
     return true;
 }
 
 bool test_factorize_perfect_power() {
     // 2^10 = 1024
     auto result = factorize(Integer("1024"));
-    assert(result.success);
-    assert(result.stats.method_used == FactorizationMethod::TrialDivision);
-    assert(result.stats.method_reason == "perfect power");
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.stats.method_used == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(result.stats.method_reason == "perfect power");
     return true;
 }
 
@@ -231,56 +233,56 @@ bool test_factorize_perfect_power() {
 // ============================================================
 
 bool test_method_name_helpers() {
-    assert(std::string(method_name(FactorizationMethod::Auto)) == "Auto");
-    assert(std::string(method_name(FactorizationMethod::TrialDivision)) == "Trial Division");
-    assert(std::string(method_name(FactorizationMethod::PollardRho)) == "Pollard Rho");
-    assert(std::string(method_name(FactorizationMethod::SIQS)) == "SIQS");
-    assert(std::string(method_name(FactorizationMethod::GNFS)) == "GNFS");
+    TEST_ASSERT(std::string(method_name(FactorizationMethod::Auto)) == "Auto");
+    TEST_ASSERT(std::string(method_name(FactorizationMethod::TrialDivision)) == "Trial Division");
+    TEST_ASSERT(std::string(method_name(FactorizationMethod::PollardRho)) == "Pollard Rho");
+    TEST_ASSERT(std::string(method_name(FactorizationMethod::SIQS)) == "SIQS");
+    TEST_ASSERT(std::string(method_name(FactorizationMethod::GNFS)) == "GNFS");
     return true;
 }
 
 bool test_method_tag_helpers() {
-    assert(std::string(method_tag(FactorizationMethod::Auto)) == "auto");
-    assert(std::string(method_tag(FactorizationMethod::TrialDivision)) == "trial");
-    assert(std::string(method_tag(FactorizationMethod::PollardRho)) == "rho");
-    assert(std::string(method_tag(FactorizationMethod::SIQS)) == "siqs");
-    assert(std::string(method_tag(FactorizationMethod::GNFS)) == "gnfs");
+    TEST_ASSERT(std::string(method_tag(FactorizationMethod::Auto)) == "auto");
+    TEST_ASSERT(std::string(method_tag(FactorizationMethod::TrialDivision)) == "trial");
+    TEST_ASSERT(std::string(method_tag(FactorizationMethod::PollardRho)) == "rho");
+    TEST_ASSERT(std::string(method_tag(FactorizationMethod::SIQS)) == "siqs");
+    TEST_ASSERT(std::string(method_tag(FactorizationMethod::GNFS)) == "gnfs");
     return true;
 }
 
 bool test_parse_method() {
-    assert(parse_method("auto") == FactorizationMethod::Auto);
-    assert(parse_method("trial") == FactorizationMethod::TrialDivision);
-    assert(parse_method("rho") == FactorizationMethod::PollardRho);
-    assert(parse_method("siqs") == FactorizationMethod::SIQS);
-    assert(parse_method("gnfs") == FactorizationMethod::GNFS);
-    assert(parse_method("unknown") == FactorizationMethod::Auto);
-    assert(parse_method("") == FactorizationMethod::Auto);
+    TEST_ASSERT(parse_method("auto") == FactorizationMethod::Auto);
+    TEST_ASSERT(parse_method("trial") == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(parse_method("rho") == FactorizationMethod::PollardRho);
+    TEST_ASSERT(parse_method("siqs") == FactorizationMethod::SIQS);
+    TEST_ASSERT(parse_method("gnfs") == FactorizationMethod::GNFS);
+    TEST_ASSERT(parse_method("unknown") == FactorizationMethod::Auto);
+    TEST_ASSERT(parse_method("") == FactorizationMethod::Auto);
     // Case-insensitive
-    assert(parse_method("SIQS") == FactorizationMethod::SIQS);
-    assert(parse_method("Gnfs") == FactorizationMethod::GNFS);
-    assert(parse_method("TRIAL") == FactorizationMethod::TrialDivision);
-    assert(parse_method("RHO") == FactorizationMethod::PollardRho);
-    assert(parse_method("Auto") == FactorizationMethod::Auto);
+    TEST_ASSERT(parse_method("SIQS") == FactorizationMethod::SIQS);
+    TEST_ASSERT(parse_method("Gnfs") == FactorizationMethod::GNFS);
+    TEST_ASSERT(parse_method("TRIAL") == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(parse_method("RHO") == FactorizationMethod::PollardRho);
+    TEST_ASSERT(parse_method("Auto") == FactorizationMethod::Auto);
     return true;
 }
 
 bool test_prime_input_has_stats() {
     // Prime input: method_used should still be populated via stats_
     auto result = factorize(Integer("17"));
-    assert(!result.success);
-    assert(result.stats.n_bits > 0);
-    assert(result.stats.n_digits > 0);
+    TEST_ASSERT(!result.success);
+    TEST_ASSERT(result.stats.n_bits > 0);
+    TEST_ASSERT(result.stats.n_digits > 0);
     return true;
 }
 
 bool test_perfect_power_has_stats() {
     // Perfect power: stats should have n_bits/n_digits populated
     auto result = factorize(Integer("1024"));  // 2^10
-    assert(result.success);
-    assert(result.stats.n_bits > 0);
-    assert(result.stats.n_digits > 0);
-    assert(result.stats.method_reason == "perfect power");
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.stats.n_bits > 0);
+    TEST_ASSERT(result.stats.n_digits > 0);
+    TEST_ASSERT(result.stats.method_reason == "perfect power");
     return true;
 }
 
@@ -291,8 +293,8 @@ bool test_forced_trial_failure() {
     auto result = factorize(Integer("1000036000099"), cfg); // 1000003 × 1000033
     // Trial division only checks ≤10^6, both factors are > 10^6
     // So trial fails, and forced trial-only returns failure
-    assert(!result.success);
-    assert(result.stats.method_used == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(!result.success);
+    TEST_ASSERT(result.stats.method_used == FactorizationMethod::TrialDivision);
     return true;
 }
 
@@ -306,7 +308,7 @@ bool test_forced_rho_failure() {
     // Actually, for forced rho with 100M iter limit, a 20-digit balanced semiprime
     // might be cracked. Use a safer test: prime detection catches it first.
     auto result = factorize(Integer("10000000019"), cfg);  // prime
-    assert(!result.success);
+    TEST_ASSERT(!result.success);
     return true;
 }
 
@@ -317,8 +319,8 @@ bool test_forced_rho_failure() {
 bool test_config_method_builder() {
     auto cfg = Config::auto_detect()
         .set_method(FactorizationMethod::SIQS);
-    assert(cfg.method.has_value());
-    assert(*cfg.method == FactorizationMethod::SIQS);
+    TEST_ASSERT(cfg.method.has_value());
+    TEST_ASSERT(*cfg.method == FactorizationMethod::SIQS);
     return true;
 }
 
@@ -330,8 +332,8 @@ bool test_config_method_merge() {
     override_cfg.method = FactorizationMethod::GNFS;
 
     auto merged = base.merge(override_cfg);
-    assert(merged.method.has_value());
-    assert(*merged.method == FactorizationMethod::GNFS);
+    TEST_ASSERT(merged.method.has_value());
+    TEST_ASSERT(*merged.method == FactorizationMethod::GNFS);
     return true;
 }
 
@@ -339,7 +341,7 @@ bool test_config_method_serialize() {
     Config cfg;
     cfg.method = FactorizationMethod::SIQS;
     auto str = cfg.to_string();
-    assert(str.find("method = siqs") != std::string::npos);
+    TEST_ASSERT(str.find("method = siqs") != std::string::npos);
     return true;
 }
 
@@ -353,9 +355,9 @@ bool test_config_from_file_method() {
         ofs << "verbose = true\n";
     }
     auto cfg = Config::from_file(path);
-    assert(cfg.method.has_value());
-    assert(*cfg.method == FactorizationMethod::SIQS);
-    assert(cfg.verbose.has_value() && *cfg.verbose == true);
+    TEST_ASSERT(cfg.method.has_value());
+    TEST_ASSERT(*cfg.method == FactorizationMethod::SIQS);
+    TEST_ASSERT(cfg.verbose.has_value() && *cfg.verbose == true);
     // Clean up
     std::remove(path.c_str());
     return true;
@@ -368,9 +370,9 @@ bool test_config_from_file_method() {
 bool test_json_includes_method() {
     auto result = factorize(Integer("143"));
     auto json = result.to_json();
-    assert(json.find("\"method\"") != std::string::npos);
-    assert(json.find("\"trial\"") != std::string::npos);
-    assert(json.find("\"method_name\"") != std::string::npos);
+    TEST_ASSERT(json.find("\"method\"") != std::string::npos);
+    TEST_ASSERT(json.find("\"trial\"") != std::string::npos);
+    TEST_ASSERT(json.find("\"method_name\"") != std::string::npos);
     return true;
 }
 
@@ -378,24 +380,24 @@ bool test_csv_includes_method() {
     auto result = factorize(Integer("143"));
     auto csv = result.to_csv_line(true);
     // Header should contain "method"
-    assert(csv.find(",method,") != std::string::npos);
+    TEST_ASSERT(csv.find(",method,") != std::string::npos);
     // Data line should contain the method tag
-    assert(csv.find(",trial,") != std::string::npos);
+    TEST_ASSERT(csv.find(",trial,") != std::string::npos);
     return true;
 }
 
 bool test_report_includes_method() {
     auto result = factorize(Integer("143"));
     auto report = result.to_report();
-    assert(report.find("Method:") != std::string::npos);
-    assert(report.find("Trial Division") != std::string::npos);
+    TEST_ASSERT(report.find("Method:") != std::string::npos);
+    TEST_ASSERT(report.find("Trial Division") != std::string::npos);
     return true;
 }
 
 bool test_text_includes_method() {
     auto result = factorize(Integer("143"));
     auto text = result.to_text();
-    assert(text.find("Method:") != std::string::npos);
+    TEST_ASSERT(text.find("Method:") != std::string::npos);
     return true;
 }
 
@@ -406,14 +408,14 @@ bool test_text_includes_method() {
 bool test_reason_contains_digit_count() {
     auto [m, r] = Pipeline::select_method(166, 50);
     // Reason should mention the digit count
-    assert(r.find("50") != std::string::npos);
+    TEST_ASSERT(r.find("50") != std::string::npos);
     return true;
 }
 
 bool test_reason_user_specified() {
     auto [m, r] = Pipeline::select_method(166, 50,
         FactorizationMethod::GNFS);
-    assert(r == "user specified");
+    TEST_ASSERT(r == "user specified");
     return true;
 }
 
@@ -426,8 +428,8 @@ bool test_env_force_siqs_promotes_rho_to_siqs() {
     setenv("GNFS_FORCE_SIQS", "1", 1);
     auto [m, r] = Pipeline::select_method(40, 12);
     unsetenv("GNFS_FORCE_SIQS");
-    assert(m == FactorizationMethod::SIQS);
-    assert(r.find("GNFS_FORCE_SIQS") != std::string::npos);
+    TEST_ASSERT(m == FactorizationMethod::SIQS);
+    TEST_ASSERT(r.find("GNFS_FORCE_SIQS") != std::string::npos);
     return true;
 }
 
@@ -436,7 +438,7 @@ bool test_env_force_siqs_keeps_trial_for_tiny_n() {
     setenv("GNFS_FORCE_SIQS", "1", 1);
     auto [m, r] = Pipeline::select_method(17, 5);
     unsetenv("GNFS_FORCE_SIQS");
-    assert(m == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(m == FactorizationMethod::TrialDivision);
     return true;
 }
 
@@ -445,8 +447,8 @@ bool test_env_disable_siqs_falls_through_to_gnfs() {
     setenv("GNFS_DISABLE_SIQS", "1", 1);
     auto [m, r] = Pipeline::select_method(166, 50);
     unsetenv("GNFS_DISABLE_SIQS");
-    assert(m == FactorizationMethod::GNFS);
-    assert(r.find("SIQS disabled") != std::string::npos);
+    TEST_ASSERT(m == FactorizationMethod::GNFS);
+    TEST_ASSERT(r.find("SIQS disabled") != std::string::npos);
     return true;
 }
 
@@ -455,8 +457,8 @@ bool test_env_force_siqs_respects_user_override() {
     setenv("GNFS_FORCE_SIQS", "1", 1);
     auto [m, r] = Pipeline::select_method(166, 50, FactorizationMethod::GNFS);
     unsetenv("GNFS_FORCE_SIQS");
-    assert(m == FactorizationMethod::GNFS);
-    assert(r == "user specified");
+    TEST_ASSERT(m == FactorizationMethod::GNFS);
+    TEST_ASSERT(r == "user specified");
     return true;
 }
 

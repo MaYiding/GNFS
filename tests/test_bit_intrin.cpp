@@ -6,7 +6,6 @@
 #include "gnfs/util/bit_intrin.hpp"
 #include "gnfs/util/cpu_intrin.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 

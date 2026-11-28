@@ -8,10 +8,12 @@
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/linalg/schirokauer.hpp"
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <iostream>
 #include <limits>
 
+using gnfs::test::run_case;
 using namespace gnfs::core;
 using namespace gnfs::polynomial;
 using namespace gnfs::linalg;
@@ -30,20 +32,20 @@ void test_integer_uint64_constructor() {
     Integer from_uint(42u);
     Integer from_uint64(uint64_t(42));
 
-    assert(from_int.to_int64() == 42);
-    assert(from_int64.to_int64() == 42);
-    assert(from_uint.to_uint64() == 42);
-    assert(from_uint64.to_uint64() == 42);
+    TEST_ASSERT(from_int.to_int64() == 42);
+    TEST_ASSERT(from_int64.to_int64() == 42);
+    TEST_ASSERT(from_uint.to_uint64() == 42);
+    TEST_ASSERT(from_uint64.to_uint64() == 42);
 
     // Large uint64 that doesn't fit in int64
     uint64_t large = uint64_t(1) << 63;
     Integer big(large);
-    assert(big.to_uint64() == large);
-    assert(!big.fits_int64());
+    TEST_ASSERT(big.to_uint64() == large);
+    TEST_ASSERT(!big.fits_int64());
 
     // UINT64_MAX
     Integer max_val(std::numeric_limits<uint64_t>::max());
-    assert(max_val.to_uint64() == std::numeric_limits<uint64_t>::max());
+    TEST_ASSERT(max_val.to_uint64() == std::numeric_limits<uint64_t>::max());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -69,16 +71,16 @@ void test_schirokauer_exponent() {
     config.primes = {2};
 
     SchirokaurMap sm(ctx, config);
-    assert(sm.num_columns() == 3);  // d=3, one prime → 3 columns
+    TEST_ASSERT(sm.num_columns() == 3);  // d=3, one prime → 3 columns
 
     // Compute for a known (a,b) pair: element = a - b*α = 5 - 2*α
     auto result = sm.compute(5, 2);
-    assert(result.size() == 1);        // one prime
-    assert(result[0].size() == 3);     // d=3 columns
+    TEST_ASSERT(result.size() == 1);        // one prime
+    TEST_ASSERT(result[0].size() == 3);     // d=3 columns
 
     // Each map value must be in {0, 1} (mod ℓ=2)
     for (uint32_t v : result[0]) {
-        assert(v < 2);
+        TEST_ASSERT(v < 2);
     }
 
     // Verify additivity: λ(γ1·γ2) = λ(γ1) + λ(γ2) mod ℓ
@@ -87,8 +89,8 @@ void test_schirokauer_exponent() {
     // The sum property is fundamental to GNFS linear algebra
     // We just verify values are valid (full verification needs multiplicative check)
     for (size_t i = 0; i < 3; ++i) {
-        assert(r1[0][i] < 2);
-        assert(r2[0][i] < 2);
+        TEST_ASSERT(r1[0][i] < 2);
+        TEST_ASSERT(r2[0][i] < 2);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -117,7 +119,7 @@ void test_evaluate_mod_no_overflow() {
 
     // This should NOT overflow
     uint64_t result = f.evaluate_mod(x, p);
-    assert(result < p);
+    TEST_ASSERT(result < p);
 
     // Verify via Integer arithmetic
     Integer x_int(x);
@@ -126,7 +128,7 @@ void test_evaluate_mod_no_overflow() {
     Integer mod_val;
     Integer::mod(mod_val, val, p_int);
     if (mod_val.is_negative()) mod_val += p_int;
-    assert(mod_val.to_uint64() == result);
+    TEST_ASSERT(mod_val.to_uint64() == result);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -147,18 +149,18 @@ void test_non_monic_polynomial() {
     coeffs.push_back(Integer(2));
     IntPolynomial f(std::move(coeffs));
 
-    assert(f.degree() == 3);
-    assert(f.leading_coeff().to_int64() == 2);
+    TEST_ASSERT(f.degree() == 3);
+    TEST_ASSERT(f.leading_coeff().to_int64() == 2);
 
     // Evaluate correctly
     // f(3) = 2*27 + 3 + 5 = 54 + 3 + 5 = 62
-    assert(f.evaluate(Integer(3)).to_int64() == 62);
+    TEST_ASSERT(f.evaluate(Integer(3)).to_int64() == 62);
 
     // Derivative: f'(x) = 6x^2 + 1
     auto fp = f.derivative();
-    assert(fp.degree() == 2);
-    assert(fp[0].to_int64() == 1);
-    assert(fp[2].to_int64() == 6);
+    TEST_ASSERT(fp.degree() == 2);
+    TEST_ASSERT(fp[0].to_int64() == 1);
+    TEST_ASSERT(fp[2].to_int64() == 6);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -175,20 +177,20 @@ void test_base_m_irreducibility() {
     // which is REDUCIBLE. The fix should find m=9 or m=11 instead.
     Integer n(1320);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
 
     // Verify f(m) ≡ 0 (mod N)
-    assert(ctx.verify());
+    TEST_ASSERT(ctx.verify());
 
     // The selected m should NOT be 10 (m=10 gives reducible f(x)=x(x+1)(x+2))
     // This directly guards the bug: old code always used floor(N^(1/d)) = 10
     // Fixed code tries m±1, m±2, ... until finding an irreducible polynomial
-    assert(result.m != Integer(10));
+    TEST_ASSERT(result.m != Integer(10));
 
     // Also verify m is close to N^(1/d) ≈ 10 (not some arbitrary value)
-    assert(result.m >= Integer(8) && result.m <= Integer(12));
+    TEST_ASSERT(result.m >= Integer(8) && result.m <= Integer(12));
 
     std::cout << "  PASS (m=" << ctx.m().to_string() << ")" << std::endl;
 }
@@ -212,11 +214,11 @@ void test_algebraic_norm_convention() {
     // For d=2: N(a - b*α) = a^2 + b^2 (when f(x)=x^2+1)
     // N(3 - 2*α) = 9 + 4 = 13
     Integer norm = ctx.algebraic_norm(3, 2);
-    assert(norm.to_int64() == 13);
+    TEST_ASSERT(norm.to_int64() == 13);
 
     // N(1 - 1*α) = 1 + 1 = 2
     Integer norm2 = ctx.algebraic_norm(1, 1);
-    assert(norm2.to_int64() == 2);
+    TEST_ASSERT(norm2.to_int64() == 2);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -235,11 +237,11 @@ void test_rational_value_convention() {
 
     // R(15, 2) = 15 - 2*7 = 1
     Integer rv = ctx.rational_value(15, 2);
-    assert(rv.to_int64() == 1);
+    TEST_ASSERT(rv.to_int64() == 1);
 
     // R(3, 1) = 3 - 7 = -4
     Integer rv2 = ctx.rational_value(3, 1);
-    assert(rv2.to_int64() == -4);
+    TEST_ASSERT(rv2.to_int64() == -4);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -253,8 +255,8 @@ void test_special_q_range_regression() {
 
     for (size_t bits : {size_t{20}, size_t{40}, size_t{60}, size_t{80}, size_t{100}, size_t{150}, size_t{200}}) {
         auto params = GNFSParams::compute(bits);
-        assert(params.special_q_min > params.algebraic_bound);
-        assert(params.special_q_max > params.special_q_min);
+        TEST_ASSERT(params.special_q_min > params.algebraic_bound);
+        TEST_ASSERT(params.special_q_max > params.special_q_min);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -273,7 +275,7 @@ void test_sieve_area_cap_regression() {
     for (size_t bits : {size_t{200}, size_t{300}, size_t{500}}) {
         auto params = GNFSParams::compute(bits);
         size_t area = params.sieve_region_size();
-        assert(area <= MAX_AREA);
+        TEST_ASSERT(area <= MAX_AREA);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -305,7 +307,7 @@ void test_schirokauer_ell2_only() {
     SchirokaurMap sm(ctx, config);
 
     // d=5, one prime → 5 Schirokauer columns
-    assert(sm.num_columns() == 5);
+    TEST_ASSERT(sm.num_columns() == 5);
 
     // Compute maps for several (a,b) pairs
     auto r1 = sm.compute(1, 1);   // γ = 1 - α
@@ -314,18 +316,18 @@ void test_schirokauer_ell2_only() {
 
     // All results should have 1 prime × 5 columns, values in {0,1}
     for (const auto& result : {r1, r2, r3}) {
-        assert(result.size() == 1);
-        assert(result[0].size() == 5);
+        TEST_ASSERT(result.size() == 1);
+        TEST_ASSERT(result[0].size() == 5);
         for (uint32_t v : result[0]) {
-            assert(v < 2);
+            TEST_ASSERT(v < 2);
         }
     }
 
     // Verify flat interface consistency
     auto flat = sm.compute_flat(1, 1);
-    assert(flat.size() == 5);
+    TEST_ASSERT(flat.size() == 5);
     for (size_t i = 0; i < 5; ++i) {
-        assert(flat[i] == r1[0][i]);
+        TEST_ASSERT(flat[i] == r1[0][i]);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -340,12 +342,12 @@ void test_derivative_of_constant() {
 
     IntPolynomial c(42);
     auto cp = c.derivative();
-    assert(cp.is_zero());
-    assert(cp.degree() == 0);
+    TEST_ASSERT(cp.is_zero());
+    TEST_ASSERT(cp.degree() == 0);
 
     IntPolynomial zero;
     auto zp = zero.derivative();
-    assert(zp.is_zero());
+    TEST_ASSERT(zp.is_zero());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -358,10 +360,10 @@ void test_evaluate_at_zero() {
     std::cout << "Testing evaluate at x=0 (edge case)..." << std::endl;
 
     auto f = IntPolynomial(42);
-    assert(f.evaluate(Integer(0)).to_int64() == 42);
+    TEST_ASSERT(f.evaluate(Integer(0)).to_int64() == 42);
 
     IntPolynomial zero;
-    assert(zero.evaluate(Integer(0)).is_zero());
+    TEST_ASSERT(zero.evaluate(Integer(0)).is_zero());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -380,7 +382,7 @@ void test_mod_inverse() {
     Integer check = inv.clone();
     check *= three;
     check %= seven;
-    assert(check.to_int64() == 1);
+    TEST_ASSERT(check.to_int64() == 1);
 
     // 2^(-1) mod 11 = 6 (since 2*6 = 12 ≡ 1 mod 11)
     Integer two(2);
@@ -389,7 +391,7 @@ void test_mod_inverse() {
     Integer check2 = inv2.clone();
     check2 *= two;
     check2 %= eleven;
-    assert(check2.to_int64() == 1);
+    TEST_ASSERT(check2.to_int64() == 1);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -402,40 +404,47 @@ void test_params_edge_cases() {
 
     // Very small N (8 bits, ~3 digits)
     auto p8 = GNFSParams::compute(8);
-    assert(p8.degree == 3);
-    assert(p8.rational_bound >= 200);
-    assert(p8.sieve_region_size() > 0);
+    TEST_ASSERT(p8.degree == 3);
+    TEST_ASSERT(p8.rational_bound >= 200);
+    TEST_ASSERT(p8.sieve_region_size() > 0);
 
     // Medium N (64 bits, ~20 digits)
     auto p64 = GNFSParams::compute(64);
-    assert(p64.degree == 3);
-    assert(p64.rational_bound >= 2000);
+    TEST_ASSERT(p64.degree == 3);
+    TEST_ASSERT(p64.rational_bound >= 2000);
 
     // Large N (200 bits)
     auto p200 = GNFSParams::compute(200);
-    assert(p200.degree == 3);  // ≤200 bits forced to degree 3 (even-degree bug fix)
-    assert(p200.rational_bound > p64.rational_bound);
+    TEST_ASSERT(p200.degree == 3);  // ≤200 bits forced to degree 3 (even-degree bug fix)
+    TEST_ASSERT(p200.rational_bound > p64.rational_bound);
 
     std::cout << "  PASS" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Regression Tests ===" << std::endl;
 
-    test_integer_uint64_constructor();
-    test_schirokauer_exponent();
-    test_evaluate_mod_no_overflow();
-    test_non_monic_polynomial();
-    test_base_m_irreducibility();
-    test_algebraic_norm_convention();
-    test_rational_value_convention();
-    test_special_q_range_regression();
-    test_sieve_area_cap_regression();
-    test_schirokauer_ell2_only();
-    test_derivative_of_constant();
-    test_evaluate_at_zero();
-    test_mod_inverse();
-    test_params_edge_cases();
+    failed += !run_case(test_integer_uint64_constructor);
+    failed += !run_case(test_schirokauer_exponent);
+    failed += !run_case(test_evaluate_mod_no_overflow);
+    failed += !run_case(test_non_monic_polynomial);
+    failed += !run_case(test_base_m_irreducibility);
+    failed += !run_case(test_algebraic_norm_convention);
+    failed += !run_case(test_rational_value_convention);
+    failed += !run_case(test_special_q_range_regression);
+    failed += !run_case(test_sieve_area_cap_regression);
+    failed += !run_case(test_schirokauer_ell2_only);
+    failed += !run_case(test_derivative_of_constant);
+    failed += !run_case(test_evaluate_at_zero);
+    failed += !run_case(test_mod_inverse);
+    failed += !run_case(test_params_edge_cases);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll regression tests passed!" << std::endl;
     return 0;

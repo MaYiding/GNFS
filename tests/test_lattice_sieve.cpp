@@ -3,11 +3,11 @@
 #include "gnfs/sieve/lattice_sieve.hpp"
 #include "gnfs/util/primes.hpp"
 #include "gnfs/util/safe_math.hpp"
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs;
 using namespace gnfs::sieve;
 using namespace gnfs::factor_base;
@@ -61,28 +62,28 @@ void test_lattice_basis() {
     int64_t mod0 = check0 % static_cast<int64_t>(sq.q);
     if (mod0 < 0)
         mod0 += sq.q;
-    assert(mod0 == 0);
+    TEST_ASSERT(mod0 == 0);
 
     // v1 = (e1, f1) 应该满足 e1 - f1*r ≡ 0 (mod q)
     int64_t check1 = basis.e1 - static_cast<int64_t>(basis.f1) * sq.r;
     int64_t mod1 = check1 % static_cast<int64_t>(sq.q);
     if (mod1 < 0)
         mod1 += sq.q;
-    assert(mod1 == 0);
+    TEST_ASSERT(mod1 == 0);
 
     // 行列式应该等于 q（或 -q）
     int64_t det = basis.determinant();
-    assert(std::abs(det) == static_cast<int64_t>(sq.q));
+    TEST_ASSERT(std::abs(det) == static_cast<int64_t>(sq.q));
 
     // 测试 to_ab
     auto [a, b] = basis.to_ab(1, 2);
     int64_t expected_a = 1 * basis.e0 + 2 * basis.e1;
     int64_t expected_b = 1 * basis.f0 + 2 * basis.f1;
-    assert(a == expected_a);
-    assert(b == expected_b);
+    TEST_ASSERT(a == expected_a);
+    TEST_ASSERT(b == expected_b);
 
     // verify_ab 应该返回 true
-    assert(basis.verify_ab(a, b));
+    TEST_ASSERT(basis.verify_ab(a, b));
 
     std::cout << "  Lattice basis: PASS (det=" << det << ")" << std::endl;
 }
@@ -97,22 +98,22 @@ void test_sieve_region() {
     region.j_max = 50;
 
     // 测试尺寸
-    assert(region.i_width() == 200);
-    assert(region.j_height() == 50);
-    assert(region.size() == 200 * 50);
+    TEST_ASSERT(region.i_width() == 200);
+    TEST_ASSERT(region.j_height() == 50);
+    TEST_ASSERT(region.size() == 200 * 50);
 
     // 测试坐标转换
     size_t idx = region.ij_to_index(0, 1);
     auto [i, j] = region.index_to_ij(idx);
-    assert(i == 0);
-    assert(j == 1);
+    TEST_ASSERT(i == 0);
+    TEST_ASSERT(j == 1);
 
     // 测试边界
     size_t idx_min = region.ij_to_index(region.i_min, region.j_min);
-    assert(idx_min == 0);
+    TEST_ASSERT(idx_min == 0);
 
     size_t idx_max = region.ij_to_index(region.i_max, region.j_max);
-    assert(idx_max == region.size() - 1);
+    TEST_ASSERT(idx_max == region.size() - 1);
 
     std::cout << "  Sieve region: PASS" << std::endl;
 }
@@ -122,7 +123,7 @@ void test_lattice_sieve_basic() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
 
@@ -157,13 +158,13 @@ void test_lattice_sieve_basic() {
     SpecialQGenerator gen(fb, range);
 
     auto sq_opt = gen.next();
-    assert(sq_opt.has_value());
+    TEST_ASSERT(sq_opt.has_value());
 
     // 执行筛法
     auto sieve_result = sieve.sieve_special_q(*sq_opt);
 
     // 验证结果
-    assert(sieve_result.sieved_positions == small_region.size());
+    TEST_ASSERT(sieve_result.sieved_positions == small_region.size());
 
     std::cout << "  Basic sieve: PASS (candidates=" << sieve_result.candidates.size()
               << ", region_size=" << sieve_result.sieved_positions << ")" << std::endl;
@@ -174,7 +175,7 @@ void test_candidate_properties() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
 
@@ -205,7 +206,7 @@ void test_candidate_properties() {
     SpecialQGenerator gen(fb, range);
 
     auto sq_opt = gen.next();
-    assert(sq_opt.has_value());
+    TEST_ASSERT(sq_opt.has_value());
 
     auto sieve_result = sieve.sieve_special_q(*sq_opt);
 
@@ -214,13 +215,13 @@ void test_candidate_properties() {
 
     for (const auto& cand : sieve_result.candidates) {
         // b 应该 > 0
-        assert(cand.b > 0);
+        TEST_ASSERT(cand.b > 0);
 
         // gcd(a, b) 应该 = 1
-        assert(std::gcd(util::safe_abs(cand.a), cand.b) == 1);
+        TEST_ASSERT(std::gcd(util::safe_abs(cand.a), cand.b) == 1);
 
         // (a, b) 应该满足格条件
-        assert(basis.verify_ab(cand.a, static_cast<int64_t>(cand.b)));
+        TEST_ASSERT(basis.verify_ab(cand.a, static_cast<int64_t>(cand.b)));
     }
 
     std::cout << "  Candidate properties: PASS (" << sieve_result.candidates.size()
@@ -251,8 +252,8 @@ void test_mod_inverse() {
             t += static_cast<int64_t>(m);
         uint64_t inv = static_cast<uint64_t>(t);
 
-        assert(inv == expected);
-        assert((a * inv) % m == 1);
+        TEST_ASSERT(inv == expected);
+        TEST_ASSERT((a * inv) % m == 1);
     };
 
     test_inv(7, 11, 8);
@@ -450,13 +451,13 @@ void test_default_region() {
 
     // skewness = 1.0
     auto region1 = default_sieve_region(1.0);
-    assert(region1.i_width() > 0);
-    assert(region1.j_height() > 0);
+    TEST_ASSERT(region1.i_width() > 0);
+    TEST_ASSERT(region1.j_height() > 0);
 
     // skewness = 4.0 应该增大 i 范围
     auto region2 = default_sieve_region(4.0);
-    assert(region2.i_width() > region1.i_width());
-    assert(region2.j_height() < region1.j_height());
+    TEST_ASSERT(region2.i_width() > region1.i_width());
+    TEST_ASSERT(region2.j_height() < region1.j_height());
 
     std::cout << "  Default region: PASS (skew=1: " << region1.i_width() << "x"
               << region1.j_height() << ", skew=4: " << region2.i_width() << "x"
@@ -1408,7 +1409,7 @@ void test_lattice_sieve_r_zero() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
     auto ctx = BaseMSelector::create_context(n, result);
 
     FactorBaseBuilder::Options fb_opts;
@@ -1438,36 +1439,43 @@ void test_lattice_sieve_r_zero() {
 
     // 期望:retainsspecial_q 字段、不抛、candidates 空、sieved_positions 应为 0
     // (early return 不跑 sieve)
-    assert(sieve_result.special_q.q == 1009);
-    assert(sieve_result.special_q.r == 0);
-    assert(sieve_result.candidates.empty());
-    assert(sieve_result.sieved_positions == 0);
+    TEST_ASSERT(sieve_result.special_q.q == 1009);
+    TEST_ASSERT(sieve_result.special_q.r == 0);
+    TEST_ASSERT(sieve_result.candidates.empty());
+    TEST_ASSERT(sieve_result.sieved_positions == 0);
 
     std::cout << "  r=0 degenerate path: PASS (early-return, no sieve work)" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Lattice Sieve Tests ===" << std::endl;
 
-    test_lattice_basis();
-    test_sieve_region();
-    test_mod_inverse();
-    test_stride_size_t_boundary();
-    test_saturating_lattice_score_updates();
-    test_lattice_sieve_score_overflow_regression();
-    test_lattice_sieve_zero_threshold_with_zero_initial_log_fails_closed();
-    test_default_region();
-    test_lattice_sieve_storage_contract();
-    test_lattice_sieve_special_q_entry_contract();
-    test_wide_region_uses_exact_bucket_path();
-    test_wide_region_prime_classes_are_exact_once();
-    test_extreme_j_row_offset_sieving();
-    test_parallel_sieve_phase_equivalence();
-    test_projection_overflow_rejected_before_sieving();
-    test_factor_base_prime_admission_contract();
-    test_lattice_sieve_basic();
-    test_candidate_properties();
-    test_lattice_sieve_r_zero();
+    failed += !run_case(test_lattice_basis);
+    failed += !run_case(test_sieve_region);
+    failed += !run_case(test_mod_inverse);
+    failed += !run_case(test_stride_size_t_boundary);
+    failed += !run_case(test_saturating_lattice_score_updates);
+    failed += !run_case(test_lattice_sieve_score_overflow_regression);
+    failed += !run_case(test_lattice_sieve_zero_threshold_with_zero_initial_log_fails_closed);
+    failed += !run_case(test_default_region);
+    failed += !run_case(test_lattice_sieve_storage_contract);
+    failed += !run_case(test_lattice_sieve_special_q_entry_contract);
+    failed += !run_case(test_wide_region_uses_exact_bucket_path);
+    failed += !run_case(test_wide_region_prime_classes_are_exact_once);
+    failed += !run_case(test_extreme_j_row_offset_sieving);
+    failed += !run_case(test_parallel_sieve_phase_equivalence);
+    failed += !run_case(test_projection_overflow_rejected_before_sieving);
+    failed += !run_case(test_factor_base_prime_admission_contract);
+    failed += !run_case(test_lattice_sieve_basic);
+    failed += !run_case(test_candidate_properties);
+    failed += !run_case(test_lattice_sieve_r_zero);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

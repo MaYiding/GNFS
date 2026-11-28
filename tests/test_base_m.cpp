@@ -1,15 +1,16 @@
 // Unit tests for base-m polynomial selection (BaseMSelector)
 #include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/polynomial/base_m.hpp"
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::polynomial;
 using namespace gnfs::core;
 
@@ -45,28 +46,28 @@ void test_select_stability() {
     // 60-bit N(走 Murphy 排名路径):4 次 select 应完全一致
     Integer n("1000000016000000063");
     auto first = BaseMSelector::select(n, 3);
-    assert(first.success);
+    TEST_ASSERT(first.success);
 
     for (int rep = 1; rep < 4; ++rep) {
         auto next = BaseMSelector::select(n, 3);
-        assert(next.success);
-        assert(next.degree == first.degree);
-        assert(next.m == first.m); // 同一 m
-        assert(next.f.degree() == first.f.degree());
+        TEST_ASSERT(next.success);
+        TEST_ASSERT(next.degree == first.degree);
+        TEST_ASSERT(next.m == first.m); // 同一 m
+        TEST_ASSERT(next.f.degree() == first.f.degree());
         for (uint32_t i = 0; i <= first.f.degree(); ++i) {
-            assert(next.f[i] == first.f[i]); // 同一系数
+            TEST_ASSERT(next.f[i] == first.f[i]); // 同一系数
         }
     }
 
     // 大 N(走标准 Murphy)
     Integer big_n("100000000000000001500000000000000005049");
     auto big_first = BaseMSelector::select(big_n, 4);
-    assert(big_first.success);
+    TEST_ASSERT(big_first.success);
     auto big_second = BaseMSelector::select(big_n, 4);
-    assert(big_second.success);
-    assert(big_first.m == big_second.m);
+    TEST_ASSERT(big_second.success);
+    TEST_ASSERT(big_first.m == big_second.m);
     for (uint32_t i = 0; i <= big_first.f.degree(); ++i) {
-        assert(big_first.f[i] == big_second.f[i]);
+        TEST_ASSERT(big_first.f[i] == big_second.f[i]);
     }
 
     std::cout << "  PASS (deterministic selection across 4+2 reps)" << std::endl;
@@ -77,9 +78,9 @@ void test_select_degree3_small() {
     // N = 143 = 11 * 13
     Integer n = make_int(143);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
-    assert(result.degree == 3);
-    assert(result.f.degree() == 3);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.degree == 3);
+    TEST_ASSERT(result.f.degree() == 3);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -88,9 +89,9 @@ void test_select_degree3_medium() {
     // N = 100160063 = 10007 * 10009
     Integer n = make_int(100160063LL);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
-    assert(result.degree == 3);
-    assert(result.f.degree() == 3);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.degree == 3);
+    TEST_ASSERT(result.f.degree() == 3);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -100,11 +101,11 @@ void test_fm_equals_n() {
     for (long long n_val : {143LL, 9991LL, 10403LL, 100160063LL}) {
         Integer n = make_int(n_val);
         auto result = BaseMSelector::select(n, 3);
-        assert(result.success);
+        TEST_ASSERT(result.success);
 
         // Evaluate f(m) directly using IntPolynomial
         Integer fm = result.f.evaluate(result.m);
-        assert(fm == n);
+        TEST_ASSERT(fm == n);
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -114,14 +115,14 @@ void test_correct_degree_produced() {
     // For N = 143, degree-3 should give exactly degree-3 polynomial
     Integer n = make_int(143);
     auto r3 = BaseMSelector::select(n, 3);
-    assert(r3.success);
-    assert(r3.f.degree() == 3);
+    TEST_ASSERT(r3.success);
+    TEST_ASSERT(r3.f.degree() == 3);
 
     // For larger N, degree-4
     Integer n2("1000000000000000"); // ~50 bits
     auto r4 = BaseMSelector::select(n2, 4);
-    assert(r4.success);
-    assert(r4.f.degree() == 4);
+    TEST_ASSERT(r4.success);
+    TEST_ASSERT(r4.f.degree() == 4);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -129,12 +130,12 @@ void test_m_approximation() {
     std::cout << "Testing m ≈ N^(1/degree)..." << std::endl;
     Integer n = make_int(100160063LL);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     // m should be close to cube root of N ≈ 464.7
     // Check m is in range [460, 470]
     int64_t m_val = result.m.to_int64();
-    assert(m_val >= 455 && m_val <= 475);
+    TEST_ASSERT(m_val >= 455 && m_val <= 475);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -142,12 +143,12 @@ void test_create_context_verifies() {
     std::cout << "Testing create_context gives verifiable context..." << std::endl;
     Integer n = make_int(9991LL);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
     // The context must satisfy f(m) ≡ 0 mod n
-    assert(ctx.verify());
-    assert(ctx.degree() == 3);
+    TEST_ASSERT(ctx.verify());
+    TEST_ASSERT(ctx.degree() == 3);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -162,7 +163,7 @@ void test_create_context_failed_result_throws() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    TEST_ASSERT(threw);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -171,8 +172,8 @@ void test_select_poly_api() {
     Integer n = make_int(10403LL);
     BaseMSelector selector(n);
     auto ctx = selector.select_poly(3);
-    assert(ctx.degree() == 3);
-    assert(ctx.verify());
+    TEST_ASSERT(ctx.degree() == 3);
+    TEST_ASSERT(ctx.verify());
     std::cout << "  PASS" << std::endl;
 }
 
@@ -180,8 +181,8 @@ void test_convenience_function() {
     std::cout << "Testing select_base_m_polynomial() convenience function..." << std::endl;
     Integer n = make_int(143LL);
     auto ctx = select_base_m_polynomial(n, 3);
-    assert(ctx.degree() == 3);
-    assert(ctx.verify());
+    TEST_ASSERT(ctx.degree() == 3);
+    TEST_ASSERT(ctx.verify());
     std::cout << "  PASS" << std::endl;
 }
 
@@ -192,9 +193,9 @@ void test_leading_coeff_positive() {
     for (long long n_val : {143LL, 9991LL, 100160063LL}) {
         Integer n = make_int(n_val);
         auto result = BaseMSelector::select(n, 3);
-        assert(result.success);
+        TEST_ASSERT(result.success);
         Integer lc = result.f[result.f.degree()];
-        assert(!lc.is_negative() && !lc.is_zero());
+        TEST_ASSERT(!lc.is_negative() && !lc.is_zero());
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -206,7 +207,7 @@ void test_context_coefficients_match_polynomial() {
     auto ctx = BaseMSelector::create_context(n, result);
 
     for (uint32_t i = 0; i <= result.f.degree(); ++i) {
-        assert(ctx.coeff(i) == result.f[i]);
+        TEST_ASSERT(ctx.coeff(i) == result.f[i]);
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -216,10 +217,10 @@ void test_degree4_selection() {
     // N = 2^50 - 27 (semiprime-like, just testing API)
     Integer n("1125899906842597"); // 2^50 + some offset
     auto result = BaseMSelector::select(n, 4);
-    assert(result.success);
-    assert(result.degree == 4);
+    TEST_ASSERT(result.success);
+    TEST_ASSERT(result.degree == 4);
     // f(m) = N
-    assert(result.f.evaluate(result.m) == n);
+    TEST_ASSERT(result.f.evaluate(result.m) == n);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -227,13 +228,13 @@ void test_invalid_selection_parameters() {
     std::cout << "Testing invalid base-m selection parameters..." << std::endl;
 
     const auto zero_n = BaseMSelector::select(Integer(static_cast<int64_t>(0)), 3);
-    assert(!zero_n.success);
+    TEST_ASSERT(!zero_n.success);
 
     const auto one_n = BaseMSelector::select(Integer(static_cast<int64_t>(1)), 3);
-    assert(!one_n.success);
+    TEST_ASSERT(!one_n.success);
 
     const auto zero_degree = BaseMSelector::select(Integer(static_cast<int64_t>(143)), 0);
-    assert(!zero_degree.success);
+    TEST_ASSERT(!zero_degree.success);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -360,25 +361,32 @@ void test_window_with_candidate_is_unchanged() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== BaseMSelector Unit Tests ===" << std::endl;
 
-    test_select_degree3_small();
-    test_select_stability();
-    test_select_degree3_medium();
-    test_fm_equals_n();
-    test_correct_degree_produced();
-    test_m_approximation();
-    test_create_context_verifies();
-    test_create_context_failed_result_throws();
-    test_select_poly_api();
-    test_convenience_function();
-    test_leading_coeff_positive();
-    test_context_coefficients_match_polynomial();
-    test_degree4_selection();
-    test_invalid_selection_parameters();
-    test_window_without_candidate_widens();
-    test_no_candidate_anywhere_fails();
-    test_window_with_candidate_is_unchanged();
+    failed += !run_case(test_select_degree3_small);
+    failed += !run_case(test_select_stability);
+    failed += !run_case(test_select_degree3_medium);
+    failed += !run_case(test_fm_equals_n);
+    failed += !run_case(test_correct_degree_produced);
+    failed += !run_case(test_m_approximation);
+    failed += !run_case(test_create_context_verifies);
+    failed += !run_case(test_create_context_failed_result_throws);
+    failed += !run_case(test_select_poly_api);
+    failed += !run_case(test_convenience_function);
+    failed += !run_case(test_leading_coeff_positive);
+    failed += !run_case(test_context_coefficients_match_polynomial);
+    failed += !run_case(test_degree4_selection);
+    failed += !run_case(test_invalid_selection_parameters);
+    failed += !run_case(test_window_without_candidate_widens);
+    failed += !run_case(test_no_candidate_anywhere_fails);
+    failed += !run_case(test_window_with_candidate_is_unchanged);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

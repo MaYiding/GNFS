@@ -7,28 +7,29 @@
 // change the 50d diagnostic interpretation.
 
 #include "gnfs/linalg/matrix_builder.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <iostream>
 
 using gnfs::linalg::SparseMatrix;
 using gnfs::linalg::MatrixDiagnostics;
 using gnfs::linalg::compute_matrix_diagnostics;
+using gnfs::test::run_case;
 
 void test_empty_matrix() {
     std::cout << "Testing 0x0 matrix..." << std::endl;
     SparseMatrix M(0, 0);
     auto d = compute_matrix_diagnostics(M);
-    assert(d.empty_rows == 0);
-    assert(d.singleton_rows == 0);
-    assert(d.min_row_weight == 0);
-    assert(d.max_row_weight == 0);
-    assert(d.empty_cols == 0);
-    assert(d.singleton_cols == 0);
-    assert(d.low_weight_cols == 0);
-    assert(d.max_col_weight == 0);
-    assert(d.avg_col_weight == 0.0);
+    TEST_ASSERT(d.empty_rows == 0);
+    TEST_ASSERT(d.singleton_rows == 0);
+    TEST_ASSERT(d.min_row_weight == 0);
+    TEST_ASSERT(d.max_row_weight == 0);
+    TEST_ASSERT(d.empty_cols == 0);
+    TEST_ASSERT(d.singleton_cols == 0);
+    TEST_ASSERT(d.low_weight_cols == 0);
+    TEST_ASSERT(d.max_col_weight == 0);
+    TEST_ASSERT(d.avg_col_weight == 0.0);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -38,7 +39,7 @@ void test_rows_no_cols() {
     // early; we just need it to not crash and not report stale stats.
     SparseMatrix M(5, 0);
     auto d = compute_matrix_diagnostics(M);
-    assert(d.empty_cols == 0);  // no cols → no empty_cols either
+    TEST_ASSERT(d.empty_cols == 0);  // no cols → no empty_cols either
     std::cout << "  PASS" << std::endl;
 }
 
@@ -47,10 +48,10 @@ void test_zero_rows_with_cols() {
     SparseMatrix M(0, 4);
     auto d = compute_matrix_diagnostics(M);
     // 0 rows means all 4 cols are empty (no contribution)
-    assert(d.empty_cols == 4);
-    assert(d.singleton_cols == 0);
-    assert(d.max_col_weight == 0);
-    assert(d.avg_col_weight == 0.0);
+    TEST_ASSERT(d.empty_cols == 4);
+    TEST_ASSERT(d.singleton_cols == 0);
+    TEST_ASSERT(d.max_col_weight == 0);
+    TEST_ASSERT(d.avg_col_weight == 0.0);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -60,14 +61,14 @@ void test_identity_like() {
     for (uint32_t i = 0; i < 4; ++i) M.row(i).set(i);
     auto d = compute_matrix_diagnostics(M);
     // Each row has weight 1, each col has weight 1
-    assert(d.empty_rows == 0);
-    assert(d.singleton_rows == 4);
-    assert(d.min_row_weight == 1);
-    assert(d.max_row_weight == 1);
-    assert(d.empty_cols == 0);
-    assert(d.singleton_cols == 4);  // every col is SGE-eliminable
-    assert(d.max_col_weight == 1);
-    assert(d.avg_col_weight == 1.0);
+    TEST_ASSERT(d.empty_rows == 0);
+    TEST_ASSERT(d.singleton_rows == 4);
+    TEST_ASSERT(d.min_row_weight == 1);
+    TEST_ASSERT(d.max_row_weight == 1);
+    TEST_ASSERT(d.empty_cols == 0);
+    TEST_ASSERT(d.singleton_cols == 4);  // every col is SGE-eliminable
+    TEST_ASSERT(d.max_col_weight == 1);
+    TEST_ASSERT(d.avg_col_weight == 1.0);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -85,15 +86,15 @@ void test_empty_rows() {
     M.row(4).set(0);
     M.row(4).set(1);
     auto d = compute_matrix_diagnostics(M);
-    assert(d.empty_rows == 2);          // rows 0, 3
-    assert(d.singleton_rows == 1);      // row 1
-    assert(d.min_row_weight == 0);
-    assert(d.max_row_weight == 2);
+    TEST_ASSERT(d.empty_rows == 2);          // rows 0, 3
+    TEST_ASSERT(d.singleton_rows == 1);      // row 1
+    TEST_ASSERT(d.min_row_weight == 0);
+    TEST_ASSERT(d.max_row_weight == 2);
     // Col weights: 0→{1,4}=2, 1→{2,4}=2, 2→{2}=1, 3→{}=0
-    assert(d.empty_cols == 1);          // col 3
-    assert(d.singleton_cols == 1);      // col 2
-    assert(d.low_weight_cols == 2);     // cols 0, 1 (weight 2 ∈ [2,4])
-    assert(d.max_col_weight == 2);
+    TEST_ASSERT(d.empty_cols == 1);          // col 3
+    TEST_ASSERT(d.singleton_cols == 1);      // col 2
+    TEST_ASSERT(d.low_weight_cols == 2);     // cols 0, 1 (weight 2 ∈ [2,4])
+    TEST_ASSERT(d.max_col_weight == 2);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -106,15 +107,15 @@ void test_dense_block() {
         }
     }
     auto d = compute_matrix_diagnostics(M);
-    assert(d.empty_rows == 0);
-    assert(d.singleton_rows == 0);
-    assert(d.min_row_weight == 3);
-    assert(d.max_row_weight == 3);
-    assert(d.empty_cols == 0);
-    assert(d.singleton_cols == 0);
-    assert(d.low_weight_cols == 3);     // all 3 cols have weight 3 ∈ [2,4]
-    assert(d.max_col_weight == 3);
-    assert(d.avg_col_weight == 3.0);
+    TEST_ASSERT(d.empty_rows == 0);
+    TEST_ASSERT(d.singleton_rows == 0);
+    TEST_ASSERT(d.min_row_weight == 3);
+    TEST_ASSERT(d.max_row_weight == 3);
+    TEST_ASSERT(d.empty_cols == 0);
+    TEST_ASSERT(d.singleton_cols == 0);
+    TEST_ASSERT(d.low_weight_cols == 3);     // all 3 cols have weight 3 ∈ [2,4]
+    TEST_ASSERT(d.max_col_weight == 3);
+    TEST_ASSERT(d.avg_col_weight == 3.0);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -128,10 +129,10 @@ void test_singleton_cols_separated_from_low_weight() {
     for (uint32_t i = 0; i < 4; ++i) M.row(i).set(1);
     for (uint32_t i = 0; i < 5; ++i) M.row(i).set(2);
     auto d = compute_matrix_diagnostics(M);
-    assert(d.empty_cols == 0);
-    assert(d.singleton_cols == 1);     // col 0
-    assert(d.low_weight_cols == 1);    // col 1 only
-    assert(d.max_col_weight == 5);
+    TEST_ASSERT(d.empty_cols == 0);
+    TEST_ASSERT(d.singleton_cols == 1);     // col 0
+    TEST_ASSERT(d.low_weight_cols == 1);    // col 1 only
+    TEST_ASSERT(d.max_col_weight == 5);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -142,9 +143,9 @@ void test_avg_col_weight_includes_empty() {
     M.row(0).set(0);
     auto d = compute_matrix_diagnostics(M);
     // total_weight=1, num_cols=4 → avg = 0.25
-    assert(d.avg_col_weight > 0.24 && d.avg_col_weight < 0.26);
-    assert(d.empty_cols == 3);
-    assert(d.singleton_cols == 1);
+    TEST_ASSERT(d.avg_col_weight > 0.24 && d.avg_col_weight < 0.26);
+    TEST_ASSERT(d.empty_cols == 3);
+    TEST_ASSERT(d.singleton_cols == 1);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -158,11 +159,11 @@ void test_dup_set_is_idempotent() {
     M.row(0).set(0);
     auto d = compute_matrix_diagnostics(M);
     // Row 0 weight should be 1, not 3
-    assert(d.singleton_rows == 1);
-    assert(d.min_row_weight == 0);   // row 1 is empty
-    assert(d.max_row_weight == 1);
-    assert(d.singleton_cols == 1);   // col 0
-    assert(d.max_col_weight == 1);
+    TEST_ASSERT(d.singleton_rows == 1);
+    TEST_ASSERT(d.min_row_weight == 0);   // row 1 is empty
+    TEST_ASSERT(d.max_row_weight == 1);
+    TEST_ASSERT(d.singleton_cols == 1);   // col 0
+    TEST_ASSERT(d.max_col_weight == 1);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -180,34 +181,41 @@ void test_realistic_excess_matrix() {
     M.row(7).set(0); M.row(7).set(3); M.row(7).set(6);  // w=3
     // rows 8, 9 empty
     auto d = compute_matrix_diagnostics(M);
-    assert(d.empty_rows == 2);
-    assert(d.singleton_rows == 2);   // rows 0, 5
-    assert(d.min_row_weight == 0);
-    assert(d.max_row_weight == 5);
+    TEST_ASSERT(d.empty_rows == 2);
+    TEST_ASSERT(d.singleton_rows == 2);   // rows 0, 5
+    TEST_ASSERT(d.min_row_weight == 0);
+    TEST_ASSERT(d.max_row_weight == 5);
     // Col weights: 0={0,2,4,7}=4, 1={1,4}=2, 2={1,4,6}=3, 3={2,4,7}=3,
     //              4={3,4}=2, 5={3,6}=2, 6={3,7}=2, 7={3,5}=2
-    assert(d.empty_cols == 0);
-    assert(d.singleton_cols == 0);
+    TEST_ASSERT(d.empty_cols == 0);
+    TEST_ASSERT(d.singleton_cols == 0);
     // weight=2 cols: 1,4,5,6,7 (5 cols); weight=3 cols: 2,3 (2 cols); weight=4 col: 0 (1 col)
     // low_weight_cols (∈ [2,4]) = 8 cols total (all of them)
-    assert(d.low_weight_cols == 8);
-    assert(d.max_col_weight == 4);
+    TEST_ASSERT(d.low_weight_cols == 8);
+    TEST_ASSERT(d.max_col_weight == 4);
     std::cout << "  PASS" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== linalg/compute_matrix_diagnostics tests ===" << std::endl;
 
-    test_empty_matrix();
-    test_rows_no_cols();
-    test_zero_rows_with_cols();
-    test_identity_like();
-    test_empty_rows();
-    test_dense_block();
-    test_singleton_cols_separated_from_low_weight();
-    test_avg_col_weight_includes_empty();
-    test_dup_set_is_idempotent();
-    test_realistic_excess_matrix();
+    failed += !run_case(test_empty_matrix);
+    failed += !run_case(test_rows_no_cols);
+    failed += !run_case(test_zero_rows_with_cols);
+    failed += !run_case(test_identity_like);
+    failed += !run_case(test_empty_rows);
+    failed += !run_case(test_dense_block);
+    failed += !run_case(test_singleton_cols_separated_from_low_weight);
+    failed += !run_case(test_avg_col_weight_includes_empty);
+    failed += !run_case(test_dup_set_is_idempotent);
+    failed += !run_case(test_realistic_excess_matrix);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\n=== All linalg/compute_matrix_diagnostics tests PASSED ===" << std::endl;
     return 0;

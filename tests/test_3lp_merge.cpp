@@ -10,7 +10,6 @@
 #include <gnfs/relation/clique_merger.hpp>
 #include <gnfs/relation/filter.hpp>
 
-#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>

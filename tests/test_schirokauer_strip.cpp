@@ -17,7 +17,8 @@
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -40,8 +41,8 @@ PolynomialContext build_unsplit_ctx() {
     coeffs.push_back(Integer(int64_t(1)));
     Integer m(int64_t(1999999999687LL));
     PolynomialContext ctx(N.clone(), std::move(coeffs), m.clone(), 1.0);
-    assert(ctx.degree() == 4);
-    assert(ctx.verify() && "f(m) != 0 mod N");
+    TEST_ASSERT(ctx.degree() == 4);
+    TEST_ASSERT(ctx.verify() && "f(m) != 0 mod N");
     return ctx;
 }
 
@@ -116,7 +117,7 @@ int test_strip_two(SchirokaurMap& smap) {
 
 int test_zero_shortcircuit(SchirokaurMap& smap) {
     auto res = smap.compute(0, 0);
-    assert(res.size() == 1);
+    TEST_ASSERT(res.size() == 1);
     int fails = 0;
     for (uint32_t v : res[0]) {
         if (v != 0) {
@@ -132,7 +133,7 @@ int test_zero_shortcircuit(SchirokaurMap& smap) {
 int test_strip_max_safe(SchirokaurMap& smap) {
     // Boundary: strip exactly k-2 = 6 times. With k=8 and ℓ=2, multiplying
     // (1, 1) by 2^6 = 64 gives (64, 64). strip_v = 6, k-v = 2 → formula
-    // still well-defined per assert(strip_v + 2 <= k).
+    // still well-defined: the library asserts strip_v + 2 <= k here.
     auto base = smap.compute(1, 1);
     auto strip6 = smap.compute(int64_t{1} << 6, uint64_t{1} << 6);
     int fails = 0;

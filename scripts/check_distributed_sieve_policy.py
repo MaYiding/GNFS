@@ -5659,12 +5659,12 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST = {
     ),
     ("tests/test_method_selection.cpp", "TEST"): (
         '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
-        'if(test_##name()){++pass_count;std::cout<<"OK\\n";}'
+        'if(run_case(test_##name())){++pass_count;std::cout<<"OK\\n";}'
         'else{++fail_count;std::cout<<"FAILED\\n";}'
     ),
     ("tests/test_api.cpp", "TEST"): (
         '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
-        'if(test_##name()){++pass_count;std::cout<<"OK\\n";}'
+        'if(run_case(test_##name())){++pass_count;std::cout<<"OK\\n";}'
         'else{++fail_count;std::cout<<"FAILED\\n";}'
     ),
     ("tests/test_full_resume.cpp", "RUN_TEST"): (
@@ -5682,7 +5682,7 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS = {
     ),
     ("tests/test_method_selection.cpp", "TEST"): (
         39,
-        "470d0973f63d32e9af3a85a485ba14b2c2eba9e516190d32a86a0ca37aa57a26",
+        "4d4513fd29f68d3bc1a0ffcf0513a5e53b3da95484a80d2057bb7cfd6f2bae61",
     ),
     ("tests/test_api.cpp", "TEST"): (
         83,

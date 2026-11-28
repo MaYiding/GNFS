@@ -18,10 +18,10 @@
 
 #include "gnfs/relation/lp_key_hash.hpp"
 #include "gnfs/util/bit_intrin.hpp"
+#include "support/test_assert.hpp"
 
 #include <algorithm>
 #include <bitset>
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +29,7 @@
 #include <unordered_set>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::relation;
 
 namespace {
@@ -49,20 +50,20 @@ void set_env_and_reload(const char* value) {
 void test_env_unset_is_auto() {
     std::cout << "Testing ENV unset → Auto..." << std::endl;
     set_env_and_reload(nullptr);
-    assert(lp_hash_mix_mode() == LpHashMixMode::Auto);
-    assert(lp_hash_mix_enabled());  // Auto enables mixing
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
+    TEST_ASSERT(lp_hash_mix_enabled());  // Auto enables mixing
     std::cout << "  PASS" << std::endl;
 }
 
 void test_env_force_off() {
     std::cout << "Testing ENV \"0\" / \"off\" → ForceOff..." << std::endl;
     set_env_and_reload("0");
-    assert(lp_hash_mix_mode() == LpHashMixMode::ForceOff);
-    assert(!lp_hash_mix_enabled());
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::ForceOff);
+    TEST_ASSERT(!lp_hash_mix_enabled());
 
     set_env_and_reload("off");
-    assert(lp_hash_mix_mode() == LpHashMixMode::ForceOff);
-    assert(!lp_hash_mix_enabled());
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::ForceOff);
+    TEST_ASSERT(!lp_hash_mix_enabled());
 
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
@@ -71,12 +72,12 @@ void test_env_force_off() {
 void test_env_force_on() {
     std::cout << "Testing ENV \"1\" / \"on\" → ForceOn..." << std::endl;
     set_env_and_reload("1");
-    assert(lp_hash_mix_mode() == LpHashMixMode::ForceOn);
-    assert(lp_hash_mix_enabled());
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::ForceOn);
+    TEST_ASSERT(lp_hash_mix_enabled());
 
     set_env_and_reload("on");
-    assert(lp_hash_mix_mode() == LpHashMixMode::ForceOn);
-    assert(lp_hash_mix_enabled());
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::ForceOn);
+    TEST_ASSERT(lp_hash_mix_enabled());
 
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
@@ -85,24 +86,24 @@ void test_env_force_on() {
 void test_env_unrecognized_is_auto() {
     std::cout << "Testing ENV \"auto\" / unrecognized → Auto..." << std::endl;
     set_env_and_reload("auto");
-    assert(lp_hash_mix_mode() == LpHashMixMode::Auto);
-    assert(lp_hash_mix_enabled());
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
+    TEST_ASSERT(lp_hash_mix_enabled());
 
     set_env_and_reload("garbage");
-    assert(lp_hash_mix_mode() == LpHashMixMode::Auto);
-    assert(lp_hash_mix_enabled());
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
+    TEST_ASSERT(lp_hash_mix_enabled());
 
     set_env_and_reload("");
-    assert(lp_hash_mix_mode() == LpHashMixMode::Auto);
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
     set_env_and_reload("2");  // unrecognized number → Auto, not ForceOn
-    assert(lp_hash_mix_mode() == LpHashMixMode::Auto);
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
     set_env_and_reload("true");  // not in token set → Auto
-    assert(lp_hash_mix_mode() == LpHashMixMode::Auto);
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
     set_env_and_reload("ON");  // case-sensitive; uppercase → Auto
-    assert(lp_hash_mix_mode() == LpHashMixMode::Auto);
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
@@ -134,13 +135,13 @@ void test_splitmix64_known_vectors() {
                       << " expected 0x" << v.expected
                       << std::dec << std::endl;
         }
-        assert(actual == v.expected);
+        TEST_ASSERT(actual == v.expected);
     }
 
     // Sanity: mixer is not the identity for non-trivial inputs.
-    assert(mix_lp_key(0) != 0);
-    assert(mix_lp_key(1) != 1);
-    assert(mix_lp_key(0xDEADBEEFULL) != 0xDEADBEEFULL);
+    TEST_ASSERT(mix_lp_key(0) != 0);
+    TEST_ASSERT(mix_lp_key(1) != 1);
+    TEST_ASSERT(mix_lp_key(0xDEADBEEFULL) != 0xDEADBEEFULL);
 
     // constexpr-callable: this compiles only if mix_lp_key really is
     // constexpr.
@@ -159,7 +160,7 @@ void test_mix_lp_key_determinism() {
     for (std::uint64_t i = 0; i < 10000; ++i) {
         const std::uint64_t first = mix_lp_key(i);
         const std::uint64_t second = mix_lp_key(i);
-        assert(first == second);
+        TEST_ASSERT(first == second);
     }
     // Also test high-bit-pattern inputs.
     const std::uint64_t weird_inputs[] = {
@@ -169,7 +170,7 @@ void test_mix_lp_key_determinism() {
         0x123456789ABCDEF0ULL,
     };
     for (std::uint64_t k : weird_inputs) {
-        assert(mix_lp_key(k) == mix_lp_key(k));
+        TEST_ASSERT(mix_lp_key(k) == mix_lp_key(k));
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -187,7 +188,7 @@ void test_mix_lp_key_avalanche() {
     const int popcount = gnfs::util::popcount64(diff);
     std::cout << "    popcount(mix(0) ^ mix(1)) = " << popcount
               << " (target >= 20)" << std::endl;
-    assert(popcount >= 20);
+    TEST_ASSERT(popcount >= 20);
 
     // Same for a second neighbour pair (0xCAFE vs 0xCAFF).
     const std::uint64_t c = mix_lp_key(0xCAFEULL);
@@ -195,7 +196,7 @@ void test_mix_lp_key_avalanche() {
     const int p2 = gnfs::util::popcount64(c ^ d);
     std::cout << "    popcount(mix(0xCAFE) ^ mix(0xCAFF)) = " << p2
               << std::endl;
-    assert(p2 >= 20);
+    TEST_ASSERT(p2 >= 20);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -206,14 +207,14 @@ void test_maybe_mix_force_off_returns_input() {
     std::cout << "Testing maybe_mix_lp_key under ForceOff (passthrough)..."
               << std::endl;
     set_env_and_reload("0");
-    assert(!lp_hash_mix_enabled());
+    TEST_ASSERT(!lp_hash_mix_enabled());
 
     const std::uint64_t inputs[] = {
         0, 1, 0xDEADBEEFULL, 0xFFFFFFFFFFFFFFFFULL, 42, 0xCAFEBABEULL
     };
     for (std::uint64_t k : inputs) {
         const std::uint64_t out = maybe_mix_lp_key(k);
-        assert(out == k);  // strict passthrough
+        TEST_ASSERT(out == k);  // strict passthrough
     }
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
@@ -223,12 +224,12 @@ void test_maybe_mix_force_on_equals_mix() {
     std::cout << "Testing maybe_mix_lp_key under ForceOn (equals mix_lp_key)..."
               << std::endl;
     set_env_and_reload("1");
-    assert(lp_hash_mix_enabled());
+    TEST_ASSERT(lp_hash_mix_enabled());
 
     for (std::uint64_t i = 0; i < 1000; ++i) {
         const std::uint64_t mixed = mix_lp_key(i);
         const std::uint64_t gated = maybe_mix_lp_key(i);
-        assert(gated == mixed);  // strict per-input parity
+        TEST_ASSERT(gated == mixed);  // strict per-input parity
     }
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
@@ -238,12 +239,12 @@ void test_maybe_mix_auto_equals_mix() {
     std::cout << "Testing maybe_mix_lp_key under Auto (equals mix_lp_key)..."
               << std::endl;
     set_env_and_reload(nullptr);  // Auto
-    assert(lp_hash_mix_enabled());
+    TEST_ASSERT(lp_hash_mix_enabled());
 
     for (std::uint64_t i = 0; i < 1000; ++i) {
         const std::uint64_t mixed = mix_lp_key(i);
         const std::uint64_t gated = maybe_mix_lp_key(i);
-        assert(gated == mixed);
+        TEST_ASSERT(gated == mixed);
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -257,7 +258,7 @@ void test_lp_key_hash_determinism() {
     for (std::uint64_t i = 0; i < 1000; ++i) {
         const std::size_t a = h(i);
         const std::size_t b = h(i);
-        assert(a == b);
+        TEST_ASSERT(a == b);
     }
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
@@ -287,7 +288,7 @@ void test_lp_key_hash_distinct_outputs_for_lp_shaped_inputs() {
     }
     // 8 distinct inputs should map to 8 distinct hashes with the
     // splitmix64 mixer applied (no collision in this small set).
-    assert(hashes.size() == 8);
+    TEST_ASSERT(hashes.size() == 8);
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
 }
@@ -320,7 +321,7 @@ void test_lp_key_hash_distribution_vs_identity() {
         keys.push_back((pid << 1) | 0);
         keys.push_back((pid << 1) | 1);
     }
-    assert(keys.size() == 10000);
+    TEST_ASSERT(keys.size() == 10000);
 
     // Identity-hash baseline.
     std::unordered_set<std::uint64_t> identity_set;
@@ -347,8 +348,8 @@ void test_lp_key_hash_distribution_vs_identity() {
     // Both sets must have the same number of unique entries (no
     // hash-induced "collisions" because uniqueness is decided by
     // equality, not hash). This is a sanity check.
-    assert(identity_set.size() == 10000);
-    assert(mixed_set.size() == 10000);
+    TEST_ASSERT(identity_set.size() == 10000);
+    TEST_ASSERT(mixed_set.size() == 10000);
 
     // Informational only: typical mixed_max should be no worse than
     // identity_max for clustered input. We do not assert strict
@@ -367,15 +368,15 @@ void test_lp_key_hash_in_empty_and_single_set() {
 
     // Empty set roundtrip — nothing should explode.
     std::unordered_set<std::uint64_t, LpKeyHash> empty_set;
-    assert(empty_set.empty());
-    assert(empty_set.find(42) == empty_set.end());
+    TEST_ASSERT(empty_set.empty());
+    TEST_ASSERT(empty_set.find(42) == empty_set.end());
 
     // Single-element set.
     std::unordered_set<std::uint64_t, LpKeyHash> single_set;
     single_set.insert(0xDEADBEEFULL);
-    assert(single_set.size() == 1);
-    assert(single_set.find(0xDEADBEEFULL) != single_set.end());
-    assert(single_set.find(0xCAFEBABEULL) == single_set.end());
+    TEST_ASSERT(single_set.size() == 1);
+    TEST_ASSERT(single_set.find(0xDEADBEEFULL) != single_set.end());
+    TEST_ASSERT(single_set.find(0xCAFEBABEULL) == single_set.end());
 
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
@@ -387,48 +388,55 @@ void test_reset_env_cache_picks_up_new_value() {
     std::cout << "Testing reset_env_cache_for_testing re-reads ENV..."
               << std::endl;
     set_env_and_reload("1");
-    assert(lp_hash_mix_mode() == LpHashMixMode::ForceOn);
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::ForceOn);
 
     // Change the ENV without calling the reset hook; cached value
     // remains stale (this is by design — the once_flag pins the cache).
     ::setenv("GNFS_FILTER_LP_HASH_MIX", "0", 1);
     // Now call the reset hook — the cache should pick up the new value.
     lp_hash_mix_reset_env_cache_for_testing();
-    assert(lp_hash_mix_mode() == LpHashMixMode::ForceOff);
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::ForceOff);
 
     set_env_and_reload(nullptr);
-    assert(lp_hash_mix_mode() == LpHashMixMode::Auto);
+    TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
     std::cout << "  PASS" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== LP Key Hash Mixing Tests ===" << std::endl;
 
     // ENV parsing
-    test_env_unset_is_auto();
-    test_env_force_off();
-    test_env_force_on();
-    test_env_unrecognized_is_auto();
+    failed += !run_case(test_env_unset_is_auto);
+    failed += !run_case(test_env_force_off);
+    failed += !run_case(test_env_force_on);
+    failed += !run_case(test_env_unrecognized_is_auto);
 
     // splitmix64 algorithm
-    test_splitmix64_known_vectors();
-    test_mix_lp_key_determinism();
-    test_mix_lp_key_avalanche();
+    failed += !run_case(test_splitmix64_known_vectors);
+    failed += !run_case(test_mix_lp_key_determinism);
+    failed += !run_case(test_mix_lp_key_avalanche);
 
     // Gate semantics
-    test_maybe_mix_force_off_returns_input();
-    test_maybe_mix_force_on_equals_mix();
-    test_maybe_mix_auto_equals_mix();
+    failed += !run_case(test_maybe_mix_force_off_returns_input);
+    failed += !run_case(test_maybe_mix_force_on_equals_mix);
+    failed += !run_case(test_maybe_mix_auto_equals_mix);
 
     // LpKeyHash functor
-    test_lp_key_hash_determinism();
-    test_lp_key_hash_distinct_outputs_for_lp_shaped_inputs();
-    test_lp_key_hash_distribution_vs_identity();
-    test_lp_key_hash_in_empty_and_single_set();
+    failed += !run_case(test_lp_key_hash_determinism);
+    failed += !run_case(test_lp_key_hash_distinct_outputs_for_lp_shaped_inputs);
+    failed += !run_case(test_lp_key_hash_distribution_vs_identity);
+    failed += !run_case(test_lp_key_hash_in_empty_and_single_set);
 
     // Reset hook
-    test_reset_env_cache_picks_up_new_value();
+    failed += !run_case(test_reset_env_cache_picks_up_new_value);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

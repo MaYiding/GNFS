@@ -2,10 +2,10 @@
 #include "gnfs/factor_base/fb_roots_parallel.hpp"
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/sqrt/modular_poly.hpp"
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs;
 using namespace gnfs::factor_base;
 using namespace gnfs::polynomial;
@@ -48,7 +49,7 @@ void test_prime_sieve() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
 
@@ -61,16 +62,16 @@ void test_prime_sieve() {
     auto fb = FactorBaseBuilder::build(ctx, opts);
 
     // 验证有理因子基
-    assert(fb.rational_count() > 0);
+    TEST_ASSERT(fb.rational_count() > 0);
     // 100 以内有 25 个素数
-    assert(fb.rational_count() == 25);
+    TEST_ASSERT(fb.rational_count() == 25);
 
     // 验证第一个素数是 2
     auto rationals = fb.rational();
-    assert(rationals[0].p == 2);
+    TEST_ASSERT(rationals[0].p == 2);
 
     // 验证最后一个素数是 97
-    assert(rationals[24].p == 97);
+    TEST_ASSERT(rationals[24].p == 97);
 
     std::cout << "  Prime sieve: PASS" << std::endl;
 }
@@ -84,7 +85,7 @@ void test_zero_bounds() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
     auto ctx = BaseMSelector::create_context(n, result);
 
     FactorBaseBuilder::Options opts;
@@ -93,9 +94,9 @@ void test_zero_bounds() {
     opts.special_q_bound = 0;
 
     auto fb = FactorBaseBuilder::build(ctx, opts);
-    assert(fb.rational_count() == 0);
-    assert(fb.algebraic_count() == 0);
-    assert(fb.sieve_algebraic_count() == 0);
+    TEST_ASSERT(fb.rational_count() == 0);
+    TEST_ASSERT(fb.algebraic_count() == 0);
+    TEST_ASSERT(fb.sieve_algebraic_count() == 0);
 
     // An explicit zero sieve prefix must remain zero when the factor base
     // contains only special-Q algebraic entries. This used to be confused
@@ -144,34 +145,34 @@ void test_cz_random_splitting() {
 
     // p=101: 3, 7 都是根。p<64 走 brute-force,但 101 ≥ 64 走 CZ。
     auto roots_101 = FactorBaseBuilder::find_roots_mod_p(ctx, 101);
-    assert(roots_101.size() == 2);
+    TEST_ASSERT(roots_101.size() == 2);
     std::sort(roots_101.begin(), roots_101.end());
-    assert(roots_101[0] == 3);
-    assert(roots_101[1] == 7);
+    TEST_ASSERT(roots_101[0] == 3);
+    TEST_ASSERT(roots_101[1] == 7);
 
     // p=131(>64,CZ 路径)
     auto roots_131 = FactorBaseBuilder::find_roots_mod_p(ctx, 131);
-    assert(roots_131.size() == 2);
+    TEST_ASSERT(roots_131.size() == 2);
 
     // p=2 边界:f(0)=21 ≡ 1, f(1)=12 ≡ 0,只有 1 是根(brute-force)
     auto roots_2 = FactorBaseBuilder::find_roots_mod_p(ctx, 2);
-    assert(roots_2.size() == 1);
-    assert(roots_2[0] == 1);
+    TEST_ASSERT(roots_2.size() == 1);
+    TEST_ASSERT(roots_2[0] == 1);
 
     // p=3 边界:21=0, 10=1, x²-x+0 = x(x-1) → 根 0,1
     auto roots_3 = FactorBaseBuilder::find_roots_mod_p(ctx, 3);
-    assert(roots_3.size() == 2);
+    TEST_ASSERT(roots_3.size() == 2);
     std::sort(roots_3.begin(), roots_3.end());
-    assert(roots_3[0] == 0);
-    assert(roots_3[1] == 1);
+    TEST_ASSERT(roots_3[0] == 0);
+    TEST_ASSERT(roots_3[1] == 1);
 
     // p=5 边界:21=1, 10=0, x²+1 没有根(5≡1 mod 4? 不是 — 5 mod 4 = 1,
     // QR(-1, 5) = +1 实际 -1 ≡ 4 = 2² → 根 2, 3)
     auto roots_5 = FactorBaseBuilder::find_roots_mod_p(ctx, 5);
-    assert(roots_5.size() == 2);
+    TEST_ASSERT(roots_5.size() == 2);
     std::sort(roots_5.begin(), roots_5.end());
-    assert(roots_5[0] == 2);
-    assert(roots_5[1] == 3);
+    TEST_ASSERT(roots_5[0] == 2);
+    TEST_ASSERT(roots_5[1] == 3);
 
     std::cout << "  CZ random splitting: PASS (2 roots @ p=101/131; p=2/3/5 边界)" << std::endl;
 }
@@ -300,7 +301,7 @@ void test_algebraic_roots() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
 
@@ -312,13 +313,13 @@ void test_algebraic_roots() {
     auto fb = FactorBaseBuilder::build(ctx, opts);
 
     // 代数侧应该有一些素理想
-    assert(fb.algebraic_count() > 0);
+    TEST_ASSERT(fb.algebraic_count() > 0);
 
     // 每个代数素理想 (p, r) 应该满足 f(r) ≡ 0 (mod p)
     auto algebraics = fb.algebraic();
     for (const auto& ap : algebraics) {
         uint64_t fr = ctx.evaluate_mod(ap.r, ap.p);
-        assert(fr == 0); // f(r) mod p should be 0
+        TEST_ASSERT(fr == 0); // f(r) mod p should be 0
     }
 
     std::cout << "  Algebraic roots: PASS (" << fb.algebraic_count() << " primes)" << std::endl;
@@ -329,7 +330,7 @@ void test_index_lookup() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
 
@@ -342,20 +343,20 @@ void test_index_lookup() {
 
     // 测试有理侧查找
     auto idx = fb.find_rational(7);
-    assert(idx.has_value());
-    assert(fb.rational()[*idx].p == 7);
+    TEST_ASSERT(idx.has_value());
+    TEST_ASSERT(fb.rational()[*idx].p == 7);
 
     // 查找不存在的素数
     auto not_found = fb.find_rational(6);
-    assert(!not_found.has_value());
+    TEST_ASSERT(!not_found.has_value());
 
     // 测试代数侧查找
     auto algebraics = fb.algebraic();
     if (!algebraics.empty()) {
         const auto& first = algebraics[0];
         auto alg_idx = fb.find_algebraic(first.p, first.r);
-        assert(alg_idx.has_value());
-        assert(*alg_idx == 0);
+        TEST_ASSERT(alg_idx.has_value());
+        TEST_ASSERT(*alg_idx == 0);
     }
 
     std::cout << "  Index lookup: PASS" << std::endl;
@@ -367,13 +368,13 @@ void test_log_values() {
     uint8_t scale = 16;
 
     // log2(2) * 16 = 16
-    assert(compute_log_prime(2, scale) == 16);
+    TEST_ASSERT(compute_log_prime(2, scale) == 16);
 
     // log2(4) * 16 = 32
-    assert(compute_log_prime(4, scale) == 32);
+    TEST_ASSERT(compute_log_prime(4, scale) == 32);
 
     // log2(1024) * 16 = 160
-    assert(compute_log_prime(1024, scale) == 160);
+    TEST_ASSERT(compute_log_prime(1024, scale) == 160);
 
     std::cout << "  Log values: PASS" << std::endl;
 }
@@ -416,7 +417,7 @@ void test_parallel_build() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
 
@@ -601,7 +602,7 @@ void test_larger_bound() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
 
     auto ctx = BaseMSelector::create_context(n, result);
 
@@ -613,8 +614,8 @@ void test_larger_bound() {
     auto fb = FactorBaseBuilder::build(ctx, opts);
 
     // 100000 以内约有 9592 个素数
-    assert(fb.rational_count() > 9000);
-    assert(fb.rational_count() < 10000);
+    TEST_ASSERT(fb.rational_count() > 9000);
+    TEST_ASSERT(fb.rational_count() < 10000);
 
     std::cout << "  Larger bound: PASS (" << fb.rational_count() << " rational, "
               << fb.algebraic_count() << " algebraic)" << std::endl;
@@ -631,15 +632,15 @@ void test_base_m_irreducibility() {
     {
         Integer n("1320");
         auto result = BaseMSelector::select(n, 3);
-        assert(result.success);
-        assert(result.f.degree() == 3);
+        TEST_ASSERT(result.success);
+        TEST_ASSERT(result.f.degree() == 3);
 
         // Verify f(m) = N
         Integer fm = result.f.evaluate(result.m);
-        assert(fm == n);
+        TEST_ASSERT(fm == n);
 
         // m should NOT be 10 (the base value with reducible polynomial)
-        assert(result.m != Integer(10));
+        TEST_ASSERT(result.m != Integer(10));
 
         // Verify the selected polynomial is irreducible over Q:
         // For degree 3, no rational roots ⟹ irreducible.
@@ -647,12 +648,12 @@ void test_base_m_irreducibility() {
         Integer c0 = result.f[0].clone();
         if (c0.is_zero()) {
             // If constant term is 0, x=0 is a root → reducible → should not happen
-            assert(false && "selected polynomial has root 0");
+            TEST_ASSERT(false && "selected polynomial has root 0");
         }
         // Check small integer roots: ±1, ±2, ±3, ±6 (divisors up to |c0|)
         for (int r : {1, -1, 2, -2, 3, -3, 6, -6}) {
             Integer val = result.f.evaluate(Integer(r));
-            assert(!val.is_zero()); // no rational roots allowed
+            TEST_ASSERT(!val.is_zero()); // no rational roots allowed
         }
 
         // Verify irreducibility via mod-p test for at least one prime
@@ -674,7 +675,7 @@ void test_base_m_irreducibility() {
                 break;
             }
         }
-        assert(found_irred);
+        TEST_ASSERT(found_irred);
 
         std::cout << "  N=1320 reducible case: PASS (m=" << result.m.to_string() << ")"
                   << std::endl;
@@ -684,10 +685,10 @@ void test_base_m_irreducibility() {
     {
         Integer n("10403"); // 101 × 103
         auto result = BaseMSelector::select(n, 3);
-        assert(result.success);
-        assert(result.f.degree() == 3);
+        TEST_ASSERT(result.success);
+        TEST_ASSERT(result.f.degree() == 3);
         Integer fm = result.f.evaluate(result.m);
-        assert(fm == n);
+        TEST_ASSERT(fm == n);
         std::cout << "  N=10403 normal case: PASS" << std::endl;
     }
 
@@ -695,10 +696,10 @@ void test_base_m_irreducibility() {
     {
         Integer n(test_n); // 1000036000099 = 1000003 × 1000033
         auto result = BaseMSelector::select(n, 3);
-        assert(result.success);
-        assert(result.f.degree() == 3);
+        TEST_ASSERT(result.success);
+        TEST_ASSERT(result.f.degree() == 3);
         Integer fm = result.f.evaluate(result.m);
-        assert(fm == n);
+        TEST_ASSERT(fm == n);
         std::cout << "  N=1000036000099 normal case: PASS" << std::endl;
     }
 
@@ -710,7 +711,7 @@ void test_serialization_roundtrip() {
 
     Integer n(test_n);
     auto result = BaseMSelector::select(n, 3);
-    assert(result.success);
+    TEST_ASSERT(result.success);
     auto ctx = BaseMSelector::create_context(n, result);
 
     FactorBaseBuilder::Options opts;
@@ -730,39 +731,39 @@ void test_serialization_roundtrip() {
     auto fb2 = FactorBase::load(ss);
 
     // Verify params
-    assert(fb2.params().rational_bound == fb.params().rational_bound);
-    assert(fb2.params().algebraic_bound == fb.params().algebraic_bound);
-    assert(fb2.params().large_prime_bound == fb.params().large_prime_bound);
-    assert(fb2.params().log_scale == fb.params().log_scale);
+    TEST_ASSERT(fb2.params().rational_bound == fb.params().rational_bound);
+    TEST_ASSERT(fb2.params().algebraic_bound == fb.params().algebraic_bound);
+    TEST_ASSERT(fb2.params().large_prime_bound == fb.params().large_prime_bound);
+    TEST_ASSERT(fb2.params().log_scale == fb.params().log_scale);
 
     // Verify counts
-    assert(fb2.rational_count() == fb.rational_count());
-    assert(fb2.algebraic_count() == fb.algebraic_count());
-    assert(fb2.sieve_algebraic_count() == fb.sieve_algebraic_count());
+    TEST_ASSERT(fb2.rational_count() == fb.rational_count());
+    TEST_ASSERT(fb2.algebraic_count() == fb.algebraic_count());
+    TEST_ASSERT(fb2.sieve_algebraic_count() == fb.sieve_algebraic_count());
 
     // Verify rational primes content
     auto rat1 = fb.rational();
     auto rat2 = fb2.rational();
     for (size_t i = 0; i < rat1.size(); ++i) {
-        assert(rat1[i].p == rat2[i].p);
-        assert(rat1[i].log_p == rat2[i].log_p);
+        TEST_ASSERT(rat1[i].p == rat2[i].p);
+        TEST_ASSERT(rat1[i].log_p == rat2[i].log_p);
     }
 
     // Verify algebraic primes content
     auto alg1 = fb.algebraic();
     auto alg2 = fb2.algebraic();
     for (size_t i = 0; i < alg1.size(); ++i) {
-        assert(alg1[i].p == alg2[i].p);
-        assert(alg1[i].r == alg2[i].r);
-        assert(alg1[i].log_p == alg2[i].log_p);
-        assert(alg1[i].degree == alg2[i].degree);
+        TEST_ASSERT(alg1[i].p == alg2[i].p);
+        TEST_ASSERT(alg1[i].r == alg2[i].r);
+        TEST_ASSERT(alg1[i].log_p == alg2[i].log_p);
+        TEST_ASSERT(alg1[i].degree == alg2[i].degree);
     }
 
     // Verify index lookup works after load
     for (const auto& rp : rat1) {
         auto idx = fb2.find_rational(rp.p);
-        assert(idx.has_value());
-        assert(fb2.rational()[*idx].p == rp.p);
+        TEST_ASSERT(idx.has_value());
+        TEST_ASSERT(fb2.rational()[*idx].p == rp.p);
     }
 
     std::cout << "  Serialization roundtrip: PASS (" << fb.rational_count() << " rat, "
@@ -996,7 +997,7 @@ void test_serialization_invalid() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        TEST_ASSERT(caught);
     }
 
     // Bad version
@@ -1012,7 +1013,7 @@ void test_serialization_invalid() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        TEST_ASSERT(caught);
     }
 
     // Truncated header must fail before interpreting uninitialized fields.
@@ -1026,7 +1027,7 @@ void test_serialization_invalid() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        TEST_ASSERT(caught);
     }
 
     // A corrupt count must not trigger a count-sized resize before EOF is checked.
@@ -1056,7 +1057,7 @@ void test_serialization_invalid() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        TEST_ASSERT(caught);
     }
 
     // The sieve count is a bounded view into the algebraic-prime array.
@@ -1088,7 +1089,7 @@ void test_serialization_invalid() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        TEST_ASSERT(caught);
     }
 
     // Serialized factor-base entries are consumed as moduli by the cofactor
@@ -1196,7 +1197,7 @@ void test_count_width_guards() {
         } catch (const std::overflow_error&) {
             rational_threw = true;
         }
-        assert(rational_threw);
+        TEST_ASSERT(rational_threw);
 
         bool algebraic_threw = false;
         try {
@@ -1204,7 +1205,7 @@ void test_count_width_guards() {
         } catch (const std::overflow_error&) {
             algebraic_threw = true;
         }
-        assert(algebraic_threw);
+        TEST_ASSERT(algebraic_threw);
     }
 
     // A zero/one-element base still exercises the size_t index rebuild path.
@@ -1212,8 +1213,8 @@ void test_count_width_guards() {
     small.add_rational(2, 16);
     small.add_algebraic(3, 1, 25);
     small.build_index();
-    assert(small.find_rational(2).has_value());
-    assert(small.find_algebraic(3, 1).has_value());
+    TEST_ASSERT(small.find_rational(2).has_value());
+    TEST_ASSERT(small.find_algebraic(3, 1).has_value());
 
     std::cout << "  Factor-base count width guards: PASS" << std::endl;
 }
@@ -1258,36 +1259,43 @@ void test_segmented_parallel_sieve() {
                 ++mismatches;
             }
         }
-        assert(mismatches == 0);
+        TEST_ASSERT(mismatches == 0);
         std::cout << "  bound=" << bound << ": PASS (byte-by-byte match)" << std::endl;
     }
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Factor Base Tests ===" << std::endl;
 
-    test_prime_sieve();
-    test_zero_bounds();
-    test_algebraic_roots();
-    test_cz_random_splitting();
-    test_root_finder_degree_reduction();
-    test_projective_root_after_degree_reduction();
-    test_root_finder_rejects_non_prime_modulus();
-    test_index_lookup();
-    test_log_values();
-    test_zero_and_one_bounds();
-    test_parallel_build();
-    test_builder_root_worker_cap();
-    test_builder_root_chunks_preserve_projective_roots();
-    test_larger_bound();
-    test_segmented_parallel_sieve();
-    test_base_m_irreducibility();
-    test_serialization_roundtrip();
-    test_little_endian_serialization();
-    test_serialization_invalid();
-    test_serialized_rational_order();
-    test_serialized_algebraic_order();
-    test_count_width_guards();
+    failed += !run_case(test_prime_sieve);
+    failed += !run_case(test_zero_bounds);
+    failed += !run_case(test_algebraic_roots);
+    failed += !run_case(test_cz_random_splitting);
+    failed += !run_case(test_root_finder_degree_reduction);
+    failed += !run_case(test_projective_root_after_degree_reduction);
+    failed += !run_case(test_root_finder_rejects_non_prime_modulus);
+    failed += !run_case(test_index_lookup);
+    failed += !run_case(test_log_values);
+    failed += !run_case(test_zero_and_one_bounds);
+    failed += !run_case(test_parallel_build);
+    failed += !run_case(test_builder_root_worker_cap);
+    failed += !run_case(test_builder_root_chunks_preserve_projective_roots);
+    failed += !run_case(test_larger_bound);
+    failed += !run_case(test_segmented_parallel_sieve);
+    failed += !run_case(test_base_m_irreducibility);
+    failed += !run_case(test_serialization_roundtrip);
+    failed += !run_case(test_little_endian_serialization);
+    failed += !run_case(test_serialization_invalid);
+    failed += !run_case(test_serialized_rational_order);
+    failed += !run_case(test_serialized_algebraic_order);
+    failed += !run_case(test_count_width_guards);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

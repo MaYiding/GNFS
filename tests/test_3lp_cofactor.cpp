@@ -14,10 +14,10 @@
 #include <gnfs/core/integer.hpp>
 
 #include "support/scoped_environment_stderr.hpp"
+#include "support/test_assert.hpp"
 
 #include <array>
 #include <atomic>
-#include <cassert>
 #include <cstdint>
 #include <iostream>
 
@@ -29,6 +29,7 @@ using gnfs::cofactor::quick_cofactor_check;
 using gnfs::cofactor::survival_stats;
 using gnfs::cofactor::try_classify_three_lp;
 using gnfs::core::Integer;
+using gnfs::test::run_case;
 using gnfs::tests::support::ScopedEnvironmentVariable;
 
 static int g_pass = 0;
@@ -50,9 +51,9 @@ void test_3lp_accepted() {
     // Pick three small primes well below 2^20 (B for lp_bits=20).
     // Use p=10007, q=10009, r=10037: all prime, all < 2^20.
     constexpr uint64_t p = 10007, q = 10009, r = 10037;
-    assert(is_probable_prime_u64(p));
-    assert(is_probable_prime_u64(q));
-    assert(is_probable_prime_u64(r));
+    TEST_ASSERT(is_probable_prime_u64(p));
+    TEST_ASSERT(is_probable_prime_u64(q));
+    TEST_ASSERT(is_probable_prime_u64(r));
     constexpr uint64_t c = p * q * r;                 // ≈ 1.01e12, < 2^40
     [[maybe_unused]] constexpr uint64_t B = 1u << 20; // lp_bits=20, B = 2^20 ≈ 1.05e6
     // Sanity: c > B² (~1.1e12 > 1.1e12 — actually almost equal!). Let me pick smaller B.
@@ -379,20 +380,20 @@ void test_big_integer_factorization_budget_failure() {
 }
 
 int main() {
-    test_3lp_accepted();
-    test_3lp_rejected_by_default();
-    test_3lp_rejected_factor_too_large();
-    test_cofactor_above_b3();
-    test_quick_check_3lp_window();
-    test_direct_3lp_helper();
-    test_2lp_still_classified();
-    test_smooth_unchanged();
-    test_prime_unchanged();
-    test_hard_3lp_corpus();
-    test_big_integer_3lp();
-    test_big_integer_factor_above_bound();
-    test_big_integer_b3_boundary();
-    test_big_integer_factorization_budget_failure();
+    g_fail += !run_case(test_3lp_accepted);
+    g_fail += !run_case(test_3lp_rejected_by_default);
+    g_fail += !run_case(test_3lp_rejected_factor_too_large);
+    g_fail += !run_case(test_cofactor_above_b3);
+    g_fail += !run_case(test_quick_check_3lp_window);
+    g_fail += !run_case(test_direct_3lp_helper);
+    g_fail += !run_case(test_2lp_still_classified);
+    g_fail += !run_case(test_smooth_unchanged);
+    g_fail += !run_case(test_prime_unchanged);
+    g_fail += !run_case(test_hard_3lp_corpus);
+    g_fail += !run_case(test_big_integer_3lp);
+    g_fail += !run_case(test_big_integer_factor_above_bound);
+    g_fail += !run_case(test_big_integer_b3_boundary);
+    g_fail += !run_case(test_big_integer_factorization_budget_failure);
 
     std::cout << "\n=============================================" << std::endl;
     std::cout << "  Results: " << g_pass << " passed, " << g_fail << " failed" << std::endl;

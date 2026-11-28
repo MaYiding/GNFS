@@ -13,13 +13,16 @@
 
 #include <gnfs/api/factorizer.hpp>
 #include <gnfs/siqs/siqs.hpp>
-#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 
+#include "support/test_assert.hpp"
+
 using gnfs::core::Integer;
+using gnfs::test::run_case;
+
 namespace siqs = gnfs::siqs;
 namespace api  = gnfs::api;
 
@@ -43,9 +46,9 @@ bool run_direct_siqs(const Case& c) {
     size_t digits = N.to_string().size();
     printf("\n[E2E:%s] direct siqs::factor — N (%zu bits, %zu digits) timeout=%zus\n",
            c.label, bits, digits, c.timeout_s);
-    assert(bits   == c.expected_bits);
-    assert(digits == c.expected_digits);
-    assert(P * Q == N);
+    TEST_ASSERT(bits   == c.expected_bits);
+    TEST_ASSERT(digits == c.expected_digits);
+    TEST_ASSERT(P * Q == N);
 
     auto t0 = std::chrono::steady_clock::now();
     auto r  = siqs::factor(N, c.timeout_s, /*verbose=*/false);
@@ -172,10 +175,10 @@ int main() {
         60, 101, 31};
 
     bool ok = true;
-    ok &= run_direct_siqs(c100);
-    ok &= run_pipeline_siqs(c100);
-    ok &= run_force_siqs_env(c_small);
-    ok &= run_direct_siqs(c180);
+    ok &= run_case(run_direct_siqs, c100);
+    ok &= run_case(run_pipeline_siqs, c100);
+    ok &= run_case(run_force_siqs_env, c_small);
+    ok &= run_case(run_direct_siqs, c180);
     // Skip pipeline-route check for 180-bit by default to keep e2e under slow tier;
     // direct factor() above already exercises the same algorithm.
 

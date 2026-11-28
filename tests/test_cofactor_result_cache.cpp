@@ -21,17 +21,18 @@
 //     no crash and counter consistency)
 //   * 16-key mixed hash sweep (covers hash distribution)
 
-// Force assert() live under -DNDEBUG so Release builds do not silently
-// strip verification (W14 follows W13 T3 test convention).
+// Keep NDEBUG undefined in this translation unit: library headers included
+// below may keep their own assert checks live here. The checks of this file
+// use GNFS_TEST_CHECK and TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 
 #include "gnfs/cofactor/result_cache.hpp"
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -42,6 +43,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+using gnfs::test::run_case;
 
 namespace {
 
@@ -238,8 +241,8 @@ static void test_env_unset_default_zero() {
     std::cout << "Testing GNFS_COFACTOR_RESULT_CACHE_SIZE unset => 0..." << std::endl;
     unsetenv("GNFS_COFACTOR_RESULT_CACHE_SIZE");
     cofactor_result_cache_reset_env_cache_for_testing();
-    assert(cofactor_result_cache_size() == 0);
-    assert(cofactor_result_cache_enabled() == false);
+    TEST_ASSERT(cofactor_result_cache_size() == 0);
+    TEST_ASSERT(cofactor_result_cache_enabled() == false);
     std::cout << "  ENV unset: PASS (size=0, disabled)" << std::endl;
 }
 
@@ -247,8 +250,8 @@ static void test_env_explicit_zero() {
     std::cout << "Testing GNFS_COFACTOR_RESULT_CACHE_SIZE=0..." << std::endl;
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "0", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
-    assert(cofactor_result_cache_size() == 0);
-    assert(cofactor_result_cache_enabled() == false);
+    TEST_ASSERT(cofactor_result_cache_size() == 0);
+    TEST_ASSERT(cofactor_result_cache_enabled() == false);
     std::cout << "  ENV=0: PASS" << std::endl;
 }
 
@@ -256,8 +259,8 @@ static void test_env_value_100() {
     std::cout << "Testing GNFS_COFACTOR_RESULT_CACHE_SIZE=100..." << std::endl;
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "100", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
-    assert(cofactor_result_cache_size() == 100);
-    assert(cofactor_result_cache_enabled() == true);
+    TEST_ASSERT(cofactor_result_cache_size() == 100);
+    TEST_ASSERT(cofactor_result_cache_enabled() == true);
     std::cout << "  ENV=100: PASS (size=100, enabled)" << std::endl;
 }
 
@@ -266,7 +269,7 @@ static void test_env_clamp_to_max() {
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "9999999", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
     constexpr std::size_t kExpected = 1ULL << 20; // 1,048,576
-    assert(cofactor_result_cache_size() == kExpected);
+    TEST_ASSERT(cofactor_result_cache_size() == kExpected);
     std::cout << "  ENV=9999999 clamp to " << kExpected << ": PASS" << std::endl;
 }
 
@@ -277,9 +280,9 @@ static void test_env_huge_value_clamps_to_max() {
     for (const char* value : {"2147483648", "999999999999999999999999999"}) {
         setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", value, 1);
         cofactor_result_cache_reset_env_cache_for_testing();
-        assert(cofactor_result_cache_size() == (1ULL << 20));
+        TEST_ASSERT(cofactor_result_cache_size() == (1ULL << 20));
     }
-    assert(cofactor_result_cache_enabled());
+    TEST_ASSERT(cofactor_result_cache_enabled());
     std::cout << "  huge value clamps to 1048576: PASS" << std::endl;
 }
 
@@ -287,7 +290,7 @@ static void test_env_garbage_zero() {
     std::cout << "Testing GNFS_COFACTOR_RESULT_CACHE_SIZE=garbage => 0..." << std::endl;
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "garbage", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
-    assert(cofactor_result_cache_size() == 0);
+    TEST_ASSERT(cofactor_result_cache_size() == 0);
     std::cout << "  ENV=garbage: PASS (size=0)" << std::endl;
 }
 
@@ -296,7 +299,7 @@ static void test_env_partial_parse_12abc() {
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "12abc", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
     // std::stoi accepts numeric prefix.
-    assert(cofactor_result_cache_size() == 12);
+    TEST_ASSERT(cofactor_result_cache_size() == 12);
     std::cout << "  ENV=12abc partial-parse: PASS (size=12, documented)" << std::endl;
 }
 
@@ -305,7 +308,7 @@ static void test_env_leading_whitespace_zero() {
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "  100", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
     // Leading whitespace explicitly rejected (matches W12 T1 convention).
-    assert(cofactor_result_cache_size() == 0);
+    TEST_ASSERT(cofactor_result_cache_size() == 0);
     std::cout << "  ENV='  100' leading whitespace: PASS (size=0)" << std::endl;
 }
 
@@ -313,7 +316,7 @@ static void test_env_negative_zero() {
     std::cout << "Testing GNFS_COFACTOR_RESULT_CACHE_SIZE='-5' => 0..." << std::endl;
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "-5", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
-    assert(cofactor_result_cache_size() == 0);
+    TEST_ASSERT(cofactor_result_cache_size() == 0);
     std::cout << "  ENV=-5: PASS (size=0)" << std::endl;
 }
 
@@ -321,15 +324,15 @@ static void test_env_reset_hook_re_resolves() {
     std::cout << "Testing reset hook re-resolves ENV..." << std::endl;
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "50", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
-    assert(cofactor_result_cache_size() == 50);
+    TEST_ASSERT(cofactor_result_cache_size() == 50);
 
     setenv("GNFS_COFACTOR_RESULT_CACHE_SIZE", "200", 1);
     cofactor_result_cache_reset_env_cache_for_testing();
-    assert(cofactor_result_cache_size() == 200);
+    TEST_ASSERT(cofactor_result_cache_size() == 200);
 
     unsetenv("GNFS_COFACTOR_RESULT_CACHE_SIZE");
     cofactor_result_cache_reset_env_cache_for_testing();
-    assert(cofactor_result_cache_size() == 0);
+    TEST_ASSERT(cofactor_result_cache_size() == 0);
 
     std::cout << "  reset hook re-resolves 3x: PASS" << std::endl;
 }
@@ -341,17 +344,17 @@ static void test_env_reset_hook_re_resolves() {
 static void test_disabled_cache_get_put_noop() {
     std::cout << "Testing capacity=0 disabled cache..." << std::endl;
     CofactorResultCache cache(0);
-    assert(cache.capacity() == 0);
-    assert(cache.size() == 0);
+    TEST_ASSERT(cache.capacity() == 0);
+    TEST_ASSERT(cache.size() == 0);
 
     // put is a no-op.
     auto v = make_classification(CofactorClass::Smooth);
     cache.put(123, 1024, 8192, v);
-    assert(cache.size() == 0);
+    TEST_ASSERT(cache.size() == 0);
 
     // get returns nullopt.
     auto r = cache.get(123, 1024, 8192);
-    assert(!r.has_value());
+    TEST_ASSERT(!r.has_value());
 
     std::cout << "  capacity=0: PASS (put no-op, get nullopt)" << std::endl;
 }
@@ -375,7 +378,7 @@ static void test_put_get_basic_roundtrip() {
     cache.put(3, 1000, 5000, v_semi);
     cache.put(4, 1000, 5000, v_3lp);
     cache.put(5, 1000, 5000, v_pp);
-    assert(cache.size() == 5);
+    TEST_ASSERT(cache.size() == 5);
 
     auto r1 = cache.get(1, 1000, 5000);
     auto r2 = cache.get(2, 1000, 5000);
@@ -383,15 +386,15 @@ static void test_put_get_basic_roundtrip() {
     auto r4 = cache.get(4, 1000, 5000);
     auto r5 = cache.get(5, 1000, 5000);
 
-    assert(r1.has_value() && classifications_equal(*r1, v_smooth));
-    assert(r2.has_value() && classifications_equal(*r2, v_prime));
-    assert(r3.has_value() && classifications_equal(*r3, v_semi));
-    assert(r4.has_value() && classifications_equal(*r4, v_3lp));
-    assert(r5.has_value() && classifications_equal(*r5, v_pp));
+    TEST_ASSERT(r1.has_value() && classifications_equal(*r1, v_smooth));
+    TEST_ASSERT(r2.has_value() && classifications_equal(*r2, v_prime));
+    TEST_ASSERT(r3.has_value() && classifications_equal(*r3, v_semi));
+    TEST_ASSERT(r4.has_value() && classifications_equal(*r4, v_3lp));
+    TEST_ASSERT(r5.has_value() && classifications_equal(*r5, v_pp));
 
     // Miss returns nullopt.
     auto miss = cache.get(99, 1000, 5000);
-    assert(!miss.has_value());
+    TEST_ASSERT(!miss.has_value());
 
     std::cout << "  put + get round-trip 5 values: PASS" << std::endl;
 }
@@ -407,21 +410,21 @@ static void test_lru_eviction_capacity_3_insert_4() {
     cache.put(1, 0, 0, make_classification(CofactorClass::Smooth));
     cache.put(2, 0, 0, make_classification(CofactorClass::Prime, 2));
     cache.put(3, 0, 0, make_classification(CofactorClass::Prime, 3));
-    assert(cache.size() == 3);
+    TEST_ASSERT(cache.size() == 3);
 
     // Insert 4th: evicts LRU = key 1.
     cache.put(4, 0, 0, make_classification(CofactorClass::Prime, 4));
-    assert(cache.size() == 3);
+    TEST_ASSERT(cache.size() == 3);
 
     auto r1 = cache.get(1, 0, 0);
     auto r2 = cache.get(2, 0, 0);
     auto r3 = cache.get(3, 0, 0);
     auto r4 = cache.get(4, 0, 0);
 
-    assert(!r1.has_value()); // evicted
-    assert(r2.has_value());
-    assert(r3.has_value());
-    assert(r4.has_value());
+    TEST_ASSERT(!r1.has_value()); // evicted
+    TEST_ASSERT(r2.has_value());
+    TEST_ASSERT(r3.has_value());
+    TEST_ASSERT(r4.has_value());
 
     std::cout << "  LRU eviction key 1 evicted: PASS" << std::endl;
 }
@@ -441,7 +444,7 @@ static void test_lru_promotion_after_get_hit() {
     // Cache state (MRU→LRU): 3, 2, 1
     // Get 1: promotes 1 to MRU. New state: 1, 3, 2.
     auto r1 = cache.get(1, 0, 0);
-    assert(r1.has_value());
+    TEST_ASSERT(r1.has_value());
 
     // Insert 4: evicts LRU = 2 (not 1).
     cache.put(4, 0, 0, make_classification(CofactorClass::Prime, 4));
@@ -451,10 +454,10 @@ static void test_lru_promotion_after_get_hit() {
     auto r3_after = cache.get(3, 0, 0);
     auto r4_after = cache.get(4, 0, 0);
 
-    assert(r1_after.has_value());  // promoted, retained
-    assert(!r2_after.has_value()); // evicted
-    assert(r3_after.has_value());
-    assert(r4_after.has_value());
+    TEST_ASSERT(r1_after.has_value());  // promoted, retained
+    TEST_ASSERT(!r2_after.has_value()); // evicted
+    TEST_ASSERT(r3_after.has_value());
+    TEST_ASSERT(r4_after.has_value());
 
     std::cout << "  get hit promoted key 1, key 2 evicted instead: PASS" << std::endl;
 }
@@ -470,22 +473,22 @@ static void test_clear_empties_cache() {
     for (uint64_t k = 1; k <= 4; ++k) {
         cache.put(k, 0, 0, make_classification(CofactorClass::Prime, k));
     }
-    assert(cache.size() == 4);
+    TEST_ASSERT(cache.size() == 4);
 
     cache.clear();
-    assert(cache.size() == 0);
+    TEST_ASSERT(cache.size() == 0);
 
     for (uint64_t k = 1; k <= 4; ++k) {
         auto r = cache.get(k, 0, 0);
-        assert(!r.has_value());
+        TEST_ASSERT(!r.has_value());
     }
 
     // Cache is reusable after clear: insert again.
     cache.put(10, 0, 0, make_classification(CofactorClass::Smooth));
-    assert(cache.size() == 1);
+    TEST_ASSERT(cache.size() == 1);
     auto r10 = cache.get(10, 0, 0);
-    assert(r10.has_value());
-    assert(r10->type == CofactorClass::Smooth);
+    TEST_ASSERT(r10.has_value());
+    TEST_ASSERT(r10->type == CofactorClass::Smooth);
 
     std::cout << "  clear + re-use: PASS" << std::endl;
 }
@@ -508,19 +511,19 @@ static void test_same_cofactor_different_B_lp_independent() {
     cache.put(cofactor, 200, 1000, v_b);
     cache.put(cofactor, 100, 2000, v_c);
 
-    assert(cache.size() == 3);
+    TEST_ASSERT(cache.size() == 3);
 
     auto r_a = cache.get(cofactor, 100, 1000);
     auto r_b = cache.get(cofactor, 200, 1000);
     auto r_c = cache.get(cofactor, 100, 2000);
 
-    assert(r_a.has_value() && classifications_equal(*r_a, v_a));
-    assert(r_b.has_value() && classifications_equal(*r_b, v_b));
-    assert(r_c.has_value() && classifications_equal(*r_c, v_c));
+    TEST_ASSERT(r_a.has_value() && classifications_equal(*r_a, v_a));
+    TEST_ASSERT(r_b.has_value() && classifications_equal(*r_b, v_b));
+    TEST_ASSERT(r_c.has_value() && classifications_equal(*r_c, v_c));
 
     // Different combo not stored.
     auto r_miss = cache.get(cofactor, 200, 2000);
-    assert(!r_miss.has_value());
+    TEST_ASSERT(!r_miss.has_value());
 
     std::cout << "  three independent slots same cofactor: PASS" << std::endl;
 }
@@ -548,17 +551,17 @@ static void test_repeated_put_updates_and_promotes() {
     cache.put(1, 0, 0, v1_new);
 
     // Verify size unchanged (no double-insert).
-    assert(cache.size() == 3);
+    TEST_ASSERT(cache.size() == 3);
 
     // Verify value updated.
     auto r1 = cache.get(1, 0, 0);
-    assert(r1.has_value());
-    assert(r1->type == CofactorClass::Smooth);
+    TEST_ASSERT(r1.has_value());
+    TEST_ASSERT(r1->type == CofactorClass::Smooth);
 
     // Note: r1.get hit also promoted to MRU. Insert 4 evicts key 2 (LRU).
     cache.put(4, 0, 0, make_classification(CofactorClass::Prime, 4));
     auto r2 = cache.get(2, 0, 0);
-    assert(!r2.has_value());
+    TEST_ASSERT(!r2.has_value());
 
     std::cout << "  re-put updates value + promotes: PASS" << std::endl;
 }
@@ -571,22 +574,22 @@ static void test_size_capacity_accessors() {
     std::cout << "Testing size() / capacity() accessors..." << std::endl;
     CofactorResultCache cache(7);
 
-    assert(cache.capacity() == 7);
-    assert(cache.size() == 0);
+    TEST_ASSERT(cache.capacity() == 7);
+    TEST_ASSERT(cache.size() == 0);
 
     for (uint64_t k = 0; k < 5; ++k) {
         cache.put(k, 0, 0, make_classification(CofactorClass::Smooth));
-        assert(cache.size() == k + 1);
-        assert(cache.capacity() == 7);
+        TEST_ASSERT(cache.size() == k + 1);
+        TEST_ASSERT(cache.capacity() == 7);
     }
 
     // Exceed capacity: size stays at 7 (LRU evicts).
     for (uint64_t k = 5; k < 20; ++k) {
         cache.put(k, 0, 0, make_classification(CofactorClass::Smooth));
-        assert(cache.size() <= 7);
-        assert(cache.capacity() == 7);
+        TEST_ASSERT(cache.size() <= 7);
+        TEST_ASSERT(cache.capacity() == 7);
     }
-    assert(cache.size() == 7);
+    TEST_ASSERT(cache.size() == 7);
 
     std::cout << "  capacity bound enforced: PASS" << std::endl;
 }
@@ -650,9 +653,9 @@ static void test_shared_singleton_same_instance() {
     CofactorResultCache& c3 = shared_cofactor_result_cache();
 
     // Address comparison: all three refer to the same singleton.
-    assert(&c1 == &c2);
-    assert(&c1 == &c3);
-    assert(&c2 == &c3);
+    TEST_ASSERT(&c1 == &c2);
+    TEST_ASSERT(&c1 == &c3);
+    TEST_ASSERT(&c2 == &c3);
 
     std::cout << "  singleton address stable: PASS" << std::endl;
 }
@@ -705,8 +708,8 @@ static void test_thread_safety_4x100_mixed() {
     // No crash → mutex protected access. hits + misses ≤ total ops (rough
     // sanity).
     const int total_get_ops = hits.load() + misses.load();
-    assert(total_get_ops >= 0);
-    assert(total_get_ops <= kThreads * kIters);
+    TEST_ASSERT(total_get_ops >= 0);
+    TEST_ASSERT(total_get_ops <= kThreads * kIters);
     GNFS_TEST_CHECK(cache.size() <= 32);
 
     std::cout << "  4 threads x 100 ops: PASS (hits=" << hits.load() << ", misses=" << misses.load()
@@ -755,14 +758,14 @@ static void test_16_key_mixed_hash_sweep() {
         cache.put(samples[i].cof, samples[i].b, samples[i].lp,
                   make_classification(CofactorClass::Prime, samples[i].marker));
     }
-    assert(static_cast<int>(cache.size()) == n);
+    TEST_ASSERT(static_cast<int>(cache.size()) == n);
 
     // Retrieve each, verify per-slot marker (no cross-key corruption).
     for (int i = 0; i < n; ++i) {
         auto r = cache.get(samples[i].cof, samples[i].b, samples[i].lp);
-        assert(r.has_value());
-        assert(r->type == CofactorClass::Prime);
-        assert(r->factor1 == samples[i].marker);
+        TEST_ASSERT(r.has_value());
+        TEST_ASSERT(r->type == CofactorClass::Prime);
+        TEST_ASSERT(r->factor1 == samples[i].marker);
     }
 
     std::cout << "  16 distinct keys preserved: PASS" << std::endl;
@@ -773,34 +776,41 @@ static void test_16_key_mixed_hash_sweep() {
 // ────────────────────────────────────────────────────────────────────
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== W14 T3 Cofactor Result Cache Tests ===" << std::endl;
 
     // ENV parsing (9 cases — exceeds 6 minimum)
-    test_env_unset_default_zero();
-    test_env_explicit_zero();
-    test_env_value_100();
-    test_env_clamp_to_max();
-    test_env_huge_value_clamps_to_max();
-    test_env_garbage_zero();
-    test_env_partial_parse_12abc();
-    test_env_leading_whitespace_zero();
-    test_env_negative_zero();
-    test_env_reset_hook_re_resolves();
+    failed += !run_case(test_env_unset_default_zero);
+    failed += !run_case(test_env_explicit_zero);
+    failed += !run_case(test_env_value_100);
+    failed += !run_case(test_env_clamp_to_max);
+    failed += !run_case(test_env_huge_value_clamps_to_max);
+    failed += !run_case(test_env_garbage_zero);
+    failed += !run_case(test_env_partial_parse_12abc);
+    failed += !run_case(test_env_leading_whitespace_zero);
+    failed += !run_case(test_env_negative_zero);
+    failed += !run_case(test_env_reset_hook_re_resolves);
 
     // Cache behavior
-    test_allocation_failures_preserve_transaction();
-    test_disabled_cache_get_put_noop();
-    test_put_get_basic_roundtrip();
-    test_lru_eviction_capacity_3_insert_4();
-    test_lru_promotion_after_get_hit();
-    test_clear_empties_cache();
-    test_same_cofactor_different_B_lp_independent();
-    test_repeated_put_updates_and_promotes();
-    test_size_capacity_accessors();
-    test_repeated_evictions_preserve_consistency();
-    test_shared_singleton_same_instance();
-    test_thread_safety_4x100_mixed();
-    test_16_key_mixed_hash_sweep();
+    failed += !run_case(test_allocation_failures_preserve_transaction);
+    failed += !run_case(test_disabled_cache_get_put_noop);
+    failed += !run_case(test_put_get_basic_roundtrip);
+    failed += !run_case(test_lru_eviction_capacity_3_insert_4);
+    failed += !run_case(test_lru_promotion_after_get_hit);
+    failed += !run_case(test_clear_empties_cache);
+    failed += !run_case(test_same_cofactor_different_B_lp_independent);
+    failed += !run_case(test_repeated_put_updates_and_promotes);
+    failed += !run_case(test_size_capacity_accessors);
+    failed += !run_case(test_repeated_evictions_preserve_consistency);
+    failed += !run_case(test_shared_singleton_same_instance);
+    failed += !run_case(test_thread_safety_4x100_mixed);
+    failed += !run_case(test_16_key_mixed_hash_sweep);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl;
     std::cout << "=== ALL TESTS PASSED ===" << std::endl;

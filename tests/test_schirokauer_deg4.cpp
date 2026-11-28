@@ -3,9 +3,10 @@
 
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
-#include <cassert>
 #include <iostream>
 #include <vector>
+
+#include "support/test_assert.hpp"
 
 using namespace gnfs::core;
 using namespace gnfs::linalg;
@@ -33,8 +34,8 @@ int main() {
     Integer m(int64_t(1999999999687LL));
 
     PolynomialContext ctx(N.clone(), std::move(coeffs), m.clone(), 1.0);
-    assert(ctx.degree() == 4);
-    assert(ctx.verify() && "f(m) != 0 mod N");
+    TEST_ASSERT(ctx.degree() == 4);
+    TEST_ASSERT(ctx.verify() && "f(m) != 0 mod N");
     std::cout << "Polynomial verified: degree=" << ctx.degree() << std::endl;
 
     // Create Schirokauer map
@@ -44,7 +45,7 @@ int main() {
 
     SchirokaurMap smap(ctx, config);
     std::cout << "Schirokauer columns: " << smap.num_columns() << std::endl;
-    assert(smap.num_columns() == 4 && "Degree 4 should have 4 Schirokauer columns");
+    TEST_ASSERT(smap.num_columns() == 4 && "Degree 4 should have 4 Schirokauer columns");
 
     // Print mode
     std::cout << "Mode: " << (smap.prime_info_[0].is_split ? "SPLIT" : "UNSPLIT") << std::endl;
@@ -74,10 +75,10 @@ int main() {
 
     for (auto [a, b] : test_pairs) {
         auto maps = smap.compute(a, b);
-        assert(maps.size() == 1);
-        assert(maps[0].size() == 4);
+        TEST_ASSERT(maps.size() == 1);
+        TEST_ASSERT(maps[0].size() == 4);
         for (uint32_t v : maps[0]) {
-            assert(v < 2 && "Value must be 0 or 1");
+            TEST_ASSERT(v < 2 && "Value must be 0 or 1");
         }
         total_tests++;
         bool all_zero = true;
@@ -104,7 +105,7 @@ int main() {
         if (ok) pass2++;
     }
     std::cout << "  " << pass2 << "/" << test_pairs.size() << " passed" << std::endl;
-    assert(pass2 == (int)test_pairs.size() && "Self-sum must always be 0 mod 2");
+    TEST_ASSERT(pass2 == (int)test_pairs.size() && "Self-sum must always be 0 mod 2");
 
     // Test 3: Homomorphism: λ(g₁g₂) = λ(g₁) + λ(g₂) mod 2
     // For GF(2) matrix, this means: for a valid dependency (∑ rows = 0 mod 2),

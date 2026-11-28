@@ -11,16 +11,17 @@
 //   * Generator exception propagates with consistent partial-fill state
 //   * reset_env_cache_for_testing re-reads modified ENV
 
-// Force assert() to remain live even under -DNDEBUG so Release builds
-// do not silently strip verification.
+// Keep NDEBUG undefined in this translation unit: library headers included
+// below may keep their own assert checks live here. The checks of this file
+// use TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
 #  undef NDEBUG
 #endif
 
 #include "gnfs/cofactor/sigma_seed_pool.hpp"
+#include "support/test_assert.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -31,6 +32,7 @@
 #include <thread>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::cofactor;
 
 // ────────────────────────────────────────────────────────────────────
@@ -41,8 +43,8 @@ static void test_env_unset_default_off() {
     std::cout << "Testing GNFS_ECM_SIGMA_POOL_SIZE unset => 0..." << std::endl;
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 0);
-    assert(sigma_seed_pool_enabled() == false);
+    TEST_ASSERT(sigma_seed_pool_size() == 0);
+    TEST_ASSERT(sigma_seed_pool_enabled() == false);
     std::cout << "  ENV unset: PASS (size=0, disabled)" << std::endl;
 }
 
@@ -50,8 +52,8 @@ static void test_env_zero_explicit_off() {
     std::cout << "Testing GNFS_ECM_SIGMA_POOL_SIZE=0 => 0..." << std::endl;
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "0", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 0);
-    assert(sigma_seed_pool_enabled() == false);
+    TEST_ASSERT(sigma_seed_pool_size() == 0);
+    TEST_ASSERT(sigma_seed_pool_enabled() == false);
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
     std::cout << "  ENV=0: PASS (size=0, disabled)" << std::endl;
@@ -61,8 +63,8 @@ static void test_env_100_enabled() {
     std::cout << "Testing GNFS_ECM_SIGMA_POOL_SIZE=100 => 100..." << std::endl;
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "100", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 100);
-    assert(sigma_seed_pool_enabled() == true);
+    TEST_ASSERT(sigma_seed_pool_size() == 100);
+    TEST_ASSERT(sigma_seed_pool_enabled() == true);
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
     std::cout << "  ENV=100: PASS (size=100, enabled)" << std::endl;
@@ -73,13 +75,13 @@ static void test_env_1025_clamp_to_1024() {
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "1025", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
     int s = sigma_seed_pool_size();
-    assert(s == 1024 && "1025 must clamp to 1024");
-    assert(sigma_seed_pool_enabled() == true);
+    TEST_ASSERT(s == 1024 && "1025 must clamp to 1024");
+    TEST_ASSERT(sigma_seed_pool_enabled() == true);
 
     // Also test extreme out-of-range (positive overflow but valid int range).
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "999999", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 1024);
+    TEST_ASSERT(sigma_seed_pool_size() == 1024);
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -91,17 +93,17 @@ static void test_env_garbage_default_off() {
     // std::stoi throws on leading non-digit, so "garbage" → exception → 0.
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "garbage", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 0);
+    TEST_ASSERT(sigma_seed_pool_size() == 0);
 
     // Negative parses fine but clamped to 0.
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "-5", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 0);
+    TEST_ASSERT(sigma_seed_pool_size() == 0);
 
     // Empty string → unset-like behavior.
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 0);
+    TEST_ASSERT(sigma_seed_pool_size() == 0);
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -118,20 +120,20 @@ static void test_default_off_get_next_returns_fresh() {
     sigma_seed_pool_reset_env_cache_for_testing();
     sigma_seed_pool_clear();
 
-    assert(sigma_seed_pool_enabled() == false);
-    assert(sigma_seed_pool_remaining() == 0);
+    TEST_ASSERT(sigma_seed_pool_enabled() == false);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0);
 
     const uint64_t fresh = 0xDEADBEEFCAFEBABEULL;
     uint64_t got = get_next_sigma_seed(fresh);
-    assert(got == fresh && "OFF path must return fresh fallback unchanged");
+    TEST_ASSERT(got == fresh && "OFF path must return fresh fallback unchanged");
 
     // Try multiple calls; pool size never grows when disabled.
     for (int i = 0; i < 100; ++i) {
         uint64_t f = 0x1000ULL + static_cast<uint64_t>(i);
         uint64_t r = get_next_sigma_seed(f);
-        assert(r == f);
+        TEST_ASSERT(r == f);
     }
-    assert(sigma_seed_pool_remaining() == 0);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0);
 
     // refill_sigma_seed_pool must be no-op when disabled (and generator
     // must NOT be invoked).
@@ -140,8 +142,8 @@ static void test_default_off_get_next_returns_fresh() {
         ++gen_calls;
         return 42;
     });
-    assert(gen_calls == 0 && "Generator must not run when pool disabled");
-    assert(sigma_seed_pool_remaining() == 0);
+    TEST_ASSERT(gen_calls == 0 && "Generator must not run when pool disabled");
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0);
 
     std::cout << "  Default OFF: PASS (fresh returned, refill no-op)" << std::endl;
 }
@@ -152,13 +154,13 @@ static void test_enable_empty_pool_returns_fresh() {
     sigma_seed_pool_reset_env_cache_for_testing();
     sigma_seed_pool_clear();
 
-    assert(sigma_seed_pool_enabled() == true);
-    assert(sigma_seed_pool_remaining() == 0);
+    TEST_ASSERT(sigma_seed_pool_enabled() == true);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0);
 
     const uint64_t fresh = 0xABCDEF0123456789ULL;
     uint64_t got = get_next_sigma_seed(fresh);
-    assert(got == fresh && "Empty enabled pool must fall back to fresh");
-    assert(sigma_seed_pool_remaining() == 0 && "Empty pool stays empty after get");
+    TEST_ASSERT(got == fresh && "Empty enabled pool must fall back to fresh");
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0 && "Empty pool stays empty after get");
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -176,21 +178,21 @@ static void test_refill_and_drain_lifo_order() {
     refill_sigma_seed_pool([&gen_counter]() -> uint64_t {
         return static_cast<uint64_t>(gen_counter++);
     });
-    assert(sigma_seed_pool_remaining() == 8);
-    assert(gen_counter == 108 && "Generator must run exactly 8 times");
+    TEST_ASSERT(sigma_seed_pool_remaining() == 8);
+    TEST_ASSERT(gen_counter == 108 && "Generator must run exactly 8 times");
 
     // Drain: pool is LIFO so we get [107, 106, 105, 104, 103, 102, 101, 100].
     std::vector<uint64_t> drained;
     for (int i = 0; i < 8; ++i) {
         uint64_t f = 0xFFFFFFFFFFFFFFFFULL;  // fallback never expected
         uint64_t s = get_next_sigma_seed(f);
-        assert(s != f && "Pool non-empty, must NOT return fresh");
+        TEST_ASSERT(s != f && "Pool non-empty, must NOT return fresh");
         drained.push_back(s);
     }
-    assert(sigma_seed_pool_remaining() == 0);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0);
     for (int i = 0; i < 8; ++i) {
         uint64_t expected = static_cast<uint64_t>(107 - i);
-        assert(drained[static_cast<size_t>(i)] == expected && "LIFO order");
+        TEST_ASSERT(drained[static_cast<size_t>(i)] == expected && "LIFO order");
     }
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
@@ -209,21 +211,21 @@ static void test_pool_exhaust_falls_back_to_fresh() {
     refill_sigma_seed_pool([&gen_counter]() -> uint64_t {
         return static_cast<uint64_t>(gen_counter++);
     });
-    assert(sigma_seed_pool_remaining() == 3);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 3);
 
     // Drain all 3.
     (void)get_next_sigma_seed(0);
     (void)get_next_sigma_seed(0);
     (void)get_next_sigma_seed(0);
-    assert(sigma_seed_pool_remaining() == 0);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0);
 
     // Now pool exhausted: must fall back to fresh on subsequent calls.
     for (int i = 0; i < 5; ++i) {
         uint64_t fresh = 0x12340000ULL + static_cast<uint64_t>(i);
         uint64_t got = get_next_sigma_seed(fresh);
-        assert(got == fresh && "Exhausted pool must return fresh");
+        TEST_ASSERT(got == fresh && "Exhausted pool must return fresh");
     }
-    assert(sigma_seed_pool_remaining() == 0);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0);
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -241,18 +243,18 @@ static void test_clear_releases_pool() {
     refill_sigma_seed_pool([&gen_counter]() -> uint64_t {
         return static_cast<uint64_t>(gen_counter++);
     });
-    assert(sigma_seed_pool_remaining() == 20);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 20);
 
     sigma_seed_pool_clear();
-    assert(sigma_seed_pool_remaining() == 0 && "Clear must drop all seeds");
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0 && "Clear must drop all seeds");
 
     // After clear, refill should run generator from scratch (count 20).
     int gen2_calls = 0;
     refill_sigma_seed_pool([&gen2_calls]() -> uint64_t {
         return static_cast<uint64_t>(gen2_calls++);
     });
-    assert(gen2_calls == 20 && "Refill after clear must repopulate");
-    assert(sigma_seed_pool_remaining() == 20);
+    TEST_ASSERT(gen2_calls == 20 && "Refill after clear must repopulate");
+    TEST_ASSERT(sigma_seed_pool_remaining() == 20);
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -311,11 +313,11 @@ static void test_multithread_isolation() {
     ta.join();
     tb.join();
 
-    assert(thread_a_ok.load() && "Thread A must see its own [1000..1015] seeds");
-    assert(thread_b_ok.load() && "Thread B must see its own [2000..2015] seeds");
+    TEST_ASSERT(thread_a_ok.load() && "Thread A must see its own [1000..1015] seeds");
+    TEST_ASSERT(thread_b_ok.load() && "Thread B must see its own [2000..2015] seeds");
 
     // Main thread pool is independent — should still be empty.
-    assert(sigma_seed_pool_remaining() == 0 && "Main thread pool untouched");
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0 && "Main thread pool untouched");
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -342,15 +344,15 @@ static void test_generator_exception_propagates() {
     } catch (const std::runtime_error&) {
         caught = true;
     }
-    assert(caught && "Generator exception must propagate to caller");
+    TEST_ASSERT(caught && "Generator exception must propagate to caller");
 
     // Pool should contain the 5 successfully generated seeds (0..4).
     // The 5th call threw before push_back, so size is 5 not 6.
-    assert(sigma_seed_pool_remaining() == 5 && "Partial fill: 5 seeds before throw");
+    TEST_ASSERT(sigma_seed_pool_remaining() == 5 && "Partial fill: 5 seeds before throw");
 
     // The pool is still in a usable state; we can drain partially.
     uint64_t s = get_next_sigma_seed(0xFFFFULL);
-    assert(s == 4 && "Top of partial-fill pool should be the 4th generator output");
+    TEST_ASSERT(s == 4 && "Top of partial-fill pool should be the 4th generator output");
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -364,22 +366,22 @@ static void test_reset_env_cache_re_reads() {
     // Start with unset.
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 0);
+    TEST_ASSERT(sigma_seed_pool_size() == 0);
 
     // Set to 50 and re-read.
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "50", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 50);
+    TEST_ASSERT(sigma_seed_pool_size() == 50);
 
     // Change to 200 and re-read.
     setenv("GNFS_ECM_SIGMA_POOL_SIZE", "200", 1);
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 200);
+    TEST_ASSERT(sigma_seed_pool_size() == 200);
 
     // Unset and re-read.
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
-    assert(sigma_seed_pool_size() == 0);
+    TEST_ASSERT(sigma_seed_pool_size() == 0);
 
     std::cout << "  Reset env cache: PASS (multi-mutation reads)" << std::endl;
 }
@@ -411,15 +413,15 @@ static void test_mt19937_generator_consistent() {
     refill_sigma_seed_pool([&rng]() -> uint64_t {
         return rng();
     });
-    assert(sigma_seed_pool_remaining() == 32);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 32);
 
     // Drain LIFO and verify against reversed expected sequence.
     for (int i = 0; i < 32; ++i) {
         uint64_t s = get_next_sigma_seed(0);
         uint64_t expected = expected_in_order[static_cast<size_t>(31 - i)];
-        assert(s == expected && "Drained seed must match reversed generator order");
+        TEST_ASSERT(s == expected && "Drained seed must match reversed generator order");
     }
-    assert(sigma_seed_pool_remaining() == 0);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 0);
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -441,20 +443,20 @@ static void test_refill_already_full_noop() {
     refill_sigma_seed_pool([&first_counter]() -> uint64_t {
         return static_cast<uint64_t>(first_counter++);
     });
-    assert(sigma_seed_pool_remaining() == 5);
-    assert(first_counter == 1005);
+    TEST_ASSERT(sigma_seed_pool_remaining() == 5);
+    TEST_ASSERT(first_counter == 1005);
 
     // Second refill: pool is already at capacity. Generator must NOT run.
     int second_counter = 9000;
     refill_sigma_seed_pool([&second_counter]() -> uint64_t {
         return static_cast<uint64_t>(second_counter++);
     });
-    assert(second_counter == 9000 && "Generator must not run when pool full");
-    assert(sigma_seed_pool_remaining() == 5);
+    TEST_ASSERT(second_counter == 9000 && "Generator must not run when pool full");
+    TEST_ASSERT(sigma_seed_pool_remaining() == 5);
 
     // Drain — should give first generator's output (NOT second).
     uint64_t s = get_next_sigma_seed(0);
-    assert(s == 1004 && "Top must be from FIRST refill (1004), not second");
+    TEST_ASSERT(s == 1004 && "Top must be from FIRST refill (1004), not second");
 
     unsetenv("GNFS_ECM_SIGMA_POOL_SIZE");
     sigma_seed_pool_reset_env_cache_for_testing();
@@ -467,26 +469,33 @@ static void test_refill_already_full_noop() {
 // ────────────────────────────────────────────────────────────────────
 
 int main() {
+    int failed = 0;
+
     std::cout << "\n========== Sigma Seed Pool Unit Tests (W10 T3) ==========\n" << std::endl;
 
     // ENV parsing
-    test_env_unset_default_off();
-    test_env_zero_explicit_off();
-    test_env_100_enabled();
-    test_env_1025_clamp_to_1024();
-    test_env_garbage_default_off();
+    failed += !run_case(test_env_unset_default_off);
+    failed += !run_case(test_env_zero_explicit_off);
+    failed += !run_case(test_env_100_enabled);
+    failed += !run_case(test_env_1025_clamp_to_1024);
+    failed += !run_case(test_env_garbage_default_off);
 
     // Behavior
-    test_default_off_get_next_returns_fresh();
-    test_enable_empty_pool_returns_fresh();
-    test_refill_and_drain_lifo_order();
-    test_pool_exhaust_falls_back_to_fresh();
-    test_clear_releases_pool();
-    test_refill_already_full_noop();
-    test_multithread_isolation();
-    test_generator_exception_propagates();
-    test_reset_env_cache_re_reads();
-    test_mt19937_generator_consistent();
+    failed += !run_case(test_default_off_get_next_returns_fresh);
+    failed += !run_case(test_enable_empty_pool_returns_fresh);
+    failed += !run_case(test_refill_and_drain_lifo_order);
+    failed += !run_case(test_pool_exhaust_falls_back_to_fresh);
+    failed += !run_case(test_clear_releases_pool);
+    failed += !run_case(test_refill_already_full_noop);
+    failed += !run_case(test_multithread_isolation);
+    failed += !run_case(test_generator_exception_propagates);
+    failed += !run_case(test_reset_env_cache_re_reads);
+    failed += !run_case(test_mt19937_generator_consistent);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\n========== ALL SIGMA SEED POOL TESTS PASSED ==========\n" << std::endl;
     return 0;

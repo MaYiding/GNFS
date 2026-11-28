@@ -12,7 +12,6 @@
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 
-#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>

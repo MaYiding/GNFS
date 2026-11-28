@@ -9,7 +9,6 @@
 #include <gnfs/sieve/special_q.hpp>
 #include <gnfs/sieve/lattice_sieve.hpp>
 
-#include <cassert>
 #include <iostream>
 #include <vector>
 

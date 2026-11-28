@@ -30,7 +30,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>  // fprintf for [ooc] signal

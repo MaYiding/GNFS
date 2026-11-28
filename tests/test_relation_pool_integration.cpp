@@ -5,7 +5,9 @@
 // Also includes a perf-info probe that prints push timing for pool ON vs OFF;
 // not an assertion — only reports for human inspection during local runs.
 
-// Force assert() to remain live even under -DNDEBUG.
+// Keep NDEBUG undefined in this translation unit: library headers included
+// below may keep their own assert checks live here. The checks of this file
+// use TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
 #  undef NDEBUG
 #endif
@@ -13,9 +15,9 @@
 #include "gnfs/relation/collector.hpp"
 #include "gnfs/util/memory_pool.hpp"
 #include "gnfs/util/safe_math.hpp"
+#include "support/test_assert.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <cstdlib>
 #include <cstdint>
@@ -24,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs;
 using namespace gnfs::relation;
 using namespace gnfs::core;
@@ -94,7 +97,7 @@ std::vector<Relation> collect_with_config(const std::vector<ABFactors>& seq,
         (void)added;  // Some inputs may legitimately fail validation in
                      // extreme corner cases (e.g. a=b=0); deterministic seq
                      // ensures non-degenerate pairs so this should be true.
-        assert(added);
+        TEST_ASSERT(added);
     }
     return collector.get_relations();
 }
@@ -108,12 +111,12 @@ void test_small_sequence_bit_for_bit() {
     auto off = collect_with_config(seq, /*use_pool=*/false, /*bytes=*/0);
     auto on  = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/64 * 1024);
 
-    assert(off.size() == on.size());
+    TEST_ASSERT(off.size() == on.size());
     sort_by_ab(off);
     sort_by_ab(on);
 
     for (size_t i = 0; i < off.size(); ++i) {
-        assert(same_relation(off[i], on[i]));
+        TEST_ASSERT(same_relation(off[i], on[i]));
     }
 
     std::cout << "  Small sequence (50 relations) bit-for-bit: PASS" << std::endl;
@@ -126,12 +129,12 @@ void test_medium_sequence_bit_for_bit() {
     auto off = collect_with_config(seq, /*use_pool=*/false, /*bytes=*/0);
     auto on  = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/1 * 1024 * 1024);
 
-    assert(off.size() == on.size());
+    TEST_ASSERT(off.size() == on.size());
     sort_by_ab(off);
     sort_by_ab(on);
 
     for (size_t i = 0; i < off.size(); ++i) {
-        assert(same_relation(off[i], on[i]));
+        TEST_ASSERT(same_relation(off[i], on[i]));
     }
 
     std::cout << "  Medium sequence (5000 relations) bit-for-bit: PASS" << std::endl;
@@ -155,15 +158,15 @@ void test_pool_stats_match_no_pool() {
     auto s_off = c_off.stats();
     auto s_on  = c_on.stats();
 
-    assert(s_off.total_relations == s_on.total_relations);
-    assert(s_off.full_relations == s_on.full_relations);
-    assert(s_off.partial_1lp == s_on.partial_1lp);
-    assert(s_off.partial_2lp == s_on.partial_2lp);
-    assert(s_off.duplicates_rejected == s_on.duplicates_rejected);
-    assert(s_off.invalid_rejected == s_on.invalid_rejected);
+    TEST_ASSERT(s_off.total_relations == s_on.total_relations);
+    TEST_ASSERT(s_off.full_relations == s_on.full_relations);
+    TEST_ASSERT(s_off.partial_1lp == s_on.partial_1lp);
+    TEST_ASSERT(s_off.partial_2lp == s_on.partial_2lp);
+    TEST_ASSERT(s_off.duplicates_rejected == s_on.duplicates_rejected);
+    TEST_ASSERT(s_off.invalid_rejected == s_on.invalid_rejected);
 
-    assert(c_off.size() == c_on.size());
-    assert(c_off.empty() == c_on.empty());
+    TEST_ASSERT(c_off.size() == c_on.size());
+    TEST_ASSERT(c_off.empty() == c_on.empty());
 
     std::cout << "  Pool stats parity: PASS" << std::endl;
 }
@@ -178,18 +181,18 @@ void test_clear_recycles_pool() {
 
     auto seq = make_deterministic_sequence(100);
     for (const auto& f : seq) collector.add(to_relation(f));
-    assert(collector.size() == 100);
+    TEST_ASSERT(collector.size() == 100);
 
     collector.clear();
-    assert(collector.size() == 0);
-    assert(collector.empty());
+    TEST_ASSERT(collector.size() == 0);
+    TEST_ASSERT(collector.empty());
 
     // After clear, collector still accepts new additions through the (new) pool.
     for (const auto& f : seq) collector.add(to_relation(f));
-    assert(collector.size() == 100);
+    TEST_ASSERT(collector.size() == 100);
 
     auto out = collector.get_relations();
-    assert(out.size() == 100);
+    TEST_ASSERT(out.size() == 100);
 
     std::cout << "  Pool clear() recycle: PASS" << std::endl;
 }
@@ -255,20 +258,27 @@ void perf_info_push_10k_warm() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Relation Pool Integration Tests (W6 T4) ===" << std::endl;
 
     // Ensure ENV does not contaminate test config (we drive use_pool directly)
     unsetenv("GNFS_RELATION_POOL_SIZE");
 
     // 4 correctness tests
-    test_small_sequence_bit_for_bit();
-    test_medium_sequence_bit_for_bit();
-    test_pool_stats_match_no_pool();
-    test_clear_recycles_pool();
+    failed += !run_case(test_small_sequence_bit_for_bit);
+    failed += !run_case(test_medium_sequence_bit_for_bit);
+    failed += !run_case(test_pool_stats_match_no_pool);
+    failed += !run_case(test_clear_recycles_pool);
 
     // 2 perf-info probes
-    perf_info_push_100k();
-    perf_info_push_10k_warm();
+    failed += !run_case(perf_info_push_100k);
+    failed += !run_case(perf_info_push_10k_warm);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll relation pool integration tests passed!" << std::endl;
     return 0;

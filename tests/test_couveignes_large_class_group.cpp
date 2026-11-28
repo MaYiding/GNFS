@@ -24,12 +24,14 @@
 #include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/core/polynomial_context.hpp>
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs;
 using namespace gnfs::sqrt;
 using namespace gnfs::core;
@@ -96,16 +98,16 @@ void test_metrics_populated() {
     const auto& m = couveignes.last_metrics();
 
     // Regardless of result, metrics must be populated
-    assert(m.primes_checked > 0 && "metrics.primes_checked must be > 0");
-    assert(m.primes_used <= cfg.num_primes && "metrics.primes_used must be <= num_primes");
-    assert(m.sign_patterns_tried > 0 && "metrics.sign_patterns_tried must be > 0");
-    assert(m.full_verifications > 0 && "metrics.full_verifications must be > 0");
+    TEST_ASSERT(m.primes_checked > 0 && "metrics.primes_checked must be > 0");
+    TEST_ASSERT(m.primes_used <= cfg.num_primes && "metrics.primes_used must be <= num_primes");
+    TEST_ASSERT(m.sign_patterns_tried > 0 && "metrics.sign_patterns_tried must be > 0");
+    TEST_ASSERT(m.full_verifications > 0 && "metrics.full_verifications must be > 0");
 
     // Default: characters disabled → no character primes used
-    assert(m.character_primes_used == 0 &&
-           "metrics.character_primes_used == 0 when num_characters=0");
-    assert(m.character_filter_rejects == 0 &&
-           "metrics.character_filter_rejects == 0 when num_characters=0");
+    TEST_ASSERT(m.character_primes_used == 0 &&
+                "metrics.character_primes_used == 0 when num_characters=0");
+    TEST_ASSERT(m.character_filter_rejects == 0 &&
+                "metrics.character_filter_rejects == 0 when num_characters=0");
 
     std::cout << "  metrics populated: PASSED"
               << " (primes_checked=" << m.primes_checked
@@ -145,15 +147,15 @@ void test_metrics_reset_on_entry() {
     [[maybe_unused]] auto r2 = couveignes.compute(ab_pairs, nf);
     size_t patterns_2 = couveignes.last_metrics().sign_patterns_tried;
 
-    assert(patterns_1 == patterns_2 &&
-           "Reset must produce identical pattern counts for identical input");
+    TEST_ASSERT(patterns_1 == patterns_2 &&
+                "Reset must produce identical pattern counts for identical input");
 
     // Now empty input — metrics should reset to defaults
     [[maybe_unused]] auto r3 = couveignes.compute({}, nf);
     const auto& m3 = couveignes.last_metrics();
-    assert(m3.sign_patterns_tried == 0 &&
-           "Reset on entry: empty input must yield sign_patterns_tried=0");
-    assert(m3.primes_used == 0 && "Empty input must yield primes_used=0");
+    TEST_ASSERT(m3.sign_patterns_tried == 0 &&
+                "Reset on entry: empty input must yield sign_patterns_tried=0");
+    TEST_ASSERT(m3.primes_used == 0 && "Empty input must yield primes_used=0");
 
     std::cout << "  metrics reset: PASSED" << std::endl;
 }
@@ -201,18 +203,18 @@ void test_character_verification_correctness() {
     const auto& m_yes = couveignes_chars.last_metrics();
 
     // CORRECTNESS: characters must not change sqrt found/notfound
-    assert(result_no_chars.has_value() == result_chars.has_value() &&
-           "Character filter must preserve sqrt result (no false rejects)");
+    TEST_ASSERT(result_no_chars.has_value() == result_chars.has_value() &&
+                "Character filter must preserve sqrt result (no false rejects)");
 
     // Diagnostic: character_primes_used populated when num_characters > 0
-    assert(m_yes.character_primes_used <= cfg_chars.num_characters &&
-           "character_primes_used <= configured");
+    TEST_ASSERT(m_yes.character_primes_used <= cfg_chars.num_characters &&
+                "character_primes_used <= configured");
 
     // Without characters, no primes collected
-    assert(m_no.character_primes_used == 0 &&
-           "num_characters=0: no character primes collected");
-    assert(m_no.character_filter_rejects == 0 &&
-           "num_characters=0: no rejects");
+    TEST_ASSERT(m_no.character_primes_used == 0 &&
+                "num_characters=0: no character primes collected");
+    TEST_ASSERT(m_no.character_filter_rejects == 0 &&
+                "num_characters=0: no rejects");
 
     // EFFICACY: when characters present and search exhausts patterns
     // without finding sqrt, we expect rejections > 0 (else filter is broken).
@@ -230,9 +232,9 @@ void test_character_verification_correctness() {
     // Accounting invariant when chars enabled:
     // patterns_tried = (full_verifications) + (character_filter_rejects)
     // when all patterns are processed; off-by-one acceptable at early exit.
-    assert(m_yes.full_verifications + m_yes.character_filter_rejects
-           <= m_yes.sign_patterns_tried + 1 &&
-           "Filter accounting: verifies + rejects <= patterns_tried (+1)");
+    TEST_ASSERT(m_yes.full_verifications + m_yes.character_filter_rejects
+                <= m_yes.sign_patterns_tried + 1 &&
+                "Filter accounting: verifies + rejects <= patterns_tried (+1)");
 
     std::cout << "  character verification correctness: PASSED" << std::endl;
 }
@@ -268,7 +270,7 @@ void test_character_count_scaling() {
             std::chrono::steady_clock::now() - start).count();
 
         // Must always complete within 5s for d=3, num_primes=4
-        assert(elapsed_ms < 5000 && "compute() must terminate within 5s");
+        TEST_ASSERT(elapsed_ms < 5000 && "compute() must terminate within 5s");
 
         const auto& m = couveignes.last_metrics();
         std::cout << "    num_characters=" << nc
@@ -280,7 +282,7 @@ void test_character_count_scaling() {
                   << " elapsed=" << elapsed_ms << "ms" << std::endl;
 
         // Sanity: character_primes_used cannot exceed configured
-        assert(m.character_primes_used <= nc && "char_primes_used <= configured");
+        TEST_ASSERT(m.character_primes_used <= nc && "char_primes_used <= configured");
     }
 
     std::cout << "  character count scaling: PASSED" << std::endl;
@@ -318,14 +320,14 @@ void test_force_couveignes_env() {
 
     // Set env var
     setenv("GNFS_FORCE_COUVEIGNES", "1", 1);
-    assert(std::getenv("GNFS_FORCE_COUVEIGNES") != nullptr &&
-           "setenv must succeed");
+    TEST_ASSERT(std::getenv("GNFS_FORCE_COUVEIGNES") != nullptr &&
+                "setenv must succeed");
 
     // Verify env detection (the algebraic_sqrt path reads this env in
     // compute(), which we can't easily call here without Relations).
     // Just confirm env round-trips.
     const char* val = std::getenv("GNFS_FORCE_COUVEIGNES");
-    assert(val && std::string(val) == "1" && "env round-trip");
+    TEST_ASSERT(val && std::string(val) == "1" && "env round-trip");
 
     // Restore env
     if (!saved_env.empty()) {
@@ -375,7 +377,7 @@ void test_higher_degree_polynomial() {
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
 
-    assert(elapsed_ms < 10000 && "d=5 Couveignes must complete within 10s");
+    TEST_ASSERT(elapsed_ms < 10000 && "d=5 Couveignes must complete within 10s");
 
     const auto& m = couveignes.last_metrics();
     std::cout << "    d=5: found=" << (r.has_value() ? "yes" : "no")
@@ -434,7 +436,7 @@ void test_polynomial_sweep() {
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start).count();
 
-        assert(elapsed_ms < 10000 && "polynomial sweep: each must complete within 10s");
+        TEST_ASSERT(elapsed_ms < 10000 && "polynomial sweep: each must complete within 10s");
 
         const auto& m = couveignes.last_metrics();
         std::cout << "    " << spec.name
@@ -485,9 +487,9 @@ void test_filter_accounting_invariant() {
 
     // Loose invariant: every pattern either rejected or fully verified
     // (off-by-1 for the pattern-0 base case accounting).
-    assert(m.full_verifications + m.character_filter_rejects
-           <= m.sign_patterns_tried + 1 &&
-           "Filter accounting: verifies + rejects <= patterns_tried + 1");
+    TEST_ASSERT(m.full_verifications + m.character_filter_rejects
+                <= m.sign_patterns_tried + 1 &&
+                "Filter accounting: verifies + rejects <= patterns_tried + 1");
 
     // If chars collected, expect some filtering activity (unless sqrt found
     // immediately at pattern 0). Soft check via cerr.
@@ -535,7 +537,7 @@ void test_extra_sign_bits_no_op() {
     size_t p2 = c2.last_metrics().sign_patterns_tried;
 
     // Currently no-op → pattern counts identical
-    assert(p0 == p2 && "extra_sign_bits is currently a no-op forward-compat field");
+    TEST_ASSERT(p0 == p2 && "extra_sign_bits is currently a no-op forward-compat field");
 
     std::cout << "  extra_sign_bits no-op: PASSED" << std::endl;
 }
@@ -543,17 +545,24 @@ void test_extra_sign_bits_no_op() {
 }  // anonymous namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Couveignes Large Class Group Tests ===" << std::endl;
 
-    test_metrics_populated();
-    test_metrics_reset_on_entry();
-    test_character_verification_correctness();
-    test_character_count_scaling();
-    test_force_couveignes_env();
-    test_higher_degree_polynomial();
-    test_polynomial_sweep();
-    test_filter_accounting_invariant();
-    test_extra_sign_bits_no_op();
+    failed += !run_case(test_metrics_populated);
+    failed += !run_case(test_metrics_reset_on_entry);
+    failed += !run_case(test_character_verification_correctness);
+    failed += !run_case(test_character_count_scaling);
+    failed += !run_case(test_force_couveignes_env);
+    failed += !run_case(test_higher_degree_polynomial);
+    failed += !run_case(test_polynomial_sweep);
+    failed += !run_case(test_filter_accounting_invariant);
+    failed += !run_case(test_extra_sign_bits_no_op);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "=== All Couveignes Large Class Group Tests PASSED ===" << std::endl;
     return 0;
