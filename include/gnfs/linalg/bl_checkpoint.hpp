@@ -103,6 +103,11 @@ struct BlockLanczosCheckpoint {
     static constexpr uint64_t VERSION = VERSION_V4;
     /// Maximum packed payload accepted by load() (64 GiB).
     static constexpr uint64_t MAX_AUG_WORDS = (64ULL * 1024 * 1024 * 1024) / 8;
+    /// Width of one encoded word. Byte offsets below are written with this constant
+    /// rather than with sizeof inside pointer arithmetic: the buffers are byte
+    /// sequences, and `bytes + k * sizeof(uint64_t)` reads like the common mistake
+    /// of scaling an element pointer by its own element size.
+    static constexpr size_t WORD_BYTES = sizeof(uint64_t);
 
     // Stable V4 byte offsets used by format-level tests. The digest replaces
     // the V3 header checksum word and is 32 bytes wide, so every later field
@@ -347,19 +352,19 @@ private:
         util::Sha256Accumulator hasher;
         std::array<std::byte, PAYLOAD_OFFSET> header{};
         encode_u64_le(header.data(), MAGIC_INCOMPLETE);
-        encode_u64_le(header.data() + sizeof(uint64_t), VERSION);
-        encode_u64_le(header.data() + 2 * sizeof(uint64_t), rows);
-        encode_u64_le(header.data() + 3 * sizeof(uint64_t), cols);
-        encode_u64_le(header.data() + 4 * sizeof(uint64_t), aug_words_per_row);
-        encode_u64_le(header.data() + 5 * sizeof(uint64_t), pivot_row);
-        encode_u64_le(header.data() + 6 * sizeof(uint64_t), cur_col);
-        encode_u64_le(header.data() + 7 * sizeof(uint64_t), iteration);
+        encode_u64_le(header.data() + WORD_BYTES, VERSION);
+        encode_u64_le(header.data() + 2 * WORD_BYTES, rows);
+        encode_u64_le(header.data() + 3 * WORD_BYTES, cols);
+        encode_u64_le(header.data() + 4 * WORD_BYTES, aug_words_per_row);
+        encode_u64_le(header.data() + 5 * WORD_BYTES, pivot_row);
+        encode_u64_le(header.data() + 6 * WORD_BYTES, cur_col);
+        encode_u64_le(header.data() + 7 * WORD_BYTES, iteration);
         // [DIGEST_OFFSET, FINGERPRINT_OFFSET) stays zero until the payload is hashed.
         std::memcpy(header.data() + FINGERPRINT_OFFSET, matrix_fingerprint->bytes.data(),
                     matrix_fingerprint->bytes.size());
         encode_u64_le(header.data() + AUG_WORD_COUNT_OFFSET, aug_word_count);
 
-        if (!hasher.update(std::span<const std::byte>(header.data() + sizeof(uint64_t),
+        if (!hasher.update(std::span<const std::byte>(header.data() + WORD_BYTES,
                                                       DIGEST_OFFSET - sizeof(uint64_t))) ||
             !hasher.update(std::span<const std::byte>(header.data() + FINGERPRINT_OFFSET,
                                                       PAYLOAD_OFFSET - FINGERPRINT_OFFSET)) ||
@@ -373,7 +378,7 @@ private:
             const size_t words = std::min(CHUNK_WORDS, aug.size() - index);
             const size_t bytes = words * sizeof(uint64_t);
             for (size_t word = 0; word < words; ++word)
-                encode_u64_le(staging.data() + word * sizeof(uint64_t), aug[index + word]);
+                encode_u64_le(staging.data() + word * WORD_BYTES, aug[index + word]);
             index += words;
             if (!hasher.update(std::span<const std::byte>(staging.data(), bytes)) ||
                 !file.write(staging.data(), bytes)) {
@@ -530,11 +535,11 @@ private:
         }
 
         ck.rows = decode_u64_le(fields.data());
-        ck.cols = decode_u64_le(fields.data() + sizeof(uint64_t));
-        ck.aug_words_per_row = decode_u64_le(fields.data() + 2 * sizeof(uint64_t));
-        ck.pivot_row = decode_u64_le(fields.data() + 3 * sizeof(uint64_t));
-        ck.cur_col = decode_u64_le(fields.data() + 4 * sizeof(uint64_t));
-        ck.iteration = decode_u64_le(fields.data() + 5 * sizeof(uint64_t));
+        ck.cols = decode_u64_le(fields.data() + WORD_BYTES);
+        ck.aug_words_per_row = decode_u64_le(fields.data() + 2 * WORD_BYTES);
+        ck.pivot_row = decode_u64_le(fields.data() + 3 * WORD_BYTES);
+        ck.cur_col = decode_u64_le(fields.data() + 4 * WORD_BYTES);
+        ck.iteration = decode_u64_le(fields.data() + 5 * WORD_BYTES);
         ck.matrix_fingerprint = fingerprint;
         const uint64_t aug_word_count = decode_u64_le(count_bytes.data());
 
@@ -556,7 +561,7 @@ private:
                 return std::nullopt;
             }
             for (size_t word = 0; word < words; ++word)
-                ck.aug[decoded + word] = decode_u64_le(staging.data() + word * sizeof(uint64_t));
+                ck.aug[decoded + word] = decode_u64_le(staging.data() + word * WORD_BYTES);
             decoded += words;
         }
 
