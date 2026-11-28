@@ -5543,7 +5543,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_BOUNDARY_SHA256 = (
-    "fc7c89231204425288a0be53957f51dd3a76fc66c6be4be9e54b9bd2b0e55db4"
+    "3621bd94f9b88e1ecca07a5c73faf1c94a9d14b61f520a3d6d117afb68f4a9c4"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -5659,12 +5659,12 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST = {
     ),
     ("tests/test_method_selection.cpp", "TEST"): (
         '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
-        'if(test_##name()){++pass_count;std::cout<<"OK\\n";}'
+        'if(run_case([&]{returntest_##name();})){++pass_count;std::cout<<"OK\\n";}'
         'else{++fail_count;std::cout<<"FAILED\\n";}'
     ),
     ("tests/test_api.cpp", "TEST"): (
         '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
-        'if(test_##name()){++pass_count;std::cout<<"OK\\n";}'
+        'if(run_case([&]{returntest_##name();})){++pass_count;std::cout<<"OK\\n";}'
         'else{++fail_count;std::cout<<"FAILED\\n";}'
     ),
     ("tests/test_full_resume.cpp", "RUN_TEST"): (
@@ -5682,7 +5682,7 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_CODE_USE_CONTEXTS = {
     ),
     ("tests/test_method_selection.cpp", "TEST"): (
         39,
-        "470d0973f63d32e9af3a85a485ba14b2c2eba9e516190d32a86a0ca37aa57a26",
+        "4d4513fd29f68d3bc1a0ffcf0513a5e53b3da95484a80d2057bb7cfd6f2bae61",
     ),
     ("tests/test_api.cpp", "TEST"): (
         83,

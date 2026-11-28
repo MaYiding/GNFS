@@ -9,8 +9,8 @@
 #include "gnfs/util/owned_native_file.hpp"
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/temp_path.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -35,6 +35,7 @@
 #include <unistd.h>
 #endif
 
+using gnfs::test::run_case;
 using namespace gnfs::util;
 
 namespace {
@@ -223,13 +224,13 @@ void test_basic_open_and_read() {
     write_bytes(path, payload);
 
     MmapFile mf(path);
-    assert(mf.is_open());
-    assert(mf.size() == payload.size());
-    assert(mf.data() != nullptr);
+    TEST_ASSERT(mf.is_open());
+    TEST_ASSERT(mf.size() == payload.size());
+    TEST_ASSERT(mf.data() != nullptr);
 
     // Byte-by-byte readback
     for (size_t i = 0; i < payload.size(); ++i) {
-        assert(mf.data()[i] == payload[i]);
+        TEST_ASSERT(mf.data()[i] == payload[i]);
     }
 
     std::cout << "  basic open/read: PASS" << std::endl;
@@ -244,9 +245,9 @@ void test_empty_file() {
     write_bytes(path, {}); // create empty file
 
     MmapFile mf(path);
-    assert(mf.is_open()); // fd is open
-    assert(mf.size() == 0);
-    assert(mf.data() == nullptr); // no mapping for empty file
+    TEST_ASSERT(mf.is_open()); // fd is open
+    TEST_ASSERT(mf.size() == 0);
+    TEST_ASSERT(mf.data() == nullptr); // no mapping for empty file
 
 #ifndef _WIN32
     const int descriptor = find_fd_for_path(path);
@@ -276,7 +277,7 @@ void test_nonexistent_file_throws() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    TEST_ASSERT(threw);
     (void)threw; // appease -Wunused-but-set-variable when NDEBUG defined
 
     std::cout << "  nonexistent throws: PASS" << std::endl;
@@ -313,20 +314,20 @@ void test_read_at_typed_values() {
     write_bytes(path, buf);
 
     MmapFile mf(path);
-    assert(mf.size() == buf.size());
+    TEST_ASSERT(mf.size() == buf.size());
 
     [[maybe_unused]] uint32_t header = mf.read_at<uint32_t>(0);
-    assert(header == 0xDEADBEEF);
+    TEST_ASSERT(header == 0xDEADBEEF);
 
     [[maybe_unused]] int64_t val = mf.read_at<int64_t>(4);
-    assert(val == -9223372036854775000ll);
+    TEST_ASSERT(val == -9223372036854775000ll);
 
     [[maybe_unused]] uint16_t a = mf.read_at<uint16_t>(12);
     [[maybe_unused]] uint16_t b = mf.read_at<uint16_t>(14);
     [[maybe_unused]] uint16_t c = mf.read_at<uint16_t>(16);
-    assert(a == 100);
-    assert(b == 200);
-    assert(c == 300);
+    TEST_ASSERT(a == 100);
+    TEST_ASSERT(b == 200);
+    TEST_ASSERT(c == 300);
 
     std::cout << "  read_at typed values: PASS" << std::endl;
 }
@@ -384,15 +385,15 @@ void test_ptr_at() {
 
     MmapFile mf(path);
     [[maybe_unused]] const uint32_t* arr = mf.ptr_at<uint32_t>(0);
-    assert(arr[0] == 0x12345678u);
-    assert(arr[1] == 0xABCDEF01u);
-    assert(arr[2] == 0xDEADBEEFu);
-    assert(arr[3] == 0xCAFEBABEu);
+    TEST_ASSERT(arr[0] == 0x12345678u);
+    TEST_ASSERT(arr[1] == 0xABCDEF01u);
+    TEST_ASSERT(arr[2] == 0xDEADBEEFu);
+    TEST_ASSERT(arr[3] == 0xCAFEBABEu);
 
     // Offset variant
     [[maybe_unused]] const uint32_t* arr_offset = mf.ptr_at<uint32_t>(8);
-    assert(arr_offset[0] == 0xDEADBEEFu);
-    assert(arr_offset[1] == 0xCAFEBABEu);
+    TEST_ASSERT(arr_offset[0] == 0xDEADBEEFu);
+    TEST_ASSERT(arr_offset[1] == 0xCAFEBABEu);
 
     std::cout << "  ptr_at: PASS" << std::endl;
 }
@@ -413,7 +414,7 @@ void test_advise_random() {
 
     // Data still readable
     for (size_t i = 0; i < buf.size(); ++i) {
-        assert(mf.data()[i] == static_cast<uint8_t>(i));
+        TEST_ASSERT(mf.data()[i] == static_cast<uint8_t>(i));
     }
 
     std::cout << "  advise_random: PASS" << std::endl;
@@ -431,22 +432,22 @@ void test_move_semantics() {
     MmapFile original(path);
     [[maybe_unused]] const uint8_t* orig_data = original.data();
     [[maybe_unused]] size_t orig_size = original.size();
-    assert(orig_data != nullptr);
-    assert(orig_size == 4);
+    TEST_ASSERT(orig_data != nullptr);
+    TEST_ASSERT(orig_size == 4);
 
     // Move constructor
     MmapFile moved(std::move(original));
-    assert(moved.data() == orig_data);
-    assert(moved.size() == orig_size);
-    assert(moved.is_open());
+    TEST_ASSERT(moved.data() == orig_data);
+    TEST_ASSERT(moved.size() == orig_size);
+    TEST_ASSERT(moved.is_open());
 
-    assert(original.data() == nullptr);
-    assert(original.size() == 0);
-    assert(!original.is_open());
+    TEST_ASSERT(original.data() == nullptr);
+    TEST_ASSERT(original.size() == 0);
+    TEST_ASSERT(!original.is_open());
 
     // Data readable from moved
-    assert(moved.data()[0] == 0xCA);
-    assert(moved.data()[3] == 0xBE);
+    TEST_ASSERT(moved.data()[0] == 0xCA);
+    TEST_ASSERT(moved.data()[3] == 0xBE);
 
     // Move assignment
     std::string path2 = make_temp_path("move2");
@@ -455,12 +456,12 @@ void test_move_semantics() {
 
     MmapFile other(path2);
     other = std::move(moved);
-    assert(other.data() == orig_data);
-    assert(other.size() == 4);
-    assert(other.data()[0] == 0xCA);
+    TEST_ASSERT(other.data() == orig_data);
+    TEST_ASSERT(other.size() == 4);
+    TEST_ASSERT(other.data()[0] == 0xCA);
 
-    assert(moved.data() == nullptr);
-    assert(!moved.is_open());
+    TEST_ASSERT(moved.data() == nullptr);
+    TEST_ASSERT(!moved.is_open());
 
     std::cout << "  move semantics: PASS" << std::endl;
 }
@@ -474,16 +475,16 @@ void test_close_idempotent() {
     write_bytes(path, {0x42});
 
     MmapFile mf(path);
-    assert(mf.is_open());
+    TEST_ASSERT(mf.is_open());
 
     mf.close();
-    assert(!mf.is_open());
-    assert(mf.data() == nullptr);
-    assert(mf.size() == 0);
+    TEST_ASSERT(!mf.is_open());
+    TEST_ASSERT(mf.data() == nullptr);
+    TEST_ASSERT(mf.size() == 0);
 
     // Second close should be no-op
     mf.close();
-    assert(!mf.is_open());
+    TEST_ASSERT(!mf.is_open());
 
     std::cout << "  close idempotent: PASS" << std::endl;
 }
@@ -503,19 +504,19 @@ void test_large_multi_page() {
     write_bytes(path, buf);
 
     MmapFile mf(path);
-    assert(mf.size() == SIZE);
+    TEST_ASSERT(mf.size() == SIZE);
 
     // Spot-check: header, middle, tail
-    assert(mf.data()[0] == buf[0]);
-    assert(mf.data()[SIZE / 2] == buf[SIZE / 2]);
-    assert(mf.data()[SIZE - 1] == buf[SIZE - 1]);
+    TEST_ASSERT(mf.data()[0] == buf[0]);
+    TEST_ASSERT(mf.data()[SIZE / 2] == buf[SIZE / 2]);
+    TEST_ASSERT(mf.data()[SIZE - 1] == buf[SIZE - 1]);
 
     // Full content match
-    assert(std::memcmp(mf.data(), buf.data(), SIZE) == 0);
+    TEST_ASSERT(std::memcmp(mf.data(), buf.data(), SIZE) == 0);
 
     // Switch advise + re-verify (random access patterns)
     mf.advise_random();
-    assert(std::memcmp(mf.data(), buf.data(), SIZE) == 0);
+    TEST_ASSERT(std::memcmp(mf.data(), buf.data(), SIZE) == 0);
 
     std::cout << "  large multi-page: PASS" << std::endl;
 }
@@ -524,13 +525,13 @@ void test_default_constructed_state() {
     std::cout << "Testing MmapFile default-constructed state..." << std::endl;
 
     MmapFile mf;
-    assert(!mf.is_open());
-    assert(mf.data() == nullptr);
-    assert(mf.size() == 0);
+    TEST_ASSERT(!mf.is_open());
+    TEST_ASSERT(mf.data() == nullptr);
+    TEST_ASSERT(mf.size() == 0);
 
     // close() on default-constructed is safe
     mf.close();
-    assert(!mf.is_open());
+    TEST_ASSERT(!mf.is_open());
 
     std::cout << "  default constructed: PASS" << std::endl;
 }
@@ -729,33 +730,44 @@ void test_utf8_path() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== util/mmap_file.hpp tests ===" << std::endl;
 
-    test_owned_native_file_exact_handle_read();
-    test_owned_native_file_survives_path_replacement();
-    test_owned_native_empty_file();
-    test_owned_native_file_move_and_close();
-    test_invalid_owned_native_file_rejected();
-    test_owned_native_file_mapping_failure_closes_temporary_handle();
-    test_read_and_ptr_at_reject_out_of_bounds_offsets();
+    failed += !run_case(test_owned_native_file_exact_handle_read);
+    failed += !run_case(test_owned_native_file_survives_path_replacement);
+    failed += !run_case(test_owned_native_empty_file);
+    failed += !run_case(test_owned_native_file_move_and_close);
+    failed += !run_case(test_invalid_owned_native_file_rejected);
+    failed += !run_case(test_owned_native_file_mapping_failure_closes_temporary_handle);
+    failed += !run_case(test_read_and_ptr_at_reject_out_of_bounds_offsets);
 
 #ifdef _WIN32
-    test_default_constructed_state();
-    test_utf8_path();
+    failed += !run_case(test_default_constructed_state);
+    failed += !run_case(test_utf8_path);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
     return 0;
 #else
-    test_default_constructed_state();
-    test_basic_open_and_read();
-    test_empty_file();
-    test_nonexistent_file_throws();
-    test_read_at_typed_values();
-    test_ptr_at();
-    test_advise_random();
-    test_move_semantics();
-    test_close_idempotent();
-    test_large_multi_page();
-    test_utf8_path();
+    failed += !run_case(test_default_constructed_state);
+    failed += !run_case(test_basic_open_and_read);
+    failed += !run_case(test_empty_file);
+    failed += !run_case(test_nonexistent_file_throws);
+    failed += !run_case(test_read_at_typed_values);
+    failed += !run_case(test_ptr_at);
+    failed += !run_case(test_advise_random);
+    failed += !run_case(test_move_semantics);
+    failed += !run_case(test_close_idempotent);
+    failed += !run_case(test_large_multi_page);
+    failed += !run_case(test_utf8_path);
 
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
     std::cout << "\n=== All util/mmap_file.hpp tests PASSED ===" << std::endl;
     return 0;
 #endif

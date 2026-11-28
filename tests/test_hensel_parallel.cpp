@@ -22,7 +22,8 @@
 #include <gnfs/sqrt/hensel_sqrt.hpp>
 #include <gnfs/sqrt/number_field.hpp>
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -34,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::core;
 using namespace gnfs::sqrt;
 using gnfs::polynomial::BaseMSelector;
@@ -48,7 +50,7 @@ namespace {
 NumberField build_test_number_field() {
     Integer n("9991");
     auto poly_result = BaseMSelector::select(n, 2);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
     return NumberField(ctx);
 }
@@ -116,9 +118,9 @@ void test_correctness_seq_vs_parallel_1_vs_4() {
     // be bit-for-bit identical (the K slots are pure-function over per-slot
     // state, so sequential and parallel paths must give the same per-slot
     // LiftResult and therefore the same CRT-combined sqrt).
-    assert(seq.result.has_value() == par.result.has_value());
+    TEST_ASSERT(seq.result.has_value() == par.result.has_value());
     if (seq.result && par.result) {
-        assert(seq.result->compare(*par.result) == 0);
+        TEST_ASSERT(seq.result->compare(*par.result) == 0);
         std::cout << "  seq vs N=4 result match: PASSED (" << seq.ms << "ms vs " << par.ms << "ms)"
                   << std::endl;
     } else {
@@ -135,9 +137,9 @@ void test_correctness_seq_vs_parallel_1_vs_2() {
     auto seq = run_hensel_with_threads(pairs, nf, "1");
     auto par = run_hensel_with_threads(pairs, nf, "2");
 
-    assert(seq.result.has_value() == par.result.has_value());
+    TEST_ASSERT(seq.result.has_value() == par.result.has_value());
     if (seq.result && par.result) {
-        assert(seq.result->compare(*par.result) == 0);
+        TEST_ASSERT(seq.result->compare(*par.result) == 0);
         std::cout << "  seq vs N=2 result match: PASSED (" << seq.ms << "ms vs " << par.ms << "ms)"
                   << std::endl;
     } else {
@@ -153,9 +155,9 @@ void test_correctness_default_vs_parallel() {
     auto def = run_hensel_with_threads(pairs, nf, nullptr); // env unset -> N=1 default
     auto par = run_hensel_with_threads(pairs, nf, "4");
 
-    assert(def.result.has_value() == par.result.has_value());
+    TEST_ASSERT(def.result.has_value() == par.result.has_value());
     if (def.result && par.result) {
-        assert(def.result->compare(*par.result) == 0);
+        TEST_ASSERT(def.result->compare(*par.result) == 0);
         std::cout << "  default vs N=4 match: PASSED (" << def.ms << "ms vs " << par.ms << "ms)"
                   << std::endl;
     } else {
@@ -174,9 +176,9 @@ void test_correctness_small_ab_pairs() {
     auto seq = run_hensel_with_threads(pairs, nf, "1");
     auto par = run_hensel_with_threads(pairs, nf, "8");
 
-    assert(seq.result.has_value() == par.result.has_value());
+    TEST_ASSERT(seq.result.has_value() == par.result.has_value());
     if (seq.result && par.result) {
-        assert(seq.result->compare(*par.result) == 0);
+        TEST_ASSERT(seq.result->compare(*par.result) == 0);
         std::cout << "  Small input path: PASSED (env ignored when <100 pairs)" << std::endl;
     } else {
         std::cout << "  Small input path: PASSED (consistent nullopt across thread counts)"
@@ -200,27 +202,27 @@ void test_env_parsing_values() {
     // Empty string -> default 1.
     setenv("GNFS_SQRT_HENSEL_THREADS", "", /*overwrite=*/1);
     reset_sqrt_hensel_threads_cache();
-    assert(sqrt_hensel_threads() == 1);
+    TEST_ASSERT(sqrt_hensel_threads() == 1);
 
     // "0" -> treated as invalid (<=0) -> 1.
     setenv("GNFS_SQRT_HENSEL_THREADS", "0", /*overwrite=*/1);
     reset_sqrt_hensel_threads_cache();
-    assert(sqrt_hensel_threads() == 1);
+    TEST_ASSERT(sqrt_hensel_threads() == 1);
 
     // "-3" -> treated as invalid -> 1.
     setenv("GNFS_SQRT_HENSEL_THREADS", "-3", /*overwrite=*/1);
     reset_sqrt_hensel_threads_cache();
-    assert(sqrt_hensel_threads() == 1);
+    TEST_ASSERT(sqrt_hensel_threads() == 1);
 
     // "1" -> 1.
     setenv("GNFS_SQRT_HENSEL_THREADS", "1", /*overwrite=*/1);
     reset_sqrt_hensel_threads_cache();
-    assert(sqrt_hensel_threads() == 1);
+    TEST_ASSERT(sqrt_hensel_threads() == 1);
 
     // "4" -> 4 (assuming hw*2 >= 4, which holds on any modern machine).
     setenv("GNFS_SQRT_HENSEL_THREADS", "4", /*overwrite=*/1);
     reset_sqrt_hensel_threads_cache();
-    assert(sqrt_hensel_threads() == 4);
+    TEST_ASSERT(sqrt_hensel_threads() == 4);
 
     // "999" -> clamp to hw*2.
     setenv("GNFS_SQRT_HENSEL_THREADS", "999", /*overwrite=*/1);
@@ -350,19 +352,26 @@ void test_prime_search_exhaustion() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Hensel Parallel Dispatch Tests ===" << std::endl << std::endl;
 
-    test_correctness_seq_vs_parallel_1_vs_4();
-    test_correctness_seq_vs_parallel_1_vs_2();
-    test_correctness_default_vs_parallel();
-    test_correctness_small_ab_pairs();
+    failed += !run_case(test_correctness_seq_vs_parallel_1_vs_4);
+    failed += !run_case(test_correctness_seq_vs_parallel_1_vs_2);
+    failed += !run_case(test_correctness_default_vs_parallel);
+    failed += !run_case(test_correctness_small_ab_pairs);
 
-    test_env_parsing_unset();
-    test_env_parsing_values();
+    failed += !run_case(test_env_parsing_unset);
+    failed += !run_case(test_env_parsing_values);
 
-    test_perf_info_4_vs_1();
-    test_edge_case_single_slot();
-    test_prime_search_exhaustion();
+    failed += !run_case(test_perf_info_4_vs_1);
+    failed += !run_case(test_edge_case_single_slot);
+    failed += !run_case(test_prime_search_exhaustion);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All Hensel Parallel Tests PASSED ===" << std::endl;
     return 0;

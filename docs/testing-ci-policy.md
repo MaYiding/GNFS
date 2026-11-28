@@ -39,11 +39,16 @@ Longest measured enabled tests:
 | `fast` | Medium integration or resource-sensitive helper tests. Single-run target is under 30s on Debug. | Release PR matrix on Linux and macOS |
 | `gate` | Multi-size correctness gate, especially 17/27/40/81-bit pipeline coverage. | Linux Release deep gate |
 | `slow` | Real GNFS or API pipeline tests. Debug may take 30s to 5min. | Linux Release deep gate, targeted platform-specific PR lanes, nightly, local pre-merge |
-| `heavy` | Long algorithmic or size-sensitive tests. | Manual, nightly candidate, never required PR |
+| `heavy` | Long algorithmic or size-sensitive tests. | Manual, the nightly GNFS evidence ladder, never required PR |
 | `bench` | Informational benchmark tests. | Benchmark workflow only, non-blocking |
-| `stress` | 50/60-digit stress tests. | Manual or dedicated long-run workflow only |
+| `stress` | 50/60-digit stress tests. | Manual, the non-blocking nightly 50-digit evidence job, or a dedicated long-run workflow |
 
 Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Windows, and high CTest parallelism can change runtime by an order of magnitude.
+
+The four GNFS evidence ladder CTests also carry the `ladder` label, which is
+not a tier. `unit` and `full` select every CTest with `ctest -R '.*'` and pass
+`--label-exclude ladder`, so the ladder runs only where a job selects it by
+name.
 
 `HarnessHooks` aggregates isolated hook and runner CLI contracts, including
 fresh interpreter, fixture, and reporting processes. It retains the `instant`
@@ -58,6 +63,20 @@ CTest allows it 10 seconds. `scripts/test.sh` maps the checker to `util`, so
 `changed` runs the contract after an edit to the checker. Docs Integrity and
 Script Checks run the same self-test, and Docs Integrity also scans the
 tracked Markdown.
+
+`HeaderReachabilityCheckerSelfTest` is the `instant` script contract for the
+header reachability checker. It runs
+`scripts/ci/check_header_reachability.py --self-test` over a temporary tree
+and a Git checkout of it, so it needs no build product, and CTest allows it 10
+seconds. Script Checks also run the real check: starting from every C and C++
+source outside `tests/` and `bench/` and from each `/FI` forced include, it
+follows `#include` lines and lists the headers under `include/gnfs` that
+nothing reaches. `scripts/ci/production-unreachable-headers.txt` pins that
+list with the gate that guards each header, so the check fails when an
+unreachable header is not listed and when a listed header is reached, moved,
+or deleted. A new header therefore goes into production, or into the list with
+a comment that names its gate. `scripts/test.sh` maps the checker and the list
+to `util`.
 
 ### Local Change Selection
 
@@ -244,6 +263,18 @@ Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
 to release-active checks in bounded batches instead.
 
+The unit tests under `tests/` use `TEST_ASSERT` from
+`tests/support/test_assert.hpp` for the same reason. It throws
+`gnfs::test::AssertionFailure`, a `std::runtime_error` that names the
+expression, file, and line, in every build type. A test `main()` can wrap
+each case in `gnfs::test::run_case()`, which prints the exception and returns
+`false`, so a failed check ends only that case, one run lists every failing
+case, and the binary still exits nonzero. An unwrapped failure terminates the
+process with the same message. `GNFS_TEST_CHECK` from
+`tests/support/test_check.hpp` remains the Release-active check of the
+migrated chains above. Script Checks runs `scripts/ci/check_test_asserts.py`,
+which rejects `assert()` and `<cassert>` under `tests/`.
+
 ## CI Policy
 
 The PR CI intentionally has three layers:
@@ -283,6 +314,8 @@ The PR CI intentionally has three layers:
      or the `fast` tier.
    - Proves that the ordinary POSIX path transport builds and runs on musl, while production campaign admission rejects the unavailable authenticated profile without creating the journal lock, header, artifact entries, or launch marker.
 
+Test checks are active in Release builds as well: tests use `TEST_ASSERT` or `GNFS_TEST_CHECK` instead of `assert()`, so every Release row above verifies the same conditions as a Debug run of the same test.
+
 ASan/UBSan and coverage run only `instant` tests. They already multiply test cost through instrumentation, and they should not duplicate the Release deep gate. TSan uses the narrower lane below because its purpose is to exercise explicit concurrency boundaries, not to repeat every isolated helper.
 
 `CLIEventStream` is an `instant` real-process contract. It launches the selected
@@ -290,8 +323,10 @@ ASan/UBSan and coverage run only `instant` tests. They already multiply test cos
 then it validates JSON Lines framing, event order, terminal status, and process
 exit status. The cross-platform quick matrix runs it on Windows as well as POSIX
 hosts, so `CreateProcess`, runtime DLL lookup, complete child-environment
-replacement, and executable-path handling remain covered. The test is also in
-the project smoke set because each invocation uses a deterministic small input.
+replacement, and executable-path handling remain covered. A directory named in
+CJK ideographs also covers the UTF-8 argument conversion and the `--config` and
+`--output` paths. The test is also in the project smoke set because each
+invocation uses a deterministic small input.
 
 `ProcessSupervisor` is the cross-platform `instant` contract for the compiled
 test-runner supervisor. It freezes ambient-environment and Unicode argument
@@ -320,21 +355,25 @@ orphan. Generic runner capture is limited to 16 MiB per stream; overflow is a
 Harness failure rather than a truncated test result. The manual 50-digit
 campaign retains its separately validated process-group and signal protocol.
 
+The `Format` job runs clang-format 18 on every C or C++ file a pull request changes. A file that drifted earlier fails as soon as a change touches it, so reformat the whole file rather than only the new lines. `scripts/ci/format_changed.sh` runs the same check on the current branch: set `CLANG_FORMAT` to a clang-format 18 binary, add `--fix` to reformat the changed files in place, and omit it to only report differences.
+
 ## Nightly and Release Qualification
 
 The scheduled nightly workflow and the verify-only release phase call the same
 reusable qualification workflow. This keeps expensive coverage outside the
 default pull request matrix while preventing the release path from drifting
-away from nightly evidence. The reusable workflow runs three independent
-Release jobs: the repository `thorough` mode, the structured 120-bit route
-gate, and the bounded four-special-Q 50-digit legacy/structured route
-comparison. The bounded comparison uses a 900-second timeout for each route;
-it is not a complete 50-digit factorization claim. Successful probes retain
-the permanent zero-byte OOC coordination locks required by the store contract.
-The Harness removes the private test directory only after a no-following,
-directory-relative check proves that its entries are exactly the raw lock and,
-for the structured route, one precisely named structured-output lock. Extra,
-renamed, linked, symlinked, or nonempty residue remains a release failure.
+away from nightly evidence. The scheduled and manual nightly run adds two jobs
+of its own, the GNFS evidence ladder described at the end of this section. The
+reusable workflow runs three independent Release jobs: the repository `thorough`
+mode, the structured 120-bit route gate, and the bounded four-special-Q
+50-digit legacy/structured route comparison. The bounded comparison uses a
+900-second timeout for each route; it is not a complete 50-digit factorization
+claim. Successful probes retain the permanent zero-byte OOC coordination locks
+required by the store contract. The Harness removes the private test directory
+only after a no-following, directory-relative check proves that its entries
+are exactly the raw lock and, for the structured route, one precisely named
+structured-output lock. Extra, renamed, linked, symlinked, or nonempty residue
+remains a release failure.
 
 Release publication also requires every workflow that was triggered by the
 exact main push to finish successfully. A fixed set of release-critical jobs
@@ -389,6 +428,84 @@ decision. A runtime capability rejection that is classified as unavailable on
 an otherwise supported build retains its native cause in `native_error`. The
 musl lane does not add an authenticated launch implementation and does not
 change the authenticated transport ID.
+
+### Nightly GNFS Evidence Ladder
+
+Two further nightly jobs run beside the reusable qualification jobs. Each one
+checks out `github.sha`, builds only `test_gnfs_e2e_ladder` in Release with
+`GNFS_ENABLE_NATIVE_ARCH=OFF`, and selects its CTests by name. Pull-request CI
+compiles the binary but excludes the `heavy` and `stress` labels, so the rungs
+never run there.
+
+- `gnfs-e2e-ladder` proves that a complete GNFS factorization still succeeds
+  above the 25-digit regression level. It runs `GNFS_E2E_Ladder30`,
+  `GNFS_E2E_Ladder35`, and `GNFS_E2E_Ladder40`, each with a 1800-second CTest
+  timeout, and a failed rung fails the nightly run.
+- `gnfs-50d-evidence` collects experimental evidence for one 50-digit
+  semiprime through the structured route (`GNFS_E2E_50d`, 14400 seconds). The
+  job sets `continue-on-error`, so a timeout, an out-of-memory kill, or a
+  failed factorization is recorded but does not turn the nightly run red. It
+  uploads `build/Testing/Temporary/` on every outcome.
+
+All four CTests are enabled and also carry the `ladder` label, because
+`ctest` offers no option to run a test that is marked `DISABLED` and the jobs
+select the rungs by name. The `unit` and `full` modes of `scripts/test.sh` run
+`ctest -R '.*'` and exclude that label, so they do not run the ladder.
+
+`test_gnfs_e2e_ladder` factors one fixture per process through
+`Pipeline::run()`. It sets `GNFS_DISABLE_SIQS=1` and calls
+`Config::set_method(FactorizationMethod::GNFS)`, so neither the automatic SIQS
+route nor the 30-second SIQS probe can supply the answer. The 30-, 35-, and
+40-digit fixtures take the default reduction route, which leaves
+`GNFS_STRUCTURED_FILTER` unset. The 50-digit fixture sets
+`GNFS_STRUCTURED_FILTER=1` and `GNFS_OOC_RELATIONS=1`. Every other process
+variable copies the isolation set of `tests/test_structured_ooc_50d_probe.cpp`,
+which keeps resume, distributed workers, the V3 cascade, V0 BFS, 3LP, the
+adaptive lattice, and the lattice skew off.
+
+The test passes only when all of the following hold:
+
+- the published statistics name `gnfs` as the executed algorithm and never
+  list `siqs`;
+- both factors are nontrivial and multiply back to N;
+- the factors equal the two expected primes from `--expect`, in either order;
+- the structured-filter log records appear exactly when the structured route
+  was requested.
+
+A run prints one line on stdout: `GNFS_E2E_LADDER ` followed by one JSON
+object. Both jobs copy these lines from `Testing/Temporary/LastTest.log` into
+the step summary, and the `gnfs-e2e-ladder` mode reprints the record of each
+passing rung. Each of them parses the record first, so a line that is not one
+JSON object fails the step or counts as a failed rung. The object carries:
+
+- `digits`, `n_bits`, `route`, `n`, `factors`, `executed_algorithm`,
+  `algorithms_executed`, and `status` (`pass` or `fail`) with the `error` text
+  of a failed run;
+- `wall_total_seconds` and one `stages` entry per stage, each with the
+  `start_seconds` offset of its first progress event and its attributed
+  `wall_seconds`: `polynomial_selection`, `factor_base`, `sieve_collect`,
+  `filter_reduction`, `matrix`, `linear_algebra`, `square_root`, and `other`;
+- `relations` (raw relations collected), `relations_after_filter`,
+  `sieve_rounds_completed`, `sieve_stop_reason`, `matrix_rows`,
+  `matrix_cols`, `matrix_nonzeros`, `matrix_excess`, `dependencies_found`,
+  `dependencies_tried`, and the lifetime `peak_rss_bytes`.
+
+Statistics are `null` when `Pipeline::run()` threw before it published them;
+the stage timings, the structured-route counts, and the peak RSS stay in the
+record. A timeout kills the process before it prints, so a missing line means
+that the rung never finished. The time budgets are provisional until the first
+nightly runs report stage wall times. The `TIMEOUT` property of each CTest is
+the effective budget; `ctest --timeout` does not override it.
+
+To add a rung, append the fixture to `kFixtures` in
+`tests/test_gnfs_e2e_ladder.cpp`, register its CTest with its tier, the
+`ladder` label, and `TIMEOUT`, and add it to the nightly job that should run
+it. A CTest with arguments or a `heavy` or `stress` label stays inside the
+protected CMake boundary, so the registration also moves the boundary digest
+in `scripts/check_distributed_sieve_policy.py`. The expected primes live in
+the CTest command and in the `gnfs-e2e-ladder` mode of `scripts/test.sh`,
+which runs the 30-, 35-, and 40-digit rungs locally and defaults to a Release
+build.
 
 ## ThreadSanitizer Lane
 
@@ -1589,6 +1706,8 @@ When adding or changing tests:
 - Add matching entries to `TEST_TIMEOUT` and `TEST_TIER`.
 - Put the test in `SMOKE_TESTS` only if it is pure `instant` and does not run a real GNFS pipeline.
 - Put real pipeline tests in `MODULE_SLOW_TESTS` or a dedicated mode.
+- Put a new digit band that needs a complete GNFS factorization on the
+  nightly evidence ladder instead of adding a one-off pipeline test.
 - For candidate, structured-relation, or SIQS shadow concurrency changes, run
   `./scripts/test.sh tsan-relation` on a supported toolchain.
 - Re-run at least `./scripts/test.sh list`, `ctest --show-only=json-v1`, and the affected local test subset.

@@ -140,7 +140,8 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
     // When enabled, we (a) try to load a saved checkpoint and resume the scan
     // at the saved (pivot_row, cur_col, aug payload), and (b) save the state
     // every `bl_checkpoint_interval()` pivots so a crash loses at most that
-    // many pivots' worth of work.
+    // many pivots' worth of work. A save publishes through a temporary file
+    // and a rename, so a failed save leaves the previous checkpoint intact.
     //
     // Shape alone cannot distinguish different runs. Bind the checkpoint to
     // the canonical source matrix; unbound legacy states restart safely.
@@ -152,9 +153,20 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
     const uint64_t matrix_rows = static_cast<uint64_t>(m);
     const uint64_t matrix_cols = static_cast<uint64_t>(n);
 
+    if (bl_ckpt_enabled) {
+        // This solve now owns the checkpoint name. A temporary file that exists
+        // before its first save is a leftover of an interrupted save, and
+        // save() refuses to write while such a file is present.
+        BlockLanczosCheckpoint::remove_temporary(bl_ckpt_path);
+    }
+
     if (bl_ckpt_enabled && BlockLanczosCheckpoint::exists_and_valid(bl_ckpt_path)) {
         auto loaded = BlockLanczosCheckpoint::load(bl_ckpt_path);
-        if (loaded.has_value() && loaded->matrix_fingerprint == matrix_fingerprint &&
+        // Only the current format is resumable: its SHA-256 digest is sensitive
+        // to the payload word order, which the older XOR folds were not.
+        const bool resumable_format =
+            loaded.has_value() && loaded->format_version == BlockLanczosCheckpoint::VERSION;
+        if (resumable_format && loaded->matrix_fingerprint == matrix_fingerprint &&
             loaded->rows == matrix_rows && loaded->cols == matrix_cols &&
             loaded->aug_words_per_row == aug.words_per_row_ &&
             loaded->aug.size() == aug.data_.size()
@@ -171,6 +183,12 @@ std::vector<std::vector<bool>> BlockLanczos::find_dependencies_sparse(const Spar
             std::cerr << "[bl_ckpt] resume from " << bl_ckpt_path << " iter=" << iter_counter
                       << " pivot_row=" << pivot_row << " cur_col=" << scan_start_col << " (m=" << m
                       << ", n=" << n << ")\n";
+        } else if (loaded.has_value() && !resumable_format) {
+            // Decodable, but written by an older format version.
+            std::cerr << "[bl_ckpt] rejecting incompatible checkpoint " << bl_ckpt_path
+                      << " (format version " << loaded->format_version
+                      << " is not resumable, starting fresh)\n";
+            BlockLanczosCheckpoint::remove(bl_ckpt_path);
         } else {
             // Stale or shape-mismatched checkpoint: reject and start clean.
             std::cerr << "[bl_ckpt] rejecting incompatible checkpoint " << bl_ckpt_path

@@ -25,9 +25,10 @@
 #include <gnfs/cofactor/brent_pollard_rho_parallel.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -47,6 +48,7 @@ using gnfs::cofactor::BrentPollardRho;
 using gnfs::cofactor::parallel_brent_pollard_rho;
 using gnfs::cofactor::resolve_brent_pollard_rho_threads;
 using gnfs::core::Integer;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -82,10 +84,10 @@ void test_env_unset_defaults_to_one() {
 void test_env_zero_and_one() {
     std::cout << "Test 2: ENV '0' / '1' -> 1..." << std::flush;
     apply_env("0");
-    assert(brent_pollard_rho_threads() == 1);
+    TEST_ASSERT(brent_pollard_rho_threads() == 1);
 
     apply_env("1");
-    assert(brent_pollard_rho_threads() == 1);
+    TEST_ASSERT(brent_pollard_rho_threads() == 1);
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -120,16 +122,16 @@ void test_env_non_numeric() {
     std::cout << "Test 4: ENV non-numeric / boundary -> 1..." << std::flush;
 
     apply_env("");
-    assert(brent_pollard_rho_threads() == 1);
+    TEST_ASSERT(brent_pollard_rho_threads() == 1);
 
     apply_env("-5");
-    assert(brent_pollard_rho_threads() == 1);
+    TEST_ASSERT(brent_pollard_rho_threads() == 1);
 
     apply_env("garbage");
-    assert(brent_pollard_rho_threads() == 1);
+    TEST_ASSERT(brent_pollard_rho_threads() == 1);
 
     apply_env("abc123");
-    assert(brent_pollard_rho_threads() == 1);
+    TEST_ASSERT(brent_pollard_rho_threads() == 1);
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -231,7 +233,7 @@ void test_empty_span() {
             std::abort();
             return 0;
         });
-    assert(seq.empty());
+    TEST_ASSERT(seq.empty());
 
     apply_env("4");
     auto par = parallel_brent_pollard_rho<uint64_t>(
@@ -241,7 +243,7 @@ void test_empty_span() {
             std::abort();
             return 0;
         });
-    assert(par.empty());
+    TEST_ASSERT(par.empty());
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -265,9 +267,9 @@ void test_single_config_n1() {
             return c * 1000 + x0;
         });
 
-    assert(results.size() == 1);
-    assert(results[0] == 7002);
-    assert(calls.load() == 1);
+    TEST_ASSERT(results.size() == 1);
+    TEST_ASSERT(results[0] == 7002);
+    TEST_ASSERT(calls.load() == 1);
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -295,8 +297,8 @@ void test_single_config_n4_no_stall() {
     auto t1 = std::chrono::steady_clock::now();
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    assert(results.size() == 1);
-    assert(results[0] == 503);
+    TEST_ASSERT(results.size() == 1);
+    TEST_ASSERT(results[0] == 503);
     int total = calls.load(std::memory_order_relaxed);
     if (total != 1) {
         std::cerr << "\n  ERROR: expected exactly 1 call, got " << total << std::endl;
@@ -444,7 +446,7 @@ void test_n1_vs_n_hw_mock_parity() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
             std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i] << " par=" << par[i]
@@ -491,8 +493,8 @@ void test_real_brent_rho_parity() {
         11261, 11273, 11279, 11287, 11299, 11311, 11317, 11321, 11329, 11351, 11353, 11369, 11383,
         11393, 11399, 11411, 11423, 11437, 11443, 11447, 11467, 11471, 11483, 11489,
     };
-    assert(primes_a.size() == primes_b.size());
-    assert(primes_a.size() == 50);
+    TEST_ASSERT(primes_a.size() == primes_b.size());
+    TEST_ASSERT(primes_a.size() == 50);
 
     // We do not actually use cs / x0s in the worker (split() picks its own
     // c values from a deterministic seed). We pass index-based dummy spans
@@ -541,7 +543,7 @@ void test_real_brent_rho_parity() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     std::size_t found = 0;
     for (std::size_t i = 0; i < seq.size(); ++i) {
         bool seq_has = seq[i].has_value();
@@ -559,11 +561,11 @@ void test_real_brent_rho_parity() {
                 std::abort();
             }
             // Sanity: factor must divide cofactor and be non-trivial.
-            assert(!seq[i]->is_one());
-            assert(seq[i]->compare(cofactors[i]) != 0);
+            TEST_ASSERT(!seq[i]->is_one());
+            TEST_ASSERT(seq[i]->compare(cofactors[i]) != 0);
             Integer rem;
             mpz_mod(rem.get_mpz(), cofactors[i].get_mpz(), seq[i]->get_mpz());
-            assert(rem.is_zero());
+            TEST_ASSERT(rem.is_zero());
         }
     }
 
@@ -648,13 +650,13 @@ void test_resolve_helper_edges() {
     std::cout << "Test 16: resolve_brent_pollard_rho_threads edges..." << std::flush;
 
     apply_env("4");
-    assert(resolve_brent_pollard_rho_threads(0) == 0);  // empty -> 0
-    assert(resolve_brent_pollard_rho_threads(1) == 1);  // single -> 1
-    assert(resolve_brent_pollard_rho_threads(10) >= 1); // bound by 4 or hw*2 cap
-    assert(resolve_brent_pollard_rho_threads(10) <= 4);
+    TEST_ASSERT(resolve_brent_pollard_rho_threads(0) == 0);  // empty -> 0
+    TEST_ASSERT(resolve_brent_pollard_rho_threads(1) == 1);  // single -> 1
+    TEST_ASSERT(resolve_brent_pollard_rho_threads(10) >= 1); // bound by 4 or hw*2 cap
+    TEST_ASSERT(resolve_brent_pollard_rho_threads(10) <= 4);
 
     apply_env("1");
-    assert(resolve_brent_pollard_rho_threads(100) == 1); // N=1 -> 1
+    TEST_ASSERT(resolve_brent_pollard_rho_threads(100) == 1); // N=1 -> 1
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -700,9 +702,9 @@ void test_perf_info_probe() {
     apply_env(nullptr);
 
     // Sanity: parity must hold even in perf probe.
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
-        assert(seq[i] == par[i]);
+        TEST_ASSERT(seq[i] == par[i]);
     }
 
     double speedup = (ms_n4 > 0) ? (static_cast<double>(ms_n1) / static_cast<double>(ms_n4)) : 0.0;
@@ -713,26 +715,33 @@ void test_perf_info_probe() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Brent-Pollard rho Parallel Dispatch Tests ===" << std::endl;
 
-    test_env_unset_defaults_to_one();
-    test_env_zero_and_one();
-    test_env_four();
-    test_env_non_numeric();
-    test_env_partial_parse();
-    test_env_clamp_high();
-    test_env_positive_overflow_clamps();
-    test_empty_span();
-    test_single_config_n1();
-    test_single_config_n4_no_stall();
-    test_n1_baseline_mock();
-    test_n1_vs_n4_mock_parity();
-    test_n1_vs_n_hw_mock_parity();
-    test_real_brent_rho_parity();
-    test_mismatched_span_throws();
-    test_reset_env_cache_hook();
-    test_resolve_helper_edges();
-    test_perf_info_probe();
+    failed += !run_case(test_env_unset_defaults_to_one);
+    failed += !run_case(test_env_zero_and_one);
+    failed += !run_case(test_env_four);
+    failed += !run_case(test_env_non_numeric);
+    failed += !run_case(test_env_partial_parse);
+    failed += !run_case(test_env_clamp_high);
+    failed += !run_case(test_env_positive_overflow_clamps);
+    failed += !run_case(test_empty_span);
+    failed += !run_case(test_single_config_n1);
+    failed += !run_case(test_single_config_n4_no_stall);
+    failed += !run_case(test_n1_baseline_mock);
+    failed += !run_case(test_n1_vs_n4_mock_parity);
+    failed += !run_case(test_n1_vs_n_hw_mock_parity);
+    failed += !run_case(test_real_brent_rho_parity);
+    failed += !run_case(test_mismatched_span_throws);
+    failed += !run_case(test_reset_env_cache_hook);
+    failed += !run_case(test_resolve_helper_edges);
+    failed += !run_case(test_perf_info_probe);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All Brent-Pollard rho Parallel Tests PASSED ===" << std::endl;
     return 0;

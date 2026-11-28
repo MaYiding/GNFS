@@ -1,7 +1,7 @@
 // Unit tests for gnfs::util::Timer + Stopwatch + ScopedTimer.
 
-#include "gnfs/util/timer.hpp"
 #include "support/test_check.hpp"
+#include "support/timer.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -330,7 +330,7 @@ void test_noexcept_contract() {
 }
 
 int main() {
-    std::cout << "=== util/timer.hpp tests ===" << std::endl;
+    std::cout << "=== support/timer.hpp tests ===" << std::endl;
 
     test_default_state();
     test_start_stop_basic();
@@ -347,6 +347,6 @@ int main() {
     test_stopwatch_restart();
     test_noexcept_contract();
 
-    std::cout << "\n=== All util/timer.hpp tests PASSED ===" << std::endl;
+    std::cout << "\n=== All support/timer.hpp tests PASSED ===" << std::endl;
     return 0;
 }

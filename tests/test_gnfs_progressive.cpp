@@ -28,7 +28,6 @@
 #include <gnfs/util/temp_path.hpp>
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>

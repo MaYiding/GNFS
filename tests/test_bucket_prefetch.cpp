@@ -20,14 +20,16 @@
 #include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/sieve/special_q.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs;
 using namespace gnfs::core;
 using namespace gnfs::polynomial;
@@ -37,7 +39,10 @@ using namespace gnfs::sieve;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_ASSERT(cond, msg)                                                                     \
+// File-local check with a message: it records a failure and returns from the
+// void test function. The shared TEST_ASSERT(condition) comes from
+// support/test_assert.hpp.
+#define TEST_REQUIRE(cond, msg)                                                                    \
     do {                                                                                           \
         if (!(cond)) {                                                                             \
             std::cerr << "FAIL: " << msg << " (line " << __LINE__ << ")\n";                        \
@@ -105,7 +110,7 @@ SieveSetup build_setup_40bit() {
     SpecialQGenerator sqg(s.fb, sqr);
 
     auto opt_sq = sqg.next();
-    assert(opt_sq.has_value() && "no SQ available for fixture");
+    TEST_ASSERT(opt_sq.has_value() && "no SQ available for fixture");
     s.sq = *opt_sq;
     return s;
 }
@@ -154,19 +159,19 @@ void test_bucket_region_parity_40bit() {
     auto setup = build_setup_40bit();
 
     set_env_and_reload("0");
-    TEST_ASSERT(!bucket_prefetch_enabled(), "GNFS_BUCKET_PREFETCH=0 should disable gate");
+    TEST_REQUIRE(!bucket_prefetch_enabled(), "GNFS_BUCKET_PREFETCH=0 should disable gate");
     auto off = sort_candidates(sieve_once(setup, /*force_row_major=*/false));
 
     set_env_and_reload("1");
     if (bucket_prefetch_supported()) {
-        TEST_ASSERT(bucket_prefetch_enabled(),
-                    "GNFS_BUCKET_PREFETCH=1 should enable gate when supported");
+        TEST_REQUIRE(bucket_prefetch_enabled(),
+                     "GNFS_BUCKET_PREFETCH=1 should enable gate when supported");
     }
     auto on = sort_candidates(sieve_once(setup, /*force_row_major=*/false));
 
-    TEST_ASSERT(off.size() == on.size(), "candidate count differs between prefetch states");
-    TEST_ASSERT(candidates_equal(off, on),
-                "candidate (a,b,i,j,residual) differs between prefetch states");
+    TEST_REQUIRE(off.size() == on.size(), "candidate count differs between prefetch states");
+    TEST_REQUIRE(candidates_equal(off, on),
+                 "candidate (a,b,i,j,residual) differs between prefetch states");
 
     std::cout << "  bucket region parity: " << off.size() << " candidates match bit-for-bit\n";
     TEST_PASS("bucket region prefetch parity");
@@ -184,10 +189,10 @@ void test_row_major_parity_40bit() {
     set_env_and_reload("1");
     auto on = sort_candidates(sieve_once(setup, /*force_row_major=*/true));
 
-    TEST_ASSERT(off.size() == on.size(),
-                "row-major candidate count differs between prefetch states");
-    TEST_ASSERT(candidates_equal(off, on),
-                "row-major candidate residual / (a,b) differs between prefetch states");
+    TEST_REQUIRE(off.size() == on.size(),
+                 "row-major candidate count differs between prefetch states");
+    TEST_REQUIRE(candidates_equal(off, on),
+                 "row-major candidate residual / (a,b) differs between prefetch states");
 
     std::cout << "  row-major parity: " << off.size() << " candidates match bit-for-bit\n";
     TEST_PASS("row-major prefetch parity");
@@ -242,9 +247,9 @@ void test_multi_sq_parity() {
     auto off = sieve_n(2, "0");
     auto on = sieve_n(2, "1");
 
-    TEST_ASSERT(off.size() == on.size(), "multi-SQ: differing number of SQs processed");
+    TEST_REQUIRE(off.size() == on.size(), "multi-SQ: differing number of SQs processed");
     for (size_t i = 0; i < off.size(); ++i) {
-        TEST_ASSERT(off[i] == on[i], "multi-SQ: per-SQ candidate count differs");
+        TEST_REQUIRE(off[i] == on[i], "multi-SQ: per-SQ candidate count differs");
     }
 
     std::cout << "  multi-SQ parity: " << off.size() << " SQs processed identically\n";
@@ -280,7 +285,7 @@ void test_small_n_parity() {
     sqr.max_q = params.special_q_max;
     SpecialQGenerator gen(fb, sqr);
     auto sq = gen.next();
-    TEST_ASSERT(sq.has_value(), "small N: no SQ available");
+    TEST_REQUIRE(sq.has_value(), "small N: no SQ available");
 
     auto run = [&](const char* env_value) {
         set_env_and_reload(env_value);
@@ -293,8 +298,8 @@ void test_small_n_parity() {
     auto off = sort_candidates(run("0"));
     auto on = sort_candidates(run("1"));
 
-    TEST_ASSERT(off.size() == on.size(), "small N: candidate count differs");
-    TEST_ASSERT(candidates_equal(off, on), "small N: candidate content differs");
+    TEST_REQUIRE(off.size() == on.size(), "small N: candidate count differs");
+    TEST_REQUIRE(candidates_equal(off, on), "small N: candidate content differs");
 
     std::cout << "  27-bit parity: " << off.size() << " candidates match bit-for-bit\n";
     TEST_PASS("small N prefetch parity");
@@ -303,7 +308,7 @@ void test_small_n_parity() {
 /// ENV-parse 1: explicit "0" disables the gate.
 void test_env_parse_zero() {
     set_env_and_reload("0");
-    TEST_ASSERT(!bucket_prefetch_enabled(), "GNFS_BUCKET_PREFETCH=0 should disable gate");
+    TEST_REQUIRE(!bucket_prefetch_enabled(), "GNFS_BUCKET_PREFETCH=0 should disable gate");
     TEST_PASS("env parse: 0 disables");
 }
 
@@ -313,20 +318,20 @@ void test_env_parse_one_auto_unset() {
     const bool supported = bucket_prefetch_supported();
 
     set_env_and_reload("1");
-    TEST_ASSERT(bucket_prefetch_enabled() == supported,
-                "GNFS_BUCKET_PREFETCH=1 should match support state");
+    TEST_REQUIRE(bucket_prefetch_enabled() == supported,
+                 "GNFS_BUCKET_PREFETCH=1 should match support state");
 
     set_env_and_reload("auto");
-    TEST_ASSERT(bucket_prefetch_enabled() == supported,
-                "GNFS_BUCKET_PREFETCH=auto should match support state");
+    TEST_REQUIRE(bucket_prefetch_enabled() == supported,
+                 "GNFS_BUCKET_PREFETCH=auto should match support state");
 
     set_env_and_reload(nullptr); // unset
-    TEST_ASSERT(bucket_prefetch_enabled() == supported,
-                "unset GNFS_BUCKET_PREFETCH should match support state");
+    TEST_REQUIRE(bucket_prefetch_enabled() == supported,
+                 "unset GNFS_BUCKET_PREFETCH should match support state");
 
     // Unrecognised values default to auto behaviour.
     set_env_and_reload("garbage-value");
-    TEST_ASSERT(bucket_prefetch_enabled() == supported, "unrecognised value should treat as auto");
+    TEST_REQUIRE(bucket_prefetch_enabled() == supported, "unrecognised value should treat as auto");
 
     std::cout << "  compiler support: " << (supported ? "yes (__builtin_prefetch available)" : "no")
               << "\n";
@@ -371,13 +376,13 @@ void test_perf_info_40bit() {
 int main() {
     std::cout << "=== Bucket prefetch tests ===\n";
 
-    test_bucket_region_parity_40bit();
-    test_row_major_parity_40bit();
-    test_multi_sq_parity();
-    test_small_n_parity();
-    test_env_parse_zero();
-    test_env_parse_one_auto_unset();
-    test_perf_info_40bit();
+    tests_failed += !run_case(test_bucket_region_parity_40bit);
+    tests_failed += !run_case(test_row_major_parity_40bit);
+    tests_failed += !run_case(test_multi_sq_parity);
+    tests_failed += !run_case(test_small_n_parity);
+    tests_failed += !run_case(test_env_parse_zero);
+    tests_failed += !run_case(test_env_parse_one_auto_unset);
+    tests_failed += !run_case(test_perf_info_40bit);
 
     // Restore default state so subsequent tests in the same process see
     // the auto behaviour.

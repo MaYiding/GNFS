@@ -19,17 +19,19 @@
 // rejects such false candidates at O(d) per character cost.
 // ─────────────────────────────────────────────────────────────────────────────
 
-#include <gnfs/sqrt/number_field.hpp>
-#include <gnfs/sqrt/couveignes.hpp>
-#include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/core/polynomial_context.hpp>
+#include <gnfs/sqrt/algebraic_sqrt.hpp>
+#include <gnfs/sqrt/couveignes.hpp>
+#include <gnfs/sqrt/number_field.hpp>
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs;
 using namespace gnfs::sqrt;
 using namespace gnfs::core;
@@ -45,7 +47,7 @@ namespace {
 struct DependencyFixture {
     PolynomialContext ctx;
     std::vector<std::pair<int64_t, uint64_t>> ab_pairs;
-    Integer expected_sqrt_m_mod_n;  // ∏_unique (a - b·m) mod N
+    Integer expected_sqrt_m_mod_n; // ∏_unique (a - b·m) mod N
 
     DependencyFixture(PolynomialContext c,
                       const std::vector<std::pair<int64_t, uint64_t>>& base_pairs)
@@ -83,9 +85,7 @@ void test_metrics_populated() {
     PolynomialContext ctx(Integer(143), std::move(f_coeffs), Integer(5));
     NumberField nf(ctx);
 
-    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {
-        {3, 1}, {3, 1}, {7, 2}, {7, 2}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {{3, 1}, {3, 1}, {7, 2}, {7, 2}};
 
     CouveignesSqrtConfig cfg;
     cfg.num_primes = 4;
@@ -96,24 +96,22 @@ void test_metrics_populated() {
     const auto& m = couveignes.last_metrics();
 
     // Regardless of result, metrics must be populated
-    assert(m.primes_checked > 0 && "metrics.primes_checked must be > 0");
-    assert(m.primes_used <= cfg.num_primes && "metrics.primes_used must be <= num_primes");
-    assert(m.sign_patterns_tried > 0 && "metrics.sign_patterns_tried must be > 0");
-    assert(m.full_verifications > 0 && "metrics.full_verifications must be > 0");
+    TEST_ASSERT(m.primes_checked > 0 && "metrics.primes_checked must be > 0");
+    TEST_ASSERT(m.primes_used <= cfg.num_primes && "metrics.primes_used must be <= num_primes");
+    TEST_ASSERT(m.sign_patterns_tried > 0 && "metrics.sign_patterns_tried must be > 0");
+    TEST_ASSERT(m.full_verifications > 0 && "metrics.full_verifications must be > 0");
 
     // Default: characters disabled → no character primes used
-    assert(m.character_primes_used == 0 &&
-           "metrics.character_primes_used == 0 when num_characters=0");
-    assert(m.character_filter_rejects == 0 &&
-           "metrics.character_filter_rejects == 0 when num_characters=0");
+    TEST_ASSERT(m.character_primes_used == 0 &&
+                "metrics.character_primes_used == 0 when num_characters=0");
+    TEST_ASSERT(m.character_filter_rejects == 0 &&
+                "metrics.character_filter_rejects == 0 when num_characters=0");
 
-    std::cout << "  metrics populated: PASSED"
-              << " (primes_checked=" << m.primes_checked
+    std::cout << "  metrics populated: PASSED" << " (primes_checked=" << m.primes_checked
               << " primes_used=" << m.primes_used
               << " sign_patterns_tried=" << m.sign_patterns_tried
               << " full_verifications=" << m.full_verifications
-              << " found_sqrt=" << (m.found_sqrt ? 1 : 0)
-              << ")" << std::endl;
+              << " found_sqrt=" << (m.found_sqrt ? 1 : 0) << ")" << std::endl;
 }
 
 // ─── Test 2: Reset on entry ──────────────────────────────────────────────────
@@ -128,9 +126,7 @@ void test_metrics_reset_on_entry() {
     PolynomialContext ctx(Integer(143), std::move(f_coeffs), Integer(5));
     NumberField nf(ctx);
 
-    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {
-        {3, 1}, {3, 1}, {7, 2}, {7, 2}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {{3, 1}, {3, 1}, {7, 2}, {7, 2}};
 
     CouveignesSqrtConfig cfg;
     cfg.num_primes = 4;
@@ -145,15 +141,15 @@ void test_metrics_reset_on_entry() {
     [[maybe_unused]] auto r2 = couveignes.compute(ab_pairs, nf);
     size_t patterns_2 = couveignes.last_metrics().sign_patterns_tried;
 
-    assert(patterns_1 == patterns_2 &&
-           "Reset must produce identical pattern counts for identical input");
+    TEST_ASSERT(patterns_1 == patterns_2 &&
+                "Reset must produce identical pattern counts for identical input");
 
     // Now empty input — metrics should reset to defaults
     [[maybe_unused]] auto r3 = couveignes.compute({}, nf);
     const auto& m3 = couveignes.last_metrics();
-    assert(m3.sign_patterns_tried == 0 &&
-           "Reset on entry: empty input must yield sign_patterns_tried=0");
-    assert(m3.primes_used == 0 && "Empty input must yield primes_used=0");
+    TEST_ASSERT(m3.sign_patterns_tried == 0 &&
+                "Reset on entry: empty input must yield sign_patterns_tried=0");
+    TEST_ASSERT(m3.primes_used == 0 && "Empty input must yield primes_used=0");
 
     std::cout << "  metrics reset: PASSED" << std::endl;
 }
@@ -179,9 +175,8 @@ void test_character_verification_correctness() {
     auto ctx = make_ctx();
     NumberField nf(ctx);
 
-    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {
-        {3, 1}, {3, 1}, {7, 2}, {7, 2}, {11, 3}, {11, 3}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {{3, 1}, {3, 1},  {7, 2},
+                                                          {7, 2}, {11, 3}, {11, 3}};
 
     // Run WITHOUT characters
     CouveignesSqrtConfig cfg_no_chars;
@@ -201,38 +196,35 @@ void test_character_verification_correctness() {
     const auto& m_yes = couveignes_chars.last_metrics();
 
     // CORRECTNESS: characters must not change sqrt found/notfound
-    assert(result_no_chars.has_value() == result_chars.has_value() &&
-           "Character filter must preserve sqrt result (no false rejects)");
+    TEST_ASSERT(result_no_chars.has_value() == result_chars.has_value() &&
+                "Character filter must preserve sqrt result (no false rejects)");
 
     // Diagnostic: character_primes_used populated when num_characters > 0
-    assert(m_yes.character_primes_used <= cfg_chars.num_characters &&
-           "character_primes_used <= configured");
+    TEST_ASSERT(m_yes.character_primes_used <= cfg_chars.num_characters &&
+                "character_primes_used <= configured");
 
     // Without characters, no primes collected
-    assert(m_no.character_primes_used == 0 &&
-           "num_characters=0: no character primes collected");
-    assert(m_no.character_filter_rejects == 0 &&
-           "num_characters=0: no rejects");
+    TEST_ASSERT(m_no.character_primes_used == 0 &&
+                "num_characters=0: no character primes collected");
+    TEST_ASSERT(m_no.character_filter_rejects == 0 && "num_characters=0: no rejects");
 
     // EFFICACY: when characters present and search exhausts patterns
     // without finding sqrt, we expect rejections > 0 (else filter is broken).
     // Note: when sqrt IS found early, rejects may be 0 because the first
     // few patterns include the true one.
     std::cout << "    metrics: no_chars chars_used=" << m_no.character_primes_used
-              << " patterns=" << m_no.sign_patterns_tried
-              << " verifies=" << m_no.full_verifications
+              << " patterns=" << m_no.sign_patterns_tried << " verifies=" << m_no.full_verifications
               << " | chars_4 chars_used=" << m_yes.character_primes_used
               << " patterns=" << m_yes.sign_patterns_tried
               << " rejects=" << m_yes.character_filter_rejects
-              << " verifies=" << m_yes.full_verifications
-              << std::endl;
+              << " verifies=" << m_yes.full_verifications << std::endl;
 
     // Accounting invariant when chars enabled:
     // patterns_tried = (full_verifications) + (character_filter_rejects)
     // when all patterns are processed; off-by-one acceptable at early exit.
-    assert(m_yes.full_verifications + m_yes.character_filter_rejects
-           <= m_yes.sign_patterns_tried + 1 &&
-           "Filter accounting: verifies + rejects <= patterns_tried (+1)");
+    TEST_ASSERT(m_yes.full_verifications + m_yes.character_filter_rejects <=
+                    m_yes.sign_patterns_tried + 1 &&
+                "Filter accounting: verifies + rejects <= patterns_tried (+1)");
 
     std::cout << "  character verification correctness: PASSED" << std::endl;
 }
@@ -249,9 +241,7 @@ void test_character_count_scaling() {
     PolynomialContext ctx(Integer(143), std::move(f_coeffs), Integer(5));
     NumberField nf(ctx);
 
-    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {
-        {3, 1}, {3, 1}, {7, 2}, {7, 2}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {{3, 1}, {3, 1}, {7, 2}, {7, 2}};
 
     const std::vector<size_t> char_counts = {0, 4, 8, 16};
     for (size_t nc : char_counts) {
@@ -260,27 +250,27 @@ void test_character_count_scaling() {
         cfg.prime_start = 1000;
         cfg.num_characters = nc;
         cfg.character_prime_start = 10007;
-        cfg.max_character_prime_checks = 5000;  // small but generous
+        cfg.max_character_prime_checks = 5000; // small but generous
         CouveignesSqrt couveignes(cfg);
         auto start = std::chrono::steady_clock::now();
         auto r = couveignes.compute(ab_pairs, nf, false);
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start).count();
+                              std::chrono::steady_clock::now() - start)
+                              .count();
 
         // Must always complete within 5s for d=3, num_primes=4
-        assert(elapsed_ms < 5000 && "compute() must terminate within 5s");
+        TEST_ASSERT(elapsed_ms < 5000 && "compute() must terminate within 5s");
 
         const auto& m = couveignes.last_metrics();
-        std::cout << "    num_characters=" << nc
-                  << ": found=" << (r.has_value() ? "yes" : "no")
+        std::cout << "    num_characters=" << nc << ": found=" << (r.has_value() ? "yes" : "no")
                   << " char_primes_used=" << m.character_primes_used
                   << " char_primes_checked=" << m.character_primes_checked
                   << " patterns=" << m.sign_patterns_tried
-                  << " rejects=" << m.character_filter_rejects
-                  << " elapsed=" << elapsed_ms << "ms" << std::endl;
+                  << " rejects=" << m.character_filter_rejects << " elapsed=" << elapsed_ms << "ms"
+                  << std::endl;
 
         // Sanity: character_primes_used cannot exceed configured
-        assert(m.character_primes_used <= nc && "char_primes_used <= configured");
+        TEST_ASSERT(m.character_primes_used <= nc && "char_primes_used <= configured");
     }
 
     std::cout << "  character count scaling: PASSED" << std::endl;
@@ -318,14 +308,13 @@ void test_force_couveignes_env() {
 
     // Set env var
     setenv("GNFS_FORCE_COUVEIGNES", "1", 1);
-    assert(std::getenv("GNFS_FORCE_COUVEIGNES") != nullptr &&
-           "setenv must succeed");
+    TEST_ASSERT(std::getenv("GNFS_FORCE_COUVEIGNES") != nullptr && "setenv must succeed");
 
     // Verify env detection (the algebraic_sqrt path reads this env in
     // compute(), which we can't easily call here without Relations).
     // Just confirm env round-trips.
     const char* val = std::getenv("GNFS_FORCE_COUVEIGNES");
-    assert(val && std::string(val) == "1" && "env round-trip");
+    TEST_ASSERT(val && std::string(val) == "1" && "env round-trip");
 
     // Restore env
     if (!saved_env.empty()) {
@@ -357,9 +346,8 @@ void test_higher_degree_polynomial() {
     PolynomialContext ctx(Integer(1022117), std::move(f_coeffs), Integer(7));
     NumberField nf(ctx);
 
-    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {
-        {3, 1}, {3, 1}, {7, 2}, {7, 2}, {11, 3}, {11, 3}, {-5, 4}, {-5, 4}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {{3, 1},  {3, 1},  {7, 2},  {7, 2},
+                                                          {11, 3}, {11, 3}, {-5, 4}, {-5, 4}};
 
     // Run with characters enabled
     CouveignesSqrtConfig cfg;
@@ -373,19 +361,18 @@ void test_higher_degree_polynomial() {
     auto start = std::chrono::steady_clock::now();
     auto r = couveignes.compute(ab_pairs, nf);
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start).count();
+                          std::chrono::steady_clock::now() - start)
+                          .count();
 
-    assert(elapsed_ms < 10000 && "d=5 Couveignes must complete within 10s");
+    TEST_ASSERT(elapsed_ms < 10000 && "d=5 Couveignes must complete within 10s");
 
     const auto& m = couveignes.last_metrics();
     std::cout << "    d=5: found=" << (r.has_value() ? "yes" : "no")
-              << " primes_used=" << m.primes_used
-              << " patterns=" << m.sign_patterns_tried
-              << " char_primes=" << m.character_primes_used
-              << " elapsed=" << elapsed_ms << "ms" << std::endl;
-
-    std::cout << "  higher degree polynomial: PASSED (completed without hang)"
+              << " primes_used=" << m.primes_used << " patterns=" << m.sign_patterns_tried
+              << " char_primes=" << m.character_primes_used << " elapsed=" << elapsed_ms << "ms"
               << std::endl;
+
+    std::cout << "  higher degree polynomial: PASSED (completed without hang)" << std::endl;
 }
 
 // ─── Test 7: Multiple class-rank proxies via polynomial sweep ────────────────
@@ -397,29 +384,25 @@ void test_polynomial_sweep() {
 
     struct PolySpec {
         const char* name;
-        std::vector<int64_t> coeffs;  // c_0 + c_1*x + ... + c_d*x^d
+        std::vector<int64_t> coeffs; // c_0 + c_1*x + ... + c_d*x^d
         int64_t m_val;
     };
 
     std::vector<PolySpec> polys = {
-        {"x^3 + 2x + 1 (h=1)",   {1, 2, 0, 1}, 5},
-        {"x^3 - 17 (h~4)",       {-17, 0, 0, 1}, 3},
-        {"x^4 + x + 1 (h~?)",    {1, 1, 0, 0, 1}, 3},
-        {"x^5 + 5x + 5 (h~?)",   {5, 5, 0, 0, 0, 1}, 7},
-        {"x^3 + 5x + 7 (h~?)",   {7, 5, 0, 1}, 5},
+        {"x^3 + 2x + 1 (h=1)", {1, 2, 0, 1}, 5},   {"x^3 - 17 (h~4)", {-17, 0, 0, 1}, 3},
+        {"x^4 + x + 1 (h~?)", {1, 1, 0, 0, 1}, 3}, {"x^5 + 5x + 5 (h~?)", {5, 5, 0, 0, 0, 1}, 7},
+        {"x^3 + 5x + 7 (h~?)", {7, 5, 0, 1}, 5},
     };
 
     for (const auto& spec : polys) {
         std::vector<Integer> f_coeffs;
-        for (int64_t c : spec.coeffs) f_coeffs.push_back(Integer(c));
-        PolynomialContext ctx(Integer(10403),  // 101 * 103
-                              std::move(f_coeffs),
-                              Integer(spec.m_val));
+        for (int64_t c : spec.coeffs)
+            f_coeffs.push_back(Integer(c));
+        PolynomialContext ctx(Integer(10403), // 101 * 103
+                              std::move(f_coeffs), Integer(spec.m_val));
         NumberField nf(ctx);
 
-        std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {
-            {3, 1}, {3, 1}, {7, 2}, {7, 2}
-        };
+        std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {{3, 1}, {3, 1}, {7, 2}, {7, 2}};
 
         CouveignesSqrtConfig cfg;
         cfg.num_primes = 4;
@@ -432,17 +415,16 @@ void test_polynomial_sweep() {
         auto start = std::chrono::steady_clock::now();
         [[maybe_unused]] auto r = couveignes.compute(ab_pairs, nf, false);
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start).count();
+                              std::chrono::steady_clock::now() - start)
+                              .count();
 
-        assert(elapsed_ms < 10000 && "polynomial sweep: each must complete within 10s");
+        TEST_ASSERT(elapsed_ms < 10000 && "polynomial sweep: each must complete within 10s");
 
         const auto& m = couveignes.last_metrics();
-        std::cout << "    " << spec.name
-                  << ": found=" << (r.has_value() ? "yes" : "no")
-                  << " primes_used=" << m.primes_used
-                  << " char_primes=" << m.character_primes_used
-                  << " rejects=" << m.character_filter_rejects
-                  << " elapsed=" << elapsed_ms << "ms" << std::endl;
+        std::cout << "    " << spec.name << ": found=" << (r.has_value() ? "yes" : "no")
+                  << " primes_used=" << m.primes_used << " char_primes=" << m.character_primes_used
+                  << " rejects=" << m.character_filter_rejects << " elapsed=" << elapsed_ms << "ms"
+                  << std::endl;
     }
 
     std::cout << "  polynomial sweep: PASSED (all completed without hang)" << std::endl;
@@ -468,9 +450,8 @@ void test_filter_accounting_invariant() {
     PolynomialContext ctx(Integer(10403), std::move(f_coeffs), Integer(5));
     NumberField nf(ctx);
 
-    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {
-        {3, 1}, {3, 1}, {7, 2}, {7, 2}, {11, 3}, {11, 3}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {{3, 1}, {3, 1},  {7, 2},
+                                                          {7, 2}, {11, 3}, {11, 3}};
 
     CouveignesSqrtConfig cfg;
     cfg.num_primes = 4;
@@ -485,15 +466,13 @@ void test_filter_accounting_invariant() {
 
     // Loose invariant: every pattern either rejected or fully verified
     // (off-by-1 for the pattern-0 base case accounting).
-    assert(m.full_verifications + m.character_filter_rejects
-           <= m.sign_patterns_tried + 1 &&
-           "Filter accounting: verifies + rejects <= patterns_tried + 1");
+    TEST_ASSERT(m.full_verifications + m.character_filter_rejects <= m.sign_patterns_tried + 1 &&
+                "Filter accounting: verifies + rejects <= patterns_tried + 1");
 
     // If chars collected, expect some filtering activity (unless sqrt found
     // immediately at pattern 0). Soft check via cerr.
     std::cout << "    invariant: patterns=" << m.sign_patterns_tried
-              << " verifies=" << m.full_verifications
-              << " rejects=" << m.character_filter_rejects
+              << " verifies=" << m.full_verifications << " rejects=" << m.character_filter_rejects
               << " chars_used=" << m.character_primes_used << std::endl;
     std::cout << "  filter accounting invariant: PASSED" << std::endl;
 }
@@ -514,9 +493,7 @@ void test_extra_sign_bits_no_op() {
     PolynomialContext ctx(Integer(143), std::move(f_coeffs), Integer(5));
     NumberField nf(ctx);
 
-    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {
-        {3, 1}, {3, 1}, {7, 2}, {7, 2}
-    };
+    std::vector<std::pair<int64_t, uint64_t>> ab_pairs = {{3, 1}, {3, 1}, {7, 2}, {7, 2}};
 
     // Reference: extra_sign_bits = 0
     CouveignesSqrtConfig cfg0;
@@ -535,25 +512,32 @@ void test_extra_sign_bits_no_op() {
     size_t p2 = c2.last_metrics().sign_patterns_tried;
 
     // Currently no-op → pattern counts identical
-    assert(p0 == p2 && "extra_sign_bits is currently a no-op forward-compat field");
+    TEST_ASSERT(p0 == p2 && "extra_sign_bits is currently a no-op forward-compat field");
 
     std::cout << "  extra_sign_bits no-op: PASSED" << std::endl;
 }
 
-}  // anonymous namespace
+} // anonymous namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Couveignes Large Class Group Tests ===" << std::endl;
 
-    test_metrics_populated();
-    test_metrics_reset_on_entry();
-    test_character_verification_correctness();
-    test_character_count_scaling();
-    test_force_couveignes_env();
-    test_higher_degree_polynomial();
-    test_polynomial_sweep();
-    test_filter_accounting_invariant();
-    test_extra_sign_bits_no_op();
+    failed += !run_case(test_metrics_populated);
+    failed += !run_case(test_metrics_reset_on_entry);
+    failed += !run_case(test_character_verification_correctness);
+    failed += !run_case(test_character_count_scaling);
+    failed += !run_case(test_force_couveignes_env);
+    failed += !run_case(test_higher_degree_polynomial);
+    failed += !run_case(test_polynomial_sweep);
+    failed += !run_case(test_filter_accounting_invariant);
+    failed += !run_case(test_extra_sign_bits_no_op);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "=== All Couveignes Large Class Group Tests PASSED ===" << std::endl;
     return 0;

@@ -3,16 +3,19 @@
 #include "gnfs/util/temp_path.hpp"
 #include "support/test_check.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -78,6 +81,30 @@ static std::vector<uint8_t> read_file_bytes(const std::string& path) {
     return bytes;
 }
 
+static void write_file_bytes(const std::string& path, const std::vector<uint8_t>& bytes) {
+    // trunc keeps the file exactly as long as the byte sequence.
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    GNFS_TEST_CHECK(out);
+    if (!bytes.empty()) {
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+    GNFS_TEST_CHECK(out);
+}
+
+static std::string temporary_path(const std::string& path) {
+    return BlockLanczosCheckpoint::temporary_path(path);
+}
+
+static bool temporary_exists(const std::string& path) {
+    return std::filesystem::exists(std::filesystem::path(temporary_path(path)));
+}
+
+static void append_digest(std::vector<uint8_t>& bytes, const gnfs::util::Sha256Digest& digest) {
+    for (std::byte value : digest.bytes)
+        bytes.push_back(std::to_integer<uint8_t>(value));
+}
+
 static void write_native_u64(std::ofstream& out, uint64_t value) {
     out.write(reinterpret_cast<const char*>(&value), sizeof(value));
 }
@@ -88,6 +115,28 @@ static void write_le_u64(std::ofstream& out, uint64_t value) {
         bytes[i] = static_cast<uint8_t>(value >> (i * 8));
     out.write(reinterpret_cast<const char*>(bytes.data()),
               static_cast<std::streamsize>(bytes.size()));
+}
+
+// Write the fixed 136-byte V4 prefix of a hand-built fixture: magic, version,
+// the six shape and cursor fields, the digest, the fingerprint, and the word
+// count. The payload is left to the caller.
+static void write_v4_header(std::ofstream& out, uint64_t rows, uint64_t cols, uint64_t wpr,
+                            uint64_t pivot_row, uint64_t cur_col, uint64_t iteration,
+                            uint64_t aug_word_count, const gnfs::util::Sha256Digest& digest,
+                            const gnfs::util::Sha256Digest& fingerprint) {
+    write_le_u64(out, BlockLanczosCheckpoint::MAGIC);
+    write_le_u64(out, BlockLanczosCheckpoint::VERSION_V4);
+    write_le_u64(out, rows);
+    write_le_u64(out, cols);
+    write_le_u64(out, wpr);
+    write_le_u64(out, pivot_row);
+    write_le_u64(out, cur_col);
+    write_le_u64(out, iteration);
+    out.write(reinterpret_cast<const char*>(digest.bytes.data()),
+              static_cast<std::streamsize>(digest.bytes.size()));
+    out.write(reinterpret_cast<const char*>(fingerprint.bytes.data()),
+              static_cast<std::streamsize>(fingerprint.bytes.size()));
+    write_le_u64(out, aug_word_count);
 }
 
 static gnfs::util::Sha256Digest test_fingerprint() {
@@ -122,11 +171,14 @@ void test_roundtrip_small() {
     auto orig = make_small_state();
     require_save(orig, path);
     GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path));
+    // Publishing renames the temporary file into place; nothing is left over.
+    GNFS_TEST_CHECK(!temporary_exists(path));
 
     auto loaded_opt = BlockLanczosCheckpoint::load(path);
     GNFS_TEST_CHECK(loaded_opt.has_value());
     auto& loaded = *loaded_opt;
 
+    GNFS_TEST_CHECK(loaded.format_version == BlockLanczosCheckpoint::VERSION_V4);
     GNFS_TEST_CHECK(loaded.rows == orig.rows);
     GNFS_TEST_CHECK(loaded.cols == orig.cols);
     GNFS_TEST_CHECK(loaded.aug_words_per_row == orig.aug_words_per_row);
@@ -136,12 +188,26 @@ void test_roundtrip_small() {
     GNFS_TEST_CHECK(loaded.aug == orig.aug);
     GNFS_TEST_CHECK(loaded.matrix_fingerprint == orig.matrix_fingerprint);
 
+    // Independent SHA-256 oracle for the hashed range of this exact state:
+    // version, six fields, fingerprint, word count, and the eight payload words.
+    const auto expected_digest = gnfs::util::decode_sha256_hex(
+        "6c6a70debe89f3f00d1b364914ef457a83c1e8cf868e8dff3cd41d3be512b5ae");
+    GNFS_TEST_CHECK(expected_digest.has_value());
+    const auto bytes = read_file_bytes(path);
+    GNFS_TEST_CHECK(bytes.size() == 136 + 8 * orig.aug.size());
+    const uint8_t* digest_begin = bytes.data() + BlockLanczosCheckpoint::DIGEST_OFFSET;
+    const uint8_t* digest_end = bytes.data() + BlockLanczosCheckpoint::FINGERPRINT_OFFSET;
+    const std::vector<uint8_t> stored_digest(digest_begin, digest_end);
+    std::vector<uint8_t> expected_bytes;
+    append_digest(expected_bytes, *expected_digest);
+    GNFS_TEST_CHECK(stored_digest == expected_bytes);
+
     std::cout << "  small roundtrip: PASS" << std::endl;
 }
 
-void test_v3_little_endian_fixture() {
-    std::cout << "Testing V3 little-endian byte fixture..." << std::endl;
-    auto path = tmp_ckpt_path("v3_le_fixture");
+void test_v4_little_endian_fixture() {
+    std::cout << "Testing V4 little-endian byte fixture..." << std::endl;
+    auto path = tmp_ckpt_path("v4_le_fixture");
     CkptCleanup cleanup{path};
 
     constexpr uint64_t rows = 1;
@@ -151,8 +217,12 @@ void test_v3_little_endian_fixture() {
     constexpr uint64_t cur_col = 1;
     constexpr uint64_t iteration = 7;
     constexpr uint64_t payload = 0x0123'4567'89AB'CDEFULL;
-    constexpr uint64_t header_checksum = BlockLanczosCheckpoint::VERSION_V3 ^ rows ^ cols ^ wpr ^
-                                         pivot_row ^ cur_col ^ iteration ^ 0x8000000000000001ULL;
+    const auto fingerprint = test_fingerprint();
+    // Independent SHA-256 oracle over the hashed range: version, the six
+    // fields, the fingerprint, the word count, and the payload word.
+    const auto digest = gnfs::util::decode_sha256_hex(
+        "3391fdd13b4d51c94677086215425e49f9cd15a2a0f1f0851aebcd380da3fa69");
+    GNFS_TEST_CHECK(digest.has_value());
 
     BlockLanczosCheckpoint original;
     original.rows = rows;
@@ -162,37 +232,32 @@ void test_v3_little_endian_fixture() {
     original.cur_col = cur_col;
     original.iteration = iteration;
     original.aug = {payload};
-    original.matrix_fingerprint = test_fingerprint();
+    original.matrix_fingerprint = fingerprint;
     require_save(original, path);
 
     std::vector<uint8_t> expected;
-    expected.reserve(16 * sizeof(uint64_t));
+    expected.reserve(144);
     append_u64_le(expected, BlockLanczosCheckpoint::MAGIC);
-    append_u64_le(expected, BlockLanczosCheckpoint::VERSION_V3);
+    append_u64_le(expected, BlockLanczosCheckpoint::VERSION);
     append_u64_le(expected, rows);
     append_u64_le(expected, cols);
     append_u64_le(expected, wpr);
     append_u64_le(expected, pivot_row);
     append_u64_le(expected, cur_col);
     append_u64_le(expected, iteration);
-    append_u64_le(expected, header_checksum);
-    expected.push_back(0x01);
-    expected.insert(expected.end(), 30, 0);
-    expected.push_back(0x80);
+    append_digest(expected, *digest);
+    append_digest(expected, fingerprint);
     append_u64_le(expected, 1);
     append_u64_le(expected, payload);
-    append_u64_le(expected, payload);
+    // 136 fixed bytes plus one payload word.
+    GNFS_TEST_CHECK(expected.size() == 144);
     GNFS_TEST_CHECK(read_file_bytes(path) == expected);
 
     // Decode the independent fixture, not just bytes emitted by save().
-    {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        GNFS_TEST_CHECK(out);
-        out.write(reinterpret_cast<const char*>(expected.data()),
-                  static_cast<std::streamsize>(expected.size()));
-    }
+    write_file_bytes(path, expected);
     const auto loaded = BlockLanczosCheckpoint::load(path);
     GNFS_TEST_CHECK(loaded.has_value());
+    GNFS_TEST_CHECK(loaded->format_version == BlockLanczosCheckpoint::VERSION_V4);
     GNFS_TEST_CHECK(loaded->matrix_fingerprint == original.matrix_fingerprint);
     GNFS_TEST_CHECK(loaded->rows == rows);
     GNFS_TEST_CHECK(loaded->cols == cols);
@@ -202,11 +267,11 @@ void test_v3_little_endian_fixture() {
     GNFS_TEST_CHECK(loaded->iteration == iteration);
     GNFS_TEST_CHECK(loaded->aug == std::vector<uint64_t>{payload});
 
-    std::cout << "  V3 LE byte fixture + decode: PASS" << std::endl;
+    std::cout << "  V4 LE byte fixture + decode: PASS" << std::endl;
 }
 
 void test_legacy_compatibility(uint64_t version) {
-    std::cout << "Testing legacy checkpoint compatibility..." << std::endl;
+    std::cout << "Testing legacy V" << version << " checkpoint compatibility..." << std::endl;
     auto path = tmp_ckpt_path("legacy");
     CkptCleanup cleanup{path};
 
@@ -218,7 +283,22 @@ void test_legacy_compatibility(uint64_t version) {
     constexpr uint64_t iteration = 9;
     constexpr uint64_t first_word = 0xAABB'CCDDEE11'2233ULL;
     constexpr uint64_t second_word = 0x4455'66778899'0001ULL;
-    const uint64_t header_checksum = version ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
+    const bool bound = version == BlockLanczosCheckpoint::VERSION_V3;
+    const auto fingerprint = test_fingerprint();
+
+    // V3 folded the four little-endian words of the fingerprint digest into the
+    // header checksum and stored the digest between header and word count.
+    uint64_t fingerprint_fold = 0;
+    if (bound) {
+        for (size_t index = 0; index < fingerprint.bytes.size(); ++index) {
+            fingerprint_fold ^=
+                static_cast<uint64_t>(std::to_integer<uint8_t>(fingerprint.bytes[index]))
+                << ((index % sizeof(uint64_t)) * 8);
+        }
+        GNFS_TEST_CHECK(fingerprint_fold == 0x8000000000000001ULL);
+    }
+    const uint64_t header_checksum =
+        version ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration ^ fingerprint_fold;
     const uint64_t body_checksum = first_word ^ second_word;
 
     const auto write_u64 =
@@ -234,16 +314,26 @@ void test_legacy_compatibility(uint64_t version) {
     write_u64(out, cur_col);
     write_u64(out, iteration);
     write_u64(out, header_checksum);
+    if (bound) {
+        out.write(reinterpret_cast<const char*>(fingerprint.bytes.data()),
+                  static_cast<std::streamsize>(fingerprint.bytes.size()));
+        GNFS_TEST_CHECK(out);
+    }
     write_u64(out, 2);
     write_u64(out, first_word);
     write_u64(out, second_word);
     write_u64(out, body_checksum);
     out.close();
+    GNFS_TEST_CHECK(out);
 
     GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path));
     const auto loaded = BlockLanczosCheckpoint::load(path);
     GNFS_TEST_CHECK(loaded.has_value());
-    GNFS_TEST_CHECK(!loaded->matrix_fingerprint);
+    // Legacy files stay decodable for diagnostics and report their version.
+    GNFS_TEST_CHECK(loaded->format_version == version);
+    GNFS_TEST_CHECK(loaded->matrix_fingerprint.has_value() == bound);
+    if (bound)
+        GNFS_TEST_CHECK(loaded->matrix_fingerprint == fingerprint);
     GNFS_TEST_CHECK(loaded->rows == rows);
     GNFS_TEST_CHECK(loaded->cols == cols);
     GNFS_TEST_CHECK(loaded->aug_words_per_row == wpr);
@@ -308,17 +398,12 @@ void test_incomplete_magic_rejected() {
     auto path = tmp_ckpt_path("incomplete");
     CkptCleanup cleanup{path};
 
-    // Hand-roll a file where save() crashed before flipping magic.
-    {
-        std::ofstream out(path, std::ios::binary);
-        uint64_t magic = BlockLanczosCheckpoint::MAGIC_INCOMPLETE;
-        uint64_t version = BlockLanczosCheckpoint::VERSION;
-        write_le_u64(out, magic);
-        write_le_u64(out, version);
-        // Pad rest with zeros to keep readers from underflowing
-        char zero[8 * 8] = {};
-        out.write(zero, sizeof(zero));
-    }
+    // An interrupted save leaves a temporary file whose magic is still
+    // INCOMPLETE. Only those eight bytes differ from a complete checkpoint.
+    require_save(make_small_state(), path);
+    auto bytes = read_file_bytes(path);
+    std::fill(bytes.begin(), bytes.begin() + 8, 0);
+    write_file_bytes(path, bytes);
 
     GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(path));
     auto loaded = BlockLanczosCheckpoint::load(path);
@@ -327,41 +412,44 @@ void test_incomplete_magic_rejected() {
     std::cout << "  INCOMPLETE rejection: PASS" << std::endl;
 }
 
-void test_corrupt_header_checksum_rejected() {
-    std::cout << "Testing corrupt header checksum rejection..." << std::endl;
+void test_corrupt_header_field_rejected() {
+    std::cout << "Testing corrupt header field rejection..." << std::endl;
     auto path = tmp_ckpt_path("corrupt_header");
     CkptCleanup cleanup{path};
 
     auto orig = make_small_state();
     require_save(orig, path);
 
-    // Flip one byte inside the header (e.g. byte 24 = start of `rows` field).
+    // Flip one byte of `iteration` (byte 56). No cheap field check covers it;
+    // only the digest can reject this file.
     {
         std::fstream fs(path, std::ios::binary | std::ios::in | std::ios::out);
         GNFS_TEST_CHECK(fs);
-        fs.seekp(24);
+        fs.seekp(56);
         char byte = 0;
         fs.read(&byte, 1);
+        GNFS_TEST_CHECK(fs.gcount() == 1);
         byte ^= 0x01;
-        fs.seekp(24);
+        fs.seekp(56);
         fs.write(&byte, 1);
+        GNFS_TEST_CHECK(fs);
     }
 
     auto loaded = BlockLanczosCheckpoint::load(path);
     GNFS_TEST_CHECK(!loaded.has_value());
 
-    std::cout << "  corrupt header checksum rejection: PASS" << std::endl;
+    std::cout << "  corrupt header field rejection: PASS" << std::endl;
 }
 
-void test_corrupt_body_checksum_rejected() {
-    std::cout << "Testing corrupt body checksum rejection..." << std::endl;
+void test_corrupt_payload_rejected() {
+    std::cout << "Testing corrupt payload rejection..." << std::endl;
     auto path = tmp_ckpt_path("corrupt_body");
     CkptCleanup cleanup{path};
 
     auto orig = make_small_state();
     require_save(orig, path);
 
-    // Flip the very last byte (which is part of body_csum).
+    // Flip the very last byte, which belongs to the last payload word.
     {
         std::fstream fs(path, std::ios::binary | std::ios::in | std::ios::out);
         GNFS_TEST_CHECK(fs);
@@ -378,7 +466,102 @@ void test_corrupt_body_checksum_rejected() {
     auto loaded = BlockLanczosCheckpoint::load(path);
     GNFS_TEST_CHECK(!loaded.has_value());
 
-    std::cout << "  corrupt body checksum rejection: PASS" << std::endl;
+    std::cout << "  corrupt payload rejection: PASS" << std::endl;
+}
+
+void test_payload_word_swap_rejected() {
+    std::cout << "Testing swapped payload words rejected..." << std::endl;
+    auto path = tmp_ckpt_path("word_swap");
+    CkptCleanup cleanup{path};
+
+    require_save(make_small_state(), path);
+    auto bytes = read_file_bytes(path);
+    GNFS_TEST_CHECK(bytes.size() == 136 + 8 * 8);
+
+    // Swap the first two payload words. Every 64-bit word of the payload is
+    // still present exactly once, so a per-word XOR fold accepts this file.
+    // Only a digest that depends on the byte order can reject it.
+    std::span<uint8_t> payload(bytes.data() + BlockLanczosCheckpoint::PAYLOAD_OFFSET, 16);
+    std::swap_ranges(payload.begin(), payload.begin() + 8, payload.begin() + 8);
+    write_file_bytes(path, bytes);
+
+    GNFS_TEST_CHECK(!BlockLanczosCheckpoint::load(path).has_value());
+
+    std::cout << "  swapped payload words rejection: PASS" << std::endl;
+}
+
+void test_truncation_and_tampering_rejected() {
+    std::cout << "Testing truncation and tampering rejection..." << std::endl;
+    auto path = tmp_ckpt_path("tamper");
+    CkptCleanup cleanup{path};
+
+    require_save(make_small_state(), path);
+    const auto original = read_file_bytes(path);
+    GNFS_TEST_CHECK(original.size() == 200);
+
+    const auto rejected = [&](const char* label, const std::vector<uint8_t>& bytes) {
+        write_file_bytes(path, bytes);
+        if (BlockLanczosCheckpoint::load(path).has_value()) {
+            std::cerr << "ERROR: loader accepted a checkpoint with " << label << std::endl;
+            std::abort();
+        }
+    };
+    const auto flipped = [&original](size_t offset) {
+        std::vector<uint8_t> bytes = original;
+        bytes[offset] ^= 0x01;
+        return bytes;
+    };
+
+    // One byte short, and one byte too long.
+    std::vector<uint8_t> shortened = original;
+    shortened.pop_back();
+    rejected("one byte removed", shortened);
+    std::vector<uint8_t> extended = original;
+    extended.push_back(0);
+    rejected("one byte appended", extended);
+
+    // One changed byte in each region of the file.
+    const auto reject_changed_byte = [&](size_t offset) {
+        rejected("one byte changed", flipped(offset));
+        // The cheap probe rejects only a damaged magic or version word.
+        const bool probe_expected = offset >= 2 * sizeof(uint64_t);
+        GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path) == probe_expected);
+    };
+    reject_changed_byte(0);
+    reject_changed_byte(8);
+    reject_changed_byte(BlockLanczosCheckpoint::DIGEST_OFFSET);
+    reject_changed_byte(BlockLanczosCheckpoint::FINGERPRINT_OFFSET);
+    reject_changed_byte(BlockLanczosCheckpoint::AUG_WORD_COUNT_OFFSET);
+    reject_changed_byte(BlockLanczosCheckpoint::PAYLOAD_OFFSET);
+    reject_changed_byte(BlockLanczosCheckpoint::PAYLOAD_OFFSET + 63);
+
+    // The magic bytes.
+    std::vector<uint8_t> wrong_magic = original;
+    wrong_magic[0] = 'X';
+    rejected("a changed magic", wrong_magic);
+    GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(path));
+
+    // A version word that names an older decodable format (V1 to V3) or an
+    // unknown one (V5) must not be accepted under either parser. The probe
+    // still accepts the three decodable versions, because it only inspects
+    // the magic and the version word.
+    const auto reject_version = [&](uint64_t version, bool probe_expected) {
+        std::vector<uint8_t> reversioned = original;
+        std::fill(reversioned.begin() + 8, reversioned.begin() + 16, 0);
+        reversioned[8] = static_cast<uint8_t>(version);
+        rejected("a changed version", reversioned);
+        GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path) == probe_expected);
+    };
+    reject_version(BlockLanczosCheckpoint::VERSION_V1, true);
+    reject_version(BlockLanczosCheckpoint::VERSION_V2, true);
+    reject_version(BlockLanczosCheckpoint::VERSION_V3, true);
+    reject_version(5, false);
+
+    // Restoring the bytes makes the same file acceptable again.
+    write_file_bytes(path, original);
+    GNFS_TEST_CHECK(BlockLanczosCheckpoint::load(path).has_value());
+
+    std::cout << "  truncation and tampering rejection: PASS" << std::endl;
 }
 
 void test_fingerprint_corruption_rejected() {
@@ -388,12 +571,12 @@ void test_fingerprint_corruption_rejected() {
     {
         std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
         GNFS_TEST_CHECK(file);
-        file.seekg(9 * sizeof(uint64_t));
+        file.seekg(BlockLanczosCheckpoint::FINGERPRINT_OFFSET);
         char first_byte = 0;
         file.read(&first_byte, 1);
         GNFS_TEST_CHECK(file.gcount() == 1);
         first_byte ^= 1;
-        file.seekp(9 * sizeof(uint64_t));
+        file.seekp(BlockLanczosCheckpoint::FINGERPRINT_OFFSET);
         file.write(&first_byte, 1);
         GNFS_TEST_CHECK(file);
     }
@@ -409,6 +592,62 @@ void test_unbound_save_preserves_existing_file() {
     bound.matrix_fingerprint.reset();
     GNFS_TEST_CHECK(!bound.save(path));
     GNFS_TEST_CHECK(read_file_bytes(path) == original_bytes);
+    // An unusable state is rejected before any file is created.
+    GNFS_TEST_CHECK(!temporary_exists(path));
+}
+
+void test_save_refuses_foreign_temporary() {
+    std::cout << "Testing save() refuses an existing temporary file..." << std::endl;
+    const auto path = tmp_ckpt_path("foreign_temporary");
+    CkptCleanup cleanup{path};
+    CkptCleanup temporary_cleanup{temporary_path(path)};
+
+    auto updated = make_small_state();
+    updated.iteration = 42;
+    require_save(make_small_state(), path);
+    const auto original_bytes = read_file_bytes(path);
+
+    // Another writer, or an interrupted save, owns this name.
+    const std::vector<uint8_t> foreign{0x00, 0x11, 0x22, 0x33};
+    write_file_bytes(temporary_path(path), foreign);
+    GNFS_TEST_CHECK(!updated.save(path));
+    GNFS_TEST_CHECK(read_file_bytes(path) == original_bytes);
+    GNFS_TEST_CHECK(read_file_bytes(temporary_path(path)) == foreign);
+
+    // Once the foreign file is gone, saving works again and leaves no trace.
+    BlockLanczosCheckpoint::remove_temporary(path);
+    GNFS_TEST_CHECK(!temporary_exists(path));
+    GNFS_TEST_CHECK(read_file_bytes(path) == original_bytes);
+    require_save(updated, path);
+    GNFS_TEST_CHECK(!temporary_exists(path));
+    const auto loaded = BlockLanczosCheckpoint::load(path);
+    GNFS_TEST_CHECK(loaded && loaded->iteration == 42);
+
+    std::cout << "  foreign temporary file refusal: PASS" << std::endl;
+}
+
+void test_failed_publish_removes_temporary() {
+    std::cout << "Testing failed publication removes the temporary file..." << std::endl;
+    const auto path = tmp_ckpt_path("failed_publish");
+
+    // A non-empty directory at the target name makes the final rename fail on
+    // every platform, after the temporary file has been written and flushed.
+    const std::filesystem::path target(path);
+    std::error_code error;
+    std::filesystem::remove_all(target, error);
+    GNFS_TEST_CHECK(std::filesystem::create_directory(target, error));
+    const std::filesystem::path blocker = target / "blocker";
+    write_file_bytes(blocker.string(), {1});
+
+    GNFS_TEST_CHECK(!make_small_state().save(path));
+    // The failed save leaves neither a temporary file nor a changed target.
+    GNFS_TEST_CHECK(!temporary_exists(path));
+    GNFS_TEST_CHECK(std::filesystem::exists(blocker));
+
+    std::filesystem::remove_all(target, error);
+    GNFS_TEST_CHECK(!std::filesystem::exists(target));
+
+    std::cout << "  failed publication cleanup: PASS" << std::endl;
 }
 
 void test_version_mismatch_rejected() {
@@ -491,13 +730,18 @@ void test_exists_and_valid_semantics() {
 void test_remove() {
     std::cout << "Testing remove()..." << std::endl;
     auto path = tmp_ckpt_path("remove");
+    CkptCleanup temporary_cleanup{temporary_path(path)};
 
     auto orig = make_small_state();
     require_save(orig, path);
     GNFS_TEST_CHECK(BlockLanczosCheckpoint::exists_and_valid(path));
+    // Leftover of an interrupted save: remove() must take it away as well.
+    write_file_bytes(temporary_path(path), {0x00, 0x11, 0x22, 0x33});
+    GNFS_TEST_CHECK(temporary_exists(path));
 
     BlockLanczosCheckpoint::remove(path);
     GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(path));
+    GNFS_TEST_CHECK(!temporary_exists(path));
 
     std::cout << "  remove: PASS" << std::endl;
 }
@@ -561,6 +805,7 @@ void test_overwrite_existing() {
     GNFS_TEST_CHECK(loaded->iteration == 999);
     GNFS_TEST_CHECK(loaded->pivot_row == 7);
     GNFS_TEST_CHECK(loaded->aug[0] == 0x1234'5678'9ABC'DEF0ULL);
+    GNFS_TEST_CHECK(!temporary_exists(path));
 
     std::cout << "  overwrite existing: PASS" << std::endl;
 }
@@ -570,30 +815,19 @@ void test_wpr_mismatch_rejected() {
     auto path = tmp_ckpt_path("wpr_mismatch");
     CkptCleanup cleanup{path};
 
-    // Hand-craft a file: claim rows=4, wpr=2 → 8 words, but write 7 words.
+    // Hand-craft a file: claim rows=4, wpr=2 → 8 words, but write 7 words. The
+    // digest is a placeholder: the count check rejects the file before the
+    // payload is hashed.
     {
-        std::ofstream out(path, std::ios::binary);
-        uint64_t magic = BlockLanczosCheckpoint::MAGIC;
-        uint64_t version = BlockLanczosCheckpoint::VERSION_V2;
-        uint64_t rows = 4, cols = 100, wpr = 2, pivot_row = 0;
-        uint64_t cur_col = 100, iteration = 0;
-        uint64_t header_csum = version ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
-        uint64_t aug_word_count = 7; // mismatch: rows*wpr = 8
-        write_le_u64(out, magic);
-        write_le_u64(out, version);
-        write_le_u64(out, rows);
-        write_le_u64(out, cols);
-        write_le_u64(out, wpr);
-        write_le_u64(out, pivot_row);
-        write_le_u64(out, cur_col);
-        write_le_u64(out, iteration);
-        write_le_u64(out, header_csum);
-        write_le_u64(out, aug_word_count);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        GNFS_TEST_CHECK(out);
+        const gnfs::util::Sha256Digest placeholder;
+        write_v4_header(out, 4, 100, 2, 0, 100, 0, 7, placeholder, placeholder);
         uint64_t dummy[7] = {};
         for (uint64_t word : dummy)
             write_le_u64(out, word);
-        uint64_t bcsum = 0;
-        write_le_u64(out, bcsum);
+        out.close();
+        GNFS_TEST_CHECK(out);
     }
 
     auto loaded = BlockLanczosCheckpoint::load(path);
@@ -613,25 +847,19 @@ void test_oversized_payload_rejected_before_allocation() {
     constexpr uint64_t pivot_row = 0;
     constexpr uint64_t cur_col = 1;
     constexpr uint64_t iteration = 0;
-    constexpr uint64_t header_checksum =
-        BlockLanczosCheckpoint::VERSION_V2 ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
 
     // The loader rejects the count before checking the payload frame or
-    // allocating a vector, so the fixture needs only its fixed header.
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    GNFS_TEST_CHECK(out);
-    write_le_u64(out, BlockLanczosCheckpoint::MAGIC);
-    write_le_u64(out, BlockLanczosCheckpoint::VERSION_V2);
-    write_le_u64(out, rows);
-    write_le_u64(out, cols);
-    write_le_u64(out, wpr);
-    write_le_u64(out, pivot_row);
-    write_le_u64(out, cur_col);
-    write_le_u64(out, iteration);
-    write_le_u64(out, header_checksum);
-    write_le_u64(out, wpr);
-    out.close();
-    GNFS_TEST_CHECK(out);
+    // allocating a vector, so the fixture needs only its fixed header. The
+    // digest is a placeholder for the same reason.
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        GNFS_TEST_CHECK(out);
+        const gnfs::util::Sha256Digest placeholder;
+        write_v4_header(out, rows, cols, wpr, pivot_row, cur_col, iteration, wpr, placeholder,
+                        placeholder);
+        out.close();
+        GNFS_TEST_CHECK(out);
+    }
 
     const auto loaded = BlockLanczosCheckpoint::load(path);
     GNFS_TEST_CHECK(!loaded.has_value());
@@ -666,46 +894,39 @@ void test_allocation_failure_returns_nullopt() {
 
     // Construct a wire-valid checkpoint at the 64 GiB packed-payload cap,
     // without materialising its sparse payload on disk. load() must reject the
-    // allocation in the child and return nullopt rather than terminate.
+    // allocation in the child and return nullopt rather than terminate. The
+    // digest is a placeholder: the allocation happens before the payload is
+    // hashed, so its content never matters for this probe.
     constexpr uint64_t max_aug_words = BlockLanczosCheckpoint::MAX_AUG_WORDS;
-    // The first ten u64 fields (through aug_word_count) occupy 80 bytes;
-    // the trailing body checksum makes the fixed non-payload size 88 bytes.
-    constexpr uint64_t payload_offset = 10ULL * 8ULL;
-    constexpr uint64_t fixed_file_bytes = 11ULL * 8ULL;
+    // A V4 frame is the 136-byte header followed by the payload; no field
+    // trails the payload.
+    constexpr uint64_t payload_offset = BlockLanczosCheckpoint::PAYLOAD_OFFSET;
+    constexpr uint64_t fixed_file_bytes = 136;
     constexpr uint64_t rows = 1;
     constexpr uint64_t cols = 1;
     constexpr uint64_t wpr = max_aug_words;
     constexpr uint64_t pivot_row = 0;
     constexpr uint64_t cur_col = 1;
     constexpr uint64_t iteration = 0;
-    constexpr uint64_t header_checksum =
-        BlockLanczosCheckpoint::VERSION_V2 ^ rows ^ cols ^ wpr ^ pivot_row ^ cur_col ^ iteration;
 
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         require(static_cast<bool>(out), "failed to create sparse checkpoint");
-        write_le_u64(out, BlockLanczosCheckpoint::MAGIC);
-        write_le_u64(out, BlockLanczosCheckpoint::VERSION_V2);
-        write_le_u64(out, rows);
-        write_le_u64(out, cols);
-        write_le_u64(out, wpr);
-        write_le_u64(out, pivot_row);
-        write_le_u64(out, cur_col);
-        write_le_u64(out, iteration);
-        write_le_u64(out, header_checksum);
-        write_le_u64(out, max_aug_words);
+        const gnfs::util::Sha256Digest placeholder;
+        write_v4_header(out, rows, cols, wpr, pivot_row, cur_col, iteration, max_aug_words,
+                        placeholder, placeholder);
 
-        // Leave the payload sparse and write only its trailing checksum. The
-        // resulting file size is exactly what load() expects.
-        const uint64_t checksum_offset = payload_offset + max_aug_words * 8ULL;
-        require(checksum_offset + sizeof(uint64_t) == fixed_file_bytes + max_aug_words * 8ULL,
-                "sparse checkpoint checksum offset is inconsistent");
-        require(checksum_offset <=
-                    static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()),
+        // Leave the payload sparse and write only its last byte. The resulting
+        // file size is exactly what load() expects.
+        const uint64_t file_bytes = payload_offset + max_aug_words * 8ULL;
+        require(file_bytes == fixed_file_bytes + max_aug_words * 8ULL,
+                "sparse checkpoint size is inconsistent");
+        require(file_bytes - 1 <= static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()),
                 "checkpoint offset exceeds streamoff");
-        out.seekp(static_cast<std::streamoff>(checksum_offset));
+        out.seekp(static_cast<std::streamoff>(file_bytes - 1));
         require(static_cast<bool>(out), "failed to seek sparse checkpoint");
-        write_le_u64(out, 0);
+        const char last_byte = 0;
+        out.write(&last_byte, 1);
         out.close();
         require(static_cast<bool>(out), "failed to finalize sparse checkpoint");
     }
@@ -763,16 +984,21 @@ int main() {
     std::cout << "===== BlockLanczosCheckpoint Tests =====" << std::endl;
 
     test_roundtrip_small();
-    test_v3_little_endian_fixture();
+    test_v4_little_endian_fixture();
     test_legacy_compatibility(BlockLanczosCheckpoint::VERSION_V1);
     test_legacy_compatibility(BlockLanczosCheckpoint::VERSION_V2);
+    test_legacy_compatibility(BlockLanczosCheckpoint::VERSION_V3);
     test_roundtrip_large();
     test_empty_matrix();
     test_incomplete_magic_rejected();
-    test_corrupt_header_checksum_rejected();
-    test_corrupt_body_checksum_rejected();
+    test_corrupt_header_field_rejected();
+    test_corrupt_payload_rejected();
     test_fingerprint_corruption_rejected();
+    test_payload_word_swap_rejected();
+    test_truncation_and_tampering_rejected();
     test_unbound_save_preserves_existing_file();
+    test_save_refuses_foreign_temporary();
+    test_failed_publish_removes_temporary();
     test_version_mismatch_rejected();
     test_truncated_file_rejected();
     test_load_nonexistent();

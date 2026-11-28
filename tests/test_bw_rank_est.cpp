@@ -8,39 +8,41 @@
 // the 50d empirical interpretation, so the helper is unit-locked.
 
 #include "gnfs/linalg/block_wiedemann.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <iostream>
 
-using gnfs::linalg::LingenResult;
 using gnfs::linalg::compute_rank_est;
+using gnfs::linalg::LingenResult;
+using gnfs::test::run_case;
 
 void test_empty_lingen() {
     std::cout << "Testing compute_rank_est on default-init LingenResult..." << std::endl;
     LingenResult R;
     // valid_mask=0, all degrees=0 → rank_est=0
-    assert(compute_rank_est(R) == 0);
+    TEST_ASSERT(compute_rank_est(R) == 0);
     std::cout << "  PASS" << std::endl;
 }
 
 void test_single_valid_col() {
     std::cout << "Testing single valid col..." << std::endl;
     LingenResult R;
-    R.valid_mask = 1ULL;          // only bit 0
+    R.valid_mask = 1ULL; // only bit 0
     R.degrees[0] = 42;
-    R.degrees[1] = 99;            // invalid col, should not count
+    R.degrees[1] = 99; // invalid col, should not count
     R.degrees[63] = 1000000;
-    assert(compute_rank_est(R) == 42);
+    TEST_ASSERT(compute_rank_est(R) == 42);
     std::cout << "  PASS" << std::endl;
 }
 
 void test_all_64_valid_uniform() {
     std::cout << "Testing all 64 valid columns, uniform degrees..." << std::endl;
     LingenResult R;
-    R.valid_mask = ~uint64_t(0);  // all 64 bits set
-    for (int j = 0; j < 64; ++j) R.degrees[static_cast<size_t>(j)] = 100;
-    assert(compute_rank_est(R) == 6400);
+    R.valid_mask = ~uint64_t(0); // all 64 bits set
+    for (int j = 0; j < 64; ++j)
+        R.degrees[static_cast<size_t>(j)] = 100;
+    TEST_ASSERT(compute_rank_est(R) == 6400);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -49,10 +51,11 @@ void test_mask_selects_subset() {
     LingenResult R;
     // bits 0, 5, 17, 63 set; only those degrees count
     R.valid_mask = (1ULL << 0) | (1ULL << 5) | (1ULL << 17) | (1ULL << 63);
-    for (int j = 0; j < 64; ++j) R.degrees[static_cast<size_t>(j)] = j + 1;  // 1..64
+    for (int j = 0; j < 64; ++j)
+        R.degrees[static_cast<size_t>(j)] = j + 1; // 1..64
     // expected = degrees[0] + degrees[5] + degrees[17] + degrees[63]
     //         = 1 + 6 + 18 + 64 = 89
-    assert(compute_rank_est(R) == 89);
+    TEST_ASSERT(compute_rank_est(R) == 89);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -61,8 +64,9 @@ void test_invalid_cols_ignored_even_with_large_degrees() {
     LingenResult R;
     R.valid_mask = (1ULL << 0);
     R.degrees[0] = 7;
-    for (int j = 1; j < 64; ++j) R.degrees[static_cast<size_t>(j)] = 1000000;  // garbage in invalid slots
-    assert(compute_rank_est(R) == 7);
+    for (int j = 1; j < 64; ++j)
+        R.degrees[static_cast<size_t>(j)] = 1000000; // garbage in invalid slots
+    TEST_ASSERT(compute_rank_est(R) == 7);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -72,8 +76,9 @@ void test_full_rank_thin_solve_like() {
     // Realistic profile: most cols valid, average degree ~85
     LingenResult R;
     R.valid_mask = ~uint64_t(0);
-    for (int j = 0; j < 64; ++j) R.degrees[static_cast<size_t>(j)] = 80;
-    assert(compute_rank_est(R) == 64 * 80);  // 5120
+    for (int j = 0; j < 64; ++j)
+        R.degrees[static_cast<size_t>(j)] = 80;
+    TEST_ASSERT(compute_rank_est(R) == 64 * 80); // 5120
     // This sits ≈ m=5200 → matrix has excess → BW should find deps
     std::cout << "  PASS" << std::endl;
 }
@@ -85,7 +90,7 @@ void test_extreme_rank_deficiency_profile() {
     LingenResult R;
     R.valid_mask = 1ULL;
     R.degrees[0] = 1;
-    assert(compute_rank_est(R) == 1);  // ≪ m=5200 → pathological
+    TEST_ASSERT(compute_rank_est(R) == 1); // ≪ m=5200 → pathological
     std::cout << "  PASS" << std::endl;
 }
 
@@ -95,7 +100,7 @@ void test_zero_degrees_with_valid_mask() {
     LingenResult R;
     R.valid_mask = ~uint64_t(0);
     // degrees default-init to 0
-    assert(compute_rank_est(R) == 0);
+    TEST_ASSERT(compute_rank_est(R) == 0);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -104,8 +109,8 @@ void test_only_high_bit_set() {
     LingenResult R;
     R.valid_mask = 1ULL << 63;
     R.degrees[63] = 256;
-    R.degrees[0] = 1024;  // not valid, ignored
-    assert(compute_rank_est(R) == 256);
+    R.degrees[0] = 1024; // not valid, ignored
+    TEST_ASSERT(compute_rank_est(R) == 256);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -117,18 +122,25 @@ void test_noexcept_contract() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== linalg/compute_rank_est tests ===" << std::endl;
 
-    test_empty_lingen();
-    test_single_valid_col();
-    test_all_64_valid_uniform();
-    test_mask_selects_subset();
-    test_invalid_cols_ignored_even_with_large_degrees();
-    test_full_rank_thin_solve_like();
-    test_extreme_rank_deficiency_profile();
-    test_zero_degrees_with_valid_mask();
-    test_only_high_bit_set();
-    test_noexcept_contract();
+    failed += !run_case(test_empty_lingen);
+    failed += !run_case(test_single_valid_col);
+    failed += !run_case(test_all_64_valid_uniform);
+    failed += !run_case(test_mask_selects_subset);
+    failed += !run_case(test_invalid_cols_ignored_even_with_large_degrees);
+    failed += !run_case(test_full_rank_thin_solve_like);
+    failed += !run_case(test_extreme_rank_deficiency_profile);
+    failed += !run_case(test_zero_degrees_with_valid_mask);
+    failed += !run_case(test_only_high_bit_set);
+    failed += !run_case(test_noexcept_contract);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\n=== All linalg/compute_rank_est tests PASSED ===" << std::endl;
     return 0;

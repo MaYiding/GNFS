@@ -15,7 +15,6 @@
 #include <gnfs/cofactor/ecm_brent_suyama.hpp>
 #include <gnfs/core/integer.hpp>
 
-#include <cassert>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -28,13 +27,13 @@ namespace bs = gnfs::cofactor::brent_suyama;
 namespace {
 
 // Simple assert wrapper that always fires (NDEBUG-safe).
-#define GNFS_TEST_ASSERT(cond, msg) do { \
-    if (!(cond)) { \
-        std::cerr << "FAIL: " << (msg) \
-                  << " at " << __FILE__ << ":" << __LINE__ << "\n"; \
-        std::exit(1); \
-    } \
-} while (0)
+#define GNFS_TEST_ASSERT(cond, msg)                                                                \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "FAIL: " << (msg) << " at " << __FILE__ << ":" << __LINE__ << "\n";       \
+            std::exit(1);                                                                          \
+        }                                                                                          \
+    } while (0)
 
 void test_is_supported_degree() {
     std::cout << "  is_supported_degree(): ";
@@ -53,7 +52,7 @@ void test_is_supported_degree() {
 
 void test_evaluate_polynomial() {
     std::cout << "  evaluate_polynomial(): ";
-    Integer n("1000000007");  // prime modulus for clean checks
+    Integer n("1000000007"); // prime modulus for clean checks
     Integer x("12345");
     Integer out;
 
@@ -131,8 +130,8 @@ struct EcmResult {
     double ms;
 };
 
-EcmResult run_ecm(const Integer& n, uint64_t B1, uint64_t B2,
-                  uint32_t num_curves, uint32_t bs_degree) {
+EcmResult run_ecm(const Integer& n, uint64_t B1, uint64_t B2, uint32_t num_curves,
+                  uint32_t bs_degree) {
     ECM::Config cfg;
     cfg.auto_params = false;
     cfg.B1 = B1;
@@ -163,11 +162,14 @@ void test_known_semiprime_factor() {
     GNFS_TEST_ASSERT(r12.factor.has_value(), "Brent-Suyama d=12 finds factor");
 
     // both must find some factor that divides n
-    Integer q0 = n;  q0 /= *r0.factor;
-    Integer rem0; mpz_mod(rem0.get_mpz(), n.get_mpz(), r0.factor->get_mpz());
+    Integer q0 = n;
+    q0 /= *r0.factor;
+    Integer rem0;
+    mpz_mod(rem0.get_mpz(), n.get_mpz(), r0.factor->get_mpz());
     GNFS_TEST_ASSERT(rem0.is_zero(), "BSGS factor divides n");
 
-    Integer rem12; mpz_mod(rem12.get_mpz(), n.get_mpz(), r12.factor->get_mpz());
+    Integer rem12;
+    mpz_mod(rem12.get_mpz(), n.get_mpz(), r12.factor->get_mpz());
     GNFS_TEST_ASSERT(rem12.is_zero(), "Brent-Suyama factor divides n");
 
     std::cout << "PASS (BSGS=" << r0.ms << "ms; BS-12=" << r12.ms << "ms)\n";
@@ -178,7 +180,8 @@ void test_degree_30_works() {
     Integer n("2261419229");
     auto r30 = run_ecm(n, 2000, 100000, 15, 30);
     GNFS_TEST_ASSERT(r30.factor.has_value(), "Brent-Suyama d=30 finds factor");
-    Integer rem; mpz_mod(rem.get_mpz(), n.get_mpz(), r30.factor->get_mpz());
+    Integer rem;
+    mpz_mod(rem.get_mpz(), n.get_mpz(), r30.factor->get_mpz());
     GNFS_TEST_ASSERT(rem.is_zero(), "d=30 factor divides n");
     std::cout << "PASS (" << r30.ms << "ms)\n";
 }
@@ -198,8 +201,10 @@ void test_degree_1_equivalent_to_bsgs() {
     // factors divide n; cannot strictly require identical factor because
     // sigma_pool randomization differs per call, but they should both be
     // non-trivial divisors.
-    Integer rem0; mpz_mod(rem0.get_mpz(), n.get_mpz(), r0.factor->get_mpz());
-    Integer rem1; mpz_mod(rem1.get_mpz(), n.get_mpz(), r1.factor->get_mpz());
+    Integer rem0;
+    mpz_mod(rem0.get_mpz(), n.get_mpz(), r0.factor->get_mpz());
+    Integer rem1;
+    mpz_mod(rem1.get_mpz(), n.get_mpz(), r1.factor->get_mpz());
     GNFS_TEST_ASSERT(rem0.is_zero(), "BSGS factor divides n");
     GNFS_TEST_ASSERT(rem1.is_zero(), "degree=1 factor divides n");
 
@@ -223,19 +228,24 @@ void test_env_opt_in() {
     auto r = ECM::factor(n);
     GNFS_TEST_ASSERT(r.has_value(), "ENV-enabled BS finds factor");
 
-    Integer rem; mpz_mod(rem.get_mpz(), n.get_mpz(), r->get_mpz());
+    Integer rem;
+    mpz_mod(rem.get_mpz(), n.get_mpz(), r->get_mpz());
     GNFS_TEST_ASSERT(rem.is_zero(), "ENV-enabled BS factor divides n");
 
     // Verify invalid degree gets clamped to default (12)
-    setenv("GNFS_ECM_BS_DEGREE", "99", 1);  // not in {1,2,6,12,30}
+    setenv("GNFS_ECM_BS_DEGREE", "99", 1); // not in {1,2,6,12,30}
     auto r2 = ECM::factor(n);
     GNFS_TEST_ASSERT(r2.has_value(), "invalid degree falls back to default");
 
     // Restore ENV
-    if (prev_enable) setenv("GNFS_ECM_BRENT_SUYAMA", prev_enable, 1);
-    else unsetenv("GNFS_ECM_BRENT_SUYAMA");
-    if (prev_degree) setenv("GNFS_ECM_BS_DEGREE", prev_degree, 1);
-    else unsetenv("GNFS_ECM_BS_DEGREE");
+    if (prev_enable)
+        setenv("GNFS_ECM_BRENT_SUYAMA", prev_enable, 1);
+    else
+        unsetenv("GNFS_ECM_BRENT_SUYAMA");
+    if (prev_degree)
+        setenv("GNFS_ECM_BS_DEGREE", prev_degree, 1);
+    else
+        unsetenv("GNFS_ECM_BS_DEGREE");
 
     std::cout << "PASS\n";
 }
@@ -246,8 +256,8 @@ void test_b1_smaller_than_d_brent_suyama() {
     Integer n("10097063");
     ECM::Config cfg;
     cfg.auto_params = false;
-    cfg.B1 = 100;     // < D = 2310
-    cfg.B2 = 20000;   // > B1 + D*3 -> hits BSGS path with j_lo=0 fix
+    cfg.B1 = 100;   // < D = 2310
+    cfg.B2 = 20000; // > B1 + D*3 -> hits BSGS path with j_lo=0 fix
     cfg.num_curves = 10;
     cfg.brent_suyama_degree = 12;
 
@@ -263,20 +273,21 @@ void test_b2_le_b1_no_stage2() {
     ECM::Config cfg;
     cfg.auto_params = false;
     cfg.B1 = 1000;
-    cfg.B2 = 1000;  // == B1
+    cfg.B2 = 1000; // == B1
     cfg.num_curves = 5;
     cfg.brent_suyama_degree = 12;
     auto r = ECM::factor(n, cfg);
     // Stage 1 alone may or may not find the factor (B1=1000 covers small p).
     // Critical: must not crash, must not return invalid factor.
     if (r) {
-        Integer rem; mpz_mod(rem.get_mpz(), n.get_mpz(), r->get_mpz());
+        Integer rem;
+        mpz_mod(rem.get_mpz(), n.get_mpz(), r->get_mpz());
         GNFS_TEST_ASSERT(rem.is_zero(), "factor (if any) must divide n");
     }
     std::cout << "PASS (no crash)\n";
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== ECM Brent-Suyama Stage 3 Tests ===\n";

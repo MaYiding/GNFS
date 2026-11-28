@@ -25,10 +25,10 @@
 #include "gnfs/sqrt/modular_poly.hpp"
 #include "gnfs/sqrt/number_field.hpp"
 #include "gnfs/sqrt/rational_sqrt.hpp"
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
 #include <array>
-#include <cassert>
 #include <climits> // INT64_MAX, INT64_MIN, UINT32_MAX
 #include <cstdint>
 #include <iostream>
@@ -37,6 +37,7 @@
 #include <stdexcept>
 #include <utility>
 
+using gnfs::test::run_case;
 using namespace gnfs::core;
 using namespace gnfs::linalg;
 using namespace gnfs::cofactor;
@@ -64,35 +65,35 @@ void test_integer_negative_mod_truncated() {
     Integer a(int64_t(-7));
     Integer b(int64_t(3));
     Integer r = a % b;
-    assert(r.to_int64() == -1);
+    TEST_ASSERT(r.to_int64() == -1);
 
     // 7 % (-3) = 1  (截断: 7/(-3) = -2.33 → -2, 余数 = 7 - (-2)*(-3) = 1)
     Integer c(int64_t(7));
     Integer d(int64_t(-3));
     Integer r2 = c % d;
-    assert(r2.to_int64() == 1);
+    TEST_ASSERT(r2.to_int64() == 1);
 
     // (-10) % 5 = 0  (整除)
     Integer e(int64_t(-10));
     Integer f(int64_t(5));
     Integer r3 = e % f;
-    assert(r3.is_zero());
+    TEST_ASSERT(r3.is_zero());
 
     // 10 % 3 = 1  (正常正值不受影响)
     Integer g(int64_t(10));
     Integer h(int64_t(3));
     Integer r4 = g % h;
-    assert(r4.to_int64() == 1);
+    TEST_ASSERT(r4.to_int64() == 1);
 
     // Integer::mod() static — 使用相同的 mpz_tdiv_r
     Integer result;
     Integer::mod(result, Integer(int64_t(-7)), Integer(int64_t(3)));
-    assert(result.to_int64() == -1);
+    TEST_ASSERT(result.to_int64() == -1);
 
     // operator%= in-place
     Integer x(int64_t(-17));
     x %= Integer(int64_t(5));
-    assert(x.to_int64() == -2); // -17 = (-3)*5 + (-2)
+    TEST_ASSERT(x.to_int64() == -2); // -17 = (-3)*5 + (-2)
 
     std::cout << "  PASS" << std::endl;
 }
@@ -107,32 +108,32 @@ void test_integer_gcd_with_zero() {
 
     // gcd(0, n) = |n| (GMP 约定)
     Integer g1 = gcd(zero, six);
-    assert(g1.to_int64() == 6);
+    TEST_ASSERT(g1.to_int64() == 6);
 
     // gcd(n, 0) = |n|
     Integer g2 = gcd(six, zero);
-    assert(g2.to_int64() == 6);
+    TEST_ASSERT(g2.to_int64() == 6);
 
     // gcd(0, 0) = 0 (GMP 约定)
     Integer g3 = gcd(zero, zero);
-    assert(g3.is_zero());
+    TEST_ASSERT(g3.is_zero());
 
     // gcd(1, n) = 1 for any n
     Integer one(int64_t(1));
     Integer big("123456789012345678");
     Integer g4 = gcd(one, big);
-    assert(g4.to_int64() == 1);
+    TEST_ASSERT(g4.to_int64() == 1);
 
     // gcd(n, n) = n for positive n
     Integer n7(int64_t(7));
     Integer g5 = gcd(n7, n7);
-    assert(g5.to_int64() == 7);
+    TEST_ASSERT(g5.to_int64() == 7);
 
     // gcd with large numbers
     Integer a("36893488147419103232"); // 2^65
     Integer b("18446744073709551616"); // 2^64
     Integer g6 = gcd(a, b);
-    assert(g6 == b); // gcd(2^65, 2^64) = 2^64
+    TEST_ASSERT(g6 == b); // gcd(2^65, 2^64) = 2^64
 
     std::cout << "  PASS" << std::endl;
 }
@@ -144,33 +145,33 @@ void test_integer_sqrt_edge_cases() {
 
     // sqrt(0) = 0
     Integer s0 = sqrt(Integer(int64_t(0)));
-    assert(s0.is_zero());
+    TEST_ASSERT(s0.is_zero());
 
     // sqrt(1) = 1
     Integer s1 = sqrt(Integer(int64_t(1)));
-    assert(s1.to_int64() == 1);
+    TEST_ASSERT(s1.to_int64() == 1);
 
     // sqrt(4) = 2 (perfect square)
     Integer s2 = sqrt(Integer(int64_t(4)));
-    assert(s2.to_int64() == 2);
+    TEST_ASSERT(s2.to_int64() == 2);
 
     // sqrt(9) = 3
     Integer s3 = sqrt(Integer(int64_t(9)));
-    assert(s3.to_int64() == 3);
+    TEST_ASSERT(s3.to_int64() == 3);
 
     // sqrt(5) = 2 (floor, not a perfect square)
     Integer s4 = sqrt(Integer(int64_t(5)));
-    assert(s4.to_int64() == 2);
+    TEST_ASSERT(s4.to_int64() == 2);
 
     // sqrt(10^20) = 10^10 (exact)
     Integer big("100000000000000000000");
     Integer s5 = sqrt(big);
-    assert(s5.to_string() == "10000000000");
+    TEST_ASSERT(s5.to_string() == "10000000000");
 
     // sqrt(INT64_MAX) = floor(sqrt(2^63-1)) = 3037000499
     Integer imax(INT64_MAX);
     Integer s6 = sqrt(imax);
-    assert(s6.to_int64() == 3037000499LL);
+    TEST_ASSERT(s6.to_int64() == 3037000499LL);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -187,40 +188,40 @@ void test_integer_pow_edge_cases() {
 
     // pow(x, 0) = 1 for any x > 0
     Integer p0 = pow(two_int, 0u);
-    assert(p0.to_int64() == 1);
+    TEST_ASSERT(p0.to_int64() == 1);
 
     // pow(0, n) = 0 for n > 0
     Integer pz = pow(zero_int, 5u);
-    assert(pz.is_zero());
+    TEST_ASSERT(pz.is_zero());
 
     // pow(1, n) = 1 for any n
     Integer p1 = pow(one_int, 1000000u);
-    assert(p1.to_int64() == 1);
+    TEST_ASSERT(p1.to_int64() == 1);
 
     // pow(2, 10) = 1024
     Integer p1024 = pow(two_int, 10u);
-    assert(p1024.to_int64() == 1024);
+    TEST_ASSERT(p1024.to_int64() == 1024);
 
     // powmod(x, 0, m) = 1  (for x > 0)
     Integer exp0(int64_t(0));
     Integer pm_exp0 = powmod(two_int, exp0, mod7);
-    assert(pm_exp0.to_int64() == 1);
+    TEST_ASSERT(pm_exp0.to_int64() == 1);
 
     // powmod(0, n, m) = 0 for n > 0
     Integer exp3(int64_t(3));
     Integer pm_base0 = powmod(zero_int, exp3, mod7);
-    assert(pm_base0.is_zero());
+    TEST_ASSERT(pm_base0.is_zero());
 
     // powmod(1, large, m) = 1
     Integer large_exp("99999999999");
     Integer pm_one = powmod(one_int, large_exp, mod7);
-    assert(pm_one.to_int64() == 1);
+    TEST_ASSERT(pm_one.to_int64() == 1);
 
     // powmod(2, 10, 1000) = 24  (normal case as sanity check)
     Integer mod1000(int64_t(1000));
     Integer exp10(int64_t(10));
     Integer pm_2_10 = powmod(two_int, exp10, mod1000);
-    assert(pm_2_10.to_int64() == 24);
+    TEST_ASSERT(pm_2_10.to_int64() == 24);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -239,10 +240,10 @@ void test_integer_native_width_overloads() {
     Integer from_unsigned_long(unsigned_long);
     Integer from_signed_long_long(signed_long_long);
     Integer from_unsigned_long_long(unsigned_long_long);
-    assert(from_signed_long.to_int64() == -123);
-    assert(from_unsigned_long.to_uint64() == 123);
-    assert(from_signed_long_long.to_int64() == -456);
-    assert(from_unsigned_long_long.to_uint64() == 456);
+    TEST_ASSERT(from_signed_long.to_int64() == -123);
+    TEST_ASSERT(from_unsigned_long.to_uint64() == 123);
+    TEST_ASSERT(from_signed_long_long.to_int64() == -456);
+    TEST_ASSERT(from_unsigned_long_long.to_uint64() == 456);
 
     Integer assigned_signed_long;
     Integer assigned_unsigned_long;
@@ -252,17 +253,17 @@ void test_integer_native_width_overloads() {
     assigned_unsigned_long = unsigned_long;
     assigned_signed_long_long = signed_long_long;
     assigned_unsigned_long_long = unsigned_long_long;
-    assert(assigned_signed_long.to_int64() == -123);
-    assert(assigned_unsigned_long.to_uint64() == 123);
-    assert(assigned_signed_long_long.to_int64() == -456);
-    assert(assigned_unsigned_long_long.to_uint64() == 456);
+    TEST_ASSERT(assigned_signed_long.to_int64() == -123);
+    TEST_ASSERT(assigned_unsigned_long.to_uint64() == 123);
+    TEST_ASSERT(assigned_signed_long_long.to_int64() == -456);
+    TEST_ASSERT(assigned_unsigned_long_long.to_uint64() == 456);
 
     Integer assigned_int;
     Integer assigned_unsigned_int;
     assigned_int = -789;
     assigned_unsigned_int = 789u;
-    assert(assigned_int.to_int64() == -789);
-    assert(assigned_unsigned_int.to_uint64() == 789);
+    TEST_ASSERT(assigned_int.to_int64() == -789);
+    TEST_ASSERT(assigned_unsigned_int.to_uint64() == 789);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -275,27 +276,27 @@ void test_integer_add_sub_boundary() {
     // INT64_MAX + 1 → 2^63 (no GMP overflow)
     Integer maxint(INT64_MAX);
     maxint += Integer(int64_t(1));
-    assert(maxint.to_string() == "9223372036854775808");
-    assert(maxint.is_positive());
-    assert(!maxint.fits_int64());
+    TEST_ASSERT(maxint.to_string() == "9223372036854775808");
+    TEST_ASSERT(maxint.is_positive());
+    TEST_ASSERT(!maxint.fits_int64());
 
     // INT64_MIN - 1 → -2^63 - 1 (no GMP overflow)
     Integer minint(INT64_MIN);
     minint -= Integer(int64_t(1));
-    assert(minint.to_string() == "-9223372036854775809");
-    assert(minint.is_negative());
+    TEST_ASSERT(minint.to_string() == "-9223372036854775809");
+    TEST_ASSERT(minint.is_negative());
 
     // Negate INT64_MIN → 2^63 (doesn't fit int64)
     Integer negmin(INT64_MIN);
     Integer neg_of_min = -negmin;
-    assert(neg_of_min.is_positive());
-    assert(neg_of_min.to_string() == "9223372036854775808");
-    assert(!neg_of_min.fits_int64());
+    TEST_ASSERT(neg_of_min.is_positive());
+    TEST_ASSERT(neg_of_min.to_string() == "9223372036854775808");
+    TEST_ASSERT(!neg_of_min.fits_int64());
 
     // INT64_MIN + INT64_MIN = -2^64 (no overflow via GMP)
     Integer minint2(INT64_MIN);
     minint2 += Integer(INT64_MIN);
-    assert(minint2.to_string() == "-18446744073709551616");
+    TEST_ASSERT(minint2.to_string() == "-18446744073709551616");
 
     std::cout << "  PASS" << std::endl;
 }
@@ -307,21 +308,21 @@ void test_sparse_row_empty() {
 
     SparseRow empty_row;
 
-    assert(empty_row.empty());
-    assert(empty_row.weight() == 0);
+    TEST_ASSERT(empty_row.empty());
+    TEST_ASSERT(empty_row.weight() == 0);
 
     // first_nonzero() → UINT32_MAX (sentinel for "no elements")
-    assert(empty_row.first_nonzero() == UINT32_MAX);
-    assert(empty_row.last_nonzero() == UINT32_MAX);
+    TEST_ASSERT(empty_row.first_nonzero() == UINT32_MAX);
+    TEST_ASSERT(empty_row.last_nonzero() == UINT32_MAX);
 
     // test() on any col → false
-    assert(!empty_row.test(0));
-    assert(!empty_row.test(1000000));
+    TEST_ASSERT(!empty_row.test(0));
+    TEST_ASSERT(!empty_row.test(1000000));
 
     // xor_with empty → stays empty
     SparseRow other_empty;
     empty_row.xor_with(other_empty);
-    assert(empty_row.empty());
+    TEST_ASSERT(empty_row.empty());
 
     // SparseRow::set() is idempotent: multiple set(col) = single set(col)
     // This is the correct GF(2) "set bit to 1" semantic. Use flip() for toggle.
@@ -329,8 +330,8 @@ void test_sparse_row_empty() {
         SparseRow row;
         row.set(5); // bit 5 = 1
         row.set(5); // idempotent: bit 5 still = 1
-        assert(row.weight() == 1);
-        assert(row.test(5));
+        TEST_ASSERT(row.weight() == 1);
+        TEST_ASSERT(row.test(5));
     }
 
     // flip() provides GF(2) toggle: double flip cancels
@@ -338,8 +339,8 @@ void test_sparse_row_empty() {
         SparseRow row;
         row.flip(5); // bit 5 = 1
         row.flip(5); // bit 5 = 0
-        assert(row.weight() == 0);
-        assert(!row.test(5));
+        TEST_ASSERT(row.weight() == 0);
+        TEST_ASSERT(!row.test(5));
     }
 
     std::cout << "  PASS" << std::endl;
@@ -351,15 +352,15 @@ void test_sparse_matrix_zero_rows() {
     std::cout << "Testing SparseMatrix with 0 rows..." << std::endl;
 
     SparseMatrix m(0, 5);
-    assert(m.num_rows() == 0);
-    assert(m.num_cols() == 5);
-    assert(m.total_weight() == 0);
+    TEST_ASSERT(m.num_rows() == 0);
+    TEST_ASSERT(m.num_cols() == 5);
+    TEST_ASSERT(m.total_weight() == 0);
 
     // transpose of 0×5 → 5×0
     SparseMatrix t = m.transpose();
-    assert(t.num_rows() == 5);
-    assert(t.num_cols() == 0);
-    assert(t.total_weight() == 0);
+    TEST_ASSERT(t.num_rows() == 5);
+    TEST_ASSERT(t.num_cols() == 0);
+    TEST_ASSERT(t.total_weight() == 0);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -368,9 +369,9 @@ void test_sparse_matrix_zero_cols() {
     std::cout << "Testing SparseMatrix with 0 cols..." << std::endl;
 
     SparseMatrix m(3, 0);
-    assert(m.num_rows() == 3);
-    assert(m.num_cols() == 0);
-    assert(m.total_weight() == 0);
+    TEST_ASSERT(m.num_rows() == 3);
+    TEST_ASSERT(m.num_cols() == 0);
+    TEST_ASSERT(m.total_weight() == 0);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -379,13 +380,13 @@ void test_sparse_matrix_one_by_one_zero() {
     std::cout << "Testing 1x1 all-zero SparseMatrix with Gaussian..." << std::endl;
 
     SparseMatrix m(1, 1);
-    assert(!m.test(0, 0));
-    assert(m.total_weight() == 0);
+    TEST_ASSERT(!m.test(0, 0));
+    TEST_ASSERT(m.total_weight() == 0);
 
     // Gaussian on 1×1 zero matrix → rank 0
     GaussianEliminator elim;
     auto result = elim.eliminate(m);
-    assert(result.rank == 0);
+    TEST_ASSERT(result.rank == 0);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -395,14 +396,14 @@ void test_sparse_matrix_one_by_one_one() {
 
     SparseMatrix m(1, 1);
     m.set(0, 0);
-    assert(m.test(0, 0));
-    assert(m.total_weight() == 1);
+    TEST_ASSERT(m.test(0, 0));
+    TEST_ASSERT(m.total_weight() == 1);
 
     // Gaussian on 1×1 [[1]] → rank 1, no free variables
     GaussianEliminator elim;
     auto result = elim.eliminate(m);
-    assert(result.rank == 1);
-    assert(result.free_cols.empty());
+    TEST_ASSERT(result.rank == 1);
+    TEST_ASSERT(result.free_cols.empty());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -411,11 +412,11 @@ void test_sparse_matrix_all_zero() {
     std::cout << "Testing all-zero 5x3 SparseMatrix → rank 0..." << std::endl;
 
     SparseMatrix m(5, 3);
-    assert(m.total_weight() == 0);
+    TEST_ASSERT(m.total_weight() == 0);
 
     GaussianEliminator elim;
     auto result = elim.eliminate(m);
-    assert(result.rank == 0);
+    TEST_ASSERT(result.rank == 0);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -426,15 +427,15 @@ void test_bitvector_empty() {
     std::cout << "Testing BitVector(0) empty..." << std::endl;
 
     BitVector bv(0);
-    assert(bv.size() == 0);
-    assert(bv.is_zero());
-    assert(bv.popcount() == 0);
-    assert(bv.set_bits().empty());
+    TEST_ASSERT(bv.size() == 0);
+    TEST_ASSERT(bv.is_zero());
+    TEST_ASSERT(bv.popcount() == 0);
+    TEST_ASSERT(bv.set_bits().empty());
 
     // XOR two empty → still empty
     BitVector bv2(0);
     bv.xor_with(bv2);
-    assert(bv.is_zero());
+    TEST_ASSERT(bv.is_zero());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -443,23 +444,23 @@ void test_bitvector_single_bit() {
     std::cout << "Testing BitVector(1) single bit..." << std::endl;
 
     BitVector bv(1);
-    assert(bv.size() == 1);
-    assert(bv.is_zero());
-    assert(!bv.test(0));
+    TEST_ASSERT(bv.size() == 1);
+    TEST_ASSERT(bv.is_zero());
+    TEST_ASSERT(!bv.test(0));
 
     bv.set(0);
-    assert(bv.test(0));
-    assert(bv.popcount() == 1);
-    assert(!bv.is_zero());
+    TEST_ASSERT(bv.test(0));
+    TEST_ASSERT(bv.popcount() == 1);
+    TEST_ASSERT(!bv.is_zero());
 
     bv.clear(0);
-    assert(!bv.test(0));
-    assert(bv.is_zero());
+    TEST_ASSERT(!bv.test(0));
+    TEST_ASSERT(bv.is_zero());
 
     bv.flip(0);
-    assert(bv.test(0));
+    TEST_ASSERT(bv.test(0));
     bv.flip(0);
-    assert(!bv.test(0));
+    TEST_ASSERT(!bv.test(0));
 
     std::cout << "  PASS" << std::endl;
 }
@@ -470,44 +471,44 @@ void test_bitvector_word_boundaries() {
     // BitVector(64): exactly 1 word (64 bits)
     {
         BitVector bv(64);
-        assert(bv.size() == 64);
+        TEST_ASSERT(bv.size() == 64);
         bv.set(0);  // first bit of first word
         bv.set(63); // last bit of first word
-        assert(bv.test(0));
-        assert(bv.test(63));
-        assert(!bv.test(1));
-        assert(bv.popcount() == 2);
+        TEST_ASSERT(bv.test(0));
+        TEST_ASSERT(bv.test(63));
+        TEST_ASSERT(!bv.test(1));
+        TEST_ASSERT(bv.popcount() == 2);
     }
 
     // BitVector(65): 2 words; bit 64 is second word's bit 0
     {
         BitVector bv(65);
-        assert(bv.size() == 65);
+        TEST_ASSERT(bv.size() == 65);
         bv.set(64); // first bit of second word
-        assert(bv.test(64));
-        assert(!bv.test(63)); // last bit of first word should be 0
-        assert(bv.popcount() == 1);
+        TEST_ASSERT(bv.test(64));
+        TEST_ASSERT(!bv.test(63)); // last bit of first word should be 0
+        TEST_ASSERT(bv.popcount() == 1);
     }
 
     // BitVector(128): exactly 2 words
     {
         BitVector bv(128);
-        assert(bv.size() == 128);
+        TEST_ASSERT(bv.size() == 128);
         bv.set(0);
         bv.set(63);
         bv.set(64);
         bv.set(127);
-        assert(bv.popcount() == 4);
-        assert(bv.test(0) && bv.test(63) && bv.test(64) && bv.test(127));
+        TEST_ASSERT(bv.popcount() == 4);
+        TEST_ASSERT(bv.test(0) && bv.test(63) && bv.test(64) && bv.test(127));
     }
 
     // BitVector(63): 63 bits, still fits in 1 word
     {
         BitVector bv(63);
-        assert(bv.size() == 63);
+        TEST_ASSERT(bv.size() == 63);
         bv.set(62); // last valid bit
-        assert(bv.test(62));
-        assert(bv.popcount() == 1);
+        TEST_ASSERT(bv.test(62));
+        TEST_ASSERT(bv.popcount() == 1);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -527,10 +528,10 @@ void test_bitvector_xor_boundary() {
 
     a.xor_with(b);
     // After XOR: bit 64 set, bit 65 set, bit 63 cleared
-    assert(!a.test(63));
-    assert(a.test(64));
-    assert(a.test(65));
-    assert(a.popcount() == 2);
+    TEST_ASSERT(!a.test(63));
+    TEST_ASSERT(a.test(64));
+    TEST_ASSERT(a.test(65));
+    TEST_ASSERT(a.popcount() == 2);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -547,8 +548,8 @@ void test_gaussian_identity_matrix() {
 
     GaussianEliminator elim;
     auto result = elim.eliminate(m);
-    assert(result.rank == 3);
-    assert(result.free_cols.empty());
+    TEST_ASSERT(result.rank == 3);
+    TEST_ASSERT(result.free_cols.empty());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -563,12 +564,12 @@ void test_gaussian_single_row() {
 
     GaussianEliminator elim;
     auto result = elim.eliminate(m);
-    assert(result.rank == 1);
+    TEST_ASSERT(result.rank == 1);
     // Columns 1 and 2 are free (col 0 is pivot, col 2 is in same row but col 1 is free?)
     // Actually: pivot is col 0 (first nonzero), col 1 and col 2 have no pivot row
     // Free variables: columns with no pivot = col 1, col 2 minus the pivot cols
     // With 1 pivot and 3 cols total, 2 cols are free
-    assert(result.free_cols.size() == 2);
+    TEST_ASSERT(result.free_cols.size() == 2);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -582,7 +583,7 @@ void test_block_lanczos_empty_matrix() {
     BlockLanczos solver;
     auto deps = solver.find_dependencies(m, 1);
     // 0 rows → no dependencies (handled early in find_dependencies)
-    assert(deps.empty());
+    TEST_ASSERT(deps.empty());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -608,29 +609,29 @@ void test_integer_sign_checks() {
     std::cout << "Testing Integer sign checks (zero, positive, negative)..." << std::endl;
 
     Integer zero_val(int64_t(0));
-    assert(zero_val.is_zero());
-    assert(!zero_val.is_positive());
-    assert(!zero_val.is_negative());
+    TEST_ASSERT(zero_val.is_zero());
+    TEST_ASSERT(!zero_val.is_positive());
+    TEST_ASSERT(!zero_val.is_negative());
 
     Integer pos(int64_t(1));
-    assert(!pos.is_zero());
-    assert(pos.is_positive());
-    assert(!pos.is_negative());
+    TEST_ASSERT(!pos.is_zero());
+    TEST_ASSERT(pos.is_positive());
+    TEST_ASSERT(!pos.is_negative());
 
     Integer neg(int64_t(-1));
-    assert(!neg.is_zero());
-    assert(!neg.is_positive());
-    assert(neg.is_negative());
+    TEST_ASSERT(!neg.is_zero());
+    TEST_ASSERT(!neg.is_positive());
+    TEST_ASSERT(neg.is_negative());
 
     // Large positive
     Integer big("99999999999999999999999999999999");
-    assert(big.is_positive());
-    assert(!big.is_negative());
+    TEST_ASSERT(big.is_positive());
+    TEST_ASSERT(!big.is_negative());
 
     // Large negative
     Integer nbig("-99999999999999999999999999999999");
-    assert(nbig.is_negative());
-    assert(!nbig.is_positive());
+    TEST_ASSERT(nbig.is_negative());
+    TEST_ASSERT(!nbig.is_positive());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -646,21 +647,21 @@ void test_ecm_edge_cases() {
     {
         Integer one(int64_t(1));
         auto result = ECM::factor(one);
-        assert(!result.has_value());
+        TEST_ASSERT(!result.has_value());
     }
 
     // ECM with a prime → should return nullopt
     {
         Integer prime(int64_t(997));
         auto result = ECM::factor(prime);
-        assert(!result.has_value());
+        TEST_ASSERT(!result.has_value());
     }
 
     // ECM with n=2 (smallest prime) → nullopt
     {
         Integer two(int64_t(2));
         auto result = ECM::factor(two);
-        assert(!result.has_value());
+        TEST_ASSERT(!result.has_value());
     }
 
     // ECM with a known small composite → should find a factor
@@ -669,7 +670,7 @@ void test_ecm_edge_cases() {
         auto result = ECM::factor(composite);
         if (result.has_value()) {
             int64_t f = result->to_int64();
-            assert(f == 11 || f == 13);
+            TEST_ASSERT(f == 11 || f == 13);
         }
         // ECM may or may not succeed — non-deterministic, but should not crash
     }
@@ -680,7 +681,7 @@ void test_ecm_edge_cases() {
         auto result = ECM::quick_factor(composite);
         if (result.has_value()) {
             int64_t f = result->to_int64();
-            assert(f == 3 || f == 5);
+            TEST_ASSERT(f == 3 || f == 5);
         }
     }
 
@@ -694,65 +695,65 @@ void test_cofactor_classify_edge_cases() {
     {
         Integer one(int64_t(1));
         auto cls = classify_cofactor(one, 1000);
-        assert(cls.type == CofactorClass::Smooth);
+        TEST_ASSERT(cls.type == CofactorClass::Smooth);
     }
 
     // classify_cofactor(2, lpb=1000) → Prime
     {
         Integer two(int64_t(2));
         auto cls = classify_cofactor(two, 1000);
-        assert(cls.type == CofactorClass::Prime);
-        assert(cls.factor1 == 2);
+        TEST_ASSERT(cls.type == CofactorClass::Prime);
+        TEST_ASSERT(cls.factor1 == 2);
     }
 
     // classify_cofactor(4, lpb=1000) → PrimePower (2^2)
     {
         Integer four(int64_t(4));
         auto cls = classify_cofactor(four, 1000);
-        assert(cls.type == CofactorClass::PrimePower);
-        assert(cls.factor1 == 2);
-        assert(cls.power == 2);
+        TEST_ASSERT(cls.type == CofactorClass::PrimePower);
+        TEST_ASSERT(cls.factor1 == 2);
+        TEST_ASSERT(cls.power == 2);
     }
 
     // classify_cofactor with lpb=1 → almost everything is TooLarge
     {
         Integer two(int64_t(2));
         auto cls = classify_cofactor(two, 1);
-        assert(cls.type == CofactorClass::TooLarge);
+        TEST_ASSERT(cls.type == CofactorClass::TooLarge);
     }
 
     // is_probable_prime_u64 edge: 0, 1
-    assert(!is_probable_prime_u64(0));
-    assert(!is_probable_prime_u64(1));
-    assert(is_probable_prime_u64(2));
-    assert(is_probable_prime_u64(3));
+    TEST_ASSERT(!is_probable_prime_u64(0));
+    TEST_ASSERT(!is_probable_prime_u64(1));
+    TEST_ASSERT(is_probable_prime_u64(2));
+    TEST_ASSERT(is_probable_prime_u64(3));
 
     // is_perfect_square(0)
     {
         uint64_t root;
-        assert(is_perfect_square(0, root) && root == 0);
-        assert(is_perfect_square(1, root) && root == 1);
+        TEST_ASSERT(is_perfect_square(0, root) && root == 0);
+        TEST_ASSERT(is_perfect_square(1, root) && root == 1);
     }
 
     // is_perfect_power: n<2 不是有意义的"完全幂",返回 false (新语义)
     {
         uint64_t base;
         uint8_t exp;
-        assert(!is_perfect_power(0, base, exp));
-        assert(!is_perfect_power(1, base, exp));
+        TEST_ASSERT(!is_perfect_power(0, base, exp));
+        TEST_ASSERT(!is_perfect_power(1, base, exp));
         // n=2 是素数,不是 perfect power (b^k with k>=2)
-        assert(!is_perfect_power(2, base, exp));
+        TEST_ASSERT(!is_perfect_power(2, base, exp));
         // n=4 = 2² 是
-        assert(is_perfect_power(4, base, exp));
-        assert(base == 2 && exp == 2);
+        TEST_ASSERT(is_perfect_power(4, base, exp));
+        TEST_ASSERT(base == 2 && exp == 2);
     }
 
     // pollard_rho with even number → should return 2
-    assert(pollard_rho(4) == 2);
-    assert(pollard_rho(6) == 2 || pollard_rho(6) == 3);
+    TEST_ASSERT(pollard_rho(4) == 2);
+    TEST_ASSERT(pollard_rho(6) == 2 || pollard_rho(6) == 3);
 
     // pollard_rho with n divisible by 3
-    assert(pollard_rho(9) == 3);
+    TEST_ASSERT(pollard_rho(9) == 3);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -763,7 +764,7 @@ void test_trial_division_edge_cases() {
     // Build a minimal factor base for N=143
     Integer n("143");
     auto bm_result = gnfs::polynomial::BaseMSelector::select(n, 2);
-    assert(bm_result.success);
+    TEST_ASSERT(bm_result.success);
     auto ctx = gnfs::polynomial::BaseMSelector::create_context(n, bm_result);
 
     gnfs::factor_base::FactorBaseBuilder::Options opts;
@@ -778,29 +779,29 @@ void test_trial_division_edge_cases() {
     {
         Integer zero(int64_t(0));
         auto result = divider.divide_rational(std::move(zero));
-        assert(result.is_smooth);
+        TEST_ASSERT(result.is_smooth);
     }
 
     // divide_rational with value=1 → smooth (cofactor=1)
     {
         Integer one(int64_t(1));
         auto result = divider.divide_rational(std::move(one));
-        assert(result.is_smooth || result.cofactor.to_uint64() == 1);
+        TEST_ASSERT(result.is_smooth || result.cofactor.to_uint64() == 1);
     }
 
     // divide_rational with negative value → should handle sign
     {
         Integer neg(int64_t(-30)); // 2 * 3 * 5
         auto result = divider.divide_rational(std::move(neg));
-        assert(result.is_smooth);
+        TEST_ASSERT(result.is_smooth);
     }
 
     // divide_rational with a large prime > factor base → not smooth
     {
         Integer large(int64_t(10007)); // prime > 50
         auto result = divider.divide_rational(std::move(large));
-        assert(!result.is_smooth);
-        assert(result.cofactor.to_uint64() == 10007);
+        TEST_ASSERT(!result.is_smooth);
+        TEST_ASSERT(result.cofactor.to_uint64() == 10007);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -819,12 +820,12 @@ void test_relation_serialization_edge_cases() {
         std::stringstream ss;
         r.serialize(ss);
         auto r2 = Relation::deserialize(ss);
-        assert(r2.a == 0);
-        assert(r2.b == 1);
-        assert(r2.rational_factors.empty());
-        assert(r2.algebraic_factors.empty());
-        assert(r2.rational_large_prime.empty());
-        assert(r2.algebraic_large_prime.empty());
+        TEST_ASSERT(r2.a == 0);
+        TEST_ASSERT(r2.b == 1);
+        TEST_ASSERT(r2.rational_factors.empty());
+        TEST_ASSERT(r2.algebraic_factors.empty());
+        TEST_ASSERT(r2.rational_large_prime.empty());
+        TEST_ASSERT(r2.algebraic_large_prime.empty());
     }
 
     // Relation with negative a
@@ -835,10 +836,10 @@ void test_relation_serialization_edge_cases() {
         std::stringstream ss;
         r.serialize(ss);
         auto r2 = Relation::deserialize(ss);
-        assert(r2.a == -12345);
-        assert(r2.b == 7);
-        assert(r2.rational_factors.size() == 3);
-        assert(r2.algebraic_factors.size() == 2);
+        TEST_ASSERT(r2.a == -12345);
+        TEST_ASSERT(r2.b == 7);
+        TEST_ASSERT(r2.rational_factors.size() == 3);
+        TEST_ASSERT(r2.algebraic_factors.size() == 2);
     }
 
     // Relation with large primes round-trip
@@ -849,10 +850,10 @@ void test_relation_serialization_edge_cases() {
         std::stringstream ss;
         r.serialize(ss);
         auto r2 = Relation::deserialize(ss);
-        assert(r2.rational_large_prime.size() == 1);
-        assert(r2.rational_large_prime[0].p == 999983ULL);
-        assert(r2.algebraic_large_prime.size() == 1);
-        assert(r2.algebraic_large_prime[0].p == 999979ULL);
+        TEST_ASSERT(r2.rational_large_prime.size() == 1);
+        TEST_ASSERT(r2.rational_large_prime[0].p == 999983ULL);
+        TEST_ASSERT(r2.algebraic_large_prime.size() == 1);
+        TEST_ASSERT(r2.algebraic_large_prime[0].p == 999979ULL);
     }
 
     // Merged relation with extra_ab_pairs
@@ -864,13 +865,13 @@ void test_relation_serialization_edge_cases() {
         std::stringstream ss;
         r.serialize(ss);
         auto r2 = Relation::deserialize(ss);
-        assert(r2.a == 100 && r2.b == 7);
-        assert(r2.extra_ab_pairs.size() == 2);
-        assert(r2.extra_ab_pairs[0].first == -50);
-        assert(r2.extra_ab_pairs[0].second == 3);
-        assert(r2.extra_ab_pairs[1].first == 200);
-        assert(r2.extra_ab_pairs[1].second == 11);
-        assert(r2.is_merged());
+        TEST_ASSERT(r2.a == 100 && r2.b == 7);
+        TEST_ASSERT(r2.extra_ab_pairs.size() == 2);
+        TEST_ASSERT(r2.extra_ab_pairs[0].first == -50);
+        TEST_ASSERT(r2.extra_ab_pairs[0].second == 3);
+        TEST_ASSERT(r2.extra_ab_pairs[1].first == 200);
+        TEST_ASSERT(r2.extra_ab_pairs[1].second == 11);
+        TEST_ASSERT(r2.is_merged());
     }
 
     // Checksum corruption detection
@@ -880,7 +881,7 @@ void test_relation_serialization_edge_cases() {
         r.serialize(ss);
         // Flip a byte in the middle of the stream
         std::string data = ss.str();
-        assert(data.size() > 16);
+        TEST_ASSERT(data.size() > 16);
         data[12] ^= 0xFF; // corrupt a data byte
         std::stringstream ss2(data);
         bool caught = false;
@@ -889,7 +890,7 @@ void test_relation_serialization_edge_cases() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        TEST_ASSERT(caught);
     }
 
     // Invalid magic detection
@@ -903,7 +904,7 @@ void test_relation_serialization_edge_cases() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        TEST_ASSERT(caught);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -915,8 +916,8 @@ void test_relation_collector_edge_cases() {
     // Empty collector
     {
         RelationCollector c;
-        assert(c.size() == 0);
-        assert(c.relations().empty());
+        TEST_ASSERT(c.size() == 0);
+        TEST_ASSERT(c.relations().empty());
     }
 
     // Collector with duplicate rejection
@@ -929,8 +930,8 @@ void test_relation_collector_edge_cases() {
         Relation r2(int64_t(5), int64_t(1)); // same (a,b)
         c.add(std::move(r1));
         c.add(std::move(r2));
-        assert(c.size() == 1); // duplicate rejected
-        assert(c.stats().duplicates_rejected == 1);
+        TEST_ASSERT(c.size() == 1); // duplicate rejected
+        TEST_ASSERT(c.stats().duplicates_rejected == 1);
     }
 
     // Collector with max_relations limit
@@ -944,7 +945,7 @@ void test_relation_collector_edge_cases() {
             Relation r(i, int64_t(1));
             c.add(std::move(r));
         }
-        assert(c.size() == 2); // limited to 2
+        TEST_ASSERT(c.size() == 2); // limited to 2
     }
 
     // Merge two collectors
@@ -955,7 +956,7 @@ void test_relation_collector_edge_cases() {
         c1.add(std::move(r1));
         c2.add(std::move(r2));
         c1.merge(c2);
-        assert(c1.size() == 2);
+        TEST_ASSERT(c1.size() == 2);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -971,8 +972,8 @@ void test_relation_filter_edge_cases() {
         RelationFilter filter(cfg);
         std::vector<Relation> empty;
         auto filtered = filter.filter(std::move(empty));
-        assert(filtered.empty());
-        assert(filter.stats().input_relations == 0);
+        TEST_ASSERT(filtered.empty());
+        TEST_ASSERT(filter.stats().input_relations == 0);
     }
 
     // Filter with all singletons → empty result
@@ -988,8 +989,8 @@ void test_relation_filter_edge_cases() {
             rels.push_back(std::move(r));
         }
         auto filtered = filter.filter(std::move(rels));
-        assert(filtered.empty());
-        assert(filter.stats().singletons_removed == 5);
+        TEST_ASSERT(filtered.empty());
+        TEST_ASSERT(filter.stats().singletons_removed == 5);
     }
 
     // Filter with all full relations (no LP) → all pass
@@ -1003,8 +1004,8 @@ void test_relation_filter_edge_cases() {
             rels.push_back(std::move(r));
         }
         auto filtered = filter.filter(std::move(rels));
-        assert(filtered.size() == 3);
-        assert(filter.stats().singletons_removed == 0);
+        TEST_ASSERT(filtered.size() == 3);
+        TEST_ASSERT(filter.stats().singletons_removed == 0);
     }
 
     // Filter with singletons disabled → keeps everything
@@ -1017,7 +1018,7 @@ void test_relation_filter_edge_cases() {
         r.rational_large_prime.push_back(PrimePower{99991ULL, 0, 1}); // singleton
         rels.push_back(std::move(r));
         auto filtered = filter.filter(std::move(rels));
-        assert(filtered.size() == 1);
+        TEST_ASSERT(filtered.size() == 1);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -1036,7 +1037,7 @@ void test_sieve_params_edge_cases() {
         params.rational_threshold = 200;
         params.algebraic_threshold = 200;
         uint16_t combined = params.combined_threshold();
-        assert(combined == 400);
+        TEST_ASSERT(combined == 400);
     }
 
     // Normal case: combined threshold within range
@@ -1044,7 +1045,7 @@ void test_sieve_params_edge_cases() {
         SieveParams params;
         params.rational_threshold = 70;
         params.algebraic_threshold = 70;
-        assert(params.combined_threshold() == 140);
+        TEST_ASSERT(params.combined_threshold() == 140);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -1056,28 +1057,28 @@ void test_special_q_edge_cases() {
     // SpecialQ with q=0 → invalid
     {
         SpecialQ sq{0, 0, 0};
-        assert(!sq.is_valid());
+        TEST_ASSERT(!sq.is_valid());
     }
 
     // SpecialQ with q=1 → invalid
     {
         SpecialQ sq{1, 0, 0};
-        assert(!sq.is_valid());
+        TEST_ASSERT(!sq.is_valid());
     }
 
     // SpecialQ with q=2 → valid
     {
         SpecialQ sq{2, 1, 0};
-        assert(sq.is_valid());
+        TEST_ASSERT(sq.is_valid());
     }
 
     // SpecialQRange from_indices
     {
         auto range = SpecialQRange::from_indices(10, 20);
-        assert(range.start_index == 10);
-        assert(range.end_index == 20);
-        assert(range.min_q == 0);
-        assert(range.max_q == UINT32_MAX);
+        TEST_ASSERT(range.start_index == 10);
+        TEST_ASSERT(range.end_index == 20);
+        TEST_ASSERT(range.min_q == 0);
+        TEST_ASSERT(range.max_q == UINT32_MAX);
     }
 
     std::cout << "  PASS" << std::endl;
@@ -1098,13 +1099,13 @@ void test_quick_cofactor_check_edge_cases() {
     // cofactor = 1 → smooth
     {
         Integer one(int64_t(1));
-        assert(quick_cofactor_check(one, 1000, true));
+        TEST_ASSERT(quick_cofactor_check(one, 1000, true));
     }
 
     // lpb = 0 → everything is too large
     {
         Integer two(int64_t(2));
-        assert(!quick_cofactor_check(two, 0, true));
+        TEST_ASSERT(!quick_cofactor_check(two, 0, true));
     }
 
     // Negative residuals are malformed and must never pass the arbitrary-
@@ -1112,8 +1113,8 @@ void test_quick_cofactor_check_edge_cases() {
     {
         Integer negative_one(int64_t(-1));
         Integer negative_large("-123456789012345678901234567890");
-        assert(!quick_cofactor_check(negative_one, 1000, true));
-        assert(!quick_cofactor_check(negative_large, 1000, true, true));
+        TEST_ASSERT(!quick_cofactor_check(negative_one, 1000, true));
+        TEST_ASSERT(!quick_cofactor_check(negative_large, 1000, true, true));
     }
 
     std::cout << "  PASS" << std::endl;
@@ -1130,7 +1131,7 @@ void test_hensel_sqrt_edge_cases() {
     // f(x) = x² + x + 91, which is irreducible (discriminant = -363)
     Integer n("9991");
     auto poly_result = BaseMSelector::select(n, 2);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
     NumberField nf(ctx);
 
@@ -1138,8 +1139,8 @@ void test_hensel_sqrt_edge_cases() {
     {
         HenselSqrt hs;
         auto r = hs.compute({}, nf);
-        assert(r.has_value());
-        assert(*r == Integer(int64_t(1)));
+        TEST_ASSERT(r.has_value());
+        TEST_ASSERT(*r == Integer(int64_t(1)));
     }
 
     // Test 2: Default config construction
@@ -1241,7 +1242,7 @@ void test_schirokauer_large_ell_edge_cases() {
     // Setup: N=10403, degree=2
     Integer n("10403");
     auto poly_result = BaseMSelector::select(n, 2);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
     uint32_t degree = ctx.degree();
 
@@ -1250,15 +1251,15 @@ void test_schirokauer_large_ell_edge_cases() {
         SchirokaurConfig cfg;
         cfg.primes = {3};
         SchirokaurMap sm(ctx, cfg);
-        assert(sm.num_columns() == degree);
+        TEST_ASSERT(sm.num_columns() == degree);
 
         for (int64_t a = -5; a <= 5; ++a) {
             for (uint64_t b = 1; b <= 3; ++b) {
                 auto maps = sm.compute(a, b);
-                assert(maps.size() == 1);
-                assert(maps[0].size() == degree);
+                TEST_ASSERT(maps.size() == 1);
+                TEST_ASSERT(maps[0].size() == degree);
                 for (uint32_t v : maps[0])
-                    assert(v < 3);
+                    TEST_ASSERT(v < 3);
             }
         }
     }
@@ -1269,10 +1270,10 @@ void test_schirokauer_large_ell_edge_cases() {
         cfg.primes = {5};
         SchirokaurMap sm(ctx, cfg);
         auto maps = sm.compute(7, 2);
-        assert(maps.size() == 1);
-        assert(maps[0].size() == degree);
+        TEST_ASSERT(maps.size() == 1);
+        TEST_ASSERT(maps[0].size() == degree);
         for (uint32_t v : maps[0])
-            assert(v < 5);
+            TEST_ASSERT(v < 5);
     }
 
     // Test 3: Multiple primes [2, 3] → num_columns = 2 * degree
@@ -1280,14 +1281,14 @@ void test_schirokauer_large_ell_edge_cases() {
         SchirokaurConfig cfg;
         cfg.primes = {2, 3};
         SchirokaurMap sm(ctx, cfg);
-        assert(sm.num_columns() == 2 * degree);
+        TEST_ASSERT(sm.num_columns() == 2 * degree);
 
         auto maps = sm.compute(5, 1);
-        assert(maps.size() == 2);
+        TEST_ASSERT(maps.size() == 2);
         for (uint32_t v : maps[0])
-            assert(v < 2);
+            TEST_ASSERT(v < 2);
         for (uint32_t v : maps[1])
-            assert(v < 3);
+            TEST_ASSERT(v < 3);
     }
 
     // Test 4: Empty primes → num_columns = 0
@@ -1295,9 +1296,9 @@ void test_schirokauer_large_ell_edge_cases() {
         SchirokaurConfig cfg;
         cfg.primes = {};
         SchirokaurMap sm(ctx, cfg);
-        assert(sm.num_columns() == 0);
+        TEST_ASSERT(sm.num_columns() == 0);
         auto flat = sm.compute_flat(1, 1);
-        assert(flat.empty());
+        TEST_ASSERT(flat.empty());
     }
 
     // Test 5: ℓ=7 with higher exponent_k=5 → values in [0,7)
@@ -1307,10 +1308,10 @@ void test_schirokauer_large_ell_edge_cases() {
         cfg.exponent_k = 5;
         SchirokaurMap sm(ctx, cfg);
         auto maps = sm.compute(11, 3);
-        assert(maps.size() == 1);
-        assert(maps[0].size() == degree);
+        TEST_ASSERT(maps.size() == 1);
+        TEST_ASSERT(maps[0].size() == degree);
         for (uint32_t v : maps[0])
-            assert(v < 7);
+            TEST_ASSERT(v < 7);
     }
 
     // Test 6: Determinism — same (a,b) always gives same result for ℓ=3
@@ -1320,7 +1321,7 @@ void test_schirokauer_large_ell_edge_cases() {
         SchirokaurMap sm(ctx, cfg);
         auto m1 = sm.compute(13, 5);
         auto m2 = sm.compute(13, 5);
-        assert(m1[0] == m2[0]);
+        TEST_ASSERT(m1[0] == m2[0]);
     }
 
     // Test 7: The selected f = x^2 + 21x + 7 is irreducible modulo 2, 3, and
@@ -1389,16 +1390,16 @@ void test_schirokauer_degree3_split_degree2() {
     SchirokaurMap sm(ctx, cfg);
 
     // num_columns 应 = degree = 3(每根 1 列)
-    assert(sm.num_columns() == 3);
+    TEST_ASSERT(sm.num_columns() == 3);
 
     // 取若干 (a, b) 对计算 lambda 值,断言 ∈ [0, ℓ)
     std::vector<std::pair<int64_t, uint64_t>> pairs = {{1, 1}, {2, 1}, {5, 2}, {-3, 1}, {7, 3}};
     for (auto [a, b] : pairs) {
         auto maps = sm.compute(a, b);
-        assert(maps.size() == 1);
-        assert(maps[0].size() == 3);
+        TEST_ASSERT(maps.size() == 1);
+        TEST_ASSERT(maps[0].size() == 3);
         for (uint32_t v : maps[0]) {
-            assert(v < 3 && "λ value must be < ℓ=3");
+            TEST_ASSERT(v < 3 && "λ value must be < ℓ=3");
         }
     }
 
@@ -1408,7 +1409,7 @@ void test_schirokauer_degree3_split_degree2() {
     {
         auto a1 = sm.compute_flat(7, 2);
         auto a2 = sm.compute_flat(7, 2);
-        assert(a1 == a2 && "deterministic");
+        TEST_ASSERT(a1 == a2 && "deterministic");
     }
 
     std::cout << "  PASS (ℓ=3 deg=3 split={1,2} smoke test)" << std::endl;
@@ -1424,21 +1425,21 @@ void test_number_field_edge_cases() {
     // Setup: N=9991 (97×103), f(x)=x²+x+91, m=99
     Integer n("9991");
     auto poly_result = BaseMSelector::select(n, 2);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
     NumberField nf(ctx);
 
     // Test 1: zero element
     {
         auto z = nf.zero();
-        assert(z.is_zero());
+        TEST_ASSERT(z.is_zero());
     }
 
     // Test 2: one element
     {
         auto one = nf.one();
-        assert(!one.is_zero());
-        assert(one.coeff(0) == Integer(int64_t(1)));
+        TEST_ASSERT(!one.is_zero());
+        TEST_ASSERT(one.coeff(0) == Integer(int64_t(1)));
     }
 
     // Test 3: multiply zero * alpha = zero
@@ -1446,7 +1447,7 @@ void test_number_field_edge_cases() {
         auto z = nf.zero();
         auto alpha = nf.alpha();
         auto result = nf.multiply(z, alpha);
-        assert(result.is_zero());
+        TEST_ASSERT(result.is_zero());
     }
 
     // Test 4: multiply one * alpha = alpha
@@ -1454,42 +1455,42 @@ void test_number_field_edge_cases() {
         auto one = nf.one();
         auto alpha = nf.alpha();
         auto result = nf.multiply(one, alpha);
-        assert(result.coeff(0) == Integer(int64_t(0)));
-        assert(result.coeff(1) == Integer(int64_t(1)));
+        TEST_ASSERT(result.coeff(0) == Integer(int64_t(0)));
+        TEST_ASSERT(result.coeff(1) == Integer(int64_t(1)));
     }
 
     // Test 5: from_ab(0, 0) → zero
     {
         auto elem = nf.from_ab(0, 0);
-        assert(elem.is_zero());
+        TEST_ASSERT(elem.is_zero());
     }
 
     // Test 6: from_ab(5, 0) → constant 5
     {
         auto elem = nf.from_ab(5, 0);
-        assert(elem.coeff(0) == Integer(int64_t(5)));
-        assert(elem.degree() == 0);
+        TEST_ASSERT(elem.coeff(0) == Integer(int64_t(5)));
+        TEST_ASSERT(elem.degree() == 0);
     }
 
     // Test 7: from_ab(0, 1) → -α (coeff[0]=0, coeff[1]=-1)
     {
         auto elem = nf.from_ab(0, 1);
-        assert(elem.coeff(0) == Integer(int64_t(0)));
-        assert(elem.coeff(1) == Integer(int64_t(-1)));
+        TEST_ASSERT(elem.coeff(0) == Integer(int64_t(0)));
+        TEST_ASSERT(elem.coeff(1) == Integer(int64_t(-1)));
     }
 
     // Test 8: from_ab(-100, 3) → -100 - 3α
     {
         auto elem = nf.from_ab(-100, 3);
-        assert(elem.coeff(0) == Integer(int64_t(-100)));
-        assert(elem.coeff(1) == Integer(int64_t(-3)));
+        TEST_ASSERT(elem.coeff(0) == Integer(int64_t(-100)));
+        TEST_ASSERT(elem.coeff(1) == Integer(int64_t(-3)));
     }
 
     // Test 9: norm_linear(0, 1) = f_0 (constant term)
     // N(0 - 1·α) = sum f_i * 0^i * 1^{d-i} = f_0
     {
         auto norm = nf.norm_linear(0, 1);
-        assert(norm == nf.coeff(0));
+        TEST_ASSERT(norm == nf.coeff(0));
     }
 
     // Test 10: norm_linear(a, 0) = f_d * a^d (only highest term survives)
@@ -1498,21 +1499,21 @@ void test_number_field_edge_cases() {
         auto norm = nf.norm_linear(5, 0);
         // f(x) = x² + x + 91, so f_2 = 1, norm(5,0) = 1 * 25 = 25
         Integer expected(int64_t(25));
-        assert(norm == expected);
+        TEST_ASSERT(norm == expected);
     }
 
     // Test 11: evaluate_at_m of zero = 0
     {
         auto z = nf.zero();
         auto result = nf.evaluate_at_m(z);
-        assert(result == Integer(int64_t(0)));
+        TEST_ASSERT(result == Integer(int64_t(0)));
     }
 
     // Test 12: evaluate_at_m_mod_n of alpha = m (mod N)
     {
         auto alpha = nf.alpha();
         auto result = nf.evaluate_at_m_mod_n(alpha);
-        assert(result == nf.m());
+        TEST_ASSERT(result == nf.m());
     }
 
     // Test 13: norm_linear with large a — crash safety
@@ -1535,7 +1536,7 @@ void test_matrix_builder_edge_cases() {
     // N=143 has f_2=2 ≡ 0 (mod 2), which triggers modular_poly assertion (known BACKLOG bug)
     Integer n("9991");
     auto poly_result = BaseMSelector::select(n, 2);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
 
     gnfs::factor_base::FactorBaseBuilder::Options fb_opts;
@@ -1549,8 +1550,8 @@ void test_matrix_builder_edge_cases() {
         MatrixBuilder mb;
         std::vector<Relation> empty;
         auto result = mb.build(empty, fb);
-        assert(result.matrix.num_rows() == 0);
-        assert(result.row_to_relation.empty());
+        TEST_ASSERT(result.matrix.num_rows() == 0);
+        TEST_ASSERT(result.row_to_relation.empty());
     }
 
     // Test 2: Single relation → 1-row matrix
@@ -1561,9 +1562,9 @@ void test_matrix_builder_edge_cases() {
         r.rational_factors = {0, 1};
         rels.push_back(std::move(r));
         auto result = mb.build(rels, fb);
-        assert(result.matrix.num_rows() == 1);
-        assert(result.row_to_relation.size() == 1);
-        assert(result.row_to_relation[0] == 0);
+        TEST_ASSERT(result.matrix.num_rows() == 1);
+        TEST_ASSERT(result.row_to_relation.size() == 1);
+        TEST_ASSERT(result.row_to_relation[0] == 0);
     }
 
     // Test 3: Config with sign column disabled
@@ -1578,9 +1579,9 @@ void test_matrix_builder_edge_cases() {
         Relation r(int64_t(3), int64_t(1));
         rels.push_back(std::move(r));
         auto result = mb.build(rels, fb);
-        assert(result.matrix.num_rows() == 1);
+        TEST_ASSERT(result.matrix.num_rows() == 1);
         // total_columns = rational + algebraic + LP only
-        assert(result.mapping.total_columns() > 0);
+        TEST_ASSERT(result.mapping.total_columns() > 0);
     }
 
     // Test 4: build_with_qc on empty relations
@@ -1588,7 +1589,7 @@ void test_matrix_builder_edge_cases() {
         MatrixBuilder mb;
         std::vector<Relation> empty;
         auto result = mb.build_with_qc(empty, fb, ctx);
-        assert(result.matrix.num_rows() == 0);
+        TEST_ASSERT(result.matrix.num_rows() == 0);
     }
 
     std::cout << "  PASS (4 sub-tests)" << std::endl;
@@ -1604,7 +1605,7 @@ void test_rational_sqrt_edge_cases() {
     // Setup: N=9991 (97×103), same FB as MatrixBuilder tests
     Integer n("9991");
     auto poly_result = BaseMSelector::select(n, 2);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
 
     gnfs::factor_base::FactorBaseBuilder::Options fb_opts;
@@ -1654,7 +1655,7 @@ void test_algebraic_sqrt_edge_cases() {
     // Setup: N=9991 (97×103), f(x)=x²+x+91
     Integer n("9991");
     auto poly_result = BaseMSelector::select(n, 2);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
 
     // Test 1: Empty dependency (all zero bits) → error "No relations in dependency"
@@ -1666,8 +1667,8 @@ void test_algebraic_sqrt_edge_cases() {
         }
         AlgebraicSqrt as;
         auto result = as.compute(dep, rels, ctx);
-        assert(!result.success);
-        assert(!result.error.empty());
+        TEST_ASSERT(!result.success);
+        TEST_ASSERT(!result.error.empty());
     }
 
     // Test 2: Default config construction
@@ -1715,7 +1716,7 @@ void test_couveignes_edge_cases() {
     // Setup: N=9991, f(x)=x²+x+91
     Integer n("9991");
     auto poly_result = BaseMSelector::select(n, 2);
-    assert(poly_result.success);
+    TEST_ASSERT(poly_result.success);
     auto ctx = BaseMSelector::create_context(n, poly_result);
     NumberField nf(ctx);
 
@@ -1725,7 +1726,7 @@ void test_couveignes_edge_cases() {
     {
         CouveignesSqrt cs;
         auto result = cs.compute({}, nf);
-        assert(!result.has_value());
+        TEST_ASSERT(!result.has_value());
     }
 
     // Test 2: Default config construction
@@ -1776,7 +1777,7 @@ void test_polynomial_context_edge_cases() {
         } catch (const std::invalid_argument&) {
             threw = true;
         }
-        assert(threw);
+        TEST_ASSERT(threw);
     }
 
     // Test 2: Degree 0 (constant polynomial f(x) = 7)
@@ -1784,9 +1785,9 @@ void test_polynomial_context_edge_cases() {
         std::vector<Integer> coeffs;
         coeffs.push_back(Integer(int64_t(7)));
         PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
-        assert(ctx.degree() == 0);
-        assert(ctx.coeff(0) == Integer(int64_t(7)));
-        assert(ctx.leading_coeff() == Integer(int64_t(7)));
+        TEST_ASSERT(ctx.degree() == 0);
+        TEST_ASSERT(ctx.coeff(0) == Integer(int64_t(7)));
+        TEST_ASSERT(ctx.leading_coeff() == Integer(int64_t(7)));
     }
 
     // Test 3: Trailing zeros stripped → effective degree reduced
@@ -1797,8 +1798,8 @@ void test_polynomial_context_edge_cases() {
         coeffs.push_back(Integer(int64_t(0))); // x^2 = 0 → stripped
         coeffs.push_back(Integer(int64_t(0))); // x^3 = 0 → stripped
         PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
-        assert(ctx.degree() == 1);
-        assert(ctx.leading_coeff() == Integer(int64_t(2)));
+        TEST_ASSERT(ctx.degree() == 1);
+        TEST_ASSERT(ctx.leading_coeff() == Integer(int64_t(2)));
     }
 
     // Test 4: coeff() out of range → returns static zero
@@ -1806,7 +1807,7 @@ void test_polynomial_context_edge_cases() {
         std::vector<Integer> coeffs;
         coeffs.push_back(Integer(int64_t(5)));
         PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
-        assert(ctx.coeff(100).is_zero());
+        TEST_ASSERT(ctx.coeff(100).is_zero());
     }
 
     // Test 5: evaluate(0) = f_0
@@ -1816,7 +1817,7 @@ void test_polynomial_context_edge_cases() {
         coeffs.push_back(Integer(int64_t(1)));
         coeffs.push_back(Integer(int64_t(1)));
         PolynomialContext ctx(Integer(int64_t(9991)), std::move(coeffs), Integer(int64_t(99)));
-        assert(ctx.evaluate(Integer(int64_t(0))) == Integer(int64_t(91)));
+        TEST_ASSERT(ctx.evaluate(Integer(int64_t(0))) == Integer(int64_t(91)));
     }
 
     // Test 6: evaluate_mod with p=1 → always 0
@@ -1826,7 +1827,7 @@ void test_polynomial_context_edge_cases() {
         coeffs.push_back(Integer(int64_t(1)));
         coeffs.push_back(Integer(int64_t(1)));
         PolynomialContext ctx(Integer(int64_t(9991)), std::move(coeffs), Integer(int64_t(99)));
-        assert(ctx.evaluate_mod(42, 1) == 0);
+        TEST_ASSERT(ctx.evaluate_mod(42, 1) == 0);
     }
 
     // Test 7: evaluate_mod with x=0 → f_0 mod p
@@ -1836,7 +1837,7 @@ void test_polynomial_context_edge_cases() {
         coeffs.push_back(Integer(int64_t(1)));
         coeffs.push_back(Integer(int64_t(1)));
         PolynomialContext ctx(Integer(int64_t(9991)), std::move(coeffs), Integer(int64_t(99)));
-        assert(ctx.evaluate_mod(0, 7) == (91 % 7)); // 91 mod 7 = 0
+        TEST_ASSERT(ctx.evaluate_mod(0, 7) == (91 % 7)); // 91 mod 7 = 0
     }
 
     // Test 8: evaluate with negative coefficients
@@ -1846,16 +1847,16 @@ void test_polynomial_context_edge_cases() {
         coeffs.push_back(Integer(int64_t(3)));
         PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
         // f(5) = -10 + 3*5 = 5
-        assert(ctx.evaluate(Integer(int64_t(5))) == Integer(int64_t(5)));
+        TEST_ASSERT(ctx.evaluate(Integer(int64_t(5))) == Integer(int64_t(5)));
     }
 
     // Test 9: verify() — f(m) ≡ 0 (mod n) for real polynomial
     {
         Integer n("9991");
         auto pr = BaseMSelector::select(n, 2);
-        assert(pr.success);
+        TEST_ASSERT(pr.success);
         auto ctx = BaseMSelector::create_context(n, pr);
-        assert(ctx.verify());
+        TEST_ASSERT(ctx.verify());
     }
 
     // Test 10: algebraic_norm(0, 0) → f_0 * 0^0 * 0^d + ... = just f_0 * 1 * 0^d
@@ -1867,7 +1868,7 @@ void test_polynomial_context_edge_cases() {
         auto pr = BaseMSelector::select(n, 2);
         auto ctx = BaseMSelector::create_context(n, pr);
         auto norm = ctx.algebraic_norm(0, 0);
-        assert(norm.is_zero());
+        TEST_ASSERT(norm.is_zero());
     }
 
     // Test 11: rational_value(m_as_int64, 1) = m - m = 0 (mod n)
@@ -1877,7 +1878,7 @@ void test_polynomial_context_edge_cases() {
         auto ctx = BaseMSelector::create_context(n, pr);
         int64_t m_val = ctx.m().to_int64();
         auto rv = ctx.rational_value(m_val, 1);
-        assert(rv.is_zero());
+        TEST_ASSERT(rv.is_zero());
     }
 
     // Test 12: skewness default
@@ -1885,7 +1886,7 @@ void test_polynomial_context_edge_cases() {
         std::vector<Integer> coeffs;
         coeffs.push_back(Integer(int64_t(1)));
         PolynomialContext ctx(Integer(int64_t(100)), std::move(coeffs), Integer(int64_t(0)));
-        assert(ctx.skewness() == 1.0);
+        TEST_ASSERT(ctx.skewness() == 1.0);
     }
 
     std::cout << "  PASS (12 sub-tests)" << std::endl;
@@ -1901,22 +1902,22 @@ void test_factor_base_edge_cases() {
     // Test 1: Empty FactorBase — all counts = 0
     {
         FactorBase fb;
-        assert(fb.rational_count() == 0);
-        assert(fb.algebraic_count() == 0);
-        assert(fb.sieve_algebraic_count() == 0);
+        TEST_ASSERT(fb.rational_count() == 0);
+        TEST_ASSERT(fb.algebraic_count() == 0);
+        TEST_ASSERT(fb.sieve_algebraic_count() == 0);
     }
 
     // Test 2: find_rational on empty FB → nullopt
     {
         FactorBase fb;
-        assert(!fb.find_rational(2).has_value());
-        assert(!fb.find_rational(0).has_value());
+        TEST_ASSERT(!fb.find_rational(2).has_value());
+        TEST_ASSERT(!fb.find_rational(0).has_value());
     }
 
     // Test 3: find_algebraic on empty FB → nullopt
     {
         FactorBase fb;
-        assert(!fb.find_algebraic(2, 1).has_value());
+        TEST_ASSERT(!fb.find_algebraic(2, 1).has_value());
     }
 
     // Test 4: Add rational primes and verify lookup
@@ -1925,11 +1926,11 @@ void test_factor_base_edge_cases() {
         fb.add_rational(2, 1);
         fb.add_rational(3, 2);
         fb.add_rational(5, 3);
-        assert(fb.rational_count() == 3);
+        TEST_ASSERT(fb.rational_count() == 3);
         auto idx = fb.find_rational(3);
-        assert(idx.has_value());
-        assert(*idx == 1);
-        assert(!fb.find_rational(7).has_value());
+        TEST_ASSERT(idx.has_value());
+        TEST_ASSERT(*idx == 1);
+        TEST_ASSERT(!fb.find_rational(7).has_value());
     }
 
     // Test 5: Add algebraic primes and verify lookup
@@ -1937,12 +1938,12 @@ void test_factor_base_edge_cases() {
         FactorBase fb;
         fb.add_algebraic(2, 1, 1);
         fb.add_algebraic(3, 2, 2);
-        assert(fb.algebraic_count() == 2);
+        TEST_ASSERT(fb.algebraic_count() == 2);
         auto idx = fb.find_algebraic(3, 2);
-        assert(idx.has_value());
-        assert(*idx == 1);
+        TEST_ASSERT(idx.has_value());
+        TEST_ASSERT(*idx == 1);
         // Wrong root → not found
-        assert(!fb.find_algebraic(3, 0).has_value());
+        TEST_ASSERT(!fb.find_algebraic(3, 0).has_value());
     }
 
     // Test 6: sieve_algebraic_count defaults to algebraic_count when not set
@@ -1951,7 +1952,7 @@ void test_factor_base_edge_cases() {
         fb.add_algebraic(2, 1, 1);
         fb.add_algebraic(3, 2, 2);
         fb.add_algebraic(5, 3, 3);
-        assert(fb.sieve_algebraic_count() == 3); // defaults to algebraic_count()
+        TEST_ASSERT(fb.sieve_algebraic_count() == 3); // defaults to algebraic_count()
     }
 
     // Test 7: sieve_algebraic_count set explicitly
@@ -1961,8 +1962,8 @@ void test_factor_base_edge_cases() {
         fb.add_algebraic(3, 2, 2);
         fb.add_algebraic(5, 3, 3);       // SQ range prime
         fb.set_sieve_algebraic_count(2); // only first 2 are sieve primes
-        assert(fb.sieve_algebraic_count() == 2);
-        assert(fb.algebraic_count() == 3);
+        TEST_ASSERT(fb.sieve_algebraic_count() == 2);
+        TEST_ASSERT(fb.algebraic_count() == 3);
     }
 
     // Test 8: build_index rebuilds from scratch
@@ -1970,12 +1971,12 @@ void test_factor_base_edge_cases() {
         FactorBase fb;
         fb.add_rational(2, 1);
         fb.add_rational(3, 2);
-        assert(fb.find_rational(2).has_value());
+        TEST_ASSERT(fb.find_rational(2).has_value());
         // Manually rebuild index
         fb.build_index();
-        assert(fb.find_rational(2).has_value());
-        assert(fb.find_rational(3).has_value());
-        assert(*fb.find_rational(2) == 0);
+        TEST_ASSERT(fb.find_rational(2).has_value());
+        TEST_ASSERT(fb.find_rational(3).has_value());
+        TEST_ASSERT(*fb.find_rational(2) == 0);
     }
 
     // Test 9: Only rational, no algebraic
@@ -1983,17 +1984,17 @@ void test_factor_base_edge_cases() {
         FactorBase fb;
         fb.add_rational(2, 1);
         fb.add_rational(3, 2);
-        assert(fb.rational_count() == 2);
-        assert(fb.algebraic_count() == 0);
-        assert(fb.sieve_algebraic_count() == 0);
+        TEST_ASSERT(fb.rational_count() == 2);
+        TEST_ASSERT(fb.algebraic_count() == 0);
+        TEST_ASSERT(fb.sieve_algebraic_count() == 0);
     }
 
     // Test 10: Only algebraic, no rational
     {
         FactorBase fb;
         fb.add_algebraic(2, 0, 1);
-        assert(fb.rational_count() == 0);
-        assert(fb.algebraic_count() == 1);
+        TEST_ASSERT(fb.rational_count() == 0);
+        TEST_ASSERT(fb.algebraic_count() == 1);
     }
 
     std::cout << "  PASS (10 sub-tests)" << std::endl;
@@ -2008,34 +2009,34 @@ void test_modular_poly_edge_cases() {
     // Test 1: Zero polynomial properties
     {
         ModularPoly zero;
-        assert(zero.is_zero());
-        assert(!zero.is_one());
-        assert(zero.degree() == -1);
-        assert(zero.coeff(0) == 0);
-        assert(zero.coeff(100) == 0);
+        TEST_ASSERT(zero.is_zero());
+        TEST_ASSERT(!zero.is_one());
+        TEST_ASSERT(zero.degree() == -1);
+        TEST_ASSERT(zero.coeff(0) == 0);
+        TEST_ASSERT(zero.coeff(100) == 0);
     }
 
     // Test 2: Constant polynomial
     {
         ModularPoly one(1);
-        assert(!one.is_zero());
-        assert(one.is_one());
-        assert(one.degree() == 0);
+        TEST_ASSERT(!one.is_zero());
+        TEST_ASSERT(one.is_one());
+        TEST_ASSERT(one.degree() == 0);
 
         ModularPoly c(5);
-        assert(c.degree() == 0);
-        assert(c.coeff(0) == 5);
+        TEST_ASSERT(c.degree() == 0);
+        TEST_ASSERT(c.coeff(0) == 5);
     }
 
     // Test 3: Normalization strips trailing zeros
     {
         ModularPoly poly(std::vector<uint64_t>{3, 0, 0, 0});
-        assert(poly.degree() == 0);
-        assert(poly.coeff(0) == 3);
+        TEST_ASSERT(poly.degree() == 0);
+        TEST_ASSERT(poly.coeff(0) == 3);
 
         ModularPoly all_zero(std::vector<uint64_t>{0, 0, 0});
-        assert(all_zero.is_zero());
-        assert(all_zero.degree() == -1);
+        TEST_ASSERT(all_zero.is_zero());
+        TEST_ASSERT(all_zero.degree() == -1);
     }
 
     // Test 4: add/sub with zero → identity
@@ -2043,17 +2044,17 @@ void test_modular_poly_edge_cases() {
         ModularPoly a(std::vector<uint64_t>{3, 2, 1});
         ModularPoly zero;
         auto sum = ModularPoly::add(a, zero, p);
-        assert(sum.coeff(0) == 3 && sum.coeff(1) == 2 && sum.coeff(2) == 1);
+        TEST_ASSERT(sum.coeff(0) == 3 && sum.coeff(1) == 2 && sum.coeff(2) == 1);
 
         auto diff = ModularPoly::sub(a, zero, p);
-        assert(diff.coeff(0) == 3 && diff.coeff(1) == 2 && diff.coeff(2) == 1);
+        TEST_ASSERT(diff.coeff(0) == 3 && diff.coeff(1) == 2 && diff.coeff(2) == 1);
     }
 
     // Test 5: sub(a, a) = 0
     {
         ModularPoly a(std::vector<uint64_t>{3, 5, 1});
         auto diff = ModularPoly::sub(a, a, p);
-        assert(diff.is_zero());
+        TEST_ASSERT(diff.is_zero());
     }
 
     // Test 6: mul_raw with zero → zero
@@ -2061,17 +2062,17 @@ void test_modular_poly_edge_cases() {
         ModularPoly a(std::vector<uint64_t>{3, 2});
         ModularPoly zero;
         auto prod = ModularPoly::mul_raw(a, zero, p);
-        assert(prod.is_zero());
+        TEST_ASSERT(prod.is_zero());
 
         auto prod2 = ModularPoly::mul_raw(zero, a, p);
-        assert(prod2.is_zero());
+        TEST_ASSERT(prod2.is_zero());
     }
 
     // Test 7: scalar_mul by 0 → zero
     {
         ModularPoly a(std::vector<uint64_t>{3, 5, 1});
         auto scaled = ModularPoly::scalar_mul(a, 0, p);
-        assert(scaled.is_zero());
+        TEST_ASSERT(scaled.is_zero());
     }
 
     // Test 8: power with exponent 0 → 1
@@ -2079,7 +2080,7 @@ void test_modular_poly_edge_cases() {
         std::vector<uint64_t> f = {1, 0, 1}; // x^2 + 1 mod 7
         ModularPoly a(std::vector<uint64_t>{3, 2});
         auto result = ModularPoly::power(a, Integer(int64_t(0)), f, p);
-        assert(result.is_one());
+        TEST_ASSERT(result.is_one());
     }
 
     // Test 9: divmod by zero polynomial → exception
@@ -2092,7 +2093,7 @@ void test_modular_poly_edge_cases() {
         } catch (const std::runtime_error&) {
             caught = true;
         }
-        assert(caught);
+        TEST_ASSERT(caught);
     }
 
     // Test 10: divmod when a.degree < b.degree → quotient=0, remainder=a
@@ -2100,8 +2101,8 @@ void test_modular_poly_edge_cases() {
         ModularPoly a(std::vector<uint64_t>{3});    // degree 0
         ModularPoly b(std::vector<uint64_t>{1, 1}); // degree 1
         auto [q, r] = ModularPoly::divmod(a, b, p);
-        assert(q.is_zero());
-        assert(r.coeff(0) == 3);
+        TEST_ASSERT(q.is_zero());
+        TEST_ASSERT(r.coeff(0) == 3);
     }
 
     // Test 11: gcd(a, a) → monic version of a
@@ -2110,17 +2111,17 @@ void test_modular_poly_edge_cases() {
         auto g = ModularPoly::gcd(a, a, p);
         // Should be monic: (3x + 2) / 3 = x + 2*3^{-1}
         // 3^{-1} mod 7 = 5, so 2*5 = 10 mod 7 = 3
-        assert(g.degree() == 1);
-        assert(g.coeff(1) == 1); // monic
+        TEST_ASSERT(g.degree() == 1);
+        TEST_ASSERT(g.coeff(1) == 1); // monic
     }
 
     // Test 12: is_irreducible for degree 0 → false, degree 1 → true
     {
         std::vector<uint64_t> deg0 = {5};
-        assert(!ModularPoly::is_irreducible(deg0, p));
+        TEST_ASSERT(!ModularPoly::is_irreducible(deg0, p));
 
         std::vector<uint64_t> deg1 = {3, 1}; // x + 3
-        assert(ModularPoly::is_irreducible(deg1, p));
+        TEST_ASSERT(ModularPoly::is_irreducible(deg1, p));
     }
 
     // Test 13: reduce when polynomial already smaller than f → unchanged
@@ -2128,22 +2129,22 @@ void test_modular_poly_edge_cases() {
         std::vector<uint64_t> f = {1, 0, 0, 1};         // x^3 + 1
         ModularPoly small(std::vector<uint64_t>{2, 3}); // 3x + 2 (degree 1 < 3)
         auto reduced = ModularPoly::reduce(small, f, p);
-        assert(reduced.coeff(0) == 2);
-        assert(reduced.coeff(1) == 3);
-        assert(reduced.degree() == 1);
+        TEST_ASSERT(reduced.coeff(0) == 2);
+        TEST_ASSERT(reduced.coeff(1) == 3);
+        TEST_ASSERT(reduced.degree() == 1);
     }
 
     // Test 14: set_coeff extends polynomial and normalizes
     {
         ModularPoly poly;
         poly.set_coeff(3, 5); // x^3 coefficient = 5
-        assert(poly.degree() == 3);
-        assert(poly.coeff(3) == 5);
-        assert(poly.coeff(0) == 0);
+        TEST_ASSERT(poly.degree() == 3);
+        TEST_ASSERT(poly.coeff(3) == 5);
+        TEST_ASSERT(poly.coeff(0) == 0);
 
         // Setting leading coeff to 0 reduces degree
         poly.set_coeff(3, 0);
-        assert(poly.is_zero());
+        TEST_ASSERT(poly.is_zero());
     }
 
     // Test 15: arithmetic reduces raw coefficients, including near UINT64_MAX moduli
@@ -2217,9 +2218,9 @@ void test_lattice_basis_edge_cases() {
         sq.r = 1;
         auto basis = compute_lattice_basis(sq);
         int64_t det = basis.determinant();
-        assert(det == 2 || det == -2);
-        assert(basis.verify_ab(basis.e0, basis.f0));
-        assert(basis.verify_ab(basis.e1, basis.f1));
+        TEST_ASSERT(det == 2 || det == -2);
+        TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+        TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
     }
 
     // Test 2: q=3, r=0 → a ≡ 0 (mod 3) lattice
@@ -2229,10 +2230,10 @@ void test_lattice_basis_edge_cases() {
         sq.r = 0;
         auto basis = compute_lattice_basis(sq);
         int64_t det = basis.determinant();
-        assert(det == 3 || det == -3);
+        TEST_ASSERT(det == 3 || det == -3);
         // (3, 0) and (0, 1) should be a valid basis pair
-        assert(basis.verify_ab(basis.e0, basis.f0));
-        assert(basis.verify_ab(basis.e1, basis.f1));
+        TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+        TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
     }
 
     // Test 3: q=r=1 edge case → a - b ≡ 0 (mod 1) always true
@@ -2242,9 +2243,9 @@ void test_lattice_basis_edge_cases() {
         sq.r = 0;
         auto basis = compute_lattice_basis(sq);
         // All (a,b) satisfy the condition mod 1
-        assert(basis.verify_ab(0, 0));
-        assert(basis.verify_ab(7, 3));
-        assert(basis.verify_ab(-5, 2));
+        TEST_ASSERT(basis.verify_ab(0, 0));
+        TEST_ASSERT(basis.verify_ab(7, 3));
+        TEST_ASSERT(basis.verify_ab(-5, 2));
     }
 
     // Test 4: to_ab and verify_ab roundtrip — any lattice point should satisfy
@@ -2257,7 +2258,7 @@ void test_lattice_basis_edge_cases() {
         for (int i = -5; i <= 5; ++i) {
             for (int j = -5; j <= 5; ++j) {
                 auto [a, b] = basis.to_ab(i, j);
-                assert(basis.verify_ab(a, b));
+                TEST_ASSERT(basis.verify_ab(a, b));
             }
         }
     }
@@ -2270,15 +2271,15 @@ void test_lattice_basis_edge_cases() {
         region.j_min = 1;
         region.j_max = 5;
 
-        assert(region.i_width() == 20);
-        assert(region.j_height() == 5);
-        assert(region.size() == 100);
+        TEST_ASSERT(region.i_width() == 20);
+        TEST_ASSERT(region.j_height() == 5);
+        TEST_ASSERT(region.size() == 100);
 
         // Roundtrip: index → ij → index
         for (size_t idx = 0; idx < region.size(); ++idx) {
             auto [i, j] = region.index_to_ij(idx);
             size_t idx2 = region.ij_to_index(i, j);
-            assert(idx == idx2);
+            TEST_ASSERT(idx == idx2);
         }
     }
 
@@ -2434,9 +2435,9 @@ void test_lattice_basis_edge_cases() {
         sq.r = 12345;
         auto basis = compute_lattice_basis(sq);
         int64_t det = basis.determinant();
-        assert(det == 99991 || det == -99991);
-        assert(basis.verify_ab(basis.e0, basis.f0));
-        assert(basis.verify_ab(basis.e1, basis.f1));
+        TEST_ASSERT(det == 99991 || det == -99991);
+        TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+        TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
     }
 
     // Test 8: moderate root value — boundary
@@ -2449,9 +2450,9 @@ void test_lattice_basis_edge_cases() {
         sq.r = 30;
         auto basis = compute_lattice_basis(sq);
         int64_t det = basis.determinant();
-        assert(det == 97 || det == -97);
-        assert(basis.verify_ab(basis.e0, basis.f0));
-        assert(basis.verify_ab(basis.e1, basis.f1));
+        TEST_ASSERT(det == 97 || det == -97);
+        TEST_ASSERT(basis.verify_ab(basis.e0, basis.f0));
+        TEST_ASSERT(basis.verify_ab(basis.e1, basis.f1));
     }
 
     // Test 9: r=q-1 boundary — formerly known oscillation case (BACKLOG P2)
@@ -2463,7 +2464,7 @@ void test_lattice_basis_edge_cases() {
         sq.r = 96;
         auto basis = compute_lattice_basis(sq);
         int64_t det = basis.determinant();
-        assert(det == 97 || det == -97);
+        TEST_ASSERT(det == 97 || det == -97);
         // Don't assert verify_ab — partial reduction may produce non-canonical
         // basis but should still describe the lattice (det invariant holds).
         (void)basis;
@@ -2482,8 +2483,8 @@ void test_class_group_struct_edge_cases() {
         IdealClass cls;
         PrimeIdeal pi{5, 2, 1};
         cls.add_prime(pi, 7);
-        cls.reduce_mod(0);                 // order=0 → no reduction
-        assert(cls.prime_powers[pi] == 7); // unchanged
+        cls.reduce_mod(0);                      // order=0 → no reduction
+        TEST_ASSERT(cls.prime_powers[pi] == 7); // unchanged
     }
 
     // Test 2: IdealClass reduce_mod with negative exponents
@@ -2492,7 +2493,7 @@ void test_class_group_struct_edge_cases() {
         PrimeIdeal pi{3, 1, 1};
         cls.prime_powers[pi] = -5;
         cls.reduce_mod(3); // -5 mod 3 → ((-5 % 3) + 3) % 3 = ((-2) + 3) % 3 = 1
-        assert(cls.prime_powers[pi] == 1);
+        TEST_ASSERT(cls.prime_powers[pi] == 1);
     }
 
     // Test 3: IdealClass add_prime accumulates
@@ -2501,14 +2502,14 @@ void test_class_group_struct_edge_cases() {
         PrimeIdeal pi{7, 0, 1};
         cls.add_prime(pi, 3);
         cls.add_prime(pi, 4);
-        assert(cls.prime_powers[pi] == 7);
+        TEST_ASSERT(cls.prime_powers[pi] == 7);
     }
 
     // Test 4: PrimeIdeal self-comparison
     {
         PrimeIdeal pi{5, 3, 1};
-        assert(pi == pi);
-        assert(!(pi < pi));
+        TEST_ASSERT(pi == pi);
+        TEST_ASSERT(!(pi < pi));
     }
 
     // Test 5: IdealClass with all-zero exponents → principal
@@ -2520,7 +2521,7 @@ void test_class_group_struct_edge_cases() {
         cls.add_prime(p2, 0);
         // Note: zero entries are not removed by add_prime, only by reduce_mod
         // But is_principal checks for all exp==0
-        assert(cls.is_principal());
+        TEST_ASSERT(cls.is_principal());
     }
 
     // Test 6: ClassGroup with degree-2 polynomial (non-cubic) — general discriminant path
@@ -2531,8 +2532,8 @@ void test_class_group_struct_edge_cases() {
         PolynomialContext ctx(Integer("145"), std::move(coeffs), Integer(int64_t(12)));
         ClassGroup cg(ctx);
         // Should not crash; class_number >= 1
-        assert(cg.class_number() >= 1);
-        assert(cg.minkowski_bound() >= 0.0);
+        TEST_ASSERT(cg.class_number() >= 1);
+        TEST_ASSERT(cg.minkowski_bound() >= 0.0);
     }
 
     // Test 7: ClassGroup with very small discriminant → trivial
@@ -2542,11 +2543,11 @@ void test_class_group_struct_edge_cases() {
                                   Integer(int64_t(1))};
         PolynomialContext ctx(Integer("131"), std::move(c), Integer(int64_t(5)));
         ClassGroup cg(ctx);
-        assert(cg.class_number() == 1);
-        assert(cg.num_generators() == 0);
+        TEST_ASSERT(cg.class_number() == 1);
+        TEST_ASSERT(cg.num_generators() == 0);
         // Character for any (a,b) should be empty
         auto ch = cg.compute_character(3, 1);
-        assert(ch.empty());
+        TEST_ASSERT(ch.empty());
     }
 
     // Test 8: ClassGroupConfig customization
@@ -2560,111 +2561,118 @@ void test_class_group_struct_edge_cases() {
                                   Integer(int64_t(1))};
         PolynomialContext ctx(Integer("19"), std::move(c), Integer(int64_t(2)));
         ClassGroup cg(ctx, cfg);
-        assert(cg.class_number() >= 1);
+        TEST_ASSERT(cg.class_number() >= 1);
     }
 
     std::cout << "  PASS (8 sub-tests)" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Edge Case Tests ===" << std::endl;
 
     // Integer 负 mod
-    test_integer_negative_mod_truncated();
+    failed += !run_case(test_integer_negative_mod_truncated);
 
     // Integer gcd 零输入
-    test_integer_gcd_with_zero();
+    failed += !run_case(test_integer_gcd_with_zero);
 
     // Integer sqrt 边界
-    test_integer_sqrt_edge_cases();
+    failed += !run_case(test_integer_sqrt_edge_cases);
 
     // Integer pow/powmod 边界
-    test_integer_pow_edge_cases();
+    failed += !run_case(test_integer_pow_edge_cases);
 
     // Integer native-width overloads
-    test_integer_native_width_overloads();
+    failed += !run_case(test_integer_native_width_overloads);
 
     // Integer 加减法 INT64 边界
-    test_integer_add_sub_boundary();
+    failed += !run_case(test_integer_add_sub_boundary);
 
     // Integer 符号检查
-    test_integer_sign_checks();
+    failed += !run_case(test_integer_sign_checks);
 
     // SparseRow 空行
-    test_sparse_row_empty();
+    failed += !run_case(test_sparse_row_empty);
 
     // SparseMatrix 零维
-    test_sparse_matrix_zero_rows();
-    test_sparse_matrix_zero_cols();
-    test_sparse_matrix_one_by_one_zero();
-    test_sparse_matrix_one_by_one_one();
-    test_sparse_matrix_all_zero();
+    failed += !run_case(test_sparse_matrix_zero_rows);
+    failed += !run_case(test_sparse_matrix_zero_cols);
+    failed += !run_case(test_sparse_matrix_one_by_one_zero);
+    failed += !run_case(test_sparse_matrix_one_by_one_one);
+    failed += !run_case(test_sparse_matrix_all_zero);
 
     // BitVector 边界
-    test_bitvector_empty();
-    test_bitvector_single_bit();
-    test_bitvector_word_boundaries();
-    test_bitvector_xor_boundary();
+    failed += !run_case(test_bitvector_empty);
+    failed += !run_case(test_bitvector_single_bit);
+    failed += !run_case(test_bitvector_word_boundaries);
+    failed += !run_case(test_bitvector_xor_boundary);
 
     // Gaussian 退化情形
-    test_gaussian_identity_matrix();
-    test_gaussian_single_row();
+    failed += !run_case(test_gaussian_identity_matrix);
+    failed += !run_case(test_gaussian_single_row);
 
     // BlockLanczos 空矩阵
-    test_block_lanczos_empty_matrix();
-    test_block_lanczos_zero_cols();
+    failed += !run_case(test_block_lanczos_empty_matrix);
+    failed += !run_case(test_block_lanczos_zero_cols);
 
     // Cofactor 边界
-    test_ecm_edge_cases();
-    test_cofactor_classify_edge_cases();
-    test_trial_division_edge_cases();
-    test_quick_cofactor_check_edge_cases();
+    failed += !run_case(test_ecm_edge_cases);
+    failed += !run_case(test_cofactor_classify_edge_cases);
+    failed += !run_case(test_trial_division_edge_cases);
+    failed += !run_case(test_quick_cofactor_check_edge_cases);
 
     // Relation 边界
-    test_relation_serialization_edge_cases();
-    test_relation_collector_edge_cases();
-    test_relation_filter_edge_cases();
+    failed += !run_case(test_relation_serialization_edge_cases);
+    failed += !run_case(test_relation_collector_edge_cases);
+    failed += !run_case(test_relation_filter_edge_cases);
 
     // Sieve 参数边界
-    test_sieve_params_edge_cases();
-    test_special_q_edge_cases();
+    failed += !run_case(test_sieve_params_edge_cases);
+    failed += !run_case(test_special_q_edge_cases);
 
     // Hensel Sqrt 边界
-    test_hensel_sqrt_edge_cases();
+    failed += !run_case(test_hensel_sqrt_edge_cases);
 
     // Schirokauer 大域 ℓ 边界
-    test_schirokauer_large_ell_edge_cases();
-    test_schirokauer_degree3_split_degree2();
+    failed += !run_case(test_schirokauer_large_ell_edge_cases);
+    failed += !run_case(test_schirokauer_degree3_split_degree2);
 
     // NumberField 算术边界
-    test_number_field_edge_cases();
+    failed += !run_case(test_number_field_edge_cases);
 
     // MatrixBuilder 退化输入
-    test_matrix_builder_edge_cases();
+    failed += !run_case(test_matrix_builder_edge_cases);
 
     // RationalSqrt 退化输入
-    test_rational_sqrt_edge_cases();
+    failed += !run_case(test_rational_sqrt_edge_cases);
 
     // AlgebraicSqrt 退化输入
-    test_algebraic_sqrt_edge_cases();
+    failed += !run_case(test_algebraic_sqrt_edge_cases);
 
     // Couveignes 退化输入
-    test_couveignes_edge_cases();
+    failed += !run_case(test_couveignes_edge_cases);
 
     // PolynomialContext 构造与运算边界
-    test_polynomial_context_edge_cases();
+    failed += !run_case(test_polynomial_context_edge_cases);
 
     // FactorBase 查找与构造边界
-    test_factor_base_edge_cases();
+    failed += !run_case(test_factor_base_edge_cases);
 
     // ModularPoly 算术边界 (Session 34)
-    test_modular_poly_edge_cases();
+    failed += !run_case(test_modular_poly_edge_cases);
 
     // LatticeBasis 几何边界 (Session 34)
-    test_lattice_basis_edge_cases();
+    failed += !run_case(test_lattice_basis_edge_cases);
 
     // ClassGroup 结构体边界 (Session 34)
-    test_class_group_struct_edge_cases();
+    failed += !run_case(test_class_group_struct_edge_cases);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll edge case tests passed!" << std::endl;
     return 0;

@@ -4,8 +4,8 @@
 #endif
 
 #include "gnfs/relation/filter.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <cfenv>
 #include <cmath>
 #include <cstdlib>
@@ -14,6 +14,7 @@
 #include <limits>
 #include <string_view>
 
+using gnfs::test::run_case;
 using namespace gnfs::relation;
 using gnfs::core::PrimePower;
 using gnfs::core::Relation;
@@ -57,9 +58,9 @@ void test_empty_input() {
     RelationFilter filter;
     std::vector<Relation> empty;
     auto result = filter.filter(std::move(empty));
-    assert(result.empty());
-    assert(filter.stats().input_relations == 0);
-    assert(filter.stats().output_relations == 0);
+    TEST_ASSERT(result.empty());
+    TEST_ASSERT(filter.stats().input_relations == 0);
+    TEST_ASSERT(filter.stats().output_relations == 0);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -76,8 +77,8 @@ void test_no_large_primes() {
     auto result = filter.filter(std::move(rels));
 
     // No large primes → no singletons → all preserved
-    assert(result.size() == 3);
-    assert(filter.stats().singletons_removed == 0);
+    TEST_ASSERT(result.size() == 3);
+    TEST_ASSERT(filter.stats().singletons_removed == 0);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -101,10 +102,10 @@ void test_singleton_removal() {
     auto result = filter.filter(std::move(rels));
 
     // LP=103 is singleton → relation 3 removed
-    assert(result.size() == 3);
-    assert(filter.stats().singletons_removed >= 1);
-    assert(filter.stats().input_relations == 4);
-    assert(filter.stats().output_relations == 3);
+    TEST_ASSERT(result.size() == 3);
+    TEST_ASSERT(filter.stats().singletons_removed >= 1);
+    TEST_ASSERT(filter.stats().input_relations == 4);
+    TEST_ASSERT(filter.stats().output_relations == 3);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -136,7 +137,7 @@ void test_multi_pass_filtering() {
     // Pass 1: LP=103 is singleton → rel 3 removed
     // Now LP=101 appears in rel 0 and rel 1 (2 times), LP=201 in rel 0 and rel 2 (2 times)
     // All surviving are non-singleton
-    assert(result.size() == 3);
+    TEST_ASSERT(result.size() == 3);
 
     std::cout << "  PASS (passes=" << filter.stats().passes << ")" << std::endl;
 }
@@ -169,8 +170,8 @@ void test_cascading_singletons() {
     // Pass 1: LP=107 singleton → rel 3 removed
     //   After: LP=101 count=2, LP=103 count=2 → no more singletons
     // Result: 3 relations
-    assert(result.size() == 3);
-    assert(filter.stats().passes >= 1);
+    TEST_ASSERT(result.size() == 3);
+    TEST_ASSERT(filter.stats().passes >= 1);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -187,8 +188,8 @@ void test_disable_singleton_removal() {
     RelationFilter filter(cfg);
     auto result = filter.filter(std::move(rels));
 
-    assert(result.size() == 2);
-    assert(filter.stats().singletons_removed == 0);
+    TEST_ASSERT(result.size() == 2);
+    TEST_ASSERT(filter.stats().singletons_removed == 0);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -209,8 +210,8 @@ void test_max_passes_limit() {
     auto result = filter.filter(std::move(rels));
 
     // All are singletons, should be removed in 1 pass
-    assert(result.empty());
-    assert(filter.stats().passes <= 2);
+    TEST_ASSERT(result.empty());
+    TEST_ASSERT(filter.stats().passes <= 2);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -267,9 +268,9 @@ void test_count_large_primes() {
     LargePrimeKey k101r{101, 0, false};
     LargePrimeKey k103r{103, 0, false};
     LargePrimeKey k101a{101, 0, true};
-    assert(counts[k101r] == 2); // rational 101 appears twice
-    assert(counts[k103r] == 1); // rational 103 once
-    assert(counts[k101a] == 1); // algebraic 101 once
+    TEST_ASSERT(counts[k101r] == 2); // rational 101 appears twice
+    TEST_ASSERT(counts[k103r] == 1); // rational 103 once
+    TEST_ASSERT(counts[k101a] == 1); // algebraic 101 once
 
     std::cout << "  PASS" << std::endl;
 }
@@ -283,7 +284,7 @@ void test_get_unique_large_primes() {
     rels.push_back(make_1lp_relation(3, 1, 103));
 
     auto unique = RelationFilter::get_unique_large_primes(rels);
-    assert(unique.size() == 2); // 101 and 103
+    TEST_ASSERT(unique.size() == 2); // 101 and 103
 
     std::cout << "  PASS" << std::endl;
 }
@@ -298,8 +299,8 @@ void test_separate_relations() {
     rels.push_back(make_1alp_relation(4, 1, 103));
 
     auto sep = separate_relations(std::move(rels));
-    assert(sep.full.size() == 2);
-    assert(sep.partial.size() == 2);
+    TEST_ASSERT(sep.full.size() == 2);
+    TEST_ASSERT(sep.partial.size() == 2);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -309,15 +310,15 @@ void test_required_relations() {
 
     // FB=1000, LP=500, excess=1.05 → 1575 + 1 = 1576
     size_t req = required_relations(1000, 500, 1.05);
-    assert(req == 1576);
+    TEST_ASSERT(req == 1576);
 
     // Zero large primes
     size_t req2 = required_relations(1000, 0, 1.05);
-    assert(req2 == 1051);
+    TEST_ASSERT(req2 == 1051);
 
     // has_enough_relations
-    assert(has_enough_relations(1576, 1000, 500, 1.05));
-    assert(!has_enough_relations(1575, 1000, 500, 1.05));
+    TEST_ASSERT(has_enough_relations(1576, 1000, 500, 1.05));
+    TEST_ASSERT(!has_enough_relations(1575, 1000, 500, 1.05));
 
     constexpr size_t max_size = std::numeric_limits<size_t>::max();
     require_test(required_relations(max_size, 0, 1.0) == max_size,
@@ -431,7 +432,7 @@ void test_merger_count() {
 
     size_t pairs = PartialRelationMerger::count_mergeable_pairs(partials);
     // 3 relations share LP=101 → C(3,2) = 3 pairs
-    assert(pairs == 3);
+    TEST_ASSERT(pairs == 3);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -476,27 +477,27 @@ void test_merger_merge() {
     auto merged = PartialRelationMerger::merge(partials);
 
     // Should produce 1 merged relation (from the pair sharing LP=101)
-    assert(merged.size() == 1);
+    TEST_ASSERT(merged.size() == 1);
 
     const auto& m = merged[0];
     // Primary (a,b) from first relation
-    assert(m.a == 5 && m.b == 1);
+    TEST_ASSERT(m.a == 5 && m.b == 1);
     // Extra (a,b) from second relation
-    assert(m.is_merged());
-    assert(m.extra_ab_pairs.size() == 1);
-    assert(m.extra_ab_pairs[0].first == 7);
-    assert(m.extra_ab_pairs[0].second == 2);
+    TEST_ASSERT(m.is_merged());
+    TEST_ASSERT(m.extra_ab_pairs.size() == 1);
+    TEST_ASSERT(m.extra_ab_pairs[0].first == 7);
+    TEST_ASSERT(m.extra_ab_pairs[0].second == 2);
 
     // Factors: concatenation of both
-    assert(m.rational_factors.size() == 5);  // {0,1,3} + {1,2}
-    assert(m.algebraic_factors.size() == 3); // {0,2} + {1}
+    TEST_ASSERT(m.rational_factors.size() == 5);  // {0,1,3} + {1,2}
+    TEST_ASSERT(m.algebraic_factors.size() == 3); // {0,2} + {1}
 
     // LP: shared LP=101 appears twice (preserved for rational_sqrt exponent computation)
-    assert(m.rational_large_prime.size() == 2);
-    assert(m.rational_large_prime[0].p == 101);
-    assert(m.rational_large_prime[1].p == 101);
+    TEST_ASSERT(m.rational_large_prime.size() == 2);
+    TEST_ASSERT(m.rational_large_prime[0].p == 101);
+    TEST_ASSERT(m.rational_large_prime[1].p == 101);
     // But effectively full (all LPs have even count)
-    assert(PartialRelationMerger::is_effectively_full(m));
+    TEST_ASSERT(PartialRelationMerger::is_effectively_full(m));
 
     std::cout << "  PASS" << std::endl;
 }
@@ -522,15 +523,15 @@ void test_merger_algebraic_lp() {
     }
 
     auto merged = PartialRelationMerger::merge(partials);
-    assert(merged.size() == 1);
+    TEST_ASSERT(merged.size() == 1);
 
     const auto& m = merged[0];
-    assert(m.is_merged());
+    TEST_ASSERT(m.is_merged());
     // Shared algebraic LP=(107,3) appears twice (preserved for sqrt computation)
-    assert(m.algebraic_large_prime.size() == 2);
-    assert(m.algebraic_large_prime[0].p == 107);
-    assert(m.algebraic_large_prime[1].p == 107);
-    assert(PartialRelationMerger::is_effectively_full(m));
+    TEST_ASSERT(m.algebraic_large_prime.size() == 2);
+    TEST_ASSERT(m.algebraic_large_prime[0].p == 107);
+    TEST_ASSERT(m.algebraic_large_prime[1].p == 107);
+    TEST_ASSERT(PartialRelationMerger::is_effectively_full(m));
 
     // Different roots should NOT merge — they're different prime ideals
     {
@@ -544,7 +545,7 @@ void test_merger_algebraic_lp() {
         partials2.push_back(std::move(r4));
 
         auto merged2 = PartialRelationMerger::merge(partials2);
-        assert(merged2.empty()); // no merge: different prime ideals
+        TEST_ASSERT(merged2.empty()); // no merge: different prime ideals
     }
 
     std::cout << "  PASS" << std::endl;
@@ -566,7 +567,7 @@ void test_merger_no_2lp() {
 
     auto merged = PartialRelationMerger::merge(partials);
     // No merge: rel1 is 2LP, not 1LP
-    assert(merged.empty());
+    TEST_ASSERT(merged.empty());
 
     std::cout << "  PASS" << std::endl;
 }
@@ -579,13 +580,13 @@ void test_reset_stats() {
     rels.push_back(make_1lp_relation(1, 1, 101));
     auto _ = filter.filter(std::move(rels));
     (void)_;
-    assert(filter.stats().input_relations > 0);
+    TEST_ASSERT(filter.stats().input_relations > 0);
 
     filter.reset_stats();
-    assert(filter.stats().input_relations == 0);
-    assert(filter.stats().output_relations == 0);
-    assert(filter.stats().singletons_removed == 0);
-    assert(filter.stats().passes == 0);
+    TEST_ASSERT(filter.stats().input_relations == 0);
+    TEST_ASSERT(filter.stats().output_relations == 0);
+    TEST_ASSERT(filter.stats().singletons_removed == 0);
+    TEST_ASSERT(filter.stats().passes == 0);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -630,13 +631,13 @@ void test_merge_all_2lp() {
     auto merged = PartialRelationMerger::merge_all(std::move(partials), 10, &stats);
 
     // Triangle of 3 2LP relations → 1 effectively-full merged relation (in 2 rounds)
-    assert(merged.size() == 1);
-    assert(PartialRelationMerger::is_effectively_full(merged[0]));
-    assert(merged[0].is_merged());
+    TEST_ASSERT(merged.size() == 1);
+    TEST_ASSERT(PartialRelationMerger::is_effectively_full(merged[0]));
+    TEST_ASSERT(merged[0].is_merged());
     // Should have 3 ab pairs total (primary + 2 extra)
-    assert(merged[0].extra_ab_pairs.size() == 2);
-    assert(stats.input_2lp == 3);
-    assert(stats.rounds >= 2);
+    TEST_ASSERT(merged[0].extra_ab_pairs.size() == 2);
+    TEST_ASSERT(stats.input_2lp == 3);
+    TEST_ASSERT(stats.rounds >= 2);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -666,10 +667,10 @@ void test_merge_all_mixed() {
     // 1LP pair → 1 effectively-full relation
     // Singleton LP=109 removed
     // 2LP LP={103,107} has singletons → removed
-    assert(merged.size() == 1);
-    assert(PartialRelationMerger::is_effectively_full(merged[0]));
-    assert(stats.input_1lp == 3);
-    assert(stats.input_2lp == 1);
+    TEST_ASSERT(merged.size() == 1);
+    TEST_ASSERT(PartialRelationMerger::is_effectively_full(merged[0]));
+    TEST_ASSERT(stats.input_1lp == 3);
+    TEST_ASSERT(stats.input_2lp == 1);
 
     std::cout << "  PASS" << std::endl;
 }
@@ -729,9 +730,9 @@ void test_merge_all_chain() {
     auto merged = PartialRelationMerger::merge_all(std::move(partials), 10, &stats);
 
     // Should produce 1 effectively-full relation through multi-round merging
-    assert(merged.size() == 1);
-    assert(PartialRelationMerger::is_effectively_full(merged[0]));
-    assert(merged[0].extra_ab_pairs.size() == 3); // 4 relations merged
+    TEST_ASSERT(merged.size() == 1);
+    TEST_ASSERT(PartialRelationMerger::is_effectively_full(merged[0]));
+    TEST_ASSERT(merged[0].extra_ab_pairs.size() == 3); // 4 relations merged
 
     std::cout << "  PASS" << std::endl;
 }
@@ -741,13 +742,13 @@ void test_count_unique_lp_keys() {
     // Empty
     {
         std::vector<Relation> empty;
-        assert(count_unique_lp_keys(empty) == 0);
+        TEST_ASSERT(count_unique_lp_keys(empty) == 0);
     }
     // 1 rel with 1 rat LP
     {
         std::vector<Relation> rels;
         rels.push_back(make_1lp_relation(1, 1, 12345));
-        assert(count_unique_lp_keys(rels) == 1); // 1 rat LP
+        TEST_ASSERT(count_unique_lp_keys(rels) == 1); // 1 rat LP
     }
     // 2 rels share same rat LP (even exponent → cancels)
     {
@@ -757,7 +758,7 @@ void test_count_unique_lp_keys() {
         // 2 rels independently have lp=99 with e=1 each. NOT same relation.
         // count_unique_lp_keys 在 per-rel 内累加 (per matrix_builder convention),
         // 所以 rel1 has e=1 (奇), rel2 has e=1 (奇), 两个 unique key = same key = 1.
-        assert(count_unique_lp_keys(rels) == 1);
+        TEST_ASSERT(count_unique_lp_keys(rels) == 1);
     }
     // 1 rel with even exponent LP (cancels)
     {
@@ -767,7 +768,7 @@ void test_count_unique_lp_keys() {
         r.rational_large_prime.push_back(PrimePower{99, 0, 2}); // e=2 even
         std::vector<Relation> rels;
         rels.push_back(std::move(r));
-        assert(count_unique_lp_keys(rels) == 0); // even-exp → not counted
+        TEST_ASSERT(count_unique_lp_keys(rels) == 0); // even-exp → not counted
     }
     // alg LP differs by (p, r) — same p, different r → 2 columns
     {
@@ -781,7 +782,7 @@ void test_count_unique_lp_keys() {
         std::vector<Relation> rels;
         rels.push_back(std::move(r1));
         rels.push_back(std::move(r2));
-        assert(count_unique_lp_keys(rels) == 2); // 2 distinct ideals
+        TEST_ASSERT(count_unique_lp_keys(rels) == 2); // 2 distinct ideals
     }
     // Same alg ideal twice in 1 rel (e=2 even → cancels)
     {
@@ -792,7 +793,7 @@ void test_count_unique_lp_keys() {
         r.algebraic_large_prime.push_back(PrimePower{77, 3, 1}); // duplicate
         std::vector<Relation> rels;
         rels.push_back(std::move(r));
-        assert(count_unique_lp_keys(rels) == 0); // even-exp cancels
+        TEST_ASSERT(count_unique_lp_keys(rels) == 0); // even-exp cancels
     }
     // Regression test for V2 bug: 5% guess vs ~64% actual
     // Simulates 50d distribution: many rels each with multiple distinct LP keys.
@@ -809,9 +810,9 @@ void test_count_unique_lp_keys() {
             rels.push_back(std::move(r));
         }
         // 100 rels × 2 unique LP each = 200 distinct (p,r) keys
-        assert(count_unique_lp_keys(rels) == 200);
+        TEST_ASSERT(count_unique_lp_keys(rels) == 200);
         // 5% guess would say 5; bug-induced under-estimate of 40×.
-        assert(rels.size() / 20 == 5); // confirm old buggy estimate
+        TEST_ASSERT(rels.size() / 20 == 5); // confirm old buggy estimate
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -823,11 +824,11 @@ void test_count_lp_key_weights() {
     {
         std::vector<Relation> empty;
         auto h = count_lp_key_weights(empty);
-        assert(h.unique_keys == 0);
-        assert(h.weight_1 == 0);
-        assert(h.weight_2 == 0);
-        assert(h.weight_3 == 0);
-        assert(h.weight_4plus == 0);
+        TEST_ASSERT(h.unique_keys == 0);
+        TEST_ASSERT(h.weight_1 == 0);
+        TEST_ASSERT(h.weight_2 == 0);
+        TEST_ASSERT(h.weight_3 == 0);
+        TEST_ASSERT(h.weight_4plus == 0);
     }
 
     // Single rel with 1 rat LP → 1 key, weight=1
@@ -835,9 +836,9 @@ void test_count_lp_key_weights() {
         std::vector<Relation> rels;
         rels.push_back(make_1lp_relation(1, 1, 100));
         auto h = count_lp_key_weights(rels);
-        assert(h.unique_keys == 1);
-        assert(h.weight_1 == 1);
-        assert(h.weight_2 == 0);
+        TEST_ASSERT(h.unique_keys == 1);
+        TEST_ASSERT(h.weight_1 == 1);
+        TEST_ASSERT(h.weight_2 == 0);
     }
 
     // 2 rels share same rat LP → 1 key, weight=2 (V0 sweet spot)
@@ -846,9 +847,9 @@ void test_count_lp_key_weights() {
         rels.push_back(make_1lp_relation(1, 1, 100));
         rels.push_back(make_1lp_relation(2, 1, 100));
         auto h = count_lp_key_weights(rels);
-        assert(h.unique_keys == 1);
-        assert(h.weight_1 == 0);
-        assert(h.weight_2 == 1);
+        TEST_ASSERT(h.unique_keys == 1);
+        TEST_ASSERT(h.weight_1 == 0);
+        TEST_ASSERT(h.weight_2 == 1);
     }
 
     // 3 rels share LP → weight=3 (chain territory)
@@ -858,8 +859,8 @@ void test_count_lp_key_weights() {
             rels.push_back(make_1lp_relation(a, 1, 100));
         }
         auto h = count_lp_key_weights(rels);
-        assert(h.unique_keys == 1);
-        assert(h.weight_3 == 1);
+        TEST_ASSERT(h.unique_keys == 1);
+        TEST_ASSERT(h.weight_3 == 1);
     }
 
     // 5 rels share LP → weight≥4 bucket
@@ -869,8 +870,8 @@ void test_count_lp_key_weights() {
             rels.push_back(make_1lp_relation(a, 1, 100));
         }
         auto h = count_lp_key_weights(rels);
-        assert(h.unique_keys == 1);
-        assert(h.weight_4plus == 1);
+        TEST_ASSERT(h.unique_keys == 1);
+        TEST_ASSERT(h.weight_4plus == 1);
     }
 
     // Mixed: rat LP and alg LP are SEPARATE key spaces
@@ -880,8 +881,8 @@ void test_count_lp_key_weights() {
         rels.push_back(make_1lp_relation(1, 1, 100));  // rat lp=100
         rels.push_back(make_1alp_relation(2, 1, 100)); // alg (p=100, r=0)
         auto h = count_lp_key_weights(rels);
-        assert(h.unique_keys == 2);
-        assert(h.weight_1 == 2); // both singleton
+        TEST_ASSERT(h.unique_keys == 2);
+        TEST_ASSERT(h.weight_1 == 2); // both singleton
     }
 
     // Algebraic LP distinguishes by (p, r) — same p different r → 2 keys
@@ -897,8 +898,8 @@ void test_count_lp_key_weights() {
         rels.push_back(std::move(r1));
         rels.push_back(std::move(r2));
         auto h = count_lp_key_weights(rels);
-        assert(h.unique_keys == 2);
-        assert(h.weight_1 == 2);
+        TEST_ASSERT(h.unique_keys == 2);
+        TEST_ASSERT(h.weight_1 == 2);
     }
 
     // Within one rel, repeated LP key still counts as 1 occurrence for the
@@ -914,8 +915,8 @@ void test_count_lp_key_weights() {
         std::vector<Relation> rels;
         rels.push_back(std::move(r));
         auto h = count_lp_key_weights(rels);
-        assert(h.unique_keys == 1);
-        assert(h.weight_1 == 1); // de-dup within rel
+        TEST_ASSERT(h.unique_keys == 1);
+        TEST_ASSERT(h.weight_1 == 1); // de-dup within rel
     }
 
     // Regression: per-relation LP count > 8 must NOT inflate weight via
@@ -942,11 +943,11 @@ void test_count_lp_key_weights() {
         rels.push_back(std::move(r));
         auto h = count_lp_key_weights(rels);
         // 12 unique keys, ALL weight=1 (single-rel singletons).
-        assert(h.unique_keys == 12);
-        assert(h.weight_1 == 12);
-        assert(h.weight_2 == 0);
-        assert(h.weight_3 == 0);
-        assert(h.weight_4plus == 0);
+        TEST_ASSERT(h.unique_keys == 12);
+        TEST_ASSERT(h.weight_1 == 12);
+        TEST_ASSERT(h.weight_2 == 0);
+        TEST_ASSERT(h.weight_3 == 0);
+        TEST_ASSERT(h.weight_4plus == 0);
     }
 
     // 50d-like scenario: many distinct LP keys, most weight=1, some weight=2
@@ -970,45 +971,52 @@ void test_count_lp_key_weights() {
             rels.push_back(std::move(b));
         }
         auto h = count_lp_key_weights(rels);
-        assert(h.unique_keys == 150);
-        assert(h.weight_1 == 100);
-        assert(h.weight_2 == 50);
-        assert(h.weight_3 == 0);
-        assert(h.weight_4plus == 0);
+        TEST_ASSERT(h.unique_keys == 150);
+        TEST_ASSERT(h.weight_1 == 100);
+        TEST_ASSERT(h.weight_2 == 50);
+        TEST_ASSERT(h.weight_3 == 0);
+        TEST_ASSERT(h.weight_4plus == 0);
     }
 
     std::cout << "  PASS" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== RelationFilter Unit Tests ===" << std::endl;
 
-    test_empty_input();
-    test_no_large_primes();
-    test_singleton_removal();
-    test_multi_pass_filtering();
-    test_cascading_singletons();
-    test_disable_singleton_removal();
-    test_max_passes_limit();
-    test_reuse_max_passes_is_per_call();
-    test_count_large_primes();
-    test_get_unique_large_primes();
-    test_separate_relations();
-    test_required_relations();
-    test_required_relations_extreme_inputs();
-    test_required_relations_boundaries();
-    test_effective_column_excess_boundaries();
-    test_merger_count();
-    test_saturating_pair_count();
-    test_merger_merge();
-    test_merger_algebraic_lp();
-    test_merger_no_2lp();
-    test_merge_all_2lp();
-    test_merge_all_mixed();
-    test_merge_all_chain();
-    test_reset_stats();
-    test_count_unique_lp_keys();
-    test_count_lp_key_weights();
+    failed += !run_case(test_empty_input);
+    failed += !run_case(test_no_large_primes);
+    failed += !run_case(test_singleton_removal);
+    failed += !run_case(test_multi_pass_filtering);
+    failed += !run_case(test_cascading_singletons);
+    failed += !run_case(test_disable_singleton_removal);
+    failed += !run_case(test_max_passes_limit);
+    failed += !run_case(test_reuse_max_passes_is_per_call);
+    failed += !run_case(test_count_large_primes);
+    failed += !run_case(test_get_unique_large_primes);
+    failed += !run_case(test_separate_relations);
+    failed += !run_case(test_required_relations);
+    failed += !run_case(test_required_relations_extreme_inputs);
+    failed += !run_case(test_required_relations_boundaries);
+    failed += !run_case(test_effective_column_excess_boundaries);
+    failed += !run_case(test_merger_count);
+    failed += !run_case(test_saturating_pair_count);
+    failed += !run_case(test_merger_merge);
+    failed += !run_case(test_merger_algebraic_lp);
+    failed += !run_case(test_merger_no_2lp);
+    failed += !run_case(test_merge_all_2lp);
+    failed += !run_case(test_merge_all_mixed);
+    failed += !run_case(test_merge_all_chain);
+    failed += !run_case(test_reset_stats);
+    failed += !run_case(test_count_unique_lp_keys);
+    failed += !run_case(test_count_lp_key_weights);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

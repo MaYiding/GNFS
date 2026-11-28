@@ -1,8 +1,11 @@
-// Force assert() to remain live even in Release builds. Several cases here
-// embed side-effecting calls inside assert (e.g. assert(collector.add(...)));
-// NDEBUG would otherwise strip both the check and the call, leaving phase-1
-// setup unexecuted and phase-3 reads scanning uninitialized index entries —
-// which surfaced on CI as "OOCRelationReader: corrupt record (truncated)".
+// Keep NDEBUG undefined in this translation unit: library headers included
+// below may keep their own assert checks live here. The checks of this file
+// use TEST_ASSERT, which always evaluates its condition. Several cases embed
+// side-effecting calls inside it (for example TEST_ASSERT(collector.add(...)));
+// when they were plain asserts, NDEBUG stripped both the check and the call,
+// leaving phase-1 setup unexecuted and phase-3 reads scanning uninitialized
+// index entries, which surfaced on CI as "OOCRelationReader: corrupt record
+// (truncated)".
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -12,6 +15,7 @@
 #include "gnfs/util/process.hpp"
 #include "gnfs/util/safe_math.hpp"
 #include "gnfs/util/temp_path.hpp"
+#include "support/test_assert.hpp"
 
 #ifndef _WIN32
 #include "support/child_process.hpp"
@@ -21,7 +25,6 @@
 #endif
 
 #include <array>
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -41,6 +44,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs;
 using namespace gnfs::relation;
 using namespace gnfs::core;
@@ -116,12 +120,12 @@ void test_basic_add() {
     rel.algebraic_factors.push_back(3);
 
     bool added = collector.add(std::move(rel));
-    assert(added);
-    assert(collector.size() == 1);
+    TEST_ASSERT(added);
+    TEST_ASSERT(collector.size() == 1);
 
     auto stats = collector.stats();
-    assert(stats.total_relations == 1);
-    assert(stats.full_relations == 1);
+    TEST_ASSERT(stats.total_relations == 1);
+    TEST_ASSERT(stats.full_relations == 1);
 
     std::cout << "  Basic add: PASS" << std::endl;
 }
@@ -138,18 +142,18 @@ void test_duplicate_rejection() {
     Relation rel1(100, 201); // gcd(100, 201) = 1
 
     bool added1 = collector.add(std::move(rel1));
-    assert(added1);
+    TEST_ASSERT(added1);
 
     // 尝试添加重复
     Relation rel2(100, 201);
 
     bool added2 = collector.add(std::move(rel2));
-    assert(!added2); // 应该被拒绝
+    TEST_ASSERT(!added2); // 应该被拒绝
 
-    assert(collector.size() == 1);
+    TEST_ASSERT(collector.size() == 1);
 
     auto stats = collector.stats();
-    assert(stats.duplicates_rejected == 1);
+    TEST_ASSERT(stats.duplicates_rejected == 1);
 
     std::cout << "  Duplicate rejection: PASS" << std::endl;
 }
@@ -163,18 +167,18 @@ void test_invalid_rejection() {
     Relation rel1(100, 0);
 
     bool added1 = collector.add(std::move(rel1));
-    assert(!added1);
+    TEST_ASSERT(!added1);
 
     // gcd(a, b) != 1 是无效的
     Relation rel2(100, 50); // gcd(100, 50) = 50 != 1
 
     bool added2 = collector.add(std::move(rel2));
-    assert(!added2);
+    TEST_ASSERT(!added2);
 
-    assert(collector.size() == 0);
+    TEST_ASSERT(collector.size() == 0);
 
     auto stats = collector.stats();
-    assert(stats.invalid_rejected == 2);
+    TEST_ASSERT(stats.invalid_rejected == 2);
 
     std::cout << "  Invalid rejection: PASS" << std::endl;
 }
@@ -200,10 +204,10 @@ void test_partial_relations() {
     collector.add(std::move(rel3));
 
     auto stats = collector.stats();
-    assert(stats.total_relations == 3);
-    assert(stats.full_relations == 1);
-    assert(stats.partial_1lp == 1);
-    assert(stats.partial_2lp == 1);
+    TEST_ASSERT(stats.total_relations == 3);
+    TEST_ASSERT(stats.full_relations == 1);
+    TEST_ASSERT(stats.partial_1lp == 1);
+    TEST_ASSERT(stats.partial_2lp == 1);
 
     std::cout << "  Partial relations: PASS" << std::endl;
 }
@@ -249,8 +253,8 @@ void test_batch_add() {
     }
 
     size_t added = collector.add_batch(std::move(batch));
-    assert(added == 10);
-    assert(collector.size() == 10);
+    TEST_ASSERT(added == 10);
+    TEST_ASSERT(collector.size() == 10);
 
     std::cout << "  Batch add: PASS" << std::endl;
 }
@@ -271,18 +275,18 @@ void test_save_load() {
         }
 
         bool saved = collector.save(test_file);
-        assert(saved);
+        TEST_ASSERT(saved);
     }
 
     // 加载并验证
     {
         RelationCollector collector;
         bool loaded = collector.load(test_file);
-        assert(loaded);
-        assert(collector.size() == 5);
+        TEST_ASSERT(loaded);
+        TEST_ASSERT(collector.size() == 5);
 
         auto stats = collector.stats();
-        assert(stats.total_relations == 5);
+        TEST_ASSERT(stats.total_relations == 5);
     }
 
     // 清理
@@ -796,7 +800,7 @@ void test_concurrent_add() {
     }
 
     // 所有 400 个关系键唯一，应全部保留
-    assert(collector.size() == 400);
+    TEST_ASSERT(collector.size() == 400);
 
     std::cout << "  Concurrent add: PASS (" << collector.size() << " relations)" << std::endl;
 }
@@ -826,8 +830,8 @@ void test_merge() {
     size_t merged = collector1.merge(collector2);
 
     // 应该只添加 6, 7, 8（3, 4, 5 是重复的）
-    assert(merged == 3);
-    assert(collector1.size() == 8);
+    TEST_ASSERT(merged == 3);
+    TEST_ASSERT(collector1.size() == 8);
 
     std::cout << "  Merge: PASS" << std::endl;
 }
@@ -870,7 +874,7 @@ void test_filter_duplicates() {
     }
 
     auto filtered = filter_duplicates(std::move(relations));
-    assert(filtered.size() == 5);
+    TEST_ASSERT(filtered.size() == 5);
 
     std::cout << "  Filter duplicates: PASS" << std::endl;
 }
@@ -899,8 +903,8 @@ void test_sort_relations() {
         const auto& curr = relations[i];
 
         // 先按 b 排序，再按 a 排序
-        assert(prev.ab().b < curr.ab().b ||
-               (prev.ab().b == curr.ab().b && prev.ab().a <= curr.ab().a));
+        TEST_ASSERT(prev.ab().b < curr.ab().b ||
+                    (prev.ab().b == curr.ab().b && prev.ab().a <= curr.ab().a));
     }
 
     std::cout << "  Sort relations: PASS (" << relations.size() << " relations)" << std::endl;
@@ -919,7 +923,7 @@ void test_callback() {
         collector.add(std::move(rel));
     }
 
-    assert(callback_count == 5);
+    TEST_ASSERT(callback_count == 5);
 
     std::cout << "  Callback: PASS" << std::endl;
 }
@@ -940,7 +944,7 @@ void test_callback_no_deadlock() {
         // were invoked inside the lock.
         last_size = collector.size();
         auto st = collector.stats();
-        assert(st.total_relations == last_size);
+        TEST_ASSERT(st.total_relations == last_size);
         ++callback_count;
     });
 
@@ -949,8 +953,8 @@ void test_callback_no_deadlock() {
         collector.add(std::move(rel));
     }
 
-    assert(callback_count == 5);
-    assert(last_size == 5);
+    TEST_ASSERT(callback_count == 5);
+    TEST_ASSERT(last_size == 5);
 
     std::cout << "  Callback no-deadlock: PASS" << std::endl;
 }
@@ -975,10 +979,10 @@ void test_n_divisibility_rejection() {
         RelationCollector collector(config);
         Relation rel(12, 1);
         bool added = collector.add(std::move(rel));
-        assert(added);
+        TEST_ASSERT(added);
         auto st = collector.stats();
-        assert(st.total_relations == 1);
-        assert(st.n_divisible_rejected == 0);
+        TEST_ASSERT(st.total_relations == 1);
+        TEST_ASSERT(st.n_divisible_rejected == 0);
     }
 
     // (2) 设置后:gcd(a-bm, N) > 1 的关系被拒
@@ -989,25 +993,25 @@ void test_n_divisibility_rejection() {
         // 退化关系 (12, 1):a - b*m = 0 → gcd(0, 143) = 143
         Relation bad_rel(12, 1);
         bool added = collector.add(std::move(bad_rel));
-        assert(!added);
+        TEST_ASSERT(!added);
         auto st = collector.stats();
-        assert(st.total_relations == 0);
-        assert(st.n_divisible_rejected == 1);
+        TEST_ASSERT(st.total_relations == 0);
+        TEST_ASSERT(st.n_divisible_rejected == 1);
 
         // 另一退化关系 (155, 1):155 - 12 = 143 → gcd(143, 143) = 143
         Relation bad_rel2(155, 1);
         added = collector.add(std::move(bad_rel2));
-        assert(!added);
+        TEST_ASSERT(!added);
         st = collector.stats();
-        assert(st.n_divisible_rejected == 2);
+        TEST_ASSERT(st.n_divisible_rejected == 2);
 
         // 正常关系 (5, 1):5 - 12 = -7, gcd(7, 143) = 1 → 接受
         Relation good_rel(5, 1);
         added = collector.add(std::move(good_rel));
-        assert(added);
+        TEST_ASSERT(added);
         st = collector.stats();
-        assert(st.total_relations == 1);
-        assert(st.n_divisible_rejected == 2);
+        TEST_ASSERT(st.total_relations == 1);
+        TEST_ASSERT(st.n_divisible_rejected == 2);
     }
 
     // Full-width uint64_t b must survive the a - b*m validation path on
@@ -1022,10 +1026,10 @@ void test_n_divisibility_rejection() {
         const uint64_t b = uint64_t{1} << 34;
         Relation wide_b_rel(179869065, b);
         const bool added = collector.add(std::move(wide_b_rel));
-        assert(!added);
+        TEST_ASSERT(!added);
         const auto st = collector.stats();
-        assert(st.total_relations == 0);
-        assert(st.n_divisible_rejected == 1);
+        TEST_ASSERT(st.total_relations == 0);
+        TEST_ASSERT(st.n_divisible_rejected == 1);
     }
 
     std::cout << "  N-divisibility rejection: PASS" << std::endl;
@@ -1315,22 +1319,22 @@ void test_ooc_basic_add() {
         Relation rel(i * 10, static_cast<uint64_t>(i * 10 + 1));
         rel.rational_factors.push_back(static_cast<uint32_t>(i));
         bool added = collector.add(std::move(rel));
-        assert(added);
+        TEST_ASSERT(added);
     }
 
-    assert(collector.size() == 5);
+    TEST_ASSERT(collector.size() == 5);
     auto stats = collector.stats();
-    assert(stats.total_relations == 5);
-    assert(stats.full_relations == 5);
+    TEST_ASSERT(stats.total_relations == 5);
+    TEST_ASSERT(stats.full_relations == 5);
 
     // get_relations 从盘 read_all → vector
     auto rels = collector.get_relations();
-    assert(rels.size() == 5);
+    TEST_ASSERT(rels.size() == 5);
     for (size_t i = 0; i < rels.size(); ++i) {
-        assert(rels[i].a == static_cast<int64_t>((i + 1) * 10));
-        assert(rels[i].b == (i + 1) * 10 + 1);
-        assert(rels[i].rational_factors.size() == 1);
-        assert(rels[i].rational_factors[0] == i + 1);
+        TEST_ASSERT(rels[i].a == static_cast<int64_t>((i + 1) * 10));
+        TEST_ASSERT(rels[i].b == (i + 1) * 10 + 1);
+        TEST_ASSERT(rels[i].rational_factors.size() == 1);
+        TEST_ASSERT(rels[i].rational_factors[0] == i + 1);
     }
 
     std::cout << "  OOC basic add: PASS" << std::endl;
@@ -1349,17 +1353,17 @@ void test_ooc_duplicate_rejection() {
     RelationCollector collector(config);
 
     Relation rel1(100, 201);
-    assert(collector.add(std::move(rel1)));
+    TEST_ASSERT(collector.add(std::move(rel1)));
 
     Relation rel2(100, 201); // 重复 (a,b)
-    assert(!collector.add(std::move(rel2)));
+    TEST_ASSERT(!collector.add(std::move(rel2)));
 
-    assert(collector.size() == 1); // OOC writer count = 1, dedup 拒绝第二个
+    TEST_ASSERT(collector.size() == 1); // OOC writer count = 1, dedup 拒绝第二个
     auto stats = collector.stats();
-    assert(stats.duplicates_rejected == 1);
+    TEST_ASSERT(stats.duplicates_rejected == 1);
 
     auto rels = collector.get_relations();
-    assert(rels.size() == 1);
+    TEST_ASSERT(rels.size() == 1);
 
     std::cout << "  OOC duplicate rejection: PASS" << std::endl;
 }
@@ -1458,21 +1462,21 @@ void test_ooc_n_divisibility() {
 
     // (12, 1): a - b*m = 0, gcd(0, 143) = 143 → reject
     Relation bad(12, 1);
-    assert(!collector.add(std::move(bad)));
+    TEST_ASSERT(!collector.add(std::move(bad)));
     auto st = collector.stats();
-    assert(st.n_divisible_rejected == 1);
+    TEST_ASSERT(st.n_divisible_rejected == 1);
 
     // (5, 1): 5 - 12 = -7, gcd(7, 143) = 1 → accept
     Relation good(5, 1);
-    assert(collector.add(std::move(good)));
+    TEST_ASSERT(collector.add(std::move(good)));
     st = collector.stats();
-    assert(st.total_relations == 1);
-    assert(st.n_divisible_rejected == 1);
+    TEST_ASSERT(st.total_relations == 1);
+    TEST_ASSERT(st.n_divisible_rejected == 1);
 
     auto rels = collector.get_relations();
-    assert(rels.size() == 1);
-    assert(rels[0].a == 5);
-    assert(rels[0].b == 1);
+    TEST_ASSERT(rels.size() == 1);
+    TEST_ASSERT(rels[0].a == 5);
+    TEST_ASSERT(rels[0].b == 1);
 
     std::cout << "  OOC N-divisibility rejection: PASS" << std::endl;
 }
@@ -1500,20 +1504,20 @@ void test_ooc_partial_relations() {
     rel_2lp.algebraic_large_prime.push_back(PrimePower{1000033, 17, 1});
     collector.add(std::move(rel_2lp));
 
-    assert(collector.size() == 3);
+    TEST_ASSERT(collector.size() == 3);
     auto stats = collector.stats();
-    assert(stats.full_relations == 1);
-    assert(stats.partial_1lp == 1);
-    assert(stats.partial_2lp == 1);
+    TEST_ASSERT(stats.full_relations == 1);
+    TEST_ASSERT(stats.partial_1lp == 1);
+    TEST_ASSERT(stats.partial_2lp == 1);
 
     auto rels = collector.get_relations();
-    assert(rels.size() == 3);
+    TEST_ASSERT(rels.size() == 3);
     // 验证 LP 完整序列化往返
-    assert(rels[1].rational_large_prime.size() == 1);
-    assert(rels[1].rational_large_prime[0].p == 1000003);
-    assert(rels[2].rational_large_prime[0].p == 1000003);
-    assert(rels[2].algebraic_large_prime[0].p == 1000033);
-    assert(rels[2].algebraic_large_prime[0].r == 17);
+    TEST_ASSERT(rels[1].rational_large_prime.size() == 1);
+    TEST_ASSERT(rels[1].rational_large_prime[0].p == 1000003);
+    TEST_ASSERT(rels[2].rational_large_prime[0].p == 1000003);
+    TEST_ASSERT(rels[2].algebraic_large_prime[0].p == 1000033);
+    TEST_ASSERT(rels[2].algebraic_large_prime[0].r == 17);
 
     std::cout << "  OOC partial relations: PASS" << std::endl;
 }
@@ -1551,10 +1555,10 @@ void test_ooc_concurrent_add() {
         th.join();
 
     // 全部 400 个 (a,b) 唯一, 都应被接受
-    assert(collector.size() == 400);
+    TEST_ASSERT(collector.size() == 400);
 
     auto rels = collector.get_relations();
-    assert(rels.size() == 400);
+    TEST_ASSERT(rels.size() == 400);
 
     std::cout << "  OOC concurrent add: PASS (" << collector.size() << " relations on disk)"
               << std::endl;
@@ -1574,23 +1578,23 @@ void test_ooc_clear_recycle() {
         Relation rel(i, static_cast<uint64_t>(i + 1));
         collector.add(std::move(rel));
     }
-    assert(collector.size() == 3);
+    TEST_ASSERT(collector.size() == 3);
 
     collector.clear();
-    assert(collector.size() == 0); // OOC writer count reset to 0 after recycle
+    TEST_ASSERT(collector.size() == 0); // OOC writer count reset to 0 after recycle
     auto stats = collector.stats();
-    assert(stats.total_relations == 0);
+    TEST_ASSERT(stats.total_relations == 0);
 
     // 重新可用: 加新 relations
     for (int i = 100; i <= 102; ++i) {
         Relation rel(i, static_cast<uint64_t>(i + 1));
         collector.add(std::move(rel));
     }
-    assert(collector.size() == 3);
+    TEST_ASSERT(collector.size() == 3);
 
     auto rels = collector.get_relations();
-    assert(rels.size() == 3);
-    assert(rels[0].a == 100);
+    TEST_ASSERT(rels.size() == 3);
+    TEST_ASSERT(rels[0].a == 100);
 
     std::cout << "  OOC clear() recycle: PASS" << std::endl;
 }
@@ -1609,7 +1613,7 @@ void test_ooc_empty_base_path_rejected() {
     } catch (const std::runtime_error&) {
         threw = true;
     }
-    assert(threw);
+    TEST_ASSERT(threw);
 
     std::cout << "  OOC empty base_path rejected: PASS" << std::endl;
 }
@@ -1752,8 +1756,8 @@ void test_ooc_legacy_save_load_disabled() {
     collector.add(std::move(rel));
 
     // legacy save / load 在 OOC 模式必须 return false
-    assert(!collector.save(gnfs::util::temp_path("unused.bin")));
-    assert(!collector.load(gnfs::util::temp_path("unused.bin")));
+    TEST_ASSERT(!collector.save(gnfs::util::temp_path("unused.bin")));
+    TEST_ASSERT(!collector.load(gnfs::util::temp_path("unused.bin")));
 
     std::cout << "  OOC legacy save/load disabled: PASS" << std::endl;
 }
@@ -3614,94 +3618,101 @@ void test_ooc_writer_resume_large_payload() {
 }
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
+    int failed = 0;
+
 #ifndef _WIN32
     if (argc == 3 && std::string_view(argv[1]) == "--save-with-file-limit")
         return save_with_file_limit(argv[2]);
-    test_save_reports_buffered_write_failure(argv[0]);
+    failed += !run_case(test_save_reports_buffered_write_failure, argv[0]);
 #endif
     std::cout << "=== Relation Collector Tests ===" << std::endl;
 
-    test_basic_add();
-    test_duplicate_rejection();
-    test_invalid_rejection();
-    test_partial_relations();
-    test_effective_large_prime_stats();
-    test_batch_add();
-    test_output_file_open_failure();
+    failed += !run_case(test_basic_add);
+    failed += !run_case(test_duplicate_rejection);
+    failed += !run_case(test_invalid_rejection);
+    failed += !run_case(test_partial_relations);
+    failed += !run_case(test_effective_large_prime_stats);
+    failed += !run_case(test_batch_add);
+    failed += !run_case(test_output_file_open_failure);
 #if defined(__linux__)
-    test_output_file_flush_failure_rejects_add();
+    failed += !run_case(test_output_file_flush_failure_rejects_add);
 #endif
-    test_save_load();
-    test_save_rejects_oversized_relation_without_clobbering_target();
-    test_legacy_serialization_lp_contract();
-    test_legacy_save_preflight_preserves_destination();
-    test_legacy_load_rejects_forged_lp_transactionally();
-    test_load_replaces_state_transactionally(false);
-    test_load_replaces_state_transactionally(true);
-    test_load_rejects_duplicate_ab_pairs(false);
-    test_load_rejects_duplicate_ab_pairs(true);
-    test_load_failure_preserves_state_transactionally(false);
-    test_load_failure_preserves_state_transactionally(true);
-    test_load_respects_max_relations();
-    test_concurrent_add();
-    test_merge();
-    test_merge_respects_max_relations();
-    test_filter_duplicates();
-    test_sort_relations();
-    test_callback();
-    test_callback_no_deadlock();
-    test_merge_callback_contract();
-    test_merge_callback_exception_preserves_prefix();
-    test_merge_callback_rejects_source_mutation();
-    test_n_divisibility_rejection();
-    test_merged_relation_validation();
+    failed += !run_case(test_save_load);
+    failed += !run_case(test_save_rejects_oversized_relation_without_clobbering_target);
+    failed += !run_case(test_legacy_serialization_lp_contract);
+    failed += !run_case(test_legacy_save_preflight_preserves_destination);
+    failed += !run_case(test_legacy_load_rejects_forged_lp_transactionally);
+    failed += !run_case(test_load_replaces_state_transactionally, false);
+    failed += !run_case(test_load_replaces_state_transactionally, true);
+    failed += !run_case(test_load_rejects_duplicate_ab_pairs, false);
+    failed += !run_case(test_load_rejects_duplicate_ab_pairs, true);
+    failed += !run_case(test_load_failure_preserves_state_transactionally, false);
+    failed += !run_case(test_load_failure_preserves_state_transactionally, true);
+    failed += !run_case(test_load_respects_max_relations);
+    failed += !run_case(test_concurrent_add);
+    failed += !run_case(test_merge);
+    failed += !run_case(test_merge_respects_max_relations);
+    failed += !run_case(test_filter_duplicates);
+    failed += !run_case(test_sort_relations);
+    failed += !run_case(test_callback);
+    failed += !run_case(test_callback_no_deadlock);
+    failed += !run_case(test_merge_callback_contract);
+    failed += !run_case(test_merge_callback_exception_preserves_prefix);
+    failed += !run_case(test_merge_callback_rejects_source_mutation);
+    failed += !run_case(test_n_divisibility_rejection);
+    failed += !run_case(test_merged_relation_validation);
 
     std::cout << "\n=== OOC mode tests (BACKLOG #11c) ===" << std::endl;
-    test_ooc_basic_add();
-    test_ooc_duplicate_rejection();
-    test_ooc_merge_respects_max_relations();
-    test_ooc_n_divisibility();
-    test_ooc_partial_relations();
-    test_ooc_concurrent_add();
-    test_ooc_clear_recycle();
-    test_ooc_empty_base_path_rejected();
-    test_ooc_fresh_store_refuses_existing_artifacts();
-    test_ooc_uncommitted_fresh_exception_cleanup();
-    test_ooc_legacy_save_load_disabled();
-    test_finalize_ooc_vector_mode_remains_appendable();
-    test_ooc_snapshot_append_snapshot_finalize();
-    test_ooc_borrowed_prefix_append_and_finalize();
-    test_ooc_unique_borrowed_prefix_capability_and_lifecycle();
-    test_ooc_unique_borrowed_prefix_rejects_unproven_sources();
-    test_ooc_unique_borrowed_prefix_source_corruption_fails_closed();
-    test_ooc_unique_borrowed_prefix_resume_failure_takes_precedence();
-    test_ooc_borrowed_prefix_callback_failures_resume();
-    test_ooc_borrowed_prefix_source_corruption_fails_closed();
-    test_ooc_borrowed_prefix_resume_failure_takes_precedence();
-    test_ooc_borrowed_prefix_serialization_and_state_rules();
-    test_ooc_corpus_snapshot_append_snapshot_handoff();
-    test_ooc_corpus_snapshot_collision_is_retryable();
-    test_ooc_corpus_handoff_adoption_retry_and_identity();
-    test_ooc_corpus_bridge_rejects_vector_mode();
-    test_ooc_checkpoint_requires_explicit_resume();
-    test_ooc_failed_state_rejects_mutation();
-    test_ooc_snapshot_integrity_failure_fails_closed();
-    test_ooc_empty_and_repeated_snapshot();
-    test_ooc_writer_finalize_state();
-    test_ooc_reader_rejects_corrupt_variable_lengths();
-    test_ooc_reader_rejects_trailing_bytes();
-    test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets();
+    failed += !run_case(test_ooc_basic_add);
+    failed += !run_case(test_ooc_duplicate_rejection);
+    failed += !run_case(test_ooc_merge_respects_max_relations);
+    failed += !run_case(test_ooc_n_divisibility);
+    failed += !run_case(test_ooc_partial_relations);
+    failed += !run_case(test_ooc_concurrent_add);
+    failed += !run_case(test_ooc_clear_recycle);
+    failed += !run_case(test_ooc_empty_base_path_rejected);
+    failed += !run_case(test_ooc_fresh_store_refuses_existing_artifacts);
+    failed += !run_case(test_ooc_uncommitted_fresh_exception_cleanup);
+    failed += !run_case(test_ooc_legacy_save_load_disabled);
+    failed += !run_case(test_finalize_ooc_vector_mode_remains_appendable);
+    failed += !run_case(test_ooc_snapshot_append_snapshot_finalize);
+    failed += !run_case(test_ooc_borrowed_prefix_append_and_finalize);
+    failed += !run_case(test_ooc_unique_borrowed_prefix_capability_and_lifecycle);
+    failed += !run_case(test_ooc_unique_borrowed_prefix_rejects_unproven_sources);
+    failed += !run_case(test_ooc_unique_borrowed_prefix_source_corruption_fails_closed);
+    failed += !run_case(test_ooc_unique_borrowed_prefix_resume_failure_takes_precedence);
+    failed += !run_case(test_ooc_borrowed_prefix_callback_failures_resume);
+    failed += !run_case(test_ooc_borrowed_prefix_source_corruption_fails_closed);
+    failed += !run_case(test_ooc_borrowed_prefix_resume_failure_takes_precedence);
+    failed += !run_case(test_ooc_borrowed_prefix_serialization_and_state_rules);
+    failed += !run_case(test_ooc_corpus_snapshot_append_snapshot_handoff);
+    failed += !run_case(test_ooc_corpus_snapshot_collision_is_retryable);
+    failed += !run_case(test_ooc_corpus_handoff_adoption_retry_and_identity);
+    failed += !run_case(test_ooc_corpus_bridge_rejects_vector_mode);
+    failed += !run_case(test_ooc_checkpoint_requires_explicit_resume);
+    failed += !run_case(test_ooc_failed_state_rejects_mutation);
+    failed += !run_case(test_ooc_snapshot_integrity_failure_fails_closed);
+    failed += !run_case(test_ooc_empty_and_repeated_snapshot);
+    failed += !run_case(test_ooc_writer_finalize_state);
+    failed += !run_case(test_ooc_reader_rejects_corrupt_variable_lengths);
+    failed += !run_case(test_ooc_reader_rejects_trailing_bytes);
+    failed += !run_case(test_ooc_prefix_reader_rejects_bad_descriptor_and_offsets);
 
     std::cout << "\n=== OOC resume mode tests (BACKLOG #11e) ===" << std::endl;
-    test_ooc_collector_rejects_legacy_resume_flag();
-    test_ooc_writer_resume_append();
-    test_ooc_writer_finalized_recovery();
-    test_ooc_writer_resume_nonexistent_rejected();
-    test_ooc_writer_resume_large_payload();
-    test_ooc_collector_resume_loads_seen();
-    test_ooc_collector_resume_rejects_sequence_receipt_drift();
-    test_ooc_collector_resume_empty_files_graceful();
-    test_ooc_collector_recovers_finalized_corpus();
+    failed += !run_case(test_ooc_collector_rejects_legacy_resume_flag);
+    failed += !run_case(test_ooc_writer_resume_append);
+    failed += !run_case(test_ooc_writer_finalized_recovery);
+    failed += !run_case(test_ooc_writer_resume_nonexistent_rejected);
+    failed += !run_case(test_ooc_writer_resume_large_payload);
+    failed += !run_case(test_ooc_collector_resume_loads_seen);
+    failed += !run_case(test_ooc_collector_resume_rejects_sequence_receipt_drift);
+    failed += !run_case(test_ooc_collector_resume_empty_files_graceful);
+    failed += !run_case(test_ooc_collector_recovers_finalized_corpus);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

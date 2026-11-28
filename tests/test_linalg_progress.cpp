@@ -16,15 +16,16 @@
 //   * Perf-info probe: 100k disabled-mode ticks should be free (no
 //     assertion on timing, just informational).
 
-// Force assert() to remain live even under -DNDEBUG so Release builds do
-// not silently strip verification.
+// Keep NDEBUG undefined in this translation unit: library headers included
+// below may keep their own assert checks live here. The checks of this file
+// use TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 
 #include "gnfs/linalg/progress_telemetry.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -34,6 +35,7 @@
 #include <thread>
 #include <utility>
 
+using gnfs::test::run_case;
 using namespace gnfs::linalg;
 
 // ────────────────────────────────────────────────────────────────────
@@ -91,16 +93,16 @@ static void set_env_interval(const char* value) {
 static void test_env_unset_default_zero() {
     std::cout << "Testing GNFS_LINALG_PROGRESS_INTERVAL unset => 0 (disabled)..." << std::endl;
     set_env_interval(nullptr);
-    assert(linalg_progress_interval() == 0);
-    assert(linalg_progress_enabled() == false);
+    TEST_ASSERT(linalg_progress_interval() == 0);
+    TEST_ASSERT(linalg_progress_enabled() == false);
     std::cout << "  ENV unset: PASS (disabled)" << std::endl;
 }
 
 static void test_env_zero_explicit() {
     std::cout << "Testing GNFS_LINALG_PROGRESS_INTERVAL=\"0\" => 0..." << std::endl;
     set_env_interval("0");
-    assert(linalg_progress_interval() == 0);
-    assert(linalg_progress_enabled() == false);
+    TEST_ASSERT(linalg_progress_interval() == 0);
+    TEST_ASSERT(linalg_progress_enabled() == false);
     set_env_interval(nullptr);
     std::cout << "  ENV \"0\": PASS (disabled)" << std::endl;
 }
@@ -108,8 +110,8 @@ static void test_env_zero_explicit() {
 static void test_env_positive_clean() {
     std::cout << "Testing GNFS_LINALG_PROGRESS_INTERVAL=\"100\" => 100..." << std::endl;
     set_env_interval("100");
-    assert(linalg_progress_interval() == 100);
-    assert(linalg_progress_enabled() == true);
+    TEST_ASSERT(linalg_progress_interval() == 100);
+    TEST_ASSERT(linalg_progress_enabled() == true);
     set_env_interval(nullptr);
     std::cout << "  ENV \"100\": PASS (enabled at 100)" << std::endl;
 }
@@ -117,8 +119,8 @@ static void test_env_positive_clean() {
 static void test_env_garbage_disabled() {
     std::cout << "Testing GNFS_LINALG_PROGRESS_INTERVAL=\"garbage\" => 0..." << std::endl;
     set_env_interval("garbage");
-    assert(linalg_progress_interval() == 0);
-    assert(linalg_progress_enabled() == false);
+    TEST_ASSERT(linalg_progress_interval() == 0);
+    TEST_ASSERT(linalg_progress_enabled() == false);
     set_env_interval(nullptr);
     std::cout << "  ENV \"garbage\": PASS (disabled)" << std::endl;
 }
@@ -130,8 +132,8 @@ static void test_env_numeric_prefix_documented() {
         << "Testing GNFS_LINALG_PROGRESS_INTERVAL=\"12abc\" => 12 (documented prefix-parse)..."
         << std::endl;
     set_env_interval("12abc");
-    assert(linalg_progress_interval() == 12);
-    assert(linalg_progress_enabled() == true);
+    TEST_ASSERT(linalg_progress_interval() == 12);
+    TEST_ASSERT(linalg_progress_enabled() == true);
     set_env_interval(nullptr);
     std::cout << "  ENV \"12abc\": PASS (interval=12 per documented prefix behavior)" << std::endl;
 }
@@ -139,8 +141,8 @@ static void test_env_numeric_prefix_documented() {
 static void test_env_leading_whitespace_rejected() {
     std::cout << "Testing GNFS_LINALG_PROGRESS_INTERVAL=\" 5\" => 0..." << std::endl;
     set_env_interval(" 5");
-    assert(linalg_progress_interval() == 0);
-    assert(linalg_progress_enabled() == false);
+    TEST_ASSERT(linalg_progress_interval() == 0);
+    TEST_ASSERT(linalg_progress_enabled() == false);
     set_env_interval(nullptr);
     std::cout << "  ENV \" 5\": PASS (leading whitespace rejected -> disabled)" << std::endl;
 }
@@ -161,7 +163,7 @@ static void test_disabled_no_stderr_output() {
         lg.finish();
         // No output expected.
         const std::string out = cap.str();
-        assert(out.empty() && "disabled logger should not write to stderr");
+        TEST_ASSERT(out.empty() && "disabled logger should not write to stderr");
     }
     std::cout << "  disabled mode: PASS (zero stderr output for 1000 ticks)" << std::endl;
 }
@@ -178,7 +180,7 @@ static void test_disabled_dtor_no_output() {
             // dtor runs at scope exit without explicit finish()
         }
         const std::string out = cap.str();
-        assert(out.empty() && "disabled logger dtor should not write to stderr");
+        TEST_ASSERT(out.empty() && "disabled logger dtor should not write to stderr");
     }
     std::cout << "  disabled dtor: PASS (silent)" << std::endl;
 }
@@ -211,10 +213,10 @@ static void test_enabled_first_tick_and_interval() {
     std::cout << "  captured: " << progress_lines << " progress + " << done_lines << " done line(s)"
               << std::endl;
     // First tick (iter=0) + ticks 10, 20, 30, 40, 50, 60, 70, 80, 90 = 10 lines
-    assert(progress_lines == 10);
-    assert(done_lines == 1);
+    TEST_ASSERT(progress_lines == 10);
+    TEST_ASSERT(done_lines == 1);
     // The DONE summary should contain "iter=100/100"
-    assert(out.find("DONE iter=100/100") != std::string::npos);
+    TEST_ASSERT(out.find("DONE iter=100/100") != std::string::npos);
     std::cout << "  enabled tick gating: PASS (10 progress + 1 DONE)" << std::endl;
 }
 
@@ -231,8 +233,8 @@ static void test_enabled_finish_emits_done() {
     set_env_interval(nullptr);
 
     const std::string out = cap.str();
-    assert(count_occurrences(out, "[linalg_progress] phase=F iter=") == 2);
-    assert(count_occurrences(out, "[linalg_progress] phase=F DONE") == 1);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=F iter=") == 2);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=F DONE") == 1);
     std::cout << "  finish() DONE: PASS" << std::endl;
 }
 
@@ -250,8 +252,8 @@ static void test_enabled_finish_idempotent() {
     set_env_interval(nullptr);
     const std::string out = cap.str();
     // 1 progress line (iter=0) + 1 DONE line. No more.
-    assert(count_occurrences(out, "[linalg_progress] phase=Idempotent iter=") == 1);
-    assert(count_occurrences(out, "[linalg_progress] phase=Idempotent DONE") == 1);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=Idempotent iter=") == 1);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=Idempotent DONE") == 1);
     std::cout << "  finish() idempotent: PASS" << std::endl;
 }
 
@@ -274,10 +276,10 @@ static void test_multiple_loggers_coexist() {
     const std::string out = cap.str();
     // For each phase: first tick (0) + every 3 ticks = 0, 3, 6 = 3 progress lines.
     // Plus 1 DONE each.
-    assert(count_occurrences(out, "[linalg_progress] phase=A_phase iter=") == 3);
-    assert(count_occurrences(out, "[linalg_progress] phase=B_phase iter=") == 3);
-    assert(count_occurrences(out, "[linalg_progress] phase=A_phase DONE") == 1);
-    assert(count_occurrences(out, "[linalg_progress] phase=B_phase DONE") == 1);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=A_phase iter=") == 3);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=B_phase iter=") == 3);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=A_phase DONE") == 1);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=B_phase DONE") == 1);
     std::cout << "  multiple loggers: PASS (A=3+1, B=3+1, distinct labels)" << std::endl;
 }
 
@@ -297,12 +299,12 @@ static void test_total_zero_eta_unknown() {
     set_env_interval(nullptr);
     const std::string out = cap.str();
     // First tick should contain "eta=?" since total is 0.
-    assert(out.find("eta=?") != std::string::npos);
+    TEST_ASSERT(out.find("eta=?") != std::string::npos);
     // Should NOT contain NaN or inf.
-    assert(out.find("nan") == std::string::npos);
-    assert(out.find("NaN") == std::string::npos);
-    assert(out.find("inf") == std::string::npos);
-    assert(out.find("Inf") == std::string::npos);
+    TEST_ASSERT(out.find("nan") == std::string::npos);
+    TEST_ASSERT(out.find("NaN") == std::string::npos);
+    TEST_ASSERT(out.find("inf") == std::string::npos);
+    TEST_ASSERT(out.find("Inf") == std::string::npos);
     std::cout << "  total=0 ETA: PASS (eta=? not NaN/inf)" << std::endl;
 }
 
@@ -318,9 +320,9 @@ static void test_negative_total_clamped() {
     set_env_interval(nullptr);
     const std::string out = cap.str();
     // total clamped to 0; first tick should print "iter=0/0".
-    assert(out.find("iter=0/0") != std::string::npos);
+    TEST_ASSERT(out.find("iter=0/0") != std::string::npos);
     // DONE should also reference total=0.
-    assert(out.find("DONE iter=0/0") != std::string::npos);
+    TEST_ASSERT(out.find("DONE iter=0/0") != std::string::npos);
     std::cout << "  negative total: PASS (clamped to 0)" << std::endl;
 }
 
@@ -336,8 +338,8 @@ static void test_iter_above_total_clamped() {
     set_env_interval(nullptr);
     const std::string out = cap.str();
     // The first tick must show clamped iter (100/100), not raw 200.
-    assert(out.find("iter=100/100") != std::string::npos);
-    assert(out.find("iter=200") == std::string::npos);
+    TEST_ASSERT(out.find("iter=100/100") != std::string::npos);
+    TEST_ASSERT(out.find("iter=200") == std::string::npos);
     std::cout << "  iter > total clamp: PASS" << std::endl;
 }
 
@@ -352,8 +354,8 @@ static void test_negative_iter_clamped() {
     }
     set_env_interval(nullptr);
     const std::string out = cap.str();
-    assert(out.find("iter=0/10") != std::string::npos);
-    assert(out.find("iter=-5") == std::string::npos);
+    TEST_ASSERT(out.find("iter=0/10") != std::string::npos);
+    TEST_ASSERT(out.find("iter=-5") == std::string::npos);
     std::cout << "  negative iter: PASS (clamped to 0)" << std::endl;
 }
 
@@ -373,10 +375,10 @@ static void test_zero_rate_prints_question() {
     set_env_interval(nullptr);
     const std::string out = cap.str();
     // The first progress line should contain rate=?
-    assert(out.find("rate=?") != std::string::npos);
+    TEST_ASSERT(out.find("rate=?") != std::string::npos);
     // Should not contain NaN/inf even if instantaneous timing collapses.
-    assert(out.find("nan") == std::string::npos);
-    assert(out.find("inf") == std::string::npos);
+    TEST_ASSERT(out.find("nan") == std::string::npos);
+    TEST_ASSERT(out.find("inf") == std::string::npos);
     std::cout << "  rate underflow: PASS (rate=? not NaN/inf)" << std::endl;
 }
 
@@ -395,12 +397,12 @@ static void test_extreme_rate_saturates_before_formatting() {
     set_env_interval(nullptr);
 
     const std::string out = cap.str();
-    assert(out.find("rate=922337203685477580.7/s") != std::string::npos);
-    assert(out.find("avg_rate=922337203685477580.7/s") != std::string::npos);
-    assert(out.find("nan") == std::string::npos);
-    assert(out.find("NaN") == std::string::npos);
-    assert(out.find("inf") == std::string::npos);
-    assert(out.find("Inf") == std::string::npos);
+    TEST_ASSERT(out.find("rate=922337203685477580.7/s") != std::string::npos);
+    TEST_ASSERT(out.find("avg_rate=922337203685477580.7/s") != std::string::npos);
+    TEST_ASSERT(out.find("nan") == std::string::npos);
+    TEST_ASSERT(out.find("NaN") == std::string::npos);
+    TEST_ASSERT(out.find("inf") == std::string::npos);
+    TEST_ASSERT(out.find("Inf") == std::string::npos);
     std::cout << "  extreme rate: PASS (finite saturated output)" << std::endl;
 }
 
@@ -423,7 +425,7 @@ static void test_move_construct_no_double_emit() {
     set_env_interval(nullptr);
     const std::string out = cap.str();
     // We expect exactly 1 DONE line (from b).
-    assert(count_occurrences(out, "[linalg_progress] phase=MoveA DONE") == 1);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=MoveA DONE") == 1);
     std::cout << "  move-construct: PASS (single DONE from move target)" << std::endl;
 }
 
@@ -447,8 +449,8 @@ static void test_move_assign_releases_prior() {
     const std::string out = cap.str();
     // Exactly one DONE for AssignA (from the move-assign finalisation),
     // exactly one DONE for AssignB (from a's dtor after adopting b).
-    assert(count_occurrences(out, "[linalg_progress] phase=AssignA DONE") == 1);
-    assert(count_occurrences(out, "[linalg_progress] phase=AssignB DONE") == 1);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=AssignA DONE") == 1);
+    TEST_ASSERT(count_occurrences(out, "[linalg_progress] phase=AssignB DONE") == 1);
     std::cout << "  move-assign: PASS (AssignA DONE, AssignB DONE, no doubles)" << std::endl;
 }
 
@@ -476,40 +478,47 @@ static void perf_info_disabled_loop() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Linalg Iteration Progress Telemetry Tests (W12 T1) ===" << std::endl;
 
     std::cout << "\n--- ENV parsing ---" << std::endl;
-    test_env_unset_default_zero();
-    test_env_zero_explicit();
-    test_env_positive_clean();
-    test_env_garbage_disabled();
-    test_env_numeric_prefix_documented();
-    test_env_leading_whitespace_rejected();
+    failed += !run_case(test_env_unset_default_zero);
+    failed += !run_case(test_env_zero_explicit);
+    failed += !run_case(test_env_positive_clean);
+    failed += !run_case(test_env_garbage_disabled);
+    failed += !run_case(test_env_numeric_prefix_documented);
+    failed += !run_case(test_env_leading_whitespace_rejected);
 
     std::cout << "\n--- Disabled mode ---" << std::endl;
-    test_disabled_no_stderr_output();
-    test_disabled_dtor_no_output();
+    failed += !run_case(test_disabled_no_stderr_output);
+    failed += !run_case(test_disabled_dtor_no_output);
 
     std::cout << "\n--- Enabled mode ---" << std::endl;
-    test_enabled_first_tick_and_interval();
-    test_enabled_finish_emits_done();
-    test_enabled_finish_idempotent();
-    test_multiple_loggers_coexist();
+    failed += !run_case(test_enabled_first_tick_and_interval);
+    failed += !run_case(test_enabled_finish_emits_done);
+    failed += !run_case(test_enabled_finish_idempotent);
+    failed += !run_case(test_multiple_loggers_coexist);
 
     std::cout << "\n--- Edge cases ---" << std::endl;
-    test_total_zero_eta_unknown();
-    test_negative_total_clamped();
-    test_iter_above_total_clamped();
-    test_negative_iter_clamped();
-    test_zero_rate_prints_question();
-    test_extreme_rate_saturates_before_formatting();
+    failed += !run_case(test_total_zero_eta_unknown);
+    failed += !run_case(test_negative_total_clamped);
+    failed += !run_case(test_iter_above_total_clamped);
+    failed += !run_case(test_negative_iter_clamped);
+    failed += !run_case(test_zero_rate_prints_question);
+    failed += !run_case(test_extreme_rate_saturates_before_formatting);
 
     std::cout << "\n--- Move semantics ---" << std::endl;
-    test_move_construct_no_double_emit();
-    test_move_assign_releases_prior();
+    failed += !run_case(test_move_construct_no_double_emit);
+    failed += !run_case(test_move_assign_releases_prior);
 
     std::cout << "\n--- Perf info ---" << std::endl;
-    perf_info_disabled_loop();
+    failed += !run_case(perf_info_disabled_loop);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll linalg iteration progress telemetry tests passed!" << std::endl;
     return 0;

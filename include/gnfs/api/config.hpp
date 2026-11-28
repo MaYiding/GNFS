@@ -3,6 +3,7 @@
 #include "../core/integer.hpp"
 #include "../core/params.hpp"
 #include "../core/sieve_limits.hpp"
+#include "../util/utf8_path.hpp"
 #include "progress.hpp"
 
 #include <cstddef>
@@ -167,6 +168,7 @@ struct Config {
 
     /// Load configuration from a simple key=value file
     /// Lines starting with # are comments. Blank lines ignored.
+    /// `path` is UTF-8 on Windows and native path bytes elsewhere.
     /// Example:
     ///   degree = 4
     ///   rational_bound = 50000
@@ -174,8 +176,15 @@ struct Config {
     static Config from_file(const std::string& path) {
         Config cfg;
         const auto close_file = [](std::FILE* file) { std::fclose(file); };
+#ifdef _WIN32
+        // The narrow entry point decodes its argument in the ANSI code page, so a
+        // UTF-8 path has to go through the wide one.
+        std::unique_ptr<std::FILE, decltype(close_file)> input(
+            ::_wfopen(gnfs::util::path_from_utf8(path).c_str(), L"r"), close_file);
+#else
         std::unique_ptr<std::FILE, decltype(close_file)> input(std::fopen(path.c_str(), "r"),
                                                                close_file);
+#endif
         if (!input) {
             throw std::runtime_error("Cannot open config file: " + path);
         }

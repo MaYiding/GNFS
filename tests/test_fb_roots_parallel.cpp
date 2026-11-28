@@ -17,9 +17,10 @@
 
 #include <gnfs/factor_base/fb_roots_parallel.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -34,6 +35,7 @@ using gnfs::factor_base::fb_roots_threads;
 using gnfs::factor_base::fb_roots_threads_reset_env_cache_for_testing;
 using gnfs::factor_base::parallel_fb_roots;
 using gnfs::factor_base::resolve_fb_roots_threads;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -326,7 +328,7 @@ void test_parallel_dispatcher_n4_parity() {
     auto primes_big = make_primes(1000, /*start=*/13);
     auto seq_big = run_dispatch_with_env(primes_big, "1");
     auto par_big = run_dispatch_with_env(primes_big, "4");
-    assert(seq_big.size() == par_big.size());
+    TEST_ASSERT(seq_big.size() == par_big.size());
     for (std::size_t i = 0; i < seq_big.size(); ++i) {
         if (seq_big[i] != par_big[i]) {
             std::cerr << "\n  ERROR: 1000-sweep index " << i
@@ -354,7 +356,7 @@ void test_parallel_dispatcher_nhw_parity() {
     auto seq = run_dispatch_with_env(primes, "1");
     auto par = run_dispatch_with_env(primes, hw_str.c_str());
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
             std::cerr << "\n  ERROR: hw-parity index " << i << " mismatch for prime=" << primes[i]
@@ -384,8 +386,8 @@ void test_empty_primes_no_stall() {
             std::cerr << "\n  ERROR: worker invoked on empty primes vector" << std::endl;
             std::abort();
         });
-    assert(seq.empty());
-    assert(calls.load() == 0);
+    TEST_ASSERT(seq.empty());
+    TEST_ASSERT(calls.load() == 0);
 
     // Parallel (env=4) — same invariant. Helper must short-circuit before
     // ThreadPool spawn.
@@ -396,8 +398,8 @@ void test_empty_primes_no_stall() {
             std::cerr << "\n  ERROR: worker invoked on empty primes vector" << std::endl;
             std::abort();
         });
-    assert(par.empty());
-    assert(calls.load() == 0);
+    TEST_ASSERT(par.empty());
+    TEST_ASSERT(calls.load() == 0);
 
     // Default (env unset) — also no-op.
     apply_env(nullptr);
@@ -407,8 +409,8 @@ void test_empty_primes_no_stall() {
             std::cerr << "\n  ERROR: worker invoked on empty primes vector" << std::endl;
             std::abort();
         });
-    assert(def.empty());
-    assert(calls.load() == 0);
+    TEST_ASSERT(def.empty());
+    TEST_ASSERT(calls.load() == 0);
 
     std::cout << " PASS\n";
 }
@@ -432,8 +434,8 @@ void test_single_prime_no_stall() {
     auto t1 = std::chrono::steady_clock::now();
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    assert(results.size() == 1);
-    assert(results[0] == deterministic_roots(17));
+    TEST_ASSERT(results.size() == 1);
+    TEST_ASSERT(results[0] == deterministic_roots(17));
     int total_calls = calls.load(std::memory_order_relaxed);
     if (total_calls != 1) {
         std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls << std::endl;
@@ -480,20 +482,27 @@ void test_env_partial_parse_behaviour() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Factor Base Roots Parallel Dispatch Tests ===" << std::endl;
 
-    test_env_unset_default_zero();
-    test_env_zero_explicit();
-    test_env_one_sequential();
-    test_env_four_parallel();
-    test_env_above_max_clamps();
-    test_env_invalid_non_numeric();
-    test_parallel_dispatcher_n1_sequential();
-    test_parallel_dispatcher_n4_parity();
-    test_parallel_dispatcher_nhw_parity();
-    test_empty_primes_no_stall();
-    test_single_prime_no_stall();
-    test_env_partial_parse_behaviour();
+    failed += !run_case(test_env_unset_default_zero);
+    failed += !run_case(test_env_zero_explicit);
+    failed += !run_case(test_env_one_sequential);
+    failed += !run_case(test_env_four_parallel);
+    failed += !run_case(test_env_above_max_clamps);
+    failed += !run_case(test_env_invalid_non_numeric);
+    failed += !run_case(test_parallel_dispatcher_n1_sequential);
+    failed += !run_case(test_parallel_dispatcher_n4_parity);
+    failed += !run_case(test_parallel_dispatcher_nhw_parity);
+    failed += !run_case(test_empty_primes_no_stall);
+    failed += !run_case(test_single_prime_no_stall);
+    failed += !run_case(test_env_partial_parse_behaviour);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All FB Roots Parallel Tests PASSED ===" << std::endl;
     return 0;
