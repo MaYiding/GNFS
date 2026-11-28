@@ -577,6 +577,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release with debug info
 
 The build system auto-detects GMP (required), NTL when enabled (optional), Metal (optional on macOS), native CPU flags (`-mcpu=native` on Apple Silicon and `-march=native` on x86), and either ThinLTO (Clang on macOS) or LTO (GCC) when targeting Release.
 
+In Release builds, LTO covers the `gnfs` executable; among tests, only the executables in `GNFS_LTO_TEST_TARGETS` in `CMakeLists.txt` and those that stamp the build type into their records take part, and the remaining tests link the native code of the core libraries. The list holds the end-to-end tests that run the complete pipeline and the benchmarks whose timings a later run compares, whatever their names say. With GCC or Clang, the core libraries also take part in LTO, and a build with tests enabled adds `-ffat-lto-objects` to them, so that each object carries native code next to the LTO intermediate representation; a build with `-DGNFS_BUILD_TESTS=OFF` does not add the fat option. On MSVC, the two static libraries contain plain object files without `/GL`, so the tests link them natively and the installed `gnfs_core.lib` carries no `/GL` object. The `/GL` code comes from the separate object library `gnfs_lto_objects` in `CMakeLists.txt`, which only the `gnfs` executable and the tests that keep LTO link, together with `/LTCG`.
+
 ## Contributing
 
 Contributions are welcome. Please follow this workflow:

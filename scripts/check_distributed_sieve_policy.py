@@ -5543,7 +5543,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_BOUNDARY_SHA256 = (
-    "3621bd94f9b88e1ecca07a5c73faf1c94a9d14b61f520a3d6d117afb68f4a9c4"
+    "5f3b69bca04d0c4220586ed8e502bfeb5ed34905ff08191df49e623896e9f6c7"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -5731,8 +5731,16 @@ WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS = {
         WORKER_CLEANUP_RECONCILIATION_TEST_TARGET
     },
 }
+# MSVC compiles the sources of gnfs_core a second time into gnfs_lto_objects
+# (CMakeLists.txt). The object library shares the protected unit of gnfs_core,
+# so its compile definitions, compile options, and include search are frozen
+# as well.
+WORKER_CLEANUP_RECEIPT_LTO_OBJECT_TARGET = "gnfs_lto_objects"
 WORKER_CLEANUP_RECEIPT_TARGET_DEPENDENCY_CLOSURES = {
     "gnfs_core": frozenset({"gnfs_core", "gnfs_util"}),
+    WORKER_CLEANUP_RECEIPT_LTO_OBJECT_TARGET: frozenset(
+        {WORKER_CLEANUP_RECEIPT_LTO_OBJECT_TARGET, "gnfs_core", "gnfs_util"}
+    ),
     WORKER_CLEANUP_RECEIPT_TEST_TARGET: frozenset(
         {WORKER_CLEANUP_RECEIPT_TEST_TARGET, "gnfs_core", "gnfs_util"}
     ),
@@ -5768,6 +5776,9 @@ WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_COMMANDS = {
         "gnfs_coreSYSTEMPUBLIC${GMP_INCLUDE_DIR}",
         "gnfs_coreSYSTEMPUBLIC${NTL_INCLUDE_DIR}",
     ),
+    # The object library has no include command of its own. It links gnfs_core
+    # and receives the include directories from that interface.
+    WORKER_CLEANUP_RECEIPT_LTO_OBJECT_TARGET: (),
     WORKER_CLEANUP_RECEIPT_TEST_TARGET: (
         "test_distributed_sieve_worker_cleanup_tailPRIVATE"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/relation"
@@ -5795,6 +5806,7 @@ WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_COMMANDS = {
 }
 WORKER_CLEANUP_RECEIPT_TARGET_INCLUDE_SEARCH = {
     "gnfs_core": ("include",),
+    WORKER_CLEANUP_RECEIPT_LTO_OBJECT_TARGET: ("include",),
     WORKER_CLEANUP_RECEIPT_TEST_TARGET: (
         "src/relation",
         "src/sieve",
@@ -11119,7 +11131,11 @@ def _cmake_worker_cleanup_include_searches(
             )
 
     searches: list[tuple[str, ...]] = []
-    for target in sorted(unit_targets):
+    frozen_targets = set(unit_targets)
+    if "gnfs_core" in frozen_targets:
+        # The MSVC /GL object library compiles the sources of gnfs_core again.
+        frozen_targets.add(WORKER_CLEANUP_RECEIPT_LTO_OBJECT_TARGET)
+    for target in sorted(frozen_targets):
         expected_closure = WORKER_CLEANUP_RECEIPT_TARGET_DEPENDENCY_CLOSURES.get(
             target
         )
@@ -12994,6 +13010,9 @@ def _cmake_worker_cleanup_unit_provenance(
     applicable_targets = _cmake_target_dependency_closure(
         unit_targets, dependencies
     )
+    if "gnfs_core" in unit_targets:
+        # The MSVC /GL object library compiles the sources of gnfs_core again.
+        applicable_targets.add(WORKER_CLEANUP_RECEIPT_LTO_OBJECT_TARGET)
     macros: list[tuple[str, int, str]] = []
     forced_headers: set[str] = set()
     errors: list[tuple[int, str]] = []
@@ -14505,6 +14524,8 @@ class Checks:
             for targets in WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS.values()
             for target in targets
         }
+        # The MSVC /GL object library compiles the protected sources again.
+        protected_targets.add(WORKER_CLEANUP_RECEIPT_LTO_OBJECT_TARGET)
         protected_sources = set(WORKER_CLEANUP_RECEIPT_PROTECTED_UNIT_TARGETS)
         inert_commands = {
             "message",
@@ -14514,6 +14535,10 @@ class Checks:
             "add_test",
             "set_tests_properties",
             "install",
+            # A property read changes no build surface. CMakeLists.txt reads
+            # the source list of gnfs_core with it for the MSVC /GL object
+            # library.
+            "get_target_property",
         }
         approved_commands = {
             "add_executable",
@@ -34550,6 +34575,39 @@ void escaped_cleanup_conversion_wrapper() {
         and not xclang_errors,
         "-Xclang -include forced-header provenance was not closed: "
         f"headers={xclang_forced}, errors={xclang_errors}",
+    )
+    lto_object_macro_injection = worker_cleanup_receipt_cmake + (
+        "\ntarget_compile_definitions(gnfs_lto_objects PRIVATE private=public)\n"
+    )
+    lto_object_macros, _, lto_object_errors = _cmake_worker_cleanup_unit_provenance(
+        cmake_root,
+        lto_object_macro_injection,
+        {"gnfs_core"},
+        {WORKER_CLEANUP_RECEIPT_RELATION_IMPLEMENTATION_FILE},
+    )
+    expect(
+        any(name == "private" for name, _, _ in lto_object_macros)
+        and not lto_object_errors,
+        "compile-definition injection into the MSVC /GL object library was "
+        "not attributed to the protected target: "
+        f"macros={lto_object_macros}, errors={lto_object_errors}",
+    )
+    lto_object_include_mutation = worker_cleanup_receipt_cmake + (
+        "\ntarget_include_directories(gnfs_lto_objects BEFORE PRIVATE "
+        "${CMAKE_SOURCE_DIR}/evil)\n"
+    )
+    _, lto_object_include_errors = _cmake_worker_cleanup_include_searches(
+        cmake_root,
+        lto_object_include_mutation,
+        {"gnfs_core"},
+    )
+    expect(
+        any(
+            "include_directories command/order is not exact" in error
+            for _, error in lto_object_include_errors
+        ),
+        "an include search on the MSVC /GL object library escaped the frozen "
+        f"search order: {lto_object_include_errors}",
     )
 
     worker_handoff_bridge_snippet = r"""
