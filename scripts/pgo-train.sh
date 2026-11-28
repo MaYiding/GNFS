@@ -14,9 +14,10 @@
 # See docs/perf/performance-doctrine.md §5.3 for design rationale.
 #
 # The baseline for a comparison is a plain Release build in <repo>/build. That
-# build links only the tests listed in GNFS_LTO_TEST_TARGETS (CMakeLists.txt)
-# with LTO, while every binary in build-pgo-use keeps LTO, so compare one of
-# the listed tests, for example test_factor_with_kleinjung.
+# build links the tests listed in GNFS_LTO_TEST_TARGETS (CMakeLists.txt) with
+# LTO and builds its other tests without LTO, while every binary in
+# build-pgo-use keeps LTO. Compare one of the listed tests, for example
+# test_factor_with_kleinjung.
 
 set -euo pipefail
 
@@ -159,14 +160,14 @@ echo "  -- build ok (full 41 test targets)"
 
 echo ""
 echo "==================== Done ===================="
-echo "Baseline binaries:  ${ROOT}/build/test_*           (-O3, no PGO; LTO only on the GNFS_LTO_TEST_TARGETS tests)"
+echo "Baseline binaries:  ${ROOT}/build/test_*           (-O3, no PGO; LTO on the GNFS_LTO_TEST_TARGETS tests)"
 echo "PGO binaries:       ${BUILD_USE}/test_*           (-O3 -flto -fprofile-instr-use)"
 echo ""
 echo "Quick wall-time comparison (both binaries carry LTO):"
 echo "  time ${ROOT}/build/test_factor_with_kleinjung           # baseline"
 echo "  time ${BUILD_USE}/test_factor_with_kleinjung            # PGO"
-echo "The baseline build links only the tests listed in GNFS_LTO_TEST_TARGETS"
-echo "(CMakeLists.txt) with LTO. Its other tests are built without LTO by"
+echo "The baseline build links the tests listed in GNFS_LTO_TEST_TARGETS"
+echo "(CMakeLists.txt) with LTO and builds its other tests without LTO by"
 echo "default, so comparing one of them against build-pgo-use charges the LTO"
 echo "difference to PGO."
 echo ""

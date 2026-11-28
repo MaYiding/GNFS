@@ -172,14 +172,17 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # follows the target options on the command line, so no target could opt out of
 # add_compile_options(-flto=...), and every test executable repeated the
 # whole-program optimization of gnfs_core. Those links dominated the Release
-# CI builds. LTO now covers the libraries, the gnfs executable, and the
-# end-to-end tests listed in GNFS_LTO_TEST_TARGETS; the remaining tests link
-# the native code of the core libraries. The product keeps LTO because it is
-# shipped, and the end-to-end tests keep it so that each CI round still links
-# and runs the product configuration. The other tests check behavior, which
-# does not depend on cross-module optimization. The toolchain conditions are
-# unchanged: Release builds only, ThinLTO for Clang on macOS, -flto=auto for
-# GCC, and /GL with /LTCG for MSVC.
+# CI builds. LTO now covers the libraries, the gnfs executable, the tests
+# listed in GNFS_LTO_TEST_TARGETS, and the test executables that stamp the
+# build type into their records; the remaining tests link the native code of
+# the core libraries. The product keeps LTO because it is shipped. The
+# end-to-end tests keep it so that each CI round still links and runs the
+# product configuration, and the benchmarks and evidence probes keep it
+# because their records must come from the product configuration. The
+# remaining tests check behavior, and their outcome does not depend on
+# cross-module optimization. The toolchain conditions are unchanged: Release
+# builds only, ThinLTO for Clang on macOS, -flto=auto for GCC, and /GL with
+# /LTCG for MSVC.
 #
 # The product targets receive exactly the LTO options that the directory
 # options gave them. The only addition, -ffat-lto-objects on gnfs_util and
@@ -3745,10 +3748,12 @@ if(GNFS_BUILD_TESTS)
         set(_gnfs_tests_use_lto FALSE)
     endif()
 
-    # GNFS_LTO_TEST_TARGETS lists the end-to-end tests that still take part in
-    # LTO, so each CI round links and runs the product configuration end to
-    # end. An unknown name is an error: a renamed test must not drop out of
-    # LTO silently.
+    # GNFS_LTO_TEST_TARGETS lists the tests that still take part in LTO: the
+    # end-to-end tests, so that each CI round links and runs the product
+    # configuration, and the benchmarks and stress runs, so that their Release
+    # records stay comparable with the earlier records, which came from
+    # LTO-linked binaries. A new benchmark belongs here. An unknown name is an
+    # error: a renamed test must not drop out of LTO silently.
     set(GNFS_LTO_TEST_TARGETS
         test_gnfs_e2e
         test_regression_gate
@@ -3758,6 +3763,19 @@ if(GNFS_BUILD_TESTS)
         test_siqs_e2e
         test_structured_filter_pipeline_120bit
         test_structured_ooc_50d_probe
+        test_trial_wheel_bench
+        test_batch_ecm_bench
+        test_cofactor_batch_bench
+        test_ecm_brent_suyama_bench
+        test_bai_brent_benchmark
+        test_gnfs_bench
+        test_perf_targets
+        test_gnfs_progressive
+        test_squfof_bench
+        test_structured_ooc_scale
+        test_candidate_batch_50d_sweep
+        test_siqs_shadow_matrix_bench
+        test_stress
     )
     foreach(_target IN LISTS GNFS_LTO_TEST_TARGETS)
         if(NOT TARGET ${_target})
@@ -3766,36 +3784,48 @@ if(GNFS_BUILD_TESTS)
                 "Keep the list in step with the test targets.")
         endif()
     endforeach()
+
+    get_property(_gnfs_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    list(REMOVE_ITEM _gnfs_test_targets ${_targets_before_tests})
+    set(_gnfs_test_executables "")
+    foreach(_target IN LISTS _gnfs_test_targets)
+        get_target_property(_type ${_target} TYPE)
+        if(_type STREQUAL "EXECUTABLE")
+            list(APPEND _gnfs_test_executables ${_target})
+        endif()
+    endforeach()
+
     if(_gnfs_tests_use_lto)
         # Every test executable takes part in LTO, as it did before LTO became
         # a per-target property.
-        get_property(_gnfs_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
-        list(REMOVE_ITEM _gnfs_test_targets ${_targets_before_tests})
-        foreach(_target IN LISTS _gnfs_test_targets)
-            get_target_property(_type ${_target} TYPE)
-            if(_type STREQUAL "EXECUTABLE")
-                gnfs_enable_lto(${_target})
+        set(_gnfs_lto_targets ${_gnfs_test_executables})
+    else()
+        set(_gnfs_lto_targets ${GNFS_LTO_TEST_TARGETS})
+        # An executable that stamps the build type into its records produces
+        # evidence about the product configuration, so it keeps LTO whatever
+        # its name is. This covers the Release-only measurement probes.
+        foreach(_target IN LISTS _gnfs_test_executables)
+            get_target_property(_defs ${_target} COMPILE_DEFINITIONS)
+            if(_defs MATCHES "_BUILD_TYPE=")
+                if(NOT _target IN_LIST _gnfs_lto_targets)
+                    list(APPEND _gnfs_lto_targets ${_target})
+                endif()
             endif()
         endforeach()
-    else()
-        foreach(_target IN LISTS GNFS_LTO_TEST_TARGETS)
-            gnfs_enable_lto(${_target})
+    endif()
+    foreach(_target IN LISTS _gnfs_lto_targets)
+        gnfs_enable_lto(${_target})
+    endforeach()
+
+    if(MSVC AND NOT _gnfs_tests_use_lto)
+        # Without /LTCG the linker would restart with /LTCG as soon as it meets
+        # a /GL module. /LTCG:OFF makes it treat the /GL modules as if they
+        # were compiled without /GL, which is the native link these
+        # executables need (Microsoft's /LTCG documentation).
+        list(REMOVE_ITEM _gnfs_test_executables ${_gnfs_lto_targets})
+        foreach(_target IN LISTS _gnfs_test_executables)
+            target_link_options(${_target} PRIVATE /LTCG:OFF)
         endforeach()
-        if(MSVC)
-            # Without /LTCG the linker restarts with /LTCG as soon as it meets a
-            # /GL module. /LTCG:OFF makes it treat the /GL modules as if they
-            # were compiled without /GL, which is the native link these
-            # executables need (Microsoft's /LTCG documentation).
-            get_property(_gnfs_native_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
-            list(REMOVE_ITEM _gnfs_native_targets ${_targets_before_tests}
-                ${GNFS_LTO_TEST_TARGETS})
-            foreach(_target IN LISTS _gnfs_native_targets)
-                get_target_property(_type ${_target} TYPE)
-                if(_type STREQUAL "EXECUTABLE")
-                    target_link_options(${_target} PRIVATE /LTCG:OFF)
-                endif()
-            endforeach()
-        endif()
     endif()
 
     function(gnfs_write_test_source_index)
