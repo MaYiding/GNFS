@@ -7882,10 +7882,27 @@ do_e2e() {
 # 模式: GNFS 端到端证据阶梯
 # ============================================================
 
-# 回显上一次运行打印的 GNFS_E2E_LADDER JSON 记录: 成功时 run_single_test 不展示输出，
-# 而阶梯的证据就是这一行。失败时 run_single_test 已经回显了输出尾部。
-print_gnfs_e2e_ladder_records() {
+# 提取上一次运行打印的 GNFS_E2E_LADDER 记录行。成功时 run_single_test 不展示输出，
+# 而阶梯的证据就是这一行；失败时 run_single_test 已经回显了输出尾部。
+gnfs_e2e_ladder_record() {
     printf '%s\n' "$RUN_OUTPUT" | awk '/^GNFS_E2E_LADDER / { print }'
+}
+
+# 记录合同: 恰好一行 "GNFS_E2E_LADDER " 前缀加一个 JSON 对象。只按前缀复制会放过
+# 拼接错误的记录，所以先交给 GNFS_TEST_PYTHON 解析，再当作证据交付。
+gnfs_e2e_ladder_record_is_json() {
+    "$GNFS_TEST_PYTHON" -c '
+import json, sys
+lines = sys.stdin.read().splitlines()
+if len(lines) != 1 or not lines[0].startswith("GNFS_E2E_LADDER "):
+    sys.exit("expected exactly one GNFS_E2E_LADDER line, found " + str(len(lines)))
+try:
+    value = json.loads(lines[0][len("GNFS_E2E_LADDER "):])
+except ValueError as error:
+    sys.exit("GNFS_E2E_LADDER record is not JSON: " + str(error))
+if not isinstance(value, dict):
+    sys.exit("GNFS_E2E_LADDER record is not a JSON object")
+'
 }
 
 # 每档一个独立进程，强制 GNFS 完整分解。只跑默认归约路线的前三档；
@@ -7901,14 +7918,25 @@ do_gnfs_e2e_ladder() {
         "35 508252685067849079 76762190200241549"
         "40 82171657662667870721 77484034867236456113"
     )
-    local ladder_row ladder_digits ladder_p ladder_q ladder_status
+    local ladder_row ladder_digits ladder_p ladder_q ladder_status ladder_record
     for ladder_row in "${ladder_rows[@]}"; do
         read -r ladder_digits ladder_p ladder_q <<< "$ladder_row"
         ladder_status=0
         run_single_test test_gnfs_e2e_ladder --digits "$ladder_digits" \
             --route default --expect "$ladder_p" "$ladder_q" || ladder_status=$?
-        if (( ladder_status == 0 )); then
-            print_gnfs_e2e_ladder_records
+        if (( ladder_status != 0 )); then
+            continue
+        fi
+        ladder_record="$(gnfs_e2e_ladder_record)"
+        if printf '%s\n' "$ladder_record" | gnfs_e2e_ladder_record_is_json; then
+            print -r -- "$ladder_record"
+        else
+            log_fail "${ladder_digits} 位档通过了测试，但 GNFS_E2E_LADDER 记录不是恰好一行 JSON 对象"
+            if ! reclassify_last_pass_as_contract_failure test_gnfs_e2e_ladder \
+                    ladder_record_contract; then
+                log_fail "阶梯记录合同失败且无法保持报告计数一致"
+                exit 1
+            fi
         fi
     done
 }
