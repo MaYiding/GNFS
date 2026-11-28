@@ -102,7 +102,8 @@ std::optional<size_t> parse_digits(std::string_view text) {
     return value;
 }
 
-// Parse "<value>/<total>" after any leading spaces.
+// Parse "<value>/<total>" after any leading spaces: the shape of the
+// degenerate-row record.
 std::optional<Count> parse_count(std::string_view text) {
     const size_t start = text.find_first_not_of(' ');
     if (start == std::string_view::npos) {
@@ -115,6 +116,32 @@ std::optional<Count> parse_count(std::string_view text) {
     }
     const std::optional<size_t> value = parse_digits(text.substr(0, slash));
     const std::optional<size_t> total = parse_digits(text.substr(slash + 1));
+    if (!value.has_value() || !total.has_value()) {
+        return std::nullopt;
+    }
+    return Count{*value, *total};
+}
+
+// Parse "<value> in <total> rows" after any leading spaces: the shape of the
+// precision-fallback record. Its value counts fallbacks, not rows.
+std::optional<Count> parse_count_in_rows(std::string_view text) {
+    const size_t start = text.find_first_not_of(' ');
+    if (start == std::string_view::npos) {
+        return std::nullopt;
+    }
+    text = text.substr(start);
+    constexpr std::string_view rows_suffix = " rows";
+    constexpr std::string_view separator = " in ";
+    if (!text.ends_with(rows_suffix)) {
+        return std::nullopt;
+    }
+    text = text.substr(0, text.size() - rows_suffix.size());
+    const size_t split = text.find(separator);
+    if (split == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const std::optional<size_t> value = parse_digits(text.substr(0, split));
+    const std::optional<size_t> total = parse_digits(text.substr(split + separator.size()));
     if (!value.has_value() || !total.has_value()) {
         return std::nullopt;
     }
@@ -160,7 +187,7 @@ public:
         }
         if (message.starts_with(kFallbackPrefix)) {
             if (message.substr(kFallbackPrefix.size()).starts_with(':')) {
-                fallbacks_ = parse_count(message.substr(kFallbackPrefix.size() + 1));
+                fallbacks_ = parse_count_in_rows(message.substr(kFallbackPrefix.size() + 1));
             }
         }
     }
@@ -294,7 +321,7 @@ void verify(const FactorResult& result, const RunEvidence& evidence) {
     }
     if (evidence.precision_fallbacks.has_value()) {
         std::cout << "  schirokauer precision fallbacks: " << evidence.precision_fallbacks->value
-                  << "/" << evidence.precision_fallbacks->total << "\n";
+                  << " in " << evidence.precision_fallbacks->total << " rows\n";
     }
     std::cout << "  schirokauer precision-fallback warnings: "
               << evidence.precision_fallback_warnings << "\n";

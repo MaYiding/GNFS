@@ -765,10 +765,11 @@ public:
     /// One fallback is counted for each factor whose columns are zero-filled
     /// because the ℓ-adic precision of γ = a - bα is insufficient: γ ≡ 0 mod ℓ^k,
     /// or a stripped valuation v with v + 2 > k. Such columns are not the
-    /// character of γ, so a row that hits this carries a wrong constraint. The
-    /// structural zero padding of factors that cannot be Hensel-lifted (f has
-    /// repeated roots mod ℓ) is a property of f, not a precision loss, and is
-    /// not counted.
+    /// character of γ: zero replaces the true column, so the row carries a
+    /// wrong constraint whenever that column is 1. The count is a number of
+    /// fallbacks, not of rows. The structural zero padding of factors that
+    /// cannot be Hensel-lifted (f has repeated roots mod ℓ) is a property of
+    /// f, not a precision loss, and is not counted.
     [[nodiscard]] std::vector<uint32_t>
     compute_for_prime_fast(int64_t a, uint64_t b, size_t prime_idx,
                            uint64_t& precision_fallbacks) const {

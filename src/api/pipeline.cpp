@@ -3603,22 +3603,25 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
     }
 
     // Precision fallbacks of the Schirokauer map: a - bα was known to too few
-    // ℓ-adic bits, so its columns were zero-filled instead of carrying its
-    // character. A row built from such a pair imposes a wrong constraint. The
-    // cost is wasted work, not a wrong factor: a dependency with an odd number
-    // of such rows is not a square, and the square root rejects it. Always
-    // report the count, and warn when it is not zero.
+    // ℓ-adic bits, so zero was written in place of its character. The count is
+    // a number of fallbacks, one per (a, b) pair and affected factor, not a
+    // number of rows. A fallback row carries a wrong constraint whenever the
+    // true column is 1; a dependency with an odd number of such rows is then
+    // not a square, and the square root rejects it. That costs work, never a
+    // wrong factor. Always report the count, and warn when it is not zero.
     const auto emit_schirokauer_precision_fallbacks = [&](const char* suffix) {
         const std::string fallbacks = std::to_string(build_result.schirokauer_precision_fallbacks);
         const std::string rows = std::to_string(matrix_stats.num_rows);
         emit_log(LogLevel::Info, Phase::LinearAlgebra,
-                 std::string("schirokauer precision fallbacks") + suffix + ": " + fallbacks + "/" +
-                     rows);
+                 std::string("schirokauer precision fallbacks") + suffix + ": " + fallbacks +
+                     " in " + rows + " rows");
         if (build_result.schirokauer_precision_fallbacks > 0) {
             emit_log(LogLevel::Warn, Phase::LinearAlgebra,
                      std::string("Schirokauer precision fallbacks") + suffix + ": " + fallbacks +
-                         " of " + rows +
-                         " rows carry zero Schirokauer columns in place of their character");
+                         " in " + rows +
+                         " rows; a fallback writes zero Schirokauer columns in place of the "
+                         "character, so its row carries a wrong constraint when that character "
+                         "is 1");
         }
     };
     emit_schirokauer_precision_fallbacks("");

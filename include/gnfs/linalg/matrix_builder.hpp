@@ -163,8 +163,10 @@ struct MatrixBuildResult {
     // Number of Schirokauer computations whose columns were zero-filled
     // because the ℓ-adic precision of a - bα was insufficient (see
     // SchirokaurMap::compute_for_prime_fast). Each (a, b) pair of a row counts
-    // on its own, and one fallback is counted per affected factor. A row that
-    // hits this carries a wrong constraint. Diagnostics only.
+    // on its own, and one fallback is counted per affected factor, so this is
+    // not a number of rows. A fallback writes zero in place of a true column,
+    // so the row carries a wrong constraint whenever that column is 1.
+    // Diagnostics only.
     uint64_t schirokauer_precision_fallbacks = 0;
     // Number of QC column evaluations whose argument a - b*r is 0 modulo the
     // QC prime. The Legendre symbol is undefined there, so the column records 0
