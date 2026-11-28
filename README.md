@@ -560,7 +560,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release + 调试信息
 
 构建系统自动检测：GMP（必需）、启用时的 NTL（可选）、Metal（macOS 可选）、原生 CPU 标志（Apple Silicon `-mcpu=native`，x86 `-march=native`）、ThinLTO（Clang/macOS）或 LTO（GCC）。
 
-Release 构建中，库与 `gnfs` 可执行文件参与 LTO；测试里只有端到端测试与产生性能记录的基准程序参与（规则见 `CMakeLists.txt` 的 `GNFS_LTO_TEST_TARGETS`），其余测试链接核心库的本机代码。为此，GCC 与 Clang 下启用测试的构建会为核心库加上 `-ffat-lto-objects`，让目标文件同时带本机代码与 LTO 中间表示；MSVC 下其余测试以 `/LTCG:OFF` 链接。`-DGNFS_BUILD_TESTS=OFF` 的构建不带 fat 选项。
+Release 构建中，`gnfs` 可执行文件参与 LTO；测试里只有端到端测试与产生性能记录的基准程序参与（规则见 `CMakeLists.txt` 的 `GNFS_LTO_TEST_TARGETS`），其余测试链接核心库的本机代码。GCC 与 Clang 下核心库同样参与 LTO，启用测试的构建会为核心库加上 `-ffat-lto-objects`，让目标文件同时带本机代码与 LTO 中间表示；`-DGNFS_BUILD_TESTS=OFF` 的构建不带 fat 选项。MSVC 下两个静态库是不带 `/GL` 的普通目标文件，测试直接链接它们，安装出去的 `gnfs_core.lib` 也不再含 `/GL` 目标文件。`/GL` 代码由 `CMakeLists.txt` 中单独的对象库 `gnfs_lto_objects` 提供，只有 `gnfs` 可执行文件与保留 LTO 的测试在链接时加入它，并以 `/LTCG` 链接。
 
 ## 贡献
 

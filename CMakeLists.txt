@@ -193,7 +193,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 #
 # With MSVC, the static libraries never receive /GL. They consist of plain
 # object files, so every test links them natively and the installed
-# libgnfs_core.lib carries no /GL object. The /GL code comes from the object
+# gnfs_core.lib carries no /GL object. The /GL code comes from the object
 # library gnfs_lto_objects, which compiles the sources of both libraries with
 # the same usage requirements. gnfs_enable_lto() adds it to the gnfs executable
 # and to the test executables that keep LTO, and /LTCG optimizes their code
