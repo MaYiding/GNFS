@@ -709,8 +709,12 @@ const F2Polynomial kF2XPlusOne{1U, 1U};
 struct PolynomialMod2Evidence final {
     // The root of the classified polynomial, as decimal text.
     std::optional<std::string> m;
-    // The degree of the polynomial modulo 2.
+    // The degree of the integer polynomial. It is the degree that the
+    // published statistics name, so it is the one that confirms the probe.
     std::optional<size_t> degree;
+    // The degree after the reduction modulo 2. An even leading coefficient
+    // lowers it below `degree`.
+    std::optional<size_t> mod2_degree;
     // The coefficients modulo 2, from the constant term upwards.
     std::optional<F2Polynomial> coefficients;
     // The integer coefficients, from the constant term upwards.
@@ -745,6 +749,9 @@ struct PolynomialMod2Evidence final {
     }
     polynomial = f2_trimmed(std::move(polynomial));
     evidence.coefficients = polynomial;
+    if (!polynomial.empty()) {
+        evidence.mod2_degree = polynomial.size() - 1;
+    }
     evidence.integer_coefficients = std::move(integer_coefficients);
     if (f2_degree(polynomial) < 1) {
         evidence.error = "the polynomial has degree below one modulo 2";
@@ -1260,6 +1267,8 @@ void append_polynomial_mod2(std::ostream& os, const PolynomialMod2Evidence& evid
     append_text(os, evidence.m);
     os << ",\"degree\":";
     append_count(os, evidence.degree);
+    os << ",\"mod2_degree\":";
+    append_count(os, evidence.mod2_degree);
     os << ",\"coefficients\":";
     if (evidence.coefficients.has_value()) {
         os << '[';

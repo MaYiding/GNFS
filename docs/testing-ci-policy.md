@@ -508,8 +508,11 @@ because the algebraic square root reaches Couveignes only after Hensel lifting
 returns no root. The type in `polynomial_mod2` comes from a second
 `select_polynomial()` call with the `Config` of the run, made before the
 measured interval, and its `matches_run` is `true` only when `Pipeline::run()`
-logged the same root `m`. When the two selections differ, the properties are
-`null` and `m` is the root that `Pipeline::run()` logged.
+logged the same root `m` and published the same degree. Its `degree` is the
+degree of the integer polynomial, and `mod2_degree` is the degree after the
+reduction, which an even leading coefficient lowers. When the two selections
+differ, the properties are `null` and `m` is the root that `Pipeline::run()`
+logged.
 `dependencies_succeeded_before_pairwise_xor` is `false` when an XOR pair
 produced the factors and `null` when GNFS produced none.
 
