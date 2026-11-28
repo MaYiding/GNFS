@@ -787,24 +787,32 @@ struct PolynomialMod2Evidence final {
 
 // Settles which polynomial the classification describes. run() logs only the
 // root of its polynomial, so agreement rests on that root and on the degree
-// that the published statistics name. When they differ, the record keeps what
-// run() logged and drops the type of a polynomial that the run never used.
+// that the published statistics name. Whenever the probe is not confirmed,
+// the record keeps what run() logged and drops the type of a polynomial that
+// the run never used.
 [[nodiscard]] PolynomialMod2Evidence confirm_polynomial_mod2(PolynomialMod2Evidence probe,
                                                              const RouteEvidence& evidence,
                                                              std::optional<size_t> run_degree) {
     const std::optional<std::string> run_m = evidence.run_polynomial_m();
-    if (!probe.m.has_value() || !run_m.has_value()) {
-        // Nothing confirms or contradicts the probe, which stays unconfirmed.
-        return probe;
-    }
-    if (*run_m == *probe.m && (!run_degree.has_value() || run_degree == probe.degree)) {
+    const bool confirmed = probe.m.has_value() && run_m.has_value() && *run_m == *probe.m &&
+                           (!run_degree.has_value() || run_degree == probe.degree);
+    if (confirmed) {
         probe.matches_run = true;
         return probe;
     }
+    if (probe.m.has_value() && !run_m.has_value()) {
+        // run() logged no polynomial, so nothing confirms or contradicts the
+        // probe. It stays in the record as unconfirmed.
+        return probe;
+    }
+    // run() selected another polynomial, or the probe failed.
     PolynomialMod2Evidence from_run;
-    from_run.m = *run_m;
+    from_run.m = run_m;
     from_run.degree = run_degree;
-    from_run.matches_run = false;
+    from_run.error = probe.error;
+    if (probe.m.has_value()) {
+        from_run.matches_run = false;
+    }
     return from_run;
 }
 
