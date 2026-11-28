@@ -520,6 +520,12 @@ target_link_libraries(gnfs PRIVATE
     gnfs_core
     Threads::Threads
 )
+if(MINGW)
+    # The CLI entry point is wmain, which converts the UTF-16 command line to
+    # UTF-8 so that paths do not depend on the system code page. MinGW needs
+    # the matching CRT startup; MSVC selects it on its own.
+    target_link_options(gnfs PRIVATE -municode)
+endif()
 
 # ============================================================
 # 测试

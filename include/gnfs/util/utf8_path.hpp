@@ -5,7 +5,8 @@
 
 namespace gnfs::util {
 
-/// The public mmap interfaces use UTF-8 on Windows and native path bytes on POSIX.
+/// The public mmap interfaces and the CLI (`argv`, `--config`, and `--output`)
+/// pass UTF-8 on Windows and native path bytes on POSIX.
 [[nodiscard]] inline std::filesystem::path path_from_utf8(const std::string& path) {
 #ifdef _WIN32
     return std::filesystem::path(std::u8string(path.begin(), path.end()));
