@@ -258,6 +258,18 @@ Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
 to release-active checks in bounded batches instead.
 
+The unit tests under `tests/` use `TEST_ASSERT` from
+`tests/support/test_assert.hpp` for the same reason. It throws
+`gnfs::test::AssertionFailure`, a `std::runtime_error` that names the
+expression, file, and line, in every build type. A test `main()` can wrap
+each case in `gnfs::test::run_case()`, which prints the exception and returns
+`false`, so a failed check ends only that case, one run lists every failing
+case, and the binary still exits nonzero. An unwrapped failure terminates the
+process with the same message. `GNFS_TEST_CHECK` from
+`tests/support/test_check.hpp` remains the Release-active check of the
+migrated chains above. Script Checks runs `scripts/ci/check_test_asserts.py`,
+which rejects `assert()` and `<cassert>` under `tests/`.
+
 ## CI Policy
 
 The PR CI intentionally has three layers:
@@ -296,6 +308,8 @@ The PR CI intentionally has three layers:
      its 80-child durable-publication campaign without changing child deadlines
      or the `fast` tier.
    - Proves that the ordinary POSIX path transport builds and runs on musl, while production campaign admission rejects the unavailable authenticated profile without creating the journal lock, header, artifact entries, or launch marker.
+
+Test checks are active in Release builds as well: tests use `TEST_ASSERT` or `GNFS_TEST_CHECK` instead of `assert()`, so every Release row above verifies the same conditions as a Debug run of the same test.
 
 ASan/UBSan and coverage run only `instant` tests. They already multiply test cost through instrumentation, and they should not duplicate the Release deep gate. TSan uses the narrower lane below because its purpose is to exercise explicit concurrency boundaries, not to repeat every isolated helper.
 

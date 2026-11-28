@@ -34,9 +34,10 @@
 
 #include <gnfs/sieve/apply_tile_parallel.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -54,6 +55,7 @@ using gnfs::sieve::parallel_apply_tiles;
 using gnfs::sieve::resolve_sieve_apply_tile_threads;
 using gnfs::sieve::sieve_apply_tile_threads;
 using gnfs::sieve::sieve_apply_tile_threads_reset_env_cache_for_testing;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -258,7 +260,7 @@ void test_empty_tile_count() {
             std::abort();
             return MockTileResult{};
         });
-    assert(seq_results.empty());
+    TEST_ASSERT(seq_results.empty());
 
     // Parallel (N=4).
     apply_env("4");
@@ -268,7 +270,7 @@ void test_empty_tile_count() {
             std::abort();
             return MockTileResult{};
         });
-    assert(par_results.empty());
+    TEST_ASSERT(par_results.empty());
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -283,7 +285,7 @@ void test_single_tile_n1() {
     apply_env("1");
     auto results = parallel_apply_tiles<MockTileResult>(1, mock_scan);
 
-    assert(results.size() == 1);
+    TEST_ASSERT(results.size() == 1);
     MockTileResult expect = mock_scan(0);
     if (!(results[0] == expect)) {
         std::cerr << "\n  ERROR: got value=" << results[0].value << ", expected " << expect.value
@@ -313,7 +315,7 @@ void test_single_tile_n4_no_stall() {
     auto t1 = std::chrono::steady_clock::now();
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    assert(results.size() == 1);
+    TEST_ASSERT(results.size() == 1);
     MockTileResult expect = mock_scan(0);
     if (!(results[0] == expect)) {
         std::cerr << "\n  ERROR: got value=" << results[0].value << ", expected " << expect.value
@@ -431,7 +433,7 @@ void test_n1_vs_n_hw_parity_heavy() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (!(seq[i] == par[i])) {
             std::cerr << "\n  ERROR: idx " << i << " seq.summary=" << seq[i].summary
@@ -471,7 +473,7 @@ void test_move_only_result_type() {
     // Sequential.
     apply_env("1");
     auto seq = parallel_apply_tiles<std::unique_ptr<int>>(kTileCount, unique_scan);
-    assert(seq.size() == kTileCount);
+    TEST_ASSERT(seq.size() == kTileCount);
     for (std::size_t i = 0; i < kTileCount; ++i) {
         if (!seq[i]) {
             std::cerr << "\n  ERROR seq: null pointer at idx " << i << std::endl;
@@ -488,7 +490,7 @@ void test_move_only_result_type() {
     // Parallel.
     apply_env("4");
     auto par = parallel_apply_tiles<std::unique_ptr<int>>(kTileCount, unique_scan);
-    assert(par.size() == kTileCount);
+    TEST_ASSERT(par.size() == kTileCount);
     for (std::size_t i = 0; i < kTileCount; ++i) {
         if (!par[i]) {
             std::cerr << "\n  ERROR par: null pointer at idx " << i << std::endl;
@@ -576,7 +578,7 @@ void test_reset_env_cache_hook() {
     // Establish baseline cached value of 1 from unset env.
     apply_env(nullptr);
     int v1 = sieve_apply_tile_threads();
-    assert(v1 == 1);
+    TEST_ASSERT(v1 == 1);
 
     // Set env to 4, but DO NOT call reset - cache still holds 1.
     setenv("GNFS_SIEVE_APPLY_TILE_THREADS", "4", /*overwrite=*/1);
@@ -664,24 +666,31 @@ void test_resolve_helper() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Sieve Apply-Tile Parallel Dispatch Tests ===" << std::endl;
 
-    test_env_unset_defaults_to_one();
-    test_env_zero_to_one();
-    test_env_four();
-    test_env_clamp_at_hw_times_two();
-    test_env_extreme_positive_clamps();
-    test_env_numeric_prefix();
-    test_empty_tile_count();
-    test_single_tile_n1();
-    test_single_tile_n4_no_stall();
-    test_100_tiles_n1_baseline();
-    test_n1_vs_n4_parity_simple();
-    test_n1_vs_n_hw_parity_heavy();
-    test_move_only_result_type();
-    test_tile_fn_exception_propagates();
-    test_reset_env_cache_hook();
-    test_resolve_helper();
+    failed += !run_case(test_env_unset_defaults_to_one);
+    failed += !run_case(test_env_zero_to_one);
+    failed += !run_case(test_env_four);
+    failed += !run_case(test_env_clamp_at_hw_times_two);
+    failed += !run_case(test_env_extreme_positive_clamps);
+    failed += !run_case(test_env_numeric_prefix);
+    failed += !run_case(test_empty_tile_count);
+    failed += !run_case(test_single_tile_n1);
+    failed += !run_case(test_single_tile_n4_no_stall);
+    failed += !run_case(test_100_tiles_n1_baseline);
+    failed += !run_case(test_n1_vs_n4_parity_simple);
+    failed += !run_case(test_n1_vs_n_hw_parity_heavy);
+    failed += !run_case(test_move_only_result_type);
+    failed += !run_case(test_tile_fn_exception_propagates);
+    failed += !run_case(test_reset_env_cache_hook);
+    failed += !run_case(test_resolve_helper);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All Sieve Apply-Tile Parallel Tests PASSED ===" << std::endl;
     return 0;

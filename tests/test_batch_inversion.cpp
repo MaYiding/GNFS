@@ -19,7 +19,8 @@
 #include <gnfs/cofactor/batch_inversion.hpp>
 #include <gnfs/core/integer.hpp>
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <cstdint>
 #include <cstdlib>
 #include <gmp.h>
@@ -35,6 +36,7 @@ using gnfs::cofactor::ecm_batch_inv_enabled;
 using gnfs::cofactor::ecm_batch_inv_reset_env_cache_for_testing;
 using gnfs::cofactor::naive_mod_inverse;
 using gnfs::core::Integer;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -86,12 +88,12 @@ void assert_same(const BatchInvResult& a, const BatchInvResult& b, const char* l
 // every inverse is reduced into [0, n).
 void verify_inverses(const std::vector<Integer>& values, const std::vector<Integer>& inverses,
                      const Integer& n) {
-    assert(values.size() == inverses.size());
+    TEST_ASSERT(values.size() == inverses.size());
     Integer prod;
     for (std::size_t i = 0; i < values.size(); ++i) {
         // 0 <= inv < n
-        assert(!inverses[i].is_negative());
-        assert(inverses[i].compare(n) < 0);
+        TEST_ASSERT(!inverses[i].is_negative());
+        TEST_ASSERT(inverses[i].compare(n) < 0);
         mpz_mul(prod.get_mpz(), values[i].get_mpz(), inverses[i].get_mpz());
         mpz_mod(prod.get_mpz(), prod.get_mpz(), n.get_mpz());
         if (!prod.is_one()) {
@@ -133,7 +135,7 @@ std::vector<Integer> random_coprime_values(const Integer& n, std::size_t k, uint
 void test_env_unset_default_off() {
     std::cout << "Test 1: ENV unset -> default OFF..." << std::flush;
     apply_env(nullptr);
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
     std::cout << " PASS\n";
 }
 
@@ -143,7 +145,7 @@ void test_env_unset_default_off() {
 void test_env_one_enabled() {
     std::cout << "Test 2: ENV \"1\" -> enabled..." << std::flush;
     apply_env("1");
-    assert(ecm_batch_inv_enabled() == true);
+    TEST_ASSERT(ecm_batch_inv_enabled() == true);
     apply_env(nullptr);
     std::cout << " PASS\n";
 }
@@ -156,35 +158,35 @@ void test_env_other_values_off() {
 
     // Empty string -> OFF
     apply_env("");
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     // "0" -> OFF
     apply_env("0");
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     // "2" -> OFF (not exactly "1")
     apply_env("2");
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     // "true" -> OFF
     apply_env("true");
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     // "garbage" -> OFF
     apply_env("garbage");
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     // "10" -> OFF (not exactly "1")
     apply_env("10");
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     // " 1" leading space -> OFF (strict equality)
     apply_env(" 1");
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     // "1 " trailing space -> OFF (strict equality)
     apply_env("1 ");
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     apply_env(nullptr);
     std::cout << " PASS (8 non-\"1\" values rejected)\n";
@@ -200,12 +202,12 @@ void test_empty_input() {
     std::vector<Integer> empty_values;
 
     auto batch = batch_mod_inverse(empty_values, n);
-    assert(batch.inverses.empty());
-    assert(!batch.found_factor.has_value());
+    TEST_ASSERT(batch.inverses.empty());
+    TEST_ASSERT(!batch.found_factor.has_value());
 
     auto naive = naive_mod_inverse(empty_values, n);
-    assert(naive.inverses.empty());
-    assert(!naive.found_factor.has_value());
+    TEST_ASSERT(naive.inverses.empty());
+    TEST_ASSERT(!naive.found_factor.has_value());
 
     assert_same(batch, naive, "empty");
     std::cout << " PASS\n";
@@ -224,15 +226,15 @@ void test_single_input() {
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
 
-    assert(batch.inverses.size() == 1);
-    assert(naive.inverses.size() == 1);
+    TEST_ASSERT(batch.inverses.size() == 1);
+    TEST_ASSERT(naive.inverses.size() == 1);
     assert_same(batch, naive, "k=1");
 
     // Cross-check against a fresh mpz_invert call.
     Integer expected;
     int ok = mpz_invert(expected.get_mpz(), values[0].get_mpz(), n.get_mpz());
-    assert(ok == 1);
-    assert(batch.inverses[0].compare(expected) == 0);
+    TEST_ASSERT(ok == 1);
+    TEST_ASSERT(batch.inverses[0].compare(expected) == 0);
 
     verify_inverses(values, batch.inverses, n);
     std::cout << " PASS\n";
@@ -254,8 +256,8 @@ void test_small_batch_parity() {
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
 
-    assert(batch.inverses.size() == 5);
-    assert(naive.inverses.size() == 5);
+    TEST_ASSERT(batch.inverses.size() == 5);
+    TEST_ASSERT(naive.inverses.size() == 5);
     assert_same(batch, naive, "k=5 small");
     verify_inverses(values, batch.inverses, n);
 
@@ -270,16 +272,16 @@ void test_medium_batch_parity() {
 
     // 18446744073709551557 = largest prime below 2^64 (well-known).
     Integer n{"18446744073709551557", 10};
-    assert(n.is_probable_prime(25) != 0);
+    TEST_ASSERT(n.is_probable_prime(25) != 0);
 
     auto values = random_coprime_values(n, /*k=*/20, /*seed=*/42);
-    assert(values.size() == 20);
+    TEST_ASSERT(values.size() == 20);
 
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
 
-    assert(batch.inverses.size() == 20);
-    assert(naive.inverses.size() == 20);
+    TEST_ASSERT(batch.inverses.size() == 20);
+    TEST_ASSERT(naive.inverses.size() == 20);
     assert_same(batch, naive, "k=20 medium");
     verify_inverses(values, batch.inverses, n);
 
@@ -297,16 +299,16 @@ void test_large_batch_parity() {
     // 2^200 = 1606938044258990275541962092341162602522202993782792835301376.
     // 2^200 + 235 is prime (Miller-Rabin via mpz_probab_prime_p).
     Integer n("1606938044258990275541962092341162602522202993782792835301611", 10);
-    assert(n.is_probable_prime(25) != 0);
+    TEST_ASSERT(n.is_probable_prime(25) != 0);
 
     auto values = random_coprime_values(n, /*k=*/100, /*seed=*/12345);
-    assert(values.size() == 100);
+    TEST_ASSERT(values.size() == 100);
 
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
 
-    assert(batch.inverses.size() == 100);
-    assert(naive.inverses.size() == 100);
+    TEST_ASSERT(batch.inverses.size() == 100);
+    TEST_ASSERT(naive.inverses.size() == 100);
     assert_same(batch, naive, "k=100 large");
     verify_inverses(values, batch.inverses, n);
 
@@ -326,7 +328,7 @@ void test_found_factor() {
     Integer p2{int64_t{103}};
     Integer n;
     mpz_mul(n.get_mpz(), p1.get_mpz(), p2.get_mpz());
-    assert(n.to_uint64() == 10403);
+    TEST_ASSERT(n.to_uint64() == 10403);
 
     std::vector<Integer> values;
     values.push_back(p1.clone());           // gcd(101, 10403) = 101
@@ -337,19 +339,19 @@ void test_found_factor() {
     auto naive = naive_mod_inverse(values, n);
 
     // Both paths must fail (inverses empty) and report the same culprit.
-    assert(batch.inverses.empty());
-    assert(naive.inverses.empty());
-    assert(batch.found_factor.has_value());
-    assert(naive.found_factor.has_value());
-    assert(batch.found_factor->compare(*naive.found_factor) == 0);
+    TEST_ASSERT(batch.inverses.empty());
+    TEST_ASSERT(naive.inverses.empty());
+    TEST_ASSERT(batch.found_factor.has_value());
+    TEST_ASSERT(naive.found_factor.has_value());
+    TEST_ASSERT(batch.found_factor->compare(*naive.found_factor) == 0);
 
     // Specifically the first non-trivial gcd in the sweep is 101.
-    assert(batch.found_factor->compare(p1) == 0);
+    TEST_ASSERT(batch.found_factor->compare(p1) == 0);
 
     // Also verify the factor divides n.
     Integer rem;
     mpz_mod(rem.get_mpz(), n.get_mpz(), batch.found_factor->get_mpz());
-    assert(rem.is_zero());
+    TEST_ASSERT(rem.is_zero());
 
     std::cout << " PASS (found factor = " << batch.found_factor->to_string() << ")\n";
 }
@@ -362,19 +364,19 @@ void test_reset_env_cache() {
 
     // First read with env unset.
     apply_env(nullptr);
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     // Change env BUT do not reset: cached value sticks.
     setenv("GNFS_ECM_BATCH_INV", "1", 1);
-    assert(ecm_batch_inv_enabled() == false); // still cached OFF
+    TEST_ASSERT(ecm_batch_inv_enabled() == false); // still cached OFF
 
     // Reset cache: next read picks up the new env value.
     ecm_batch_inv_reset_env_cache_for_testing();
-    assert(ecm_batch_inv_enabled() == true);
+    TEST_ASSERT(ecm_batch_inv_enabled() == true);
 
     // Flip back to unset with reset, verify OFF re-cached.
     apply_env(nullptr);
-    assert(ecm_batch_inv_enabled() == false);
+    TEST_ASSERT(ecm_batch_inv_enabled() == false);
 
     std::cout << " PASS\n";
 }
@@ -394,14 +396,14 @@ void test_boundary_values() {
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
 
-    assert(batch.inverses.size() == 3);
+    TEST_ASSERT(batch.inverses.size() == 3);
     assert_same(batch, naive, "boundary");
     verify_inverses(values, batch.inverses, n);
 
     // 1^{-1} mod 101 == 1
-    assert(batch.inverses[0].to_uint64() == 1);
+    TEST_ASSERT(batch.inverses[0].to_uint64() == 1);
     // 100^{-1} mod 101 == 100 (since 100 == -1 mod 101 and (-1)^2 == 1)
-    assert(batch.inverses[1].to_uint64() == 100);
+    TEST_ASSERT(batch.inverses[1].to_uint64() == 100);
 
     std::cout << " PASS\n";
 }
@@ -426,7 +428,7 @@ void test_unreduced_inputs() {
     auto batch = batch_mod_inverse(values, n);
     auto naive = naive_mod_inverse(values, n);
 
-    assert(batch.inverses.size() == 3);
+    TEST_ASSERT(batch.inverses.size() == 3);
     assert_same(batch, naive, "unreduced");
     // verify_inverses uses values directly, so v*inv mod n == 1 still
     // holds (mpz_mod absorbs the reduction).
@@ -471,21 +473,28 @@ void test_invalid_modulus() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Batch Modular Inversion Tests ===" << std::endl;
 
-    test_env_unset_default_off();
-    test_env_one_enabled();
-    test_env_other_values_off();
-    test_empty_input();
-    test_single_input();
-    test_small_batch_parity();
-    test_medium_batch_parity();
-    test_large_batch_parity();
-    test_found_factor();
-    test_reset_env_cache();
-    test_boundary_values();
-    test_unreduced_inputs();
-    test_invalid_modulus();
+    failed += !run_case(test_env_unset_default_off);
+    failed += !run_case(test_env_one_enabled);
+    failed += !run_case(test_env_other_values_off);
+    failed += !run_case(test_empty_input);
+    failed += !run_case(test_single_input);
+    failed += !run_case(test_small_batch_parity);
+    failed += !run_case(test_medium_batch_parity);
+    failed += !run_case(test_large_batch_parity);
+    failed += !run_case(test_found_factor);
+    failed += !run_case(test_reset_env_cache);
+    failed += !run_case(test_boundary_values);
+    failed += !run_case(test_unreduced_inputs);
+    failed += !run_case(test_invalid_modulus);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All Batch Inversion Tests PASSED ===" << std::endl;
     return 0;

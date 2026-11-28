@@ -116,6 +116,8 @@ New tests require all of the following:
 - placement in `SMOKE_TESTS` only for deterministic `instant` tests;
 - module mapping and slow-path mapping where applicable.
 
+Test checks use `TEST_ASSERT` from `tests/support/test_assert.hpp`, which stays active in Release builds. Do not include `<cassert>` or call `assert()` under `tests/`; Script Checks rejects both.
+
 Run `./scripts/test.sh list` after catalog changes. Follow `docs/testing-ci-policy.md` for tier definitions; do not classify from Release timing alone.
 
 ## Documentation Placement

@@ -10,8 +10,9 @@
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/factor_base/builder.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <array>
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -23,6 +24,7 @@ using gnfs::cofactor::wheel::strip_2;
 using gnfs::cofactor::wheel::strip_235;
 using gnfs::cofactor::wheel::strip_3;
 using gnfs::cofactor::wheel::strip_5;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -43,22 +45,22 @@ void test_strip_2_basic() {
     uint8_t exp = 99;
 
     // zero
-    assert(strip_2(uint64_t{0}, exp) == 0 && exp == 0);
+    TEST_ASSERT(strip_2(uint64_t{0}, exp) == 0 && exp == 0);
     // odd
-    assert(strip_2(uint64_t{1}, exp) == 1 && exp == 0);
-    assert(strip_2(uint64_t{3}, exp) == 3 && exp == 0);
-    assert(strip_2(uint64_t{7}, exp) == 7 && exp == 0);
+    TEST_ASSERT(strip_2(uint64_t{1}, exp) == 1 && exp == 0);
+    TEST_ASSERT(strip_2(uint64_t{3}, exp) == 3 && exp == 0);
+    TEST_ASSERT(strip_2(uint64_t{7}, exp) == 7 && exp == 0);
     // pure powers of 2
-    assert(strip_2(uint64_t{2}, exp) == 1 && exp == 1);
-    assert(strip_2(uint64_t{4}, exp) == 1 && exp == 2);
-    assert(strip_2(uint64_t{8}, exp) == 1 && exp == 3);
-    assert(strip_2(uint64_t{1024}, exp) == 1 && exp == 10);
+    TEST_ASSERT(strip_2(uint64_t{2}, exp) == 1 && exp == 1);
+    TEST_ASSERT(strip_2(uint64_t{4}, exp) == 1 && exp == 2);
+    TEST_ASSERT(strip_2(uint64_t{8}, exp) == 1 && exp == 3);
+    TEST_ASSERT(strip_2(uint64_t{1024}, exp) == 1 && exp == 10);
     // mixed
-    assert(strip_2(uint64_t{12}, exp) == 3 && exp == 2); // 12 = 4 * 3
-    assert(strip_2(uint64_t{40}, exp) == 5 && exp == 3); // 40 = 8 * 5
-    assert(strip_2(uint64_t{96}, exp) == 3 && exp == 5); // 96 = 32 * 3
+    TEST_ASSERT(strip_2(uint64_t{12}, exp) == 3 && exp == 2); // 12 = 4 * 3
+    TEST_ASSERT(strip_2(uint64_t{40}, exp) == 5 && exp == 3); // 40 = 8 * 5
+    TEST_ASSERT(strip_2(uint64_t{96}, exp) == 3 && exp == 5); // 96 = 32 * 3
     // boundary: 2^63
-    assert(strip_2(uint64_t{1ULL << 63}, exp) == 1 && exp == 63);
+    TEST_ASSERT(strip_2(uint64_t{1ULL << 63}, exp) == 1 && exp == 63);
     std::cout << " PASS\n";
 }
 
@@ -74,7 +76,7 @@ void test_strip_2_random() {
             std::fprintf(stderr, "MISMATCH v=%llu wheel=(%llu,%u) naive=(%llu,%u)\n",
                          (unsigned long long)v, (unsigned long long)r_wheel, e_wheel,
                          (unsigned long long)r_naive, e_naive);
-            assert(false);
+            TEST_ASSERT(false);
         }
     }
     std::cout << " PASS (10000 iters)\n";
@@ -85,33 +87,33 @@ void test_strip_2_u128() {
     std::cout << "  strip_2 uint128..." << std::flush;
     uint8_t exp;
     // zero
-    assert(strip_2(__uint128_t{0}, exp) == 0 && exp == 0);
+    TEST_ASSERT(strip_2(__uint128_t{0}, exp) == 0 && exp == 0);
     // low-limb zero, hi=1: value = 2^64
     __uint128_t v = __uint128_t{1} << 64;
     auto r = strip_2(v, exp);
-    assert(r == 1);
-    assert(exp == 64);
+    TEST_ASSERT(r == 1);
+    TEST_ASSERT(exp == 64);
     // low-limb zero, hi=3: 3 * 2^64 → after strip, odd part = 3
     v = (__uint128_t{3}) << 64;
     r = strip_2(v, exp);
-    assert(r == 3);
-    assert(exp == 64);
+    TEST_ASSERT(r == 3);
+    TEST_ASSERT(exp == 64);
     // mixed: 2^70 * 5
     v = (__uint128_t{5}) << 70;
     r = strip_2(v, exp);
-    assert(r == 5);
-    assert(exp == 70);
+    TEST_ASSERT(r == 5);
+    TEST_ASSERT(exp == 70);
     // 2^127
     v = __uint128_t{1} << 127;
     r = strip_2(v, exp);
-    assert(r == 1);
-    assert(exp == 127);
+    TEST_ASSERT(r == 1);
+    TEST_ASSERT(exp == 127);
     // arbitrary odd 128-bit value
     v = (__uint128_t{0xDEADBEEFULL} << 64) | uint64_t{0xCAFEBABE12345677ULL};
     // 0x...77 is odd, so no shift
     r = strip_2(v, exp);
-    assert(r == v);
-    assert(exp == 0);
+    TEST_ASSERT(r == v);
+    TEST_ASSERT(exp == 0);
     std::cout << " PASS\n";
 }
 #endif
@@ -121,14 +123,14 @@ void test_strip_2_u128() {
 void test_strip_3() {
     std::cout << "  strip_3 vs naive..." << std::flush;
     uint8_t exp;
-    assert(strip_3(uint64_t{0}, exp) == 0 && exp == 0);
-    assert(strip_3(uint64_t{1}, exp) == 1 && exp == 0);
-    assert(strip_3(uint64_t{2}, exp) == 2 && exp == 0);
-    assert(strip_3(uint64_t{3}, exp) == 1 && exp == 1);
-    assert(strip_3(uint64_t{9}, exp) == 1 && exp == 2);
-    assert(strip_3(uint64_t{27}, exp) == 1 && exp == 3);
-    assert(strip_3(uint64_t{30}, exp) == 10 && exp == 1);
-    assert(strip_3(uint64_t{81 * 7}, exp) == 7 && exp == 4);
+    TEST_ASSERT(strip_3(uint64_t{0}, exp) == 0 && exp == 0);
+    TEST_ASSERT(strip_3(uint64_t{1}, exp) == 1 && exp == 0);
+    TEST_ASSERT(strip_3(uint64_t{2}, exp) == 2 && exp == 0);
+    TEST_ASSERT(strip_3(uint64_t{3}, exp) == 1 && exp == 1);
+    TEST_ASSERT(strip_3(uint64_t{9}, exp) == 1 && exp == 2);
+    TEST_ASSERT(strip_3(uint64_t{27}, exp) == 1 && exp == 3);
+    TEST_ASSERT(strip_3(uint64_t{30}, exp) == 10 && exp == 1);
+    TEST_ASSERT(strip_3(uint64_t{81 * 7}, exp) == 7 && exp == 4);
 
     std::mt19937_64 rng(0xABCDEF12345ULL);
     for (int i = 0; i < 10000; ++i) {
@@ -136,7 +138,7 @@ void test_strip_3() {
         uint8_t e_wheel = 99, e_naive = 99;
         uint64_t r_wheel = strip_3(v, e_wheel);
         uint64_t r_naive = naive_strip<uint64_t>(v, 3, e_naive);
-        assert(r_wheel == r_naive && e_wheel == e_naive);
+        TEST_ASSERT(r_wheel == r_naive && e_wheel == e_naive);
     }
     std::cout << " PASS\n";
 }
@@ -144,11 +146,11 @@ void test_strip_3() {
 void test_strip_5() {
     std::cout << "  strip_5 vs naive..." << std::flush;
     uint8_t exp;
-    assert(strip_5(uint64_t{0}, exp) == 0 && exp == 0);
-    assert(strip_5(uint64_t{4}, exp) == 4 && exp == 0);
-    assert(strip_5(uint64_t{5}, exp) == 1 && exp == 1);
-    assert(strip_5(uint64_t{25}, exp) == 1 && exp == 2);
-    assert(strip_5(uint64_t{125 * 11}, exp) == 11 && exp == 3);
+    TEST_ASSERT(strip_5(uint64_t{0}, exp) == 0 && exp == 0);
+    TEST_ASSERT(strip_5(uint64_t{4}, exp) == 4 && exp == 0);
+    TEST_ASSERT(strip_5(uint64_t{5}, exp) == 1 && exp == 1);
+    TEST_ASSERT(strip_5(uint64_t{25}, exp) == 1 && exp == 2);
+    TEST_ASSERT(strip_5(uint64_t{125 * 11}, exp) == 11 && exp == 3);
 
     std::mt19937_64 rng(0x5555AAAA1234ULL);
     for (int i = 0; i < 10000; ++i) {
@@ -156,7 +158,7 @@ void test_strip_5() {
         uint8_t e_wheel = 99, e_naive = 99;
         uint64_t r_wheel = strip_5(v, e_wheel);
         uint64_t r_naive = naive_strip<uint64_t>(v, 5, e_naive);
-        assert(r_wheel == r_naive && e_wheel == e_naive);
+        TEST_ASSERT(r_wheel == r_naive && e_wheel == e_naive);
     }
     std::cout << " PASS\n";
 }
@@ -169,16 +171,16 @@ void test_strip_235() {
     // 2^4 * 3^2 * 5^3 * 7 = 16 * 9 * 125 * 7 = 126000
     uint64_t v = 16ULL * 9ULL * 125ULL * 7ULL;
     auto r = strip_235(v, e2, e3, e5);
-    assert(r == 7);
-    assert(e2 == 4 && e3 == 2 && e5 == 3);
+    TEST_ASSERT(r == 7);
+    TEST_ASSERT(e2 == 4 && e3 == 2 && e5 == 3);
 
     // 1 (no factors)
     r = strip_235(uint64_t{1}, e2, e3, e5);
-    assert(r == 1 && e2 == 0 && e3 == 0 && e5 == 0);
+    TEST_ASSERT(r == 1 && e2 == 0 && e3 == 0 && e5 == 0);
 
     // value coprime to 30
     r = strip_235(uint64_t{49}, e2, e3, e5);
-    assert(r == 49 && e2 == 0 && e3 == 0 && e5 == 0);
+    TEST_ASSERT(r == 49 && e2 == 0 && e3 == 0 && e5 == 0);
 
     // edge: random sweep
     std::mt19937_64 rng(0xDEADBEEFCAFEBABEULL);
@@ -191,7 +193,7 @@ void test_strip_235() {
         uint64_t r_naive = naive_strip<uint64_t>(v0, 2, a);
         r_naive = naive_strip<uint64_t>(r_naive, 3, b);
         r_naive = naive_strip<uint64_t>(r_naive, 5, c);
-        assert(r_wheel == r_naive && e2x == a && e3x == b && e5x == c);
+        TEST_ASSERT(r_wheel == r_naive && e2x == a && e3x == b && e5x == c);
     }
     std::cout << " PASS\n";
 }
@@ -219,43 +221,43 @@ void test_divider_smoke() {
 
     // 30 = 2 * 3 * 5
     auto r = d.divide_rational(gnfs::core::Integer{uint64_t{30}});
-    assert(r.is_smooth);
-    assert(r.factor_indices.size() == 3);
-    assert(r.factor_indices[0] == 0 && r.exponents[0] == 1);
-    assert(r.factor_indices[1] == 1 && r.exponents[1] == 1);
-    assert(r.factor_indices[2] == 2 && r.exponents[2] == 1);
+    TEST_ASSERT(r.is_smooth);
+    TEST_ASSERT(r.factor_indices.size() == 3);
+    TEST_ASSERT(r.factor_indices[0] == 0 && r.exponents[0] == 1);
+    TEST_ASSERT(r.factor_indices[1] == 1 && r.exponents[1] == 1);
+    TEST_ASSERT(r.factor_indices[2] == 2 && r.exponents[2] == 1);
 
     // 2^4 * 3^2 * 5 * 7 = 5040
     r = d.divide_rational(gnfs::core::Integer{uint64_t{5040}});
-    assert(r.is_smooth);
-    assert(r.factor_indices.size() == 4);
-    assert(r.factor_indices[0] == 0 && r.exponents[0] == 4);
-    assert(r.factor_indices[1] == 1 && r.exponents[1] == 2);
-    assert(r.factor_indices[2] == 2 && r.exponents[2] == 1);
-    assert(r.factor_indices[3] == 3 && r.exponents[3] == 1);
+    TEST_ASSERT(r.is_smooth);
+    TEST_ASSERT(r.factor_indices.size() == 4);
+    TEST_ASSERT(r.factor_indices[0] == 0 && r.exponents[0] == 4);
+    TEST_ASSERT(r.factor_indices[1] == 1 && r.exponents[1] == 2);
+    TEST_ASSERT(r.factor_indices[2] == 2 && r.exponents[2] == 1);
+    TEST_ASSERT(r.factor_indices[3] == 3 && r.exponents[3] == 1);
 
     // smooth with no 2/3/5: 7 * 11 = 77
     r = d.divide_rational(gnfs::core::Integer{uint64_t{77}});
-    assert(r.is_smooth);
-    assert(r.factor_indices.size() == 2);
-    assert(r.factor_indices[0] == 3 && r.exponents[0] == 1);
-    assert(r.factor_indices[1] == 4 && r.exponents[1] == 1);
+    TEST_ASSERT(r.is_smooth);
+    TEST_ASSERT(r.factor_indices.size() == 2);
+    TEST_ASSERT(r.factor_indices[0] == 3 && r.exponents[0] == 1);
+    TEST_ASSERT(r.factor_indices[1] == 4 && r.exponents[1] == 1);
 
     // value 1: trivially smooth
     r = d.divide_rational(gnfs::core::Integer{uint64_t{1}});
-    assert(r.is_smooth);
-    assert(r.factor_indices.empty());
+    TEST_ASSERT(r.is_smooth);
+    TEST_ASSERT(r.factor_indices.empty());
 
     // value 0: special-case smooth + cofactor=1
     r = d.divide_rational(gnfs::core::Integer{uint64_t{0}});
-    assert(r.is_smooth);
-    assert(r.factor_indices.empty());
+    TEST_ASSERT(r.is_smooth);
+    TEST_ASSERT(r.factor_indices.empty());
 
     // value with cofactor: 30 * 53 (53 not in FB)
     r = d.divide_rational(gnfs::core::Integer{uint64_t{30 * 53}});
-    assert(!r.is_smooth);
-    assert(r.factor_indices.size() == 3);
-    assert(r.cofactor.fits_uint64() && r.cofactor.to_uint64() == 53);
+    TEST_ASSERT(!r.is_smooth);
+    TEST_ASSERT(r.factor_indices.size() == 3);
+    TEST_ASSERT(r.cofactor.fits_uint64() && r.cofactor.to_uint64() == 53);
 
     std::cout << " PASS\n";
 }
@@ -349,11 +351,11 @@ void test_divider_random_vs_reference() {
                          (unsigned long long)v, int(r.is_smooth), r.factor_indices.size(),
                          r.cofactor.to_string().c_str(), int(smooth2), ref_idx2.size(),
                          (unsigned long long)ref2);
-            assert(false);
+            TEST_ASSERT(false);
         }
         // also compare cofactor
         if (r.cofactor.fits_uint64()) {
-            assert(r.cofactor.to_uint64() == (smooth2 ? 1ULL : ref2));
+            TEST_ASSERT(r.cofactor.to_uint64() == (smooth2 ? 1ULL : ref2));
         }
     }
     std::cout << " PASS (5000 iters)\n";
@@ -452,7 +454,7 @@ void test_divider_u128_path() {
         if (r.is_smooth != smooth || r.factor_indices != ref_idx || r.exponents != ref_exp) {
             std::fprintf(stderr, "U128 MISMATCH idx=%d wheel=(sm=%d,sz=%zu) ref=(sm=%d,sz=%zu)\n",
                          i, int(r.is_smooth), r.factor_indices.size(), int(smooth), ref_idx.size());
-            assert(false);
+            TEST_ASSERT(false);
         }
     }
     std::cout << " PASS (1000 iters)\n";
@@ -468,16 +470,16 @@ void test_divider_without_235_in_fb() {
 
     // 7 * 11 = 77 — smooth
     auto r = d.divide_rational(gnfs::core::Integer{uint64_t{77}});
-    assert(r.is_smooth);
-    assert(r.factor_indices.size() == 2);
-    assert(r.factor_indices[0] == 0);
-    assert(r.factor_indices[1] == 1);
+    TEST_ASSERT(r.is_smooth);
+    TEST_ASSERT(r.factor_indices.size() == 2);
+    TEST_ASSERT(r.factor_indices[0] == 0);
+    TEST_ASSERT(r.factor_indices[1] == 1);
 
     // 30 contains 2,3,5 — not in FB → cofactor=30
     r = d.divide_rational(gnfs::core::Integer{uint64_t{30}});
-    assert(!r.is_smooth);
-    assert(r.factor_indices.empty());
-    assert(r.cofactor.fits_uint64() && r.cofactor.to_uint64() == 30);
+    TEST_ASSERT(!r.is_smooth);
+    TEST_ASSERT(r.factor_indices.empty());
+    TEST_ASSERT(r.cofactor.fits_uint64() && r.cofactor.to_uint64() == 30);
 
     std::cout << " PASS\n";
 }
@@ -490,15 +492,15 @@ void test_divider_exponent_saturation() {
 
     // value = 2^63 → exp = 63 (well below 255)
     auto r = d.divide_rational(gnfs::core::Integer{uint64_t{1ULL << 63}});
-    assert(r.is_smooth);
-    assert(r.factor_indices.size() == 1);
-    assert(r.factor_indices[0] == 0);
-    assert(r.exponents[0] == 63);
+    TEST_ASSERT(r.is_smooth);
+    TEST_ASSERT(r.factor_indices.size() == 1);
+    TEST_ASSERT(r.factor_indices[0] == 0);
+    TEST_ASSERT(r.exponents[0] == 63);
 
     // value = 1 (after wheel, still 1) — no factors at all
     r = d.divide_rational(gnfs::core::Integer{uint64_t{1}});
-    assert(r.is_smooth);
-    assert(r.factor_indices.empty());
+    TEST_ASSERT(r.is_smooth);
+    TEST_ASSERT(r.factor_indices.empty());
 
     std::cout << " PASS\n";
 }
@@ -506,27 +508,34 @@ void test_divider_exponent_saturation() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Trial Wheel-2-3-5 Tests ===\n";
 
     std::cout << "[helper]\n";
-    test_strip_2_basic();
-    test_strip_2_random();
+    failed += !run_case(test_strip_2_basic);
+    failed += !run_case(test_strip_2_random);
 #if defined(__SIZEOF_INT128__)
-    test_strip_2_u128();
+    failed += !run_case(test_strip_2_u128);
 #endif
-    test_strip_3();
-    test_strip_5();
-    test_strip_235();
+    failed += !run_case(test_strip_3);
+    failed += !run_case(test_strip_5);
+    failed += !run_case(test_strip_235);
 
     std::cout << "[divider equivalence]\n";
-    test_divider_smoke();
-    test_divider_random_vs_reference();
+    failed += !run_case(test_divider_smoke);
+    failed += !run_case(test_divider_random_vs_reference);
 #if defined(__SIZEOF_INT128__)
-    test_divider_u128_full_width();
-    test_divider_u128_path();
+    failed += !run_case(test_divider_u128_full_width);
+    failed += !run_case(test_divider_u128_path);
 #endif
-    test_divider_without_235_in_fb();
-    test_divider_exponent_saturation();
+    failed += !run_case(test_divider_without_235_in_fb);
+    failed += !run_case(test_divider_exponent_saturation);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "=== All Trial Wheel Tests PASSED ===\n";
     return 0;

@@ -22,7 +22,6 @@
 #include <gnfs/util/safe_math.hpp>
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <iomanip>

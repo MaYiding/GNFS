@@ -5,25 +5,28 @@
 // Also includes a perf-info probe that prints push timing for pool ON vs OFF;
 // not an assertion — only reports for human inspection during local runs.
 
-// Force assert() to remain live even under -DNDEBUG.
+// Keep NDEBUG undefined in this translation unit: library headers included
+// below may keep their own assert checks live here. The checks of this file
+// use TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
-#  undef NDEBUG
+#undef NDEBUG
 #endif
 
 #include "gnfs/relation/collector.hpp"
 #include "gnfs/util/memory_pool.hpp"
 #include "gnfs/util/safe_math.hpp"
+#include "support/test_assert.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <numeric>
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs;
 using namespace gnfs::relation;
 using namespace gnfs::core;
@@ -46,7 +49,8 @@ std::vector<ABFactors> make_deterministic_sequence(int count) {
     uint64_t b = 2;
     for (int i = 0; i < count; ++i) {
         // Bump until gcd(a,b)=1
-        while (std::gcd(util::safe_abs(a), b) != 1) ++b;
+        while (std::gcd(util::safe_abs(a), b) != 1)
+            ++b;
         ABFactors r;
         r.a = a;
         r.b = b;
@@ -70,19 +74,18 @@ Relation to_relation(const ABFactors& f) {
 // Sort relations by (a,b) for stable comparison.
 void sort_by_ab(std::vector<Relation>& v) {
     std::sort(v.begin(), v.end(), [](const Relation& l, const Relation& r) {
-        if (l.b != r.b) return l.b < r.b;
+        if (l.b != r.b)
+            return l.b < r.b;
         return l.a < r.a;
     });
 }
 
 bool same_relation(const Relation& l, const Relation& r) {
-    return l.a == r.a && l.b == r.b &&
-           l.rational_factors == r.rational_factors &&
+    return l.a == r.a && l.b == r.b && l.rational_factors == r.rational_factors &&
            l.algebraic_factors == r.algebraic_factors;
 }
 
-std::vector<Relation> collect_with_config(const std::vector<ABFactors>& seq,
-                                          bool use_pool,
+std::vector<Relation> collect_with_config(const std::vector<ABFactors>& seq, bool use_pool,
                                           size_t initial_bytes) {
     CollectorConfig cfg;
     cfg.use_pool = use_pool;
@@ -91,29 +94,29 @@ std::vector<Relation> collect_with_config(const std::vector<ABFactors>& seq,
     for (const auto& f : seq) {
         Relation r = to_relation(f);
         bool added = collector.add(std::move(r));
-        (void)added;  // Some inputs may legitimately fail validation in
+        (void)added; // Some inputs may legitimately fail validation in
                      // extreme corner cases (e.g. a=b=0); deterministic seq
                      // ensures non-degenerate pairs so this should be true.
-        assert(added);
+        TEST_ASSERT(added);
     }
     return collector.get_relations();
 }
 
-}  // namespace
+} // namespace
 
 void test_small_sequence_bit_for_bit() {
     std::cout << "Testing small sequence: pool ON vs OFF bit-for-bit..." << std::endl;
     auto seq = make_deterministic_sequence(50);
 
     auto off = collect_with_config(seq, /*use_pool=*/false, /*bytes=*/0);
-    auto on  = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/64 * 1024);
+    auto on = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/64 * 1024);
 
-    assert(off.size() == on.size());
+    TEST_ASSERT(off.size() == on.size());
     sort_by_ab(off);
     sort_by_ab(on);
 
     for (size_t i = 0; i < off.size(); ++i) {
-        assert(same_relation(off[i], on[i]));
+        TEST_ASSERT(same_relation(off[i], on[i]));
     }
 
     std::cout << "  Small sequence (50 relations) bit-for-bit: PASS" << std::endl;
@@ -124,14 +127,14 @@ void test_medium_sequence_bit_for_bit() {
     auto seq = make_deterministic_sequence(5000);
 
     auto off = collect_with_config(seq, /*use_pool=*/false, /*bytes=*/0);
-    auto on  = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/1 * 1024 * 1024);
+    auto on = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/1 * 1024 * 1024);
 
-    assert(off.size() == on.size());
+    TEST_ASSERT(off.size() == on.size());
     sort_by_ab(off);
     sort_by_ab(on);
 
     for (size_t i = 0; i < off.size(); ++i) {
-        assert(same_relation(off[i], on[i]));
+        TEST_ASSERT(same_relation(off[i], on[i]));
     }
 
     std::cout << "  Medium sequence (5000 relations) bit-for-bit: PASS" << std::endl;
@@ -144,26 +147,28 @@ void test_pool_stats_match_no_pool() {
     CollectorConfig cfg_off;
     cfg_off.use_pool = false;
     RelationCollector c_off(cfg_off);
-    for (const auto& f : seq) c_off.add(to_relation(f));
+    for (const auto& f : seq)
+        c_off.add(to_relation(f));
 
     CollectorConfig cfg_on;
     cfg_on.use_pool = true;
     cfg_on.pool_initial_bytes = 256 * 1024;
     RelationCollector c_on(cfg_on);
-    for (const auto& f : seq) c_on.add(to_relation(f));
+    for (const auto& f : seq)
+        c_on.add(to_relation(f));
 
     auto s_off = c_off.stats();
-    auto s_on  = c_on.stats();
+    auto s_on = c_on.stats();
 
-    assert(s_off.total_relations == s_on.total_relations);
-    assert(s_off.full_relations == s_on.full_relations);
-    assert(s_off.partial_1lp == s_on.partial_1lp);
-    assert(s_off.partial_2lp == s_on.partial_2lp);
-    assert(s_off.duplicates_rejected == s_on.duplicates_rejected);
-    assert(s_off.invalid_rejected == s_on.invalid_rejected);
+    TEST_ASSERT(s_off.total_relations == s_on.total_relations);
+    TEST_ASSERT(s_off.full_relations == s_on.full_relations);
+    TEST_ASSERT(s_off.partial_1lp == s_on.partial_1lp);
+    TEST_ASSERT(s_off.partial_2lp == s_on.partial_2lp);
+    TEST_ASSERT(s_off.duplicates_rejected == s_on.duplicates_rejected);
+    TEST_ASSERT(s_off.invalid_rejected == s_on.invalid_rejected);
 
-    assert(c_off.size() == c_on.size());
-    assert(c_off.empty() == c_on.empty());
+    TEST_ASSERT(c_off.size() == c_on.size());
+    TEST_ASSERT(c_off.empty() == c_on.empty());
 
     std::cout << "  Pool stats parity: PASS" << std::endl;
 }
@@ -177,19 +182,21 @@ void test_clear_recycles_pool() {
     RelationCollector collector(cfg);
 
     auto seq = make_deterministic_sequence(100);
-    for (const auto& f : seq) collector.add(to_relation(f));
-    assert(collector.size() == 100);
+    for (const auto& f : seq)
+        collector.add(to_relation(f));
+    TEST_ASSERT(collector.size() == 100);
 
     collector.clear();
-    assert(collector.size() == 0);
-    assert(collector.empty());
+    TEST_ASSERT(collector.size() == 0);
+    TEST_ASSERT(collector.empty());
 
     // After clear, collector still accepts new additions through the (new) pool.
-    for (const auto& f : seq) collector.add(to_relation(f));
-    assert(collector.size() == 100);
+    for (const auto& f : seq)
+        collector.add(to_relation(f));
+    TEST_ASSERT(collector.size() == 100);
 
     auto out = collector.get_relations();
-    assert(out.size() == 100);
+    TEST_ASSERT(out.size() == 100);
 
     std::cout << "  Pool clear() recycle: PASS" << std::endl;
 }
@@ -200,8 +207,7 @@ void test_clear_recycles_pool() {
 // here — wallclock varies wildly under sanitizers and CI.
 
 void perf_info_push_100k() {
-    std::cout << "\n[perf-info] 100k push_back timing (pool OFF vs ON)..."
-              << std::endl;
+    std::cout << "\n[perf-info] 100k push_back timing (pool OFF vs ON)..." << std::endl;
     constexpr int N = 100'000;
     auto seq = make_deterministic_sequence(N);
 
@@ -213,13 +219,14 @@ void perf_info_push_100k() {
         cfg.check_duplicates = false;
         RelationCollector collector(cfg);
         auto t0 = std::chrono::steady_clock::now();
-        for (const auto& f : seq) collector.add(to_relation(f));
+        for (const auto& f : seq)
+            collector.add(to_relation(f));
         auto t1 = std::chrono::steady_clock::now();
         return std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     };
 
     auto ms_off = run(false, 0);
-    auto ms_on  = run(true, 4 * 1024 * 1024);
+    auto ms_on = run(true, 4 * 1024 * 1024);
 
     std::cout << "  pool OFF: " << ms_off << " ms (" << N << " relations)" << std::endl;
     std::cout << "  pool ON : " << ms_on << " ms (initial chunk 4 MiB)" << std::endl;
@@ -230,8 +237,7 @@ void perf_info_push_100k() {
 }
 
 void perf_info_push_10k_warm() {
-    std::cout << "\n[perf-info] 10k push_back warm timing (ENV-driven pool)..."
-              << std::endl;
+    std::cout << "\n[perf-info] 10k push_back warm timing (ENV-driven pool)..." << std::endl;
     constexpr int N = 10'000;
     auto seq = make_deterministic_sequence(N);
 
@@ -242,7 +248,8 @@ void perf_info_push_10k_warm() {
         cfg.check_duplicates = false;
         RelationCollector collector(cfg);
         auto t0 = std::chrono::steady_clock::now();
-        for (const auto& f : seq) collector.add(to_relation(f));
+        for (const auto& f : seq)
+            collector.add(to_relation(f));
         auto t1 = std::chrono::steady_clock::now();
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         std::cout << "  " << label << ": " << us << " us" << std::endl;
@@ -255,20 +262,27 @@ void perf_info_push_10k_warm() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Relation Pool Integration Tests (W6 T4) ===" << std::endl;
 
     // Ensure ENV does not contaminate test config (we drive use_pool directly)
     unsetenv("GNFS_RELATION_POOL_SIZE");
 
     // 4 correctness tests
-    test_small_sequence_bit_for_bit();
-    test_medium_sequence_bit_for_bit();
-    test_pool_stats_match_no_pool();
-    test_clear_recycles_pool();
+    failed += !run_case(test_small_sequence_bit_for_bit);
+    failed += !run_case(test_medium_sequence_bit_for_bit);
+    failed += !run_case(test_pool_stats_match_no_pool);
+    failed += !run_case(test_clear_recycles_pool);
 
     // 2 perf-info probes
-    perf_info_push_100k();
-    perf_info_push_10k_warm();
+    failed += !run_case(perf_info_push_100k);
+    failed += !run_case(perf_info_push_10k_warm);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll relation pool integration tests passed!" << std::endl;
     return 0;

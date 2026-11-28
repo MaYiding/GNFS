@@ -16,8 +16,9 @@
 
 #include <gnfs/sqrt/couveignes_parallel.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -30,6 +31,7 @@
 using gnfs::sqrt::couveignes_parallel_threads;
 using gnfs::sqrt::couveignes_parallel_threads_reset_env_cache_for_testing;
 using gnfs::sqrt::parallel_pattern_search;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -58,7 +60,7 @@ void test_env_one_explicit() {
     std::cout << "Testing ENV='1' -> 1..." << std::endl;
     set_env_and_reset("1");
     int n = couveignes_parallel_threads();
-    assert(n == 1);
+    TEST_ASSERT(n == 1);
     std::cout << "  '1' -> 1: PASSED" << std::endl;
 
     set_env_and_reset(nullptr);
@@ -124,27 +126,27 @@ void test_env_invalid_non_numeric() {
 
     // Empty string -> default 1.
     set_env_and_reset("");
-    assert(couveignes_parallel_threads() == 1);
+    TEST_ASSERT(couveignes_parallel_threads() == 1);
 
     // "0" -> non-positive -> 1.
     set_env_and_reset("0");
-    assert(couveignes_parallel_threads() == 1);
+    TEST_ASSERT(couveignes_parallel_threads() == 1);
 
     // "-3" -> non-positive -> 1.
     set_env_and_reset("-3");
-    assert(couveignes_parallel_threads() == 1);
+    TEST_ASSERT(couveignes_parallel_threads() == 1);
 
     // "abc" -> non-numeric -> 1.
     set_env_and_reset("abc");
-    assert(couveignes_parallel_threads() == 1);
+    TEST_ASSERT(couveignes_parallel_threads() == 1);
 
     // "4x" -> partial-numeric, treated as invalid -> 1 (predictable strict path).
     set_env_and_reset("4x");
-    assert(couveignes_parallel_threads() == 1);
+    TEST_ASSERT(couveignes_parallel_threads() == 1);
 
     // "  4  " -> leading whitespace, treated as invalid -> 1.
     set_env_and_reset("  4  ");
-    assert(couveignes_parallel_threads() == 1);
+    TEST_ASSERT(couveignes_parallel_threads() == 1);
 
     std::cout << "  empty/'0'/'-3'/'abc'/'4x'/'  4  ' -> 1: PASSED" << std::endl;
 
@@ -162,9 +164,9 @@ void test_sequential_no_valid() {
     };
 
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
-    assert(!result.has_value());
+    TEST_ASSERT(!result.has_value());
     // Sequential path must scan the entire range.
-    assert(calls.load() == 1024);
+    TEST_ASSERT(calls.load() == 1024);
 
     std::cout << "  N=1 no-match scanned " << calls.load() << " patterns, returned nullopt: PASSED"
               << std::endl;
@@ -183,7 +185,7 @@ void test_sequential_single_valid() {
     };
 
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
-    assert(result.has_value());
+    TEST_ASSERT(result.has_value());
     if (result.value() != 42) {
         std::cerr << "  ERROR: expected 42, got " << result.value() << std::endl;
         std::abort();
@@ -209,7 +211,7 @@ void test_parallel_single_valid_parity() {
     };
 
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
-    assert(result.has_value());
+    TEST_ASSERT(result.has_value());
     if (result.value() != 42) {
         std::cerr << "  ERROR: expected 42, got " << result.value() << std::endl;
         std::abort();
@@ -237,7 +239,7 @@ void test_parallel_multiple_valid_returns_one() {
     auto verify = [](uint64_t pattern) { return pattern == 10 || pattern == 20 || pattern == 30; };
 
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
-    assert(result.has_value());
+    TEST_ASSERT(result.has_value());
     uint64_t v = result.value();
     if (v != 10 && v != 20 && v != 30) {
         std::cerr << "  ERROR: expected 10/20/30, got " << v << std::endl;
@@ -268,7 +270,7 @@ void test_parallel_multi_valid_distributed() {
     };
 
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
-    assert(result.has_value());
+    TEST_ASSERT(result.has_value());
     uint64_t v = result.value();
     if (!verify(v)) {
         std::cerr << "  ERROR: expected one valid pattern, got " << v << std::endl;
@@ -296,7 +298,7 @@ void test_parallel_atomic_min_smallest() {
     auto verify = [](uint64_t pattern) { return pattern == 10 || pattern == 20 || pattern == 30; };
 
     auto result = parallel_pattern_search(0ULL, 1024ULL, verify);
-    assert(result.has_value());
+    TEST_ASSERT(result.has_value());
     // In this scenario the result MUST be 10 because worker 0 is the only
     // one seeing matches and it scans left-to-right.
     if (result.value() != 10) {
@@ -320,19 +322,19 @@ void test_empty_range() {
         return true;
     };
     auto r1 = parallel_pattern_search(100ULL, 100ULL, verify);
-    assert(!r1.has_value());
-    assert(calls.load() == 0);
+    TEST_ASSERT(!r1.has_value());
+    TEST_ASSERT(calls.load() == 0);
 
     // Parallel (N=4) — must also short-circuit before pool creation.
     set_env_and_reset("4");
     auto r2 = parallel_pattern_search(0ULL, 0ULL, verify);
-    assert(!r2.has_value());
-    assert(calls.load() == 0);
+    TEST_ASSERT(!r2.has_value());
+    TEST_ASSERT(calls.load() == 0);
 
     // Inverted range (end < start) treated as empty.
     auto r3 = parallel_pattern_search(50ULL, 10ULL, verify);
-    assert(!r3.has_value());
-    assert(calls.load() == 0);
+    TEST_ASSERT(!r3.has_value());
+    TEST_ASSERT(calls.load() == 0);
 
     std::cout << "  empty/inverted ranges -> nullopt, no verify_fn calls: PASSED" << std::endl;
 
@@ -350,9 +352,9 @@ void test_single_pattern_range() {
         return pattern == 7;
     };
     auto r1 = parallel_pattern_search(7ULL, 8ULL, verify_hit);
-    assert(r1.has_value());
-    assert(r1.value() == 7);
-    assert(calls.load() == 1);
+    TEST_ASSERT(r1.has_value());
+    TEST_ASSERT(r1.value() == 7);
+    TEST_ASSERT(calls.load() == 1);
 
     auto verify_miss = [&calls](uint64_t) {
         calls.fetch_add(1, std::memory_order_relaxed);
@@ -360,8 +362,8 @@ void test_single_pattern_range() {
     };
     calls.store(0);
     auto r2 = parallel_pattern_search(7ULL, 8ULL, verify_miss);
-    assert(!r2.has_value());
-    assert(calls.load() == 1);
+    TEST_ASSERT(!r2.has_value());
+    TEST_ASSERT(calls.load() == 1);
 
     std::cout << "  single-pattern range hit + miss: PASSED" << std::endl;
 
@@ -374,18 +376,18 @@ void test_reset_env_cache() {
     // Set ENV to 4, force cache load.
     set_env_and_reset("4");
     int n1 = couveignes_parallel_threads();
-    assert(n1 >= 1);
+    TEST_ASSERT(n1 >= 1);
 
     // Change ENV but DO NOT reset — cache should retain old value.
     setenv("GNFS_COUVEIGNES_PARALLEL_THREADS", "1", /*overwrite=*/1);
     int n2 = couveignes_parallel_threads();
     // Cached value should still be n1 (4), not 1.
-    assert(n2 == n1);
+    TEST_ASSERT(n2 == n1);
 
     // Now reset — cache reload should observe the new value.
     couveignes_parallel_threads_reset_env_cache_for_testing();
     int n3 = couveignes_parallel_threads();
-    assert(n3 == 1);
+    TEST_ASSERT(n3 == 1);
 
     std::cout << "  cache reload after reset_env_cache_for_testing: PASSED" << std::endl;
 
@@ -409,7 +411,7 @@ void test_parallel_dense_match_all_chunks() {
     };
 
     auto result = parallel_pattern_search(0ULL, 4096ULL, verify);
-    assert(result.has_value());
+    TEST_ASSERT(result.has_value());
     if (!verify(result.value())) {
         std::cerr << "  ERROR: expected one valid pattern, got " << result.value() << std::endl;
         std::abort();
@@ -431,9 +433,9 @@ void test_parallel_no_match_full_scan() {
     };
 
     auto result = parallel_pattern_search(0ULL, 4096ULL, verify);
-    assert(!result.has_value());
+    TEST_ASSERT(!result.has_value());
     // All workers must scan their entire chunk because no short-circuit signal.
-    assert(calls.load() == 4096);
+    TEST_ASSERT(calls.load() == 4096);
 
     std::cout << "  N=4 no-match scanned " << calls.load() << " patterns: PASSED" << std::endl;
 
@@ -485,28 +487,35 @@ void test_perf_info() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Couveignes Parallel Pattern Search Tests ===" << std::endl << std::endl;
 
-    test_env_unset_default_one();
-    test_env_one_explicit();
-    test_env_four_parallel();
-    test_env_above_max_clamps();
-    test_env_invalid_non_numeric();
+    failed += !run_case(test_env_unset_default_one);
+    failed += !run_case(test_env_one_explicit);
+    failed += !run_case(test_env_four_parallel);
+    failed += !run_case(test_env_above_max_clamps);
+    failed += !run_case(test_env_invalid_non_numeric);
 
-    test_sequential_no_valid();
-    test_sequential_single_valid();
-    test_parallel_single_valid_parity();
-    test_parallel_multiple_valid_returns_one();
-    test_parallel_multi_valid_distributed();
-    test_parallel_atomic_min_smallest();
-    test_parallel_dense_match_all_chunks();
-    test_parallel_no_match_full_scan();
+    failed += !run_case(test_sequential_no_valid);
+    failed += !run_case(test_sequential_single_valid);
+    failed += !run_case(test_parallel_single_valid_parity);
+    failed += !run_case(test_parallel_multiple_valid_returns_one);
+    failed += !run_case(test_parallel_multi_valid_distributed);
+    failed += !run_case(test_parallel_atomic_min_smallest);
+    failed += !run_case(test_parallel_dense_match_all_chunks);
+    failed += !run_case(test_parallel_no_match_full_scan);
 
-    test_empty_range();
-    test_single_pattern_range();
-    test_reset_env_cache();
+    failed += !run_case(test_empty_range);
+    failed += !run_case(test_single_pattern_range);
+    failed += !run_case(test_reset_env_cache);
 
-    test_perf_info();
+    failed += !run_case(test_perf_info);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All Couveignes Parallel Tests PASSED ===" << std::endl;
     return 0;

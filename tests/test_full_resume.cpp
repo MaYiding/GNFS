@@ -4,15 +4,14 @@
 // factor base results so a subsequent run skips both phases. Also confirms
 // the legacy GNFS_SIEVE_RESUME ENV serves as alias.
 
-#include <gnfs/api/pipeline.hpp>
 #include <gnfs/api/config.hpp>
+#include <gnfs/api/pipeline.hpp>
 #include <gnfs/core/integer.hpp>
-#include <gnfs/polynomial/poly_checkpoint.hpp>
 #include <gnfs/factor_base/fb_checkpoint.hpp>
+#include <gnfs/polynomial/poly_checkpoint.hpp>
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 
-#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -26,22 +25,27 @@ using gnfs::core::Integer;
 static int pass_count = 0;
 static int fail_count = 0;
 
-#define RUN_TEST(name) \
-    do { \
-        std::cout << "  " << #name << "... " << std::flush; \
-        bool ok = false; \
-        try { ok = test_##name(); } \
-        catch (const std::exception& e) { \
-            std::cout << "EXCEPTION: " << e.what() << " "; \
-        } \
-        if (ok) { ++pass_count; std::cout << "OK\n"; } \
-        else { ++fail_count; std::cout << "FAILED\n"; } \
+#define RUN_TEST(name)                                                                             \
+    do {                                                                                           \
+        std::cout << "  " << #name << "... " << std::flush;                                        \
+        bool ok = false;                                                                           \
+        try {                                                                                      \
+            ok = test_##name();                                                                    \
+        } catch (const std::exception& e) {                                                        \
+            std::cout << "EXCEPTION: " << e.what() << " ";                                         \
+        }                                                                                          \
+        if (ok) {                                                                                  \
+            ++pass_count;                                                                          \
+            std::cout << "OK\n";                                                                   \
+        } else {                                                                                   \
+            ++fail_count;                                                                          \
+            std::cout << "FAILED\n";                                                               \
+        }                                                                                          \
     } while (0)
 
 static std::string mk_base(const char* tag) {
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "gnfs_test_full_resume_%s_%d",
-                  tag, gnfs::util::process_id());
+    std::snprintf(buf, sizeof(buf), "gnfs_test_full_resume_%s_%d", tag, gnfs::util::process_id());
     return gnfs::util::temp_path(buf);
 }
 
@@ -69,21 +73,25 @@ bool test_phase1_phase2_ckpt_written_fresh() {
     setenv("GNFS_RESUME", base.c_str(), 1);
     Pipeline pipeline(test_n(), Config{});
     auto ctx = pipeline.select_polynomial();
-    auto fb  = pipeline.build_factor_base(ctx);
+    auto fb = pipeline.build_factor_base(ctx);
     unsetenv("GNFS_RESUME");
 
     // Both checkpoints must now exist with valid MAGIC.
-    bool poly_ok = gnfs::polynomial::PolyCheckpoint::exists_and_valid(
-        base + ".poly_ckpt");
-    bool fb_ok = gnfs::factor_base::FbCheckpoint::exists_and_valid(
-        base + ".fb_ckpt");
+    bool poly_ok = gnfs::polynomial::PolyCheckpoint::exists_and_valid(base + ".poly_ckpt");
+    bool fb_ok = gnfs::factor_base::FbCheckpoint::exists_and_valid(base + ".fb_ckpt");
 
     cleanup_base(base);
-    (void) ctx;
-    (void) fb;
+    (void)ctx;
+    (void)fb;
 
-    if (!poly_ok) { std::cout << "(no poly ckpt) "; return false; }
-    if (!fb_ok)   { std::cout << "(no fb ckpt) ";   return false; }
+    if (!poly_ok) {
+        std::cout << "(no poly ckpt) ";
+        return false;
+    }
+    if (!fb_ok) {
+        std::cout << "(no fb ckpt) ";
+        return false;
+    }
     return true;
 }
 
@@ -102,7 +110,7 @@ bool test_phase1_phase2_resume_skips_work() {
     {
         Pipeline pipeline(test_n(), Config{});
         auto ctx = pipeline.select_polynomial();
-        auto fb  = pipeline.build_factor_base(ctx);
+        auto fb = pipeline.build_factor_base(ctx);
         m_fresh = ctx.m();
         fb_rat_fresh = fb.rational_count();
     }
@@ -116,7 +124,7 @@ bool test_phase1_phase2_resume_skips_work() {
     {
         Pipeline pipeline(test_n(), Config{});
         auto ctx = pipeline.select_polynomial();
-        auto fb  = pipeline.build_factor_base(ctx);
+        auto fb = pipeline.build_factor_base(ctx);
         m_resumed = ctx.m();
         fb_rat_resumed = fb.rational_count();
     }
@@ -161,19 +169,18 @@ bool test_sieve_resume_alias_covers_phase12() {
     setenv("GNFS_SIEVE_RESUME", base.c_str(), 1);
     Pipeline pipeline(test_n(), Config{});
     auto ctx = pipeline.select_polynomial();
-    auto fb  = pipeline.build_factor_base(ctx);
+    auto fb = pipeline.build_factor_base(ctx);
     unsetenv("GNFS_SIEVE_RESUME");
 
-    bool poly_ok = gnfs::polynomial::PolyCheckpoint::exists_and_valid(
-        base + ".poly_ckpt");
-    bool fb_ok = gnfs::factor_base::FbCheckpoint::exists_and_valid(
-        base + ".fb_ckpt");
+    bool poly_ok = gnfs::polynomial::PolyCheckpoint::exists_and_valid(base + ".poly_ckpt");
+    bool fb_ok = gnfs::factor_base::FbCheckpoint::exists_and_valid(base + ".fb_ckpt");
     cleanup_base(base);
-    (void) ctx; (void) fb;
+    (void)ctx;
+    (void)fb;
 
     if (!poly_ok || !fb_ok) {
-        std::cout << "(legacy alias did not write ckpts poly=" << poly_ok
-                  << " fb=" << fb_ok << ") ";
+        std::cout << "(legacy alias did not write ckpts poly=" << poly_ok << " fb=" << fb_ok
+                  << ") ";
         return false;
     }
     return true;
@@ -190,13 +197,12 @@ bool test_no_env_no_ckpt() {
 
     Pipeline pipeline(test_n(), Config{});
     auto ctx = pipeline.select_polynomial();
-    auto fb  = pipeline.build_factor_base(ctx);
-    (void) ctx; (void) fb;
+    auto fb = pipeline.build_factor_base(ctx);
+    (void)ctx;
+    (void)fb;
 
-    bool poly_present = gnfs::polynomial::PolyCheckpoint::exists_and_valid(
-        base + ".poly_ckpt");
-    bool fb_present = gnfs::factor_base::FbCheckpoint::exists_and_valid(
-        base + ".fb_ckpt");
+    bool poly_present = gnfs::polynomial::PolyCheckpoint::exists_and_valid(base + ".poly_ckpt");
+    bool fb_present = gnfs::factor_base::FbCheckpoint::exists_and_valid(base + ".fb_ckpt");
     cleanup_base(base);
 
     if (poly_present || fb_present) {
@@ -218,8 +224,9 @@ bool test_fb_ckpt_param_mismatch_rebuilds() {
     {
         Pipeline pipeline(test_n(), Config{});
         auto ctx = pipeline.select_polynomial();
-        auto fb  = pipeline.build_factor_base(ctx);
-        (void) ctx; (void) fb;
+        auto fb = pipeline.build_factor_base(ctx);
+        (void)ctx;
+        (void)fb;
     }
 
     // Sabotage the FB checkpoint by manually rewriting its rational_bound
@@ -227,7 +234,7 @@ bool test_fb_ckpt_param_mismatch_rebuilds() {
     // bump a build param, re-save with same MAGIC. That ensures the next
     // run sees mismatch.
     auto ck = gnfs::factor_base::FbCheckpoint::load(base + ".fb_ckpt");
-    ck.rational_bound = ck.rational_bound + 99999u;  // guaranteed mismatch
+    ck.rational_bound = ck.rational_bound + 99999u; // guaranteed mismatch
     ck.save(base + ".fb_ckpt");
 
     // Second run: Phase 1 still hits (poly ckpt unchanged); Phase 2 should
@@ -236,7 +243,7 @@ bool test_fb_ckpt_param_mismatch_rebuilds() {
     {
         Pipeline pipeline(test_n(), Config{});
         auto ctx = pipeline.select_polynomial();
-        auto fb  = pipeline.build_factor_base(ctx);
+        auto fb = pipeline.build_factor_base(ctx);
         rebuilt_rat_count = fb.rational_count();
     }
     unsetenv("GNFS_RESUME");
@@ -258,7 +265,7 @@ bool test_poly_ckpt_wrong_n_rejected() {
 
     // Write a poly ckpt for a different N.
     gnfs::polynomial::PolyCheckpoint bogus;
-    bogus.n = Integer("123456789");  // != test_n()
+    bogus.n = Integer("123456789"); // != test_n()
     bogus.m = Integer("17");
     bogus.degree = 2;
     bogus.f_coeffs.emplace_back(Integer(static_cast<int64_t>(1)));
@@ -294,7 +301,6 @@ int main() {
     RUN_TEST(fb_ckpt_param_mismatch_rebuilds);
     RUN_TEST(poly_ckpt_wrong_n_rejected);
 
-    std::cout << "\nResults: " << pass_count << " passed, "
-              << fail_count << " failed\n";
+    std::cout << "\nResults: " << pass_count << " passed, " << fail_count << " failed\n";
     return fail_count == 0 ? 0 : 1;
 }

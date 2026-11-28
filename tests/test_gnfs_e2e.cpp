@@ -25,7 +25,6 @@
 #include <gnfs/util/process.hpp>
 #include <gnfs/util/temp_path.hpp>
 
-#include <cassert>
 #include <chrono>
 #include <cstdio>  // remove() for OOC artifact cleanup
 #include <cstdlib> // getenv for GNFS_OOC_RELATIONS

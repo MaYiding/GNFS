@@ -20,9 +20,10 @@
 
 #include <gnfs/relation/merger_parallel.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -40,6 +41,7 @@
 using gnfs::relation::filter_merge_threads;
 using gnfs::relation::filter_merge_threads_reset_env_cache_for_testing;
 using gnfs::relation::parallel_merge_partials;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -113,23 +115,23 @@ void test_env_non_numeric_to_one() {
 
     // Empty string -> 1.
     apply_env("");
-    assert(filter_merge_threads() == 1);
+    TEST_ASSERT(filter_merge_threads() == 1);
 
     // "0" -> 1 (invalid, non-positive).
     apply_env("0");
-    assert(filter_merge_threads() == 1);
+    TEST_ASSERT(filter_merge_threads() == 1);
 
     // "-5" -> 1 (invalid, non-positive).
     apply_env("-5");
-    assert(filter_merge_threads() == 1);
+    TEST_ASSERT(filter_merge_threads() == 1);
 
     // "garbage" -> 1 (atoi returns 0).
     apply_env("garbage");
-    assert(filter_merge_threads() == 1);
+    TEST_ASSERT(filter_merge_threads() == 1);
 
     // " " (whitespace only) -> 1 (atoi returns 0).
     apply_env("   ");
-    assert(filter_merge_threads() == 1);
+    TEST_ASSERT(filter_merge_threads() == 1);
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -319,7 +321,7 @@ void test_n1_vs_n_hw_parity() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
             std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i] << " par=" << par[i]
@@ -348,7 +350,7 @@ void test_empty_bucket_list() {
             std::abort();
             return 0;
         });
-    assert(seq_results.empty());
+    TEST_ASSERT(seq_results.empty());
 
     // Parallel (N=4).
     apply_env("4");
@@ -358,7 +360,7 @@ void test_empty_bucket_list() {
             std::abort();
             return 0;
         });
-    assert(par_results.empty());
+    TEST_ASSERT(par_results.empty());
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -384,8 +386,8 @@ void test_single_bucket_no_stall() {
     auto t1 = std::chrono::steady_clock::now();
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    assert(results.size() == 1);
-    assert(results[0] == 84);
+    TEST_ASSERT(results.size() == 1);
+    TEST_ASSERT(results[0] == 84);
     int total_calls = calls.load(std::memory_order_relaxed);
     if (total_calls != 1) {
         std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls << std::endl;
@@ -447,7 +449,7 @@ void test_non_trivial_result_type() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
             std::cerr << "\n  ERROR: idx " << i << " seq.size()=" << seq[i].size()
@@ -528,21 +530,28 @@ void test_merge_fn_exception_propagates() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Partial Relation Merger Parallel Dispatch Tests ===" << std::endl;
 
-    test_env_unset_defaults_to_one();
-    test_env_explicit_one();
-    test_env_four();
-    test_env_non_numeric_to_one();
-    test_env_clamp_at_hw_times_two();
-    test_env_huge_positive_clamps_without_signed_overflow();
-    test_n1_sequential_baseline();
-    test_n1_vs_n4_parity();
-    test_n1_vs_n_hw_parity();
-    test_empty_bucket_list();
-    test_single_bucket_no_stall();
-    test_non_trivial_result_type();
-    test_merge_fn_exception_propagates();
+    failed += !run_case(test_env_unset_defaults_to_one);
+    failed += !run_case(test_env_explicit_one);
+    failed += !run_case(test_env_four);
+    failed += !run_case(test_env_non_numeric_to_one);
+    failed += !run_case(test_env_clamp_at_hw_times_two);
+    failed += !run_case(test_env_huge_positive_clamps_without_signed_overflow);
+    failed += !run_case(test_n1_sequential_baseline);
+    failed += !run_case(test_n1_vs_n4_parity);
+    failed += !run_case(test_n1_vs_n_hw_parity);
+    failed += !run_case(test_empty_bucket_list);
+    failed += !run_case(test_single_bucket_no_stall);
+    failed += !run_case(test_non_trivial_result_type);
+    failed += !run_case(test_merge_fn_exception_propagates);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All Merger Parallel Tests PASSED ===" << std::endl;
     return 0;

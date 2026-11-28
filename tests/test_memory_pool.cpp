@@ -11,21 +11,23 @@
 //     negative / overflowing values
 //   * relation_pool_enabled() agrees with relation_pool_size_bytes() > 0
 
-// Force assert() to remain live even under -DNDEBUG so phase-2 verification
-// is not silently stripped from Release builds.
+// Keep NDEBUG undefined in this translation unit: library headers included
+// below may keep their own assert checks live here. The checks of this file
+// use TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 
 #include "gnfs/util/memory_pool.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <cstdlib>
 #include <iostream>
 #include <memory_resource>
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::util;
 
 static void test_basic_construction() {
@@ -33,17 +35,17 @@ static void test_basic_construction() {
 
     // Default chunk size
     RelationPoolResource pool;
-    assert(pool.initial_chunk_bytes() == RelationPoolResource::DEFAULT_INITIAL_CHUNK_BYTES);
-    assert(pool.upstream() != nullptr);
+    TEST_ASSERT(pool.initial_chunk_bytes() == RelationPoolResource::DEFAULT_INITIAL_CHUNK_BYTES);
+    TEST_ASSERT(pool.upstream() != nullptr);
 
     // Custom chunk size
     RelationPoolResource pool2(64 * 1024);
-    assert(pool2.initial_chunk_bytes() == 64 * 1024);
-    assert(pool2.upstream() != nullptr);
+    TEST_ASSERT(pool2.initial_chunk_bytes() == 64 * 1024);
+    TEST_ASSERT(pool2.upstream() != nullptr);
 
     // Distinct upstream pointers — each pool owns its own resource
     RelationPoolResource pool3;
-    assert(pool.upstream() != pool3.upstream());
+    TEST_ASSERT(pool.upstream() != pool3.upstream());
 
     std::cout << "  Basic construction: PASS" << std::endl;
 }
@@ -58,7 +60,7 @@ static void test_reset_releases_and_reallocates() {
         std::pmr::vector<int> v(pool.upstream());
         for (int i = 0; i < 100; ++i)
             v.push_back(i);
-        assert(v.size() == 100);
+        TEST_ASSERT(v.size() == 100);
     }
 
     // upstream pointer remains stable across reset
@@ -69,16 +71,16 @@ static void test_reset_releases_and_reallocates() {
     // so the upstream pointer typically changes; assert that the new pointer
     // is valid and usable rather than equal to the old one.
     (void)before;
-    assert(after != nullptr);
+    TEST_ASSERT(after != nullptr);
 
     // Post-reset, fresh allocations succeed
     {
         std::pmr::vector<int> v(pool.upstream());
         for (int i = 0; i < 50; ++i)
             v.push_back(i * 2);
-        assert(v.size() == 50);
+        TEST_ASSERT(v.size() == 50);
         for (int i = 0; i < 50; ++i)
-            assert(v[static_cast<size_t>(i)] == i * 2);
+            TEST_ASSERT(v[static_cast<size_t>(i)] == i * 2);
     }
 
     std::cout << "  Reset releases and reallocates: PASS" << std::endl;
@@ -89,7 +91,7 @@ static void test_move_construction() {
 
     RelationPoolResource pool1(2048);
     auto* before = pool1.upstream();
-    assert(before != nullptr);
+    TEST_ASSERT(before != nullptr);
 
     // Allocate a bit
     {
@@ -100,25 +102,25 @@ static void test_move_construction() {
 
     // Move-construct pool2 from pool1
     RelationPoolResource pool2(std::move(pool1));
-    assert(pool2.upstream() == before);
-    assert(pool2.initial_chunk_bytes() == 2048);
+    TEST_ASSERT(pool2.upstream() == before);
+    TEST_ASSERT(pool2.initial_chunk_bytes() == 2048);
     // pool1 is now hollow but valid for destruction; upstream is null
-    assert(pool1.upstream() == nullptr);
+    TEST_ASSERT(pool1.upstream() == nullptr);
 
     // pool2 still serves allocations
     {
         std::pmr::vector<int> v(pool2.upstream());
         for (int i = 0; i < 32; ++i)
             v.push_back(i);
-        assert(v.size() == 32);
+        TEST_ASSERT(v.size() == 32);
     }
 
     // Move assignment
     RelationPoolResource pool3;
     auto* pool3_orig = pool3.upstream();
     pool3 = std::move(pool2);
-    assert(pool3.upstream() == before); // adopted pool2's resource
-    assert(pool3.upstream() != pool3_orig);
+    TEST_ASSERT(pool3.upstream() == before); // adopted pool2's resource
+    TEST_ASSERT(pool3.upstream() != pool3_orig);
 
     std::cout << "  Move semantics: PASS" << std::endl;
 }
@@ -132,18 +134,18 @@ static void test_pmr_vector_int_basic() {
     // Sequential push_back
     for (int i = 0; i < 1000; ++i)
         v.push_back(i);
-    assert(v.size() == 1000);
+    TEST_ASSERT(v.size() == 1000);
     for (int i = 0; i < 1000; ++i)
-        assert(v[static_cast<size_t>(i)] == i);
+        TEST_ASSERT(v[static_cast<size_t>(i)] == i);
 
     // Clear and refill
     v.clear();
-    assert(v.empty());
+    TEST_ASSERT(v.empty());
     for (int i = 0; i < 500; ++i)
         v.push_back(i * 3);
-    assert(v.size() == 500);
+    TEST_ASSERT(v.size() == 500);
     for (int i = 0; i < 500; ++i)
-        assert(v[static_cast<size_t>(i)] == i * 3);
+        TEST_ASSERT(v[static_cast<size_t>(i)] == i * 3);
 
     std::cout << "  pmr vector<int> backed by pool: PASS" << std::endl;
 }
@@ -160,11 +162,11 @@ static void test_chunk_overflow() {
     // push 10000 ints to ensure multiple overflow allocations.
     for (int i = 0; i < 10000; ++i)
         v.push_back(i);
-    assert(v.size() == 10000);
+    TEST_ASSERT(v.size() == 10000);
     // Spot-check the data is intact across chunk boundaries
-    assert(v[0] == 0);
-    assert(v[5000] == 5000);
-    assert(v[9999] == 9999);
+    TEST_ASSERT(v[0] == 0);
+    TEST_ASSERT(v[5000] == 5000);
+    TEST_ASSERT(v[9999] == 9999);
 
     std::cout << "  Chunk overflow: PASS (10000 ints, initial chunk 64B)" << std::endl;
 }
@@ -180,10 +182,10 @@ static void test_many_small_objects() {
     for (int i = 0; i < N; ++i)
         v.push_back(i ^ 0x5A5A5A5A);
 
-    assert(v.size() == N);
+    TEST_ASSERT(v.size() == N);
     // Verify a few entries
     for (int i = 0; i < N; i += 1000) {
-        assert(v[static_cast<size_t>(i)] == (i ^ 0x5A5A5A5A));
+        TEST_ASSERT(v[static_cast<size_t>(i)] == (i ^ 0x5A5A5A5A));
     }
 
     std::cout << "  Many small objects: PASS (" << N << " ints)" << std::endl;
@@ -197,8 +199,8 @@ static void test_env_unset_returns_zero() {
     // we manipulate the env then re-parse via the test-only reset helper.
     unsetenv("GNFS_RELATION_POOL_SIZE");
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 0);
-    assert(!relation_pool_enabled());
+    TEST_ASSERT(relation_pool_size_bytes() == 0);
+    TEST_ASSERT(!relation_pool_enabled());
 
     std::cout << "  ENV unset: PASS (returns 0)" << std::endl;
 }
@@ -208,8 +210,8 @@ static void test_env_zero_returns_zero() {
 
     setenv("GNFS_RELATION_POOL_SIZE", "0", 1);
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 0);
-    assert(!relation_pool_enabled());
+    TEST_ASSERT(relation_pool_size_bytes() == 0);
+    TEST_ASSERT(!relation_pool_enabled());
 
     unsetenv("GNFS_RELATION_POOL_SIZE");
     std::cout << "  ENV=0: PASS (returns 0)" << std::endl;
@@ -220,13 +222,13 @@ static void test_env_positive_returns_value() {
 
     setenv("GNFS_RELATION_POOL_SIZE", "4194304", 1);
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 4194304);
-    assert(relation_pool_enabled());
+    TEST_ASSERT(relation_pool_size_bytes() == 4194304);
+    TEST_ASSERT(relation_pool_enabled());
 
     setenv("GNFS_RELATION_POOL_SIZE", "1024", 1);
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 1024);
-    assert(relation_pool_enabled());
+    TEST_ASSERT(relation_pool_size_bytes() == 1024);
+    TEST_ASSERT(relation_pool_enabled());
 
     unsetenv("GNFS_RELATION_POOL_SIZE");
     std::cout << "  ENV positive: PASS" << std::endl;
@@ -237,12 +239,12 @@ static void test_env_non_numeric_returns_zero() {
 
     setenv("GNFS_RELATION_POOL_SIZE", "abc", 1);
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 0);
-    assert(!relation_pool_enabled());
+    TEST_ASSERT(relation_pool_size_bytes() == 0);
+    TEST_ASSERT(!relation_pool_enabled());
 
     setenv("GNFS_RELATION_POOL_SIZE", "", 1);
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 0);
+    TEST_ASSERT(relation_pool_size_bytes() == 0);
 
     unsetenv("GNFS_RELATION_POOL_SIZE");
     std::cout << "  ENV non-numeric / empty: PASS" << std::endl;
@@ -253,13 +255,13 @@ static void test_env_negative_returns_zero() {
 
     setenv("GNFS_RELATION_POOL_SIZE", "-1", 1);
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 0);
-    assert(!relation_pool_enabled());
+    TEST_ASSERT(relation_pool_size_bytes() == 0);
+    TEST_ASSERT(!relation_pool_enabled());
 
     // strtoull accepts whitespace before a sign, so cover that spelling too.
     setenv("GNFS_RELATION_POOL_SIZE", "  -42", 1);
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 0);
+    TEST_ASSERT(relation_pool_size_bytes() == 0);
 
     unsetenv("GNFS_RELATION_POOL_SIZE");
     std::cout << "  ENV negative: PASS" << std::endl;
@@ -270,33 +272,40 @@ static void test_env_overflow_returns_zero() {
 
     setenv("GNFS_RELATION_POOL_SIZE", "18446744073709551616", 1);
     relation_pool_reset_env_cache_for_testing();
-    assert(relation_pool_size_bytes() == 0);
-    assert(!relation_pool_enabled());
+    TEST_ASSERT(relation_pool_size_bytes() == 0);
+    TEST_ASSERT(!relation_pool_enabled());
 
     unsetenv("GNFS_RELATION_POOL_SIZE");
     std::cout << "  ENV overflow: PASS" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Memory Pool Tests (W6 T4) ===" << std::endl;
 
     // RelationPoolResource unit tests (6)
-    test_basic_construction();
-    test_reset_releases_and_reallocates();
-    test_move_construction();
-    test_pmr_vector_int_basic();
-    test_chunk_overflow();
-    test_many_small_objects();
+    failed += !run_case(test_basic_construction);
+    failed += !run_case(test_reset_releases_and_reallocates);
+    failed += !run_case(test_move_construction);
+    failed += !run_case(test_pmr_vector_int_basic);
+    failed += !run_case(test_chunk_overflow);
+    failed += !run_case(test_many_small_objects);
 
     // ENV parsing tests (6: unset / =0 / positive / non-numeric / negative /
     // overflow)
     std::cout << "\n=== ENV parsing tests ===" << std::endl;
-    test_env_unset_returns_zero();
-    test_env_zero_returns_zero();
-    test_env_positive_returns_value();
-    test_env_non_numeric_returns_zero();
-    test_env_negative_returns_zero();
-    test_env_overflow_returns_zero();
+    failed += !run_case(test_env_unset_returns_zero);
+    failed += !run_case(test_env_zero_returns_zero);
+    failed += !run_case(test_env_positive_returns_value);
+    failed += !run_case(test_env_non_numeric_returns_zero);
+    failed += !run_case(test_env_negative_returns_zero);
+    failed += !run_case(test_env_overflow_returns_zero);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll memory pool tests passed!" << std::endl;
     return 0;

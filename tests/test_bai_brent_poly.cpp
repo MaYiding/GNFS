@@ -6,14 +6,15 @@
 #include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/polynomial/kleinjung_selector.hpp"
 #include "gnfs/polynomial/selector_dispatch.hpp"
+#include "support/test_assert.hpp"
 
-#include <cassert>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <string>
 
+using gnfs::test::run_case;
 using namespace gnfs::polynomial;
 using namespace gnfs::core;
 
@@ -57,10 +58,10 @@ void test_smoke_select_succeeds() {
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
 
-    assert(res.success);
-    assert(res.f.degree() == 4);
-    assert(res.g.degree() == 1);
-    assert(!res.m.is_zero());
+    TEST_ASSERT(res.success);
+    TEST_ASSERT(res.f.degree() == 4);
+    TEST_ASSERT(res.g.degree() == 1);
+    TEST_ASSERT(!res.m.is_zero());
     std::cout << "  Murphy log_E = " << res.score.log_e_score
               << ", a_d = " << res.f.leading_coeff().to_string() << ", m=" << res.m.to_string()
               << ", cands_tested=" << res.candidates_tested << std::endl;
@@ -78,10 +79,10 @@ void test_non_monic_output_possible() {
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
 
-    assert(res.success);
+    TEST_ASSERT(res.success);
     Integer ad = res.f.leading_coeff();
     Integer one(static_cast<int64_t>(1));
-    assert(!(ad == one));
+    TEST_ASSERT(!(ad == one));
     std::cout << "  Selected non-monic a_d = " << ad.to_string() << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
@@ -94,14 +95,14 @@ void test_gcd_ad_m_is_one() {
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
 
-    assert(res.success);
+    TEST_ASSERT(res.success);
     Integer g = gnfs::core::gcd(res.f.leading_coeff(), res.m);
     Integer one(static_cast<int64_t>(1));
     if (!(g == one)) {
         std::cout << "  FAIL: gcd(a_d=" << res.f.leading_coeff().to_string()
                   << ", m=" << res.m.to_string() << ") = " << g.to_string() << std::endl;
     }
-    assert(g == one);
+    TEST_ASSERT(g == one);
     std::cout << "  gcd(" << res.f.leading_coeff().to_string() << ", " << res.m.to_string()
               << ") = 1" << std::endl;
     std::cout << "  PASSED" << std::endl;
@@ -115,11 +116,11 @@ void test_f_m_divisible_by_n() {
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
 
-    assert(res.success);
+    TEST_ASSERT(res.success);
     Integer fm = res.f.evaluate(res.m);
     Integer q, r;
     Integer::divmod(q, r, fm, n);
-    assert(r.is_zero());
+    TEST_ASSERT(r.is_zero());
     std::cout << "  f(m) mod N == 0" << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
@@ -130,8 +131,8 @@ void test_degree_4() {
     auto params = make_fast_params(4);
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
-    assert(res.success);
-    assert(res.f.degree() == 4);
+    TEST_ASSERT(res.success);
+    TEST_ASSERT(res.f.degree() == 4);
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -147,7 +148,7 @@ void test_degree_5() {
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
     if (res.success) {
-        assert(res.f.degree() == 5);
+        TEST_ASSERT(res.f.degree() == 5);
         std::cout << "  Selected degree 5, log_E=" << res.score.log_e_score << std::endl;
     } else {
         std::cout << "  No degree-5 candidate found (acceptable for tiny N)" << std::endl;
@@ -171,7 +172,7 @@ void test_degree_6() {
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
     if (res.success) {
-        assert(res.f.degree() == 6);
+        TEST_ASSERT(res.f.degree() == 6);
         std::cout << "  Selected degree 6, log_E=" << res.score.log_e_score << std::endl;
     } else {
         std::cout << "  No degree-6 candidate found (acceptable for tiny N)" << std::endl;
@@ -185,11 +186,11 @@ void test_murphy_score_finite() {
     auto params = make_fast_params(4);
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
-    assert(res.success);
+    TEST_ASSERT(res.success);
     // log_e_score must be finite (not NaN, not -inf placeholder)
-    assert(res.score.log_e_score > -1e99);
-    assert(res.score.log_e_score < 1e99);
-    assert(res.score.skewness > 0.0);
+    TEST_ASSERT(res.score.log_e_score > -1e99);
+    TEST_ASSERT(res.score.log_e_score < 1e99);
+    TEST_ASSERT(res.score.skewness > 0.0);
     std::cout << "  log_E=" << res.score.log_e_score << ", skewness=" << res.score.skewness
               << std::endl;
     std::cout << "  PASSED" << std::endl;
@@ -205,7 +206,7 @@ void test_cancel_safe() {
     // After cancel before any work, select clears the flag; the run still
     // proceeds. Mainly checking cancel() does not throw / corrupt state.
     (void)res;
-    assert(!sel.is_cancelled() || sel.is_cancelled());
+    TEST_ASSERT(!sel.is_cancelled() || sel.is_cancelled());
     std::cout << "  cancel() did not throw" << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
@@ -216,7 +217,7 @@ void test_zero_n_returns_failure() {
     auto params = make_fast_params(4);
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
-    assert(!res.success);
+    TEST_ASSERT(!res.success);
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -226,7 +227,7 @@ void test_negative_n_returns_failure() {
     auto params = make_fast_params(4);
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
-    assert(!res.success);
+    TEST_ASSERT(!res.success);
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -235,7 +236,7 @@ void test_zero_degree_returns_failure() {
     auto params = make_fast_params(0);
     BaiBrentSelector sel(params);
     auto res = sel.select(make_test_n_40bit());
-    assert(!res.success);
+    TEST_ASSERT(!res.success);
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -245,7 +246,7 @@ void test_baseline_comparison_vs_basem() {
 
     // BaseM baseline
     auto base_res = BaseMSelector::select(n, 4);
-    assert(base_res.success);
+    TEST_ASSERT(base_res.success);
 
     // BaiBrent
     auto params = make_fast_params(4);
@@ -253,12 +254,12 @@ void test_baseline_comparison_vs_basem() {
     params.num_candidates = 16;
     BaiBrentSelector sel(params);
     auto bb_res = sel.select(n);
-    assert(bb_res.success);
+    TEST_ASSERT(bb_res.success);
 
     // BaiBrent uses Murphy E, BaseM does not -- we just sanity-check that
     // BaiBrent returns a valid finite score. BaseM does not return a score
     // for direct comparison.
-    assert(bb_res.score.log_e_score > -1e99);
+    TEST_ASSERT(bb_res.score.log_e_score > -1e99);
     std::cout << "  BaiBrent log_E = " << bb_res.score.log_e_score
               << ", BaseM degree = " << base_res.degree << std::endl;
     std::cout << "  PASSED (BaiBrent produced valid score; direct vs BaseM "
@@ -277,9 +278,12 @@ void test_dispatch_env_off_uses_kleinjung() {
     params.search_radius = 5;
     try {
         auto ctx = SelectorDispatch::select(n, params, /*verbose=*/false);
-        assert(ctx.degree() == 5);
+        TEST_ASSERT(ctx.degree() == 5);
         std::cout << "  Dispatch returned ctx degree=" << ctx.degree() << std::endl;
         std::cout << "  PASSED" << std::endl;
+    } catch (const gnfs::test::AssertionFailure&) {
+        // Only a dispatch failure is acceptable below; a failed check is not.
+        throw;
     } catch (const std::exception& e) {
         std::cout << "  Dispatch threw (acceptable for tiny N): " << e.what() << std::endl;
         std::cout << "  PASSED" << std::endl;
@@ -298,9 +302,12 @@ void test_dispatch_env_on_uses_bai_brent() {
     params.skewness_steps = 1;
     try {
         auto ctx = SelectorDispatch::select(n, params, /*verbose=*/false);
-        assert(ctx.degree() == 5);
+        TEST_ASSERT(ctx.degree() == 5);
         std::cout << "  Dispatch via BaiBrent returned ctx degree=" << ctx.degree() << std::endl;
         std::cout << "  PASSED" << std::endl;
+    } catch (const gnfs::test::AssertionFailure&) {
+        // Only a dispatch failure is acceptable below; a failed check is not.
+        throw;
     } catch (const std::exception& e) {
         std::cout << "  Dispatch threw (acceptable for tiny N): " << e.what() << std::endl;
         std::cout << "  PASSED" << std::endl;
@@ -324,7 +331,7 @@ void test_ad_candidate_generation_dedup() {
     params.murphy_params.sample_points = 16;
     BaiBrentSelector sel(params);
     auto res = sel.select(n);
-    assert(res.success);
+    TEST_ASSERT(res.success);
     // candidates_tested counts Stage 2 evaluations (limited by num_candidates),
     // not Stage 1 a_d count. The fact we got here without hang/OOM is the test.
     std::cout << "  cands_tested=" << res.candidates_tested << std::endl;
@@ -342,32 +349,39 @@ void test_extreme_candidate_limit_does_not_reserve_unbounded_memory() {
 
     BaiBrentSelector sel(params);
     auto res = sel.select(make_test_n_40bit());
-    assert(res.success);
+    TEST_ASSERT(res.success);
     std::cout << "  PASSED" << std::endl;
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "==========================================" << std::endl;
     std::cout << "BaiBrent Non-Monic Polynomial Selection" << std::endl;
     std::cout << "==========================================" << std::endl;
 
-    test_smoke_select_succeeds();
-    test_non_monic_output_possible();
-    test_gcd_ad_m_is_one();
-    test_f_m_divisible_by_n();
-    test_degree_4();
-    test_degree_5();
-    test_degree_6();
-    test_murphy_score_finite();
-    test_cancel_safe();
-    test_zero_n_returns_failure();
-    test_negative_n_returns_failure();
-    test_zero_degree_returns_failure();
-    test_baseline_comparison_vs_basem();
-    test_dispatch_env_off_uses_kleinjung();
-    test_dispatch_env_on_uses_bai_brent();
-    test_ad_candidate_generation_dedup();
-    test_extreme_candidate_limit_does_not_reserve_unbounded_memory();
+    failed += !run_case(test_smoke_select_succeeds);
+    failed += !run_case(test_non_monic_output_possible);
+    failed += !run_case(test_gcd_ad_m_is_one);
+    failed += !run_case(test_f_m_divisible_by_n);
+    failed += !run_case(test_degree_4);
+    failed += !run_case(test_degree_5);
+    failed += !run_case(test_degree_6);
+    failed += !run_case(test_murphy_score_finite);
+    failed += !run_case(test_cancel_safe);
+    failed += !run_case(test_zero_n_returns_failure);
+    failed += !run_case(test_negative_n_returns_failure);
+    failed += !run_case(test_zero_degree_returns_failure);
+    failed += !run_case(test_baseline_comparison_vs_basem);
+    failed += !run_case(test_dispatch_env_off_uses_kleinjung);
+    failed += !run_case(test_dispatch_env_on_uses_bai_brent);
+    failed += !run_case(test_ad_candidate_generation_dedup);
+    failed += !run_case(test_extreme_candidate_limit_does_not_reserve_unbounded_memory);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "==========================================" << std::endl;
     std::cout << "All BaiBrent tests PASSED" << std::endl;

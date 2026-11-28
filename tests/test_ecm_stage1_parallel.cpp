@@ -19,9 +19,10 @@
 #include <gnfs/cofactor/ecm_stage1_parallel.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -39,6 +40,7 @@ using gnfs::cofactor::ecm_stage1_parallel_reset_env_cache_for_testing;
 using gnfs::cofactor::ecm_stage1_parallel_threads;
 using gnfs::cofactor::parallel_stage1_curves;
 using gnfs::core::Integer;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -98,22 +100,23 @@ void test_env_non_numeric_to_one() {
 
     // Empty string -> 1.
     apply_env("");
-    assert(ecm_stage1_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage1_parallel_threads() == 1);
 
     // "0" -> 1 (invalid, non-positive).
     apply_env("0");
-    assert(ecm_stage1_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage1_parallel_threads() == 1);
 
     // "-5" -> 1 (invalid, non-positive).
     apply_env("-5");
-    assert(ecm_stage1_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage1_parallel_threads() == 1);
 
     // "garbage" -> 1 (no numeric prefix).
     apply_env("garbage");
-    assert(ecm_stage1_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage1_parallel_threads() == 1);
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     const std::size_t cap = static_cast<std::size_t>(hw) * 2;
 
     // Positive values above INT_MAX must clamp instead of wrapping through
@@ -133,7 +136,7 @@ void test_env_non_numeric_to_one() {
 
     // " " (whitespace only) -> 1 (no numeric prefix).
     apply_env("   ");
-    assert(ecm_stage1_parallel_threads() == 1);
+    TEST_ASSERT(ecm_stage1_parallel_threads() == 1);
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -238,7 +241,7 @@ void test_empty_curve_list() {
             std::abort();
             return 0;
         });
-    assert(seq_results.empty());
+    TEST_ASSERT(seq_results.empty());
 
     // Parallel (N=4).
     apply_env("4");
@@ -248,7 +251,7 @@ void test_empty_curve_list() {
             std::abort();
             return 0;
         });
-    assert(par_results.empty());
+    TEST_ASSERT(par_results.empty());
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -274,8 +277,8 @@ void test_single_curve_no_stall() {
     auto t1 = std::chrono::steady_clock::now();
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    assert(results.size() == 1);
-    assert(results[0] == 84);
+    TEST_ASSERT(results.size() == 1);
+    TEST_ASSERT(results[0] == 84);
     int total_calls = calls.load(std::memory_order_relaxed);
     if (total_calls != 1) {
         std::cerr << "\n  ERROR: expected exactly 1 call, got " << total_calls << std::endl;
@@ -330,7 +333,7 @@ void test_n_hw_parity() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
             std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i] << " par=" << par[i]
@@ -390,7 +393,7 @@ void test_real_ecm_stage1_parity() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     std::size_t any_factor_seq = 0;
     for (std::size_t i = 0; i < seq.size(); ++i) {
         bool seq_has = seq[i].has_value();
@@ -408,11 +411,11 @@ void test_real_ecm_stage1_parity() {
                 std::abort();
             }
             // Sanity: factor must divide N and be non-trivial.
-            assert(!seq[i]->is_one());
-            assert(seq[i]->compare(N) != 0);
+            TEST_ASSERT(!seq[i]->is_one());
+            TEST_ASSERT(seq[i]->compare(N) != 0);
             Integer rem;
             mpz_mod(rem.get_mpz(), N.get_mpz(), seq[i]->get_mpz());
-            assert(rem.is_zero());
+            TEST_ASSERT(rem.is_zero());
         }
     }
 
@@ -422,17 +425,24 @@ void test_real_ecm_stage1_parity() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== ECM Stage 1 Parallel Dispatch Tests ===" << std::endl;
 
-    test_env_unset_defaults_to_one();
-    test_env_four();
-    test_env_non_numeric_to_one();
-    test_n1_sequential_baseline();
-    test_n4_parallel_parity();
-    test_empty_curve_list();
-    test_single_curve_no_stall();
-    test_n_hw_parity();
-    test_real_ecm_stage1_parity();
+    failed += !run_case(test_env_unset_defaults_to_one);
+    failed += !run_case(test_env_four);
+    failed += !run_case(test_env_non_numeric_to_one);
+    failed += !run_case(test_n1_sequential_baseline);
+    failed += !run_case(test_n4_parallel_parity);
+    failed += !run_case(test_empty_curve_list);
+    failed += !run_case(test_single_curve_no_stall);
+    failed += !run_case(test_n_hw_parity);
+    failed += !run_case(test_real_ecm_stage1_parity);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All ECM Stage 1 Parallel Tests PASSED ===" << std::endl;
     return 0;

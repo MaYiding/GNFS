@@ -23,9 +23,10 @@
 
 #include <gnfs/sieve/lattice_basis_parallel.hpp>
 
+#include "support/test_assert.hpp"
+
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -44,6 +45,7 @@
 using gnfs::sieve::lattice_basis_parallel_threads;
 using gnfs::sieve::lattice_basis_parallel_threads_reset_env_cache_for_testing;
 using gnfs::sieve::parallel_lattice_basis_reduce;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -207,7 +209,7 @@ void test_empty_input() {
             std::abort();
             return MockReduced{};
         });
-    assert(seq_results.empty());
+    TEST_ASSERT(seq_results.empty());
 
     // Parallel (N=4).
     apply_env("4");
@@ -217,7 +219,7 @@ void test_empty_input() {
             std::abort();
             return MockReduced{};
         });
-    assert(par_results.empty());
+    TEST_ASSERT(par_results.empty());
 
     apply_env(nullptr);
     std::cout << " PASS\n";
@@ -234,7 +236,7 @@ void test_single_basis_n1() {
     auto results = parallel_lattice_basis_reduce<MockReduced, MockBasis>(
         std::span<const MockBasis>(bases), mock_reduce);
 
-    assert(results.size() == 1);
+    TEST_ASSERT(results.size() == 1);
     MockReduced expect = mock_reduce(bases[0]);
     if (!(results[0] == expect)) {
         std::cerr << "\n  ERROR: got value=" << results[0].value << ", expected " << expect.value
@@ -265,7 +267,7 @@ void test_single_basis_n4_no_stall() {
     auto t1 = std::chrono::steady_clock::now();
     long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-    assert(results.size() == 1);
+    TEST_ASSERT(results.size() == 1);
     MockReduced expect = mock_reduce(bases[0]);
     if (!(results[0] == expect)) {
         std::cerr << "\n  ERROR: got value=" << results[0].value << ", expected " << expect.value
@@ -411,7 +413,7 @@ void test_n1_vs_n_hw_parity() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (!(seq[i] == par[i])) {
             std::cerr << "\n  ERROR: idx " << i << " seq=" << seq[i].value
@@ -466,7 +468,7 @@ void test_non_trivial_result_type() {
 
     apply_env(nullptr);
 
-    assert(seq.size() == par.size());
+    TEST_ASSERT(seq.size() == par.size());
     for (std::size_t i = 0; i < seq.size(); ++i) {
         if (seq[i] != par[i]) {
             std::cerr << "\n  ERROR: idx " << i << " seq.size()=" << seq[i].size()
@@ -560,7 +562,7 @@ void test_reset_env_cache_hook() {
     // Establish baseline cached value of 1 from unset env.
     apply_env(nullptr);
     std::size_t v1 = lattice_basis_parallel_threads();
-    assert(v1 == 1);
+    TEST_ASSERT(v1 == 1);
 
     // Set env to 4, but DO NOT call reset — cache still holds 1.
     setenv("GNFS_LATTICE_BASIS_PARALLEL_THREADS", "4", /*overwrite=*/1);
@@ -719,24 +721,31 @@ void test_explicit_dispatch_does_not_seed_or_mutate_cache() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== Lattice Basis Parallel Dispatch Tests ===" << std::endl;
 
-    test_env_unset_defaults_to_one();
-    test_env_zero_to_one();
-    test_env_four();
-    test_env_clamp_at_hw_times_two();
-    test_empty_input();
-    test_single_basis_n1();
-    test_single_basis_n4_no_stall();
-    test_100_bases_n1_baseline();
-    test_n1_vs_n4_parity();
-    test_n1_vs_n_hw_parity();
-    test_non_trivial_result_type();
-    test_reduce_fn_exception_propagates();
-    test_reset_env_cache_hook();
-    test_explicit_four_ignores_stale_cached_one();
-    test_explicit_one_ignores_stale_cached_four();
-    test_explicit_dispatch_does_not_seed_or_mutate_cache();
+    failed += !run_case(test_env_unset_defaults_to_one);
+    failed += !run_case(test_env_zero_to_one);
+    failed += !run_case(test_env_four);
+    failed += !run_case(test_env_clamp_at_hw_times_two);
+    failed += !run_case(test_empty_input);
+    failed += !run_case(test_single_basis_n1);
+    failed += !run_case(test_single_basis_n4_no_stall);
+    failed += !run_case(test_100_bases_n1_baseline);
+    failed += !run_case(test_n1_vs_n4_parity);
+    failed += !run_case(test_n1_vs_n_hw_parity);
+    failed += !run_case(test_non_trivial_result_type);
+    failed += !run_case(test_reduce_fn_exception_propagates);
+    failed += !run_case(test_reset_env_cache_hook);
+    failed += !run_case(test_explicit_four_ignores_stale_cached_one);
+    failed += !run_case(test_explicit_one_ignores_stale_cached_four);
+    failed += !run_case(test_explicit_dispatch_does_not_seed_or_mutate_cache);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << std::endl << "=== All Lattice Basis Parallel Tests PASSED ===" << std::endl;
     return 0;

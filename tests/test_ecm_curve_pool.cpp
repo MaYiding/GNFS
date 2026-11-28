@@ -15,9 +15,9 @@
 #include <gnfs/cofactor/ecm_curve_pool.hpp>
 #include <gnfs/core/integer.hpp>
 
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +35,7 @@ using gnfs::cofactor::CachedCurve;
 using gnfs::cofactor::ecm_curve_pool_size_from_env;
 using gnfs::cofactor::EcmCurvePool;
 using gnfs::core::Integer;
+using gnfs::test::run_case;
 
 namespace {
 
@@ -129,13 +130,13 @@ void test_env_parser() {
     std::cout << "Test 1: env parser..." << std::flush;
 
     unsetenv("GNFS_ECM_CURVE_POOL");
-    assert(ecm_curve_pool_size_from_env() == 0);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 0);
 
     setenv("GNFS_ECM_CURVE_POOL", "", 1);
-    assert(ecm_curve_pool_size_from_env() == 0);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 0);
 
     setenv("GNFS_ECM_CURVE_POOL", "abc", 1);
-    assert(ecm_curve_pool_size_from_env() == 0);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 0);
 
     // A leading minus must remain disabled. `strtoul` otherwise treats a
     // negative value as an unsigned wraparound and the cap would enable it.
@@ -151,19 +152,19 @@ void test_env_parser() {
     GNFS_TEST_CHECK(ecm_curve_pool_size_from_env() == 0);
 
     setenv("GNFS_ECM_CURVE_POOL", "0", 1);
-    assert(ecm_curve_pool_size_from_env() == 0);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 0);
     setenv("GNFS_ECM_CURVE_POOL", "1", 1);
-    assert(ecm_curve_pool_size_from_env() == 0);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 0);
     setenv("GNFS_ECM_CURVE_POOL", "3", 1);
-    assert(ecm_curve_pool_size_from_env() == 0);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 0);
 
     setenv("GNFS_ECM_CURVE_POOL", "4", 1);
-    assert(ecm_curve_pool_size_from_env() == 4);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 4);
     setenv("GNFS_ECM_CURVE_POOL", "16", 1);
-    assert(ecm_curve_pool_size_from_env() == 16);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 16);
 
     setenv("GNFS_ECM_CURVE_POOL", "99999", 1);
-    assert(ecm_curve_pool_size_from_env() == 1024);
+    TEST_ASSERT(ecm_curve_pool_size_from_env() == 1024);
 
     unsetenv("GNFS_ECM_CURVE_POOL");
 
@@ -180,20 +181,20 @@ void test_disabled_pool() {
     Integer n{uint64_t{15347}};
     EcmCurvePool pool(0, n, make_sigmas(6, 4));
 
-    assert(pool.size() == 0);
-    assert(pool.empty());
+    TEST_ASSERT(pool.size() == 0);
+    TEST_ASSERT(pool.empty());
 
     // Pop falls through to synchronous build (which itself uses next sigma).
     // sigmas_.size()=4 but pool_size=0, so all 4 sigmas remain for fallback.
     for (int i = 0; i < 4; ++i) {
         CachedCurve c = pool.pop_curve();
         // Each fallback build for these sigmas should succeed (small N, sigma >= 6).
-        assert(c.valid);
-        assert(c.sigma >= 6);
+        TEST_ASSERT(c.valid);
+        TEST_ASSERT(c.sigma >= 6);
     }
     // 5th pop drains the sigma reserve too — returns invalid.
     CachedCurve c5 = pool.pop_curve();
-    assert(!c5.valid);
+    TEST_ASSERT(!c5.valid);
 
     std::cout << " PASS\n";
 }
@@ -206,21 +207,21 @@ void test_pool_8_exact() {
 
     Integer n{uint64_t{15347}};
     EcmCurvePool pool(8, n, make_sigmas(100, 8));
-    assert(pool.size() == 8);
+    TEST_ASSERT(pool.size() == 8);
 
     std::set<uint64_t> seen;
     for (int i = 0; i < 8; ++i) {
         CachedCurve c = pool.pop_curve();
-        assert(c.valid);
-        assert(c.sigma >= 100 && c.sigma < 108);
+        TEST_ASSERT(c.valid);
+        TEST_ASSERT(c.sigma >= 100 && c.sigma < 108);
         // Pool dispenses each sigma at most once.
-        assert(seen.insert(c.sigma).second);
+        TEST_ASSERT(seen.insert(c.sigma).second);
     }
-    assert(pool.size() == 0);
+    TEST_ASSERT(pool.size() == 0);
 
     // 9th pop: no pre-built + no remaining sigmas → invalid.
     CachedCurve c9 = pool.pop_curve();
-    assert(!c9.valid);
+    TEST_ASSERT(!c9.valid);
 
     std::cout << " PASS\n";
 }
@@ -234,32 +235,32 @@ void test_pool_smaller_than_sigmas() {
     Integer n{uint64_t{15347}};
     EcmCurvePool pool(4, n, make_sigmas(200, 16));
 
-    assert(pool.size() == 4);
-    assert(pool.total_sigmas() == 16);
-    assert(pool.next_sigma_index() == 4);
+    TEST_ASSERT(pool.size() == 4);
+    TEST_ASSERT(pool.total_sigmas() == 16);
+    TEST_ASSERT(pool.next_sigma_index() == 4);
 
     std::set<uint64_t> seen;
     // Pop all 4 pre-built.
     for (int i = 0; i < 4; ++i) {
         CachedCurve c = pool.pop_curve();
-        assert(c.valid);
+        TEST_ASSERT(c.valid);
         // Pre-built ones use sigmas_[0..3] = 200..203.
-        assert(c.sigma >= 200 && c.sigma < 204);
-        assert(seen.insert(c.sigma).second);
+        TEST_ASSERT(c.sigma >= 200 && c.sigma < 204);
+        TEST_ASSERT(seen.insert(c.sigma).second);
     }
-    assert(pool.size() == 0);
+    TEST_ASSERT(pool.size() == 0);
 
     // Pop next 12 — fallback synchronously through sigmas_[4..15].
     for (int i = 0; i < 12; ++i) {
         CachedCurve c = pool.pop_curve();
-        assert(c.valid);
-        assert(c.sigma >= 204 && c.sigma < 216);
-        assert(seen.insert(c.sigma).second);
+        TEST_ASSERT(c.valid);
+        TEST_ASSERT(c.sigma >= 204 && c.sigma < 216);
+        TEST_ASSERT(seen.insert(c.sigma).second);
     }
 
     // 17th pop: drained.
     CachedCurve cend = pool.pop_curve();
-    assert(!cend.valid);
+    TEST_ASSERT(!cend.valid);
 
     std::cout << " PASS\n";
 }
@@ -273,12 +274,12 @@ void test_sigma_below_six() {
     Integer n{uint64_t{15347}};
     for (uint64_t sg = 0; sg < 6; ++sg) {
         CachedCurve c = build_suyama_curve(n, sg);
-        assert(!c.valid);
+        TEST_ASSERT(!c.valid);
     }
 
     // sigma = 6 must succeed.
     CachedCurve c6 = build_suyama_curve(n, 6);
-    assert(c6.valid);
+    TEST_ASSERT(c6.valid);
 
     // Pool also exposes the same behaviour via pop fallback.
     std::vector<uint64_t> sgs = {3, 4, 5};
@@ -286,7 +287,7 @@ void test_sigma_below_six() {
     for (size_t i = 0; i < 3; ++i) {
         CachedCurve c = pool.pop_curve();
         // Build with sigma<6 returns valid=false.
-        assert(!c.valid);
+        TEST_ASSERT(!c.valid);
     }
 
     std::cout << " PASS\n";
@@ -377,19 +378,19 @@ void test_cached_matches_reference() {
     // (Pool ordering is LIFO from sigmas_[0..9] population — exact order is
     // not part of the contract, so we match by sigma.)
     for (const auto& c : popped) {
-        assert(c.valid);
+        TEST_ASSERT(c.valid);
         RefCurve r = ref_suyama(n, c.sigma);
-        assert(r.valid);
+        TEST_ASSERT(r.valid);
         if (r.lucky) {
             // Reference hit lucky; cache must also have it.
-            assert(c.lucky_factor.has_value());
-            assert(c.lucky_factor->compare(*r.lucky) == 0);
+            TEST_ASSERT(c.lucky_factor.has_value());
+            TEST_ASSERT(c.lucky_factor->compare(*r.lucky) == 0);
         } else {
-            assert(!c.lucky_factor.has_value());
+            TEST_ASSERT(!c.lucky_factor.has_value());
             // (A, x_0, z_0) must agree bit-for-bit (all reduced mod n already).
-            assert(c.A.compare(r.a24) == 0);
-            assert(c.x_0.compare(r.x0) == 0);
-            assert(c.z_0.compare(r.z0) == 0);
+            TEST_ASSERT(c.A.compare(r.a24) == 0);
+            TEST_ASSERT(c.x_0.compare(r.x0) == 0);
+            TEST_ASSERT(c.z_0.compare(r.z0) == 0);
         }
     }
 
@@ -423,7 +424,7 @@ void test_parallel_pop() {
                     std::lock_guard<std::mutex> lock(seen_mu);
                     // Sigma must be unique across threads.
                     bool inserted = seen.insert(c.sigma).second;
-                    assert(inserted);
+                    TEST_ASSERT(inserted);
                 }
                 ok_count.fetch_add(1, std::memory_order_relaxed);
             }
@@ -433,9 +434,9 @@ void test_parallel_pop() {
         th.join();
 
     // All POOL curves should have been dispensed exactly once.
-    assert(ok_count.load() == POOL);
-    assert(seen.size() == POOL);
-    assert(pool.empty());
+    TEST_ASSERT(ok_count.load() == POOL);
+    TEST_ASSERT(seen.size() == POOL);
+    TEST_ASSERT(pool.empty());
 
     std::cout << " PASS\n";
 }
@@ -459,14 +460,14 @@ void test_lucky_factor_capture() {
     Integer N{uint64_t{12ULL * 9999991ULL}}; // 119999892, factor 12 known.
 
     CachedCurve c = build_suyama_curve(N, 6);
-    assert(c.valid);
-    assert(c.lucky_factor.has_value());
+    TEST_ASSERT(c.valid);
+    TEST_ASSERT(c.lucky_factor.has_value());
     // gcd(den, N) must divide N and be != 1 and != N.
     Integer rem;
     mpz_mod(rem.get_mpz(), N.get_mpz(), c.lucky_factor->get_mpz());
-    assert(rem.is_zero());
-    assert(!c.lucky_factor->is_one());
-    assert(c.lucky_factor->compare(N) < 0);
+    TEST_ASSERT(rem.is_zero());
+    TEST_ASSERT(!c.lucky_factor->is_one());
+    TEST_ASSERT(c.lucky_factor->compare(N) < 0);
 
     std::cout << " PASS\n";
 }
@@ -479,11 +480,11 @@ void test_empty_sigmas() {
 
     Integer n{uint64_t{15347}};
     EcmCurvePool pool(8, n, {});
-    assert(pool.size() == 0);
-    assert(pool.total_sigmas() == 0);
+    TEST_ASSERT(pool.size() == 0);
+    TEST_ASSERT(pool.total_sigmas() == 0);
 
     CachedCurve c = pool.pop_curve();
-    assert(!c.valid);
+    TEST_ASSERT(!c.valid);
 
     std::cout << " PASS\n";
 }
@@ -498,15 +499,15 @@ void test_large_pool_stress() {
     const size_t POOL = 200;
     EcmCurvePool pool(POOL, n, make_sigmas(50000, POOL));
 
-    assert(pool.size() == POOL);
+    TEST_ASSERT(pool.size() == POOL);
 
     std::set<uint64_t> seen;
     for (size_t i = 0; i < POOL; ++i) {
         CachedCurve c = pool.pop_curve();
-        assert(c.valid);
-        assert(seen.insert(c.sigma).second);
+        TEST_ASSERT(c.valid);
+        TEST_ASSERT(seen.insert(c.sigma).second);
     }
-    assert(pool.empty());
+    TEST_ASSERT(pool.empty());
 
     std::cout << " PASS (200 curves)\n";
 }
@@ -514,20 +515,27 @@ void test_large_pool_stress() {
 } // namespace
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== test_ecm_curve_pool ===\n";
 
-    test_env_parser();
-    test_disabled_pool();
-    test_pool_8_exact();
-    test_pool_smaller_than_sigmas();
-    test_sigma_below_six();
-    test_numeric_boundaries();
-    test_full_width_sigma_matches_gmp_oracle();
-    test_cached_matches_reference();
-    test_parallel_pop();
-    test_lucky_factor_capture();
-    test_empty_sigmas();
-    test_large_pool_stress();
+    failed += !run_case(test_env_parser);
+    failed += !run_case(test_disabled_pool);
+    failed += !run_case(test_pool_8_exact);
+    failed += !run_case(test_pool_smaller_than_sigmas);
+    failed += !run_case(test_sigma_below_six);
+    failed += !run_case(test_numeric_boundaries);
+    failed += !run_case(test_full_width_sigma_matches_gmp_oracle);
+    failed += !run_case(test_cached_matches_reference);
+    failed += !run_case(test_parallel_pop);
+    failed += !run_case(test_lucky_factor_capture);
+    failed += !run_case(test_empty_sigmas);
+    failed += !run_case(test_large_pool_stress);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "=== All tests passed ===\n";
     return 0;

@@ -1,10 +1,10 @@
 // Unit tests for PolynomialContext — evaluate, norms, verify, edge cases
 #include "gnfs/core/polynomial_context.hpp"
 #include "gnfs/util/joining_thread.hpp"
+#include "support/test_assert.hpp"
 #include "support/test_check.hpp"
 
 #include <array>
-#include <cassert>
 #include <cstdint>
 #include <gmp.h>
 #include <initializer_list>
@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+using gnfs::test::run_case;
 using namespace gnfs::core;
 
 // ─── helpers ───────────────────────────────────────────────
@@ -73,9 +74,9 @@ static PolynomialContext make_norm_oracle_context(uint32_t degree) {
 void test_construction_and_degree() {
     std::cout << "Testing construction and degree..." << std::endl;
     auto ctx = make_cubic_131();
-    assert(ctx.degree() == 3);
-    assert(ctx.n() == Integer(131LL));
-    assert(ctx.m() == Integer(5LL));
+    TEST_ASSERT(ctx.degree() == 3);
+    TEST_ASSERT(ctx.n() == Integer(131LL));
+    TEST_ASSERT(ctx.m() == Integer(5LL));
     std::cout << "  PASS" << std::endl;
 }
 
@@ -83,22 +84,22 @@ void test_coeff_access() {
     std::cout << "Testing coeff access..." << std::endl;
     auto ctx = make_cubic_131();
     // f(x) = 1*x^3 + 0*x^2 + 1*x + 1
-    assert(ctx.coeff(0) == Integer(1LL)); // constant
-    assert(ctx.coeff(1) == Integer(1LL)); // x
-    assert(ctx.coeff(2) == Integer(0LL)); // x^2
-    assert(ctx.coeff(3) == Integer(1LL)); // x^3
+    TEST_ASSERT(ctx.coeff(0) == Integer(1LL)); // constant
+    TEST_ASSERT(ctx.coeff(1) == Integer(1LL)); // x
+    TEST_ASSERT(ctx.coeff(2) == Integer(0LL)); // x^2
+    TEST_ASSERT(ctx.coeff(3) == Integer(1LL)); // x^3
     // Out-of-range returns zero
-    assert(ctx.coeff(99) == Integer(0LL));
+    TEST_ASSERT(ctx.coeff(99) == Integer(0LL));
     std::cout << "  PASS" << std::endl;
 }
 
 void test_leading_coeff() {
     std::cout << "Testing leading_coeff..." << std::endl;
     auto ctx = make_cubic_131();
-    assert(ctx.leading_coeff() == Integer(1LL)); // monic
+    TEST_ASSERT(ctx.leading_coeff() == Integer(1LL)); // monic
 
     auto ctx2 = make_cubic_24();
-    assert(ctx2.leading_coeff() == Integer(2LL)); // 2x^3 + ...
+    TEST_ASSERT(ctx2.leading_coeff() == Integer(2LL)); // 2x^3 + ...
     std::cout << "  PASS" << std::endl;
 }
 
@@ -106,13 +107,13 @@ void test_evaluate_horner() {
     std::cout << "Testing evaluate (Horner)..." << std::endl;
     auto ctx = make_cubic_131();
     // f(0) = 1
-    assert(ctx.evaluate(Integer(0LL)) == Integer(1LL));
+    TEST_ASSERT(ctx.evaluate(Integer(0LL)) == Integer(1LL));
     // f(1) = 1+0+1+1 = 3
-    assert(ctx.evaluate(Integer(1LL)) == Integer(3LL));
+    TEST_ASSERT(ctx.evaluate(Integer(1LL)) == Integer(3LL));
     // f(5) = 125+5+1 = 131
-    assert(ctx.evaluate(Integer(5LL)) == Integer(131LL));
+    TEST_ASSERT(ctx.evaluate(Integer(5LL)) == Integer(131LL));
     // f(-1) = -1+0-1+1 = -1
-    assert(ctx.evaluate(Integer(-1LL)) == Integer(-1LL));
+    TEST_ASSERT(ctx.evaluate(Integer(-1LL)) == Integer(-1LL));
     std::cout << "  PASS" << std::endl;
 }
 
@@ -120,15 +121,15 @@ void test_evaluate_mod() {
     std::cout << "Testing evaluate_mod..." << std::endl;
     auto ctx = make_cubic_131();
     // f(5) mod 131 = 0
-    assert(ctx.evaluate_mod(5, 131) == 0);
+    TEST_ASSERT(ctx.evaluate_mod(5, 131) == 0);
     // f(0) mod 131 = 1
-    assert(ctx.evaluate_mod(0, 131) == 1);
+    TEST_ASSERT(ctx.evaluate_mod(0, 131) == 1);
     // f(1) mod 7 = 3 mod 7 = 3
-    assert(ctx.evaluate_mod(1, 7) == 3);
+    TEST_ASSERT(ctx.evaluate_mod(1, 7) == 3);
     // With coefficients that need mod-reduction
     auto ctx2 = make_cubic_24();
     // f(3) = 24 ≡ 0 mod 24
-    assert(ctx2.evaluate_mod(3, 24) == 0);
+    TEST_ASSERT(ctx2.evaluate_mod(3, 24) == 0);
     // A zero modulus has no residue; the API uses the same sentinel as
     // IntPolynomial::evaluate_mod instead of evaluating a division by zero.
     GNFS_TEST_CHECK(ctx.evaluate_mod(5, 0) == 0);
@@ -140,19 +141,19 @@ void test_evaluate_double() {
     auto ctx = make_cubic_131();
     // f(5.0) ≈ 131.0
     double result = ctx.evaluate_double(5.0);
-    assert(result > 130.9 && result < 131.1);
+    TEST_ASSERT(result > 130.9 && result < 131.1);
     // f(0.0) = 1.0
-    assert(ctx.evaluate_double(0.0) == 1.0);
+    TEST_ASSERT(ctx.evaluate_double(0.0) == 1.0);
     std::cout << "  PASS" << std::endl;
 }
 
 void test_verify() {
     std::cout << "Testing verify (f(m) ≡ 0 mod n)..." << std::endl;
     auto ctx = make_cubic_131();
-    assert(ctx.verify()); // f(5) = 131 ≡ 0 mod 131
+    TEST_ASSERT(ctx.verify()); // f(5) = 131 ≡ 0 mod 131
 
     auto ctx2 = make_cubic_24();
-    assert(ctx2.verify()); // f(3) = 24 ≡ 0 mod 24
+    TEST_ASSERT(ctx2.verify()); // f(3) = 24 ≡ 0 mod 24
     std::cout << "  PASS" << std::endl;
 }
 
@@ -162,13 +163,13 @@ void test_rational_value() {
     // m = 5
     // R(10, 2) = 10 - 2*5 = 0
     auto rv = ctx.rational_value(10, 2);
-    assert(rv == Integer(0LL));
+    TEST_ASSERT(rv == Integer(0LL));
     // R(7, 1) = 7 - 5 = 2
     rv = ctx.rational_value(7, 1);
-    assert(rv == Integer(2LL));
+    TEST_ASSERT(rv == Integer(2LL));
     // R(0, 3) = 0 - 15 = -15
     rv = ctx.rational_value(0, 3);
-    assert(rv == Integer(-15LL));
+    TEST_ASSERT(rv == Integer(-15LL));
     std::cout << "  PASS" << std::endl;
 }
 
@@ -257,11 +258,11 @@ void test_clone_is_independent() {
     auto ctx = make_cubic_131();
     auto ctx2 = ctx.clone();
     // Both should verify
-    assert(ctx.verify());
-    assert(ctx2.verify());
+    TEST_ASSERT(ctx.verify());
+    TEST_ASSERT(ctx2.verify());
     // Same coefficients
     for (uint32_t i = 0; i <= 3; ++i) {
-        assert(ctx.coeff(i) == ctx2.coeff(i));
+        TEST_ASSERT(ctx.coeff(i) == ctx2.coeff(i));
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -271,8 +272,8 @@ void test_trailing_zero_removal() {
     // Coefficients: [5, 0, 0, 0] → should produce degree 0 polynomial
     std::vector<Integer> c = {Integer(5LL), Integer(0LL), Integer(0LL), Integer(0LL)};
     PolynomialContext ctx(Integer(5LL), std::move(c), Integer(0LL));
-    assert(ctx.degree() == 0);
-    assert(ctx.coeff(0) == Integer(5LL));
+    TEST_ASSERT(ctx.degree() == 0);
+    TEST_ASSERT(ctx.coeff(0) == Integer(5LL));
     std::cout << "  PASS" << std::endl;
 }
 
@@ -313,7 +314,7 @@ void test_n_digits() {
     std::cout << "Testing n_digits..." << std::endl;
     auto ctx = make_cubic_131();
     // 131 has 3 decimal digits
-    assert(ctx.n_digits() == 3);
+    TEST_ASSERT(ctx.n_digits() == 3);
     std::cout << "  PASS" << std::endl;
 }
 
@@ -458,28 +459,35 @@ void test_i128_norm_against_integer_oracle() {
 }
 
 int main() {
+    int failed = 0;
+
     std::cout << "=== PolynomialContext Unit Tests ===" << std::endl;
 
-    test_construction_and_degree();
-    test_coeff_access();
-    test_leading_coeff();
-    test_evaluate_horner();
-    test_evaluate_mod();
-    test_evaluate_double();
-    test_verify();
-    test_rational_value();
-    test_algebraic_norm();
-    test_algebraic_norm_direct_gmp_oracle();
-    test_algebraic_norm_owned_results_and_threads();
-    test_clone_is_independent();
-    test_trailing_zero_removal();
-    test_default_context_evaluation();
-    test_empty_poly_throws();
-    test_n_digits();
-    test_uint64_portability_and_overflow_boundaries();
-    test_i128_norm_does_not_compute_unused_power();
-    test_rational_value_against_integer_oracle();
-    test_i128_norm_against_integer_oracle();
+    failed += !run_case(test_construction_and_degree);
+    failed += !run_case(test_coeff_access);
+    failed += !run_case(test_leading_coeff);
+    failed += !run_case(test_evaluate_horner);
+    failed += !run_case(test_evaluate_mod);
+    failed += !run_case(test_evaluate_double);
+    failed += !run_case(test_verify);
+    failed += !run_case(test_rational_value);
+    failed += !run_case(test_algebraic_norm);
+    failed += !run_case(test_algebraic_norm_direct_gmp_oracle);
+    failed += !run_case(test_algebraic_norm_owned_results_and_threads);
+    failed += !run_case(test_clone_is_independent);
+    failed += !run_case(test_trailing_zero_removal);
+    failed += !run_case(test_default_context_evaluation);
+    failed += !run_case(test_empty_poly_throws);
+    failed += !run_case(test_n_digits);
+    failed += !run_case(test_uint64_portability_and_overflow_boundaries);
+    failed += !run_case(test_i128_norm_does_not_compute_unused_power);
+    failed += !run_case(test_rational_value_against_integer_oracle);
+    failed += !run_case(test_i128_norm_against_integer_oracle);
+
+    if (failed != 0) {
+        std::cout << failed << " test case(s) failed" << std::endl;
+        return 1;
+    }
 
     std::cout << "\nAll tests passed!" << std::endl;
     return 0;

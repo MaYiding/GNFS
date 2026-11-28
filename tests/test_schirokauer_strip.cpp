@@ -17,7 +17,8 @@
 #include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/linalg/schirokauer.hpp>
 
-#include <cassert>
+#include "support/test_assert.hpp"
+
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -40,47 +41,50 @@ PolynomialContext build_unsplit_ctx() {
     coeffs.push_back(Integer(int64_t(1)));
     Integer m(int64_t(1999999999687LL));
     PolynomialContext ctx(N.clone(), std::move(coeffs), m.clone(), 1.0);
-    assert(ctx.degree() == 4);
-    assert(ctx.verify() && "f(m) != 0 mod N");
+    TEST_ASSERT(ctx.degree() == 4);
+    TEST_ASSERT(ctx.verify() && "f(m) != 0 mod N");
     return ctx;
 }
 
 bool vectors_equal(const std::vector<std::vector<uint32_t>>& a,
                    const std::vector<std::vector<uint32_t>>& b) {
-    if (a.size() != b.size()) return false;
+    if (a.size() != b.size())
+        return false;
     for (size_t i = 0; i < a.size(); ++i) {
-        if (a[i] != b[i]) return false;
+        if (a[i] != b[i])
+            return false;
     }
     return true;
 }
 
 void print_failure(const char* label, int64_t a, uint64_t b,
-                   const std::vector<std::vector<uint32_t>>& lhs,
-                   int64_t a2, uint64_t b2,
+                   const std::vector<std::vector<uint32_t>>& lhs, int64_t a2, uint64_t b2,
                    const std::vector<std::vector<uint32_t>>& rhs) {
-    std::cerr << "FAIL [" << label << "]: λ(" << a << "," << b << ") != λ("
-              << a2 << "," << b2 << ")\n";
+    std::cerr << "FAIL [" << label << "]: λ(" << a << "," << b << ") != λ(" << a2 << "," << b2
+              << ")\n";
     auto dump = [](const std::vector<std::vector<uint32_t>>& v) {
         for (const auto& col : v) {
             std::cerr << "  [";
             for (size_t i = 0; i < col.size(); ++i) {
-                if (i) std::cerr << ',';
+                if (i)
+                    std::cerr << ',';
                 std::cerr << col[i];
             }
             std::cerr << "]";
         }
         std::cerr << "\n";
     };
-    std::cerr << " lhs:"; dump(lhs);
-    std::cerr << " rhs:"; dump(rhs);
+    std::cerr << " lhs:";
+    dump(lhs);
+    std::cerr << " rhs:";
+    dump(rhs);
 }
 
 int test_strip_one(SchirokaurMap& smap) {
     int fails = 0;
     // Pairs with gcd coprime to ℓ=2. λ(2a, 2b) must equal λ(a, b).
     std::vector<std::pair<int64_t, uint64_t>> stripped = {
-        {1, 1}, {3, 1}, {1, 3}, {5, 3}, {7, 5},
-        {11, 9}, {-1, 1}, {-3, 5}, {127, 1}, {1, 127},
+        {1, 1}, {3, 1}, {1, 3}, {5, 3}, {7, 5}, {11, 9}, {-1, 1}, {-3, 5}, {127, 1}, {1, 127},
     };
     for (auto [a, b] : stripped) {
         auto base = smap.compute(a, b);
@@ -91,7 +95,8 @@ int test_strip_one(SchirokaurMap& smap) {
         }
     }
     std::cout << "  strip-1 (λ(2a,2b) == λ(a,b)): "
-              << (stripped.size() - static_cast<size_t>(fails)) << "/" << stripped.size() << " passed\n";
+              << (stripped.size() - static_cast<size_t>(fails)) << "/" << stripped.size()
+              << " passed\n";
     return fails;
 }
 
@@ -110,13 +115,14 @@ int test_strip_two(SchirokaurMap& smap) {
         }
     }
     std::cout << "  strip-2 (λ(4a,4b) == λ(a,b)): "
-              << (stripped.size() - static_cast<size_t>(fails)) << "/" << stripped.size() << " passed\n";
+              << (stripped.size() - static_cast<size_t>(fails)) << "/" << stripped.size()
+              << " passed\n";
     return fails;
 }
 
 int test_zero_shortcircuit(SchirokaurMap& smap) {
     auto res = smap.compute(0, 0);
-    assert(res.size() == 1);
+    TEST_ASSERT(res.size() == 1);
     int fails = 0;
     for (uint32_t v : res[0]) {
         if (v != 0) {
@@ -124,15 +130,14 @@ int test_zero_shortcircuit(SchirokaurMap& smap) {
             ++fails;
         }
     }
-    std::cout << "  zero-γ: "
-              << (fails == 0 ? "λ(0,0) == [0,0,0,0]" : "FAILED") << "\n";
+    std::cout << "  zero-γ: " << (fails == 0 ? "λ(0,0) == [0,0,0,0]" : "FAILED") << "\n";
     return fails;
 }
 
 int test_strip_max_safe(SchirokaurMap& smap) {
     // Boundary: strip exactly k-2 = 6 times. With k=8 and ℓ=2, multiplying
     // (1, 1) by 2^6 = 64 gives (64, 64). strip_v = 6, k-v = 2 → formula
-    // still well-defined per assert(strip_v + 2 <= k).
+    // still well-defined: the library asserts strip_v + 2 <= k here.
     auto base = smap.compute(1, 1);
     auto strip6 = smap.compute(int64_t{1} << 6, uint64_t{1} << 6);
     int fails = 0;
@@ -140,8 +145,8 @@ int test_strip_max_safe(SchirokaurMap& smap) {
         print_failure("strip-6 boundary", 1, 1, base, 64, 64, strip6);
         ++fails;
     }
-    std::cout << "  strip-6 boundary (λ(64,64) == λ(1,1)): "
-              << (fails == 0 ? "OK" : "FAILED") << "\n";
+    std::cout << "  strip-6 boundary (λ(64,64) == λ(1,1)): " << (fails == 0 ? "OK" : "FAILED")
+              << "\n";
     return fails;
 }
 
@@ -158,8 +163,8 @@ int test_strip_overflow_fallback(SchirokaurMap& smap) {
             ++fails;
         }
     }
-    std::cout << "  strip-7 fallback (λ(128,128) → 0 column): "
-              << (fails == 0 ? "OK" : "FAILED") << "\n";
+    std::cout << "  strip-7 fallback (λ(128,128) → 0 column): " << (fails == 0 ? "OK" : "FAILED")
+              << "\n";
     return fails;
 }
 
@@ -173,10 +178,10 @@ PolynomialContext build_n96091_ctx() {
     // f(x) = x^3 + 5x + 458, base-m polynomial near m=458 such that f(m) ≡ 0 mod N.
     // We use a synthetic base-m polynomial known to have a degree-1 factor mod 2.
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(int64_t(1024LL)));   // c0 even
+    coeffs.push_back(Integer(int64_t(1024LL))); // c0 even
     coeffs.push_back(Integer(int64_t(5LL)));
-    coeffs.push_back(Integer(int64_t(2LL)));      // c2 even — ensures reducible mod 2
-    coeffs.push_back(Integer(int64_t(1)));         // x^3
+    coeffs.push_back(Integer(int64_t(2LL))); // c2 even — ensures reducible mod 2
+    coeffs.push_back(Integer(int64_t(1)));   // x^3
     Integer m(int64_t(2LL));
     PolynomialContext ctx(N.clone(), std::move(coeffs), m.clone(), 1.0);
     return ctx;
@@ -188,9 +193,9 @@ int test_split_degree1_robustness(SchirokaurMap& smap) {
     // 0/1 values in each Schirokauer column. Some columns will trigger the
     // silent fallback (strip_v ≥ k-1 in γ = a - b·r).
     std::vector<std::pair<int64_t, uint64_t>> pairs = {
-        {1, 1}, {3, 1}, {5, 1}, {7, 1}, {9, 1}, {11, 1}, {13, 1}, {15, 1},
-        {17, 1}, {19, 1}, {21, 1}, {23, 1}, {25, 1}, {1, 3}, {3, 5}, {5, 3},
-        {7, 5}, {9, 7}, {127, 3}, {255, 5}, {-1, 1}, {-3, 5}, {-7, 9},
+        {1, 1},  {3, 1},  {5, 1},   {7, 1},   {9, 1},  {11, 1}, {13, 1}, {15, 1},
+        {17, 1}, {19, 1}, {21, 1},  {23, 1},  {25, 1}, {1, 3},  {3, 5},  {5, 3},
+        {7, 5},  {9, 7},  {127, 3}, {255, 5}, {-1, 1}, {-3, 5}, {-7, 9},
     };
     int fails = 0;
     int zero_columns = 0;
@@ -200,8 +205,9 @@ int test_split_degree1_robustness(SchirokaurMap& smap) {
         for (const auto& col : cols) {
             for (uint32_t v : col) {
                 ++total_columns;
-                if (v == 0) ++zero_columns;
-                if (v >= 2) {  // Schirokauer ℓ=2 must yield 0 or 1
+                if (v == 0)
+                    ++zero_columns;
+                if (v >= 2) { // Schirokauer ℓ=2 must yield 0 or 1
                     std::cerr << "FAIL: split-deg-1 λ(" << a << "," << b
                               << ") column has invalid value " << v << "\n";
                     ++fails;
@@ -209,14 +215,13 @@ int test_split_degree1_robustness(SchirokaurMap& smap) {
             }
         }
     }
-    std::cout << "  split-deg-1 robustness: " << pairs.size() << " pairs, "
-              << total_columns << " columns, " << zero_columns << " zero ("
-              << (100 * zero_columns / total_columns) << "%) — "
-              << (fails == 0 ? "no panic, all in {0,1}" : "FAILED") << "\n";
+    std::cout << "  split-deg-1 robustness: " << pairs.size() << " pairs, " << total_columns
+              << " columns, " << zero_columns << " zero (" << (100 * zero_columns / total_columns)
+              << "%) — " << (fails == 0 ? "no panic, all in {0,1}" : "FAILED") << "\n";
     return fails;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== Schirokauer strip-ℓ Regression ===\n";
@@ -226,8 +231,8 @@ int main() {
     config.primes = {2};
     config.exponent_k = 8;
     SchirokaurMap smap(ctx, config);
-    std::cout << "Polynomial degree: " << ctx.degree()
-              << ", columns: " << smap.num_columns() << "\n\n";
+    std::cout << "Polynomial degree: " << ctx.degree() << ", columns: " << smap.num_columns()
+              << "\n\n";
 
     int fails = 0;
     fails += test_strip_one(smap);
