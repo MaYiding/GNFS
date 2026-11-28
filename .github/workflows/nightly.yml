@@ -18,3 +18,114 @@ jobs:
     uses: ./.github/workflows/release-qualification.yml
     with:
       target_sha: ${{ github.sha }}
+
+  # Complete forced-GNFS factorizations above the 25-digit regression level.
+  # A failed rung fails the nightly run.
+  gnfs-e2e-ladder:
+    name: GNFS end-to-end ladder (30/35/40 digits)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          bash scripts/ci/apt_update.sh
+          sudo apt-get install -y libgmp-dev libntl-dev
+
+      - name: Configure Release build
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGNFS_ENABLE_NATIVE_ARCH=OFF
+
+      - name: Build the ladder target
+        run: cmake --build build --target test_gnfs_e2e_ladder --parallel "$(nproc)"
+
+      - name: Run the ladder rungs
+        working-directory: build
+        run: |
+          ctest --output-on-failure --tests-regex '^GNFS_E2E_Ladder' --no-tests=error
+
+      # CTest shows passing output only in LastTest.log, so the records are
+      # copied into the summary for reading without opening the raw log.
+      - name: Publish the ladder records
+        if: always()
+        working-directory: build
+        run: |
+          records="LastTest.log is missing; the ladder tests did not run."
+          if [[ -f Testing/Temporary/LastTest.log ]]; then
+            records="$(grep -E '^GNFS_E2E_LADDER ' Testing/Temporary/LastTest.log || true)"
+            if [[ -z "${records}" ]]; then
+              records="No GNFS_E2E_LADDER record was printed."
+            fi
+          fi
+          echo "${records}"
+          {
+            echo "## GNFS end-to-end ladder records"
+            echo
+            echo '```text'
+            echo "${records}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  # One 50-digit structured factorization. This job collects experimental
+  # evidence: a timeout, an out-of-memory kill, or a failed factorization must
+  # not turn the nightly run red.
+  gnfs-50d-evidence:
+    name: GNFS 50-digit structured evidence (experimental)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          bash scripts/ci/apt_update.sh
+          sudo apt-get install -y libgmp-dev libntl-dev
+
+      - name: Configure Release build
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGNFS_ENABLE_NATIVE_ARCH=OFF
+
+      - name: Build the ladder target
+        run: cmake --build build --target test_gnfs_e2e_ladder --parallel "$(nproc)"
+
+      - name: Run the 50-digit structured rung
+        working-directory: build
+        run: |
+          ctest --output-on-failure --tests-regex '^GNFS_E2E_50d$' --timeout 17100 --no-tests=error
+
+      - name: Publish the 50-digit record
+        if: always()
+        working-directory: build
+        run: |
+          records="LastTest.log is missing; the 50-digit rung did not run."
+          if [[ -f Testing/Temporary/LastTest.log ]]; then
+            records="$(grep -E '^GNFS_E2E_LADDER ' Testing/Temporary/LastTest.log || true)"
+            if [[ -z "${records}" ]]; then
+              records="No GNFS_E2E_LADDER record was printed."
+            fi
+          fi
+          echo "${records}"
+          {
+            echo "## GNFS 50-digit structured evidence"
+            echo
+            echo '```text'
+            echo "${records}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload 50-digit evidence logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gnfs-50d-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 14
