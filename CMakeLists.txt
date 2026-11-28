@@ -3651,16 +3651,14 @@ if(GNFS_BUILD_TESTS)
     # links and the native links. This is the only compile option that the two
     # libraries gain over the directory options they had, and a build with
     # GNFS_BUILD_TESTS off does not get it, because nothing links their
-    # objects natively there. MSVC /GL objects always carry both forms and
-    # need no extra option.
+    # objects natively there.
     #
     # The capability is probed at configure time because the linker takes part
     # in it: compile one function with the LTO and fat options, then link its
     # object with a plain object and without any LTO option. Both steps must
-    # succeed. MSVC is not probed because cl.exe needs the Visual Studio
-    # environment that execute_process() cannot provide. A failed probe, for
-    # example under a cross toolchain, falls back to LTO for every test
-    # executable, which is the behavior before LTO became a per-target property.
+    # succeed. A failed probe, for example under a cross toolchain, falls back
+    # to LTO for every test executable, which is the behavior before LTO became
+    # a per-target property.
     set(GNFS_FAT_LTO_LINKABLE FALSE)
     set(_gnfs_fat_lto_flag "")
     if(NOT _gnfs_lto_compile_flag)
@@ -3670,6 +3668,14 @@ if(GNFS_BUILD_TESTS)
         # them as LTO builds. PGO builds therefore keep LTO on every test
         # executable and need no fat LTO objects.
     elseif(MSVC)
+        # A /GL object carries the machine code as well, but Microsoft's /LTCG
+        # documentation says that a link which meets a /GL module without
+        # /LTCG is restarted with /LTCG, so the missing option alone would save
+        # nothing. The executables that leave LTO therefore link with
+        # /LTCG:OFF below, which makes the linker treat the /GL modules as if
+        # they were compiled without /GL. cl.exe is not probed because it needs
+        # the Visual Studio environment that execute_process() cannot provide,
+        # and no build has confirmed this path.
         set(GNFS_FAT_LTO_LINKABLE TRUE)
     else()
         set(_gnfs_probe_dir "${CMAKE_BINARY_DIR}/gnfs-lto-probe")
@@ -3775,6 +3781,21 @@ if(GNFS_BUILD_TESTS)
         foreach(_target IN LISTS GNFS_LTO_TEST_TARGETS)
             gnfs_enable_lto(${_target})
         endforeach()
+        if(MSVC)
+            # Without /LTCG the linker restarts with /LTCG as soon as it meets a
+            # /GL module. /LTCG:OFF makes it treat the /GL modules as if they
+            # were compiled without /GL, which is the native link these
+            # executables need (Microsoft's /LTCG documentation).
+            get_property(_gnfs_native_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+            list(REMOVE_ITEM _gnfs_native_targets ${_targets_before_tests}
+                ${GNFS_LTO_TEST_TARGETS})
+            foreach(_target IN LISTS _gnfs_native_targets)
+                get_target_property(_type ${_target} TYPE)
+                if(_type STREQUAL "EXECUTABLE")
+                    target_link_options(${_target} PRIVATE /LTCG:OFF)
+                endif()
+            endforeach()
+        endif()
     endif()
 
     function(gnfs_write_test_source_index)
