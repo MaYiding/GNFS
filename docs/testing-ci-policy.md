@@ -320,6 +320,8 @@ orphan. Generic runner capture is limited to 16 MiB per stream; overflow is a
 Harness failure rather than a truncated test result. The manual 50-digit
 campaign retains its separately validated process-group and signal protocol.
 
+The `Format` job runs clang-format 18 on every C or C++ file a pull request changes. A file that drifted earlier fails as soon as a change touches it, so reformat the whole file rather than only the new lines. `scripts/ci/format_changed.sh` runs the same check on the current branch: set `CLANG_FORMAT` to a clang-format 18 binary, add `--fix` to reformat the changed files in place, and omit it to only report differences.
+
 ## Nightly and Release Qualification
 
 The scheduled nightly workflow and the verify-only release phase call the same
