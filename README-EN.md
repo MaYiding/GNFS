@@ -288,6 +288,12 @@ contains diagnostic text only. See the
 [CLI event stream protocol](docs/api/event-stream.md) for ordering, fields, exit
 statuses, and compatibility rules.
 
+On Windows, command-line arguments arrive as UTF-16 and the entry point
+converts them to UTF-8, independent of the system code page. The CLI treats the
+paths passed to `--config` and `--output` as UTF-8 on every platform (bytes pass
+through unchanged on POSIX), so a path that contains Chinese characters behaves
+the same on Chinese and English Windows.
+
 ### macOS Workbench
 
 `apps/macos/GNFSWorkbench/` provides a native SwiftUI workbench for pipeline

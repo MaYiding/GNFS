@@ -264,6 +264,10 @@ make -C build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 完整 JSON 对象；stderr 仅承载诊断文本。协议顺序、字段、退出码及兼容规则见
 [CLI 事件流协议](docs/api/event-stream.md)。
 
+Windows 上命令行参数按 UTF-16 接收，并在入口处转成 UTF-8，与系统代码页无关。
+`--config` 与 `--output` 的路径值一律视为 UTF-8（POSIX 上按字节原样传递），
+因此含中文等非 ASCII 字符的路径在中文与英文 Windows 上行为一致。
+
 ### macOS Workbench
 
 `apps/macos/GNFSWorkbench/` 提供原生 SwiftUI 工作台，可查看流水线进度、

@@ -304,8 +304,10 @@ ASan/UBSan and coverage run only `instant` tests. They already multiply test cos
 then it validates JSON Lines framing, event order, terminal status, and process
 exit status. The cross-platform quick matrix runs it on Windows as well as POSIX
 hosts, so `CreateProcess`, runtime DLL lookup, complete child-environment
-replacement, and executable-path handling remain covered. The test is also in
-the project smoke set because each invocation uses a deterministic small input.
+replacement, and executable-path handling remain covered. A directory named in
+CJK ideographs also covers the UTF-8 argument conversion and the `--config` and
+`--output` paths. The test is also in the project smoke set because each
+invocation uses a deterministic small input.
 
 `ProcessSupervisor` is the cross-platform `instant` contract for the compiled
 test-runner supervisor. It freezes ambient-environment and Unicode argument
