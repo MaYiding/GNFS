@@ -3662,7 +3662,10 @@ if(GNFS_BUILD_TESTS)
     # succeed. A failed probe, for example under a cross toolchain, falls back
     # to LTO for every test executable, which is the behavior before LTO became
     # a per-target property.
-    set(GNFS_FAT_LTO_LINKABLE FALSE)
+    #
+    # GNFS_TESTS_LINK_NATIVE is TRUE when a test that leaves LTO can link the
+    # core libraries without the LTO option.
+    set(GNFS_TESTS_LINK_NATIVE FALSE)
     set(_gnfs_fat_lto_flag "")
     if(NOT _gnfs_lto_compile_flag)
         # No LTO in this configuration, so no fat LTO objects either.
@@ -3679,7 +3682,7 @@ if(GNFS_BUILD_TESTS)
         # they were compiled without /GL. cl.exe is not probed because it needs
         # the Visual Studio environment that execute_process() cannot provide,
         # and no build has confirmed this path.
-        set(GNFS_FAT_LTO_LINKABLE TRUE)
+        set(GNFS_TESTS_LINK_NATIVE TRUE)
     else()
         set(_gnfs_probe_dir "${CMAKE_BINARY_DIR}/gnfs-lto-probe")
         set(_gnfs_probe_obj "${_gnfs_probe_dir}/probe${CMAKE_CXX_OUTPUT_EXTENSION}")
@@ -3713,7 +3716,7 @@ if(GNFS_BUILD_TESTS)
         if(_gnfs_probe_compile_result STREQUAL "0"
             AND _gnfs_probe_link_result STREQUAL "0"
             AND EXISTS "${_gnfs_probe_exe}")
-            set(GNFS_FAT_LTO_LINKABLE TRUE)
+            set(GNFS_TESTS_LINK_NATIVE TRUE)
             set(_gnfs_fat_lto_flag -ffat-lto-objects)
         else()
             if(NOT (_gnfs_probe_compile_result STREQUAL "0"))
@@ -3732,17 +3735,17 @@ if(GNFS_BUILD_TESTS)
         target_compile_options(gnfs_core PRIVATE ${_gnfs_fat_lto_flag})
     endif()
     if(_gnfs_lto_compile_flag)
-        if(GNFS_FAT_LTO_LINKABLE)
+        if(GNFS_TESTS_LINK_NATIVE)
             message(STATUS "GNFS LTO: tests link native objects (fat LTO objects)")
         else()
             message(STATUS "GNFS LTO: tests participate in LTO (fat LTO objects unavailable)")
         endif()
     endif()
 
-    # Test executables must take part in LTO when the core libraries are not
-    # available as fat LTO objects: PGO builds and toolchains that failed the
-    # probe.
-    if(NOT GNFS_FAT_LTO_LINKABLE OR GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
+    # Test executables must take part in LTO when the tests cannot link the
+    # native code of the core libraries: PGO builds and toolchains that failed
+    # the probe.
+    if(NOT GNFS_TESTS_LINK_NATIVE OR GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
         set(_gnfs_tests_use_lto TRUE)
     else()
         set(_gnfs_tests_use_lto FALSE)
