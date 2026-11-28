@@ -90,6 +90,9 @@ jobs:
             --no-tests=error \
             -R '^BoundedChildProcess$'
 
+      - name: Smoke-test the Linux release binary
+        run: python3 scripts/release_smoke.py --executable build-release-readiness/gnfs
+
   windows-runtime-closure:
     name: Windows pinned runtime and source closure
     runs-on: windows-2022
@@ -185,3 +188,19 @@ jobs:
             --archive packages/gnfs-v0.1.0-windows-x86_64.zip \
             --platform windows-x86_64 \
             --release-tag v0.1.0
+
+      - name: Smoke-test the Windows release package
+        shell: msys2 {0}
+        # PATH keeps only the Windows system directories, so gnfs.exe must load
+        # its runtime DLLs from the package directory instead of UCRT64.
+        run: |
+          set -euo pipefail
+          system_root="$(cygpath -u "${SYSTEMROOT:-${WINDIR:-}}")"
+          if [ -z "${system_root}" ] || [ ! -d "${system_root}/System32" ]; then
+            echo "::error::Windows system directory not found (SYSTEMROOT=${SYSTEMROOT:-unset})"
+            exit 1
+          fi
+          python_exe="$(command -v python)"
+          PATH="${system_root}/System32:${system_root}" \
+            "${python_exe}" scripts/release_smoke.py \
+            --executable dist/gnfs-v0.1.0-windows-x86_64/bin/gnfs.exe
