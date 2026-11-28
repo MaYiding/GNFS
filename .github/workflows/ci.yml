@@ -250,7 +250,38 @@ jobs:
     - name: Build (POSIX)
       id: build_posix
       if: runner.os != 'Windows'
-      run: cmake --build build --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+      env:
+        # Only the macOS Release row keeps a timestamped copy of the link lines
+        # for the ThinLTO statistics step below. The other rows run the same
+        # build command without a pipe.
+        LINK_TIME_LOG: ${{ runner.os == 'macOS' && matrix.build_type == 'Release' && 'build/link-time.log' || '' }}
+      run: |
+        build_command=(cmake --build build --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)")
+        if [[ -z "${LINK_TIME_LOG}" ]] || ! command -v perl >/dev/null 2>&1; then
+          "${build_command[@]}"
+        else
+          # The default step shell is bash -e. Suspend it for the pipeline so
+          # the build keeps its own exit status even when the filter fails.
+          # Apple's awk has no systime(), so Perl stamps the relevant lines.
+          set +e
+          "${build_command[@]}" | perl -MTime::HiRes=time -e '
+            open(my $log, ">", $ARGV[0]) or die "cannot open $ARGV[0]: $!";
+            $| = 1;
+            while (<STDIN>) {
+              print;
+              printf $log "%.3f %s", time(), $_
+                if /Linking CXX executable |Built target /;
+            }
+          ' "${LINK_TIME_LOG}"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          if [[ "${statuses[0]}" -ne 0 ]]; then
+            exit "${statuses[0]}"
+          fi
+          if [[ "${statuses[1]}" -ne 0 ]]; then
+            echo "The link time filter exited with status ${statuses[1]}, so the link statistics will be missing."
+          fi
+        fi
 
     # Hits, misses, and cache size for this run. Skipped when the build did
     # not run, for example after an earlier step failed.
@@ -259,6 +290,58 @@ jobs:
       run: |
         ccache --version
         ccache --show-stats
+
+    # Size and entry count of the ThinLTO cache of the macOS Release row,
+    # printed before the post step of the restore step saves the directory.
+    # The build step timestamps the link lines on that row. Each executable
+    # link is measured from its "Linking" line to the "Built target" line of
+    # the same target, so the summed figure exceeds the wall time whenever
+    # links run in parallel. The step prints numbers only.
+    - name: Report ThinLTO cache statistics (macOS Release)
+      if: >-
+        ${{
+          !cancelled() &&
+          runner.os == 'macOS' &&
+          matrix.build_type == 'Release' &&
+          steps.build_posix.outcome != 'skipped'
+        }}
+      env:
+        LTO_CACHE_DIR: ${{ github.workspace }}/.lto-cache
+        LINK_TIME_LOG: build/link-time.log
+      run: |
+        if [[ -d "${LTO_CACHE_DIR}" ]]; then
+          echo "ThinLTO cache size: $(du -sh "${LTO_CACHE_DIR}" | cut -f1 | tr -d ' ')"
+          echo "ThinLTO cache entries: $(find "${LTO_CACHE_DIR}" -type f | wc -l | tr -d ' ')"
+          size_kib="$(du -sk "${LTO_CACHE_DIR}" | cut -f1)"
+          if (( size_kib > 1048576 )); then
+            echo "ThinLTO cache is ${size_kib} KiB, above the 1 GiB budget of its actions/cache entry."
+          fi
+        else
+          echo "ThinLTO cache directory is missing: ${LTO_CACHE_DIR}"
+        fi
+        if [[ -f "${LINK_TIME_LOG}" ]]; then
+          awk '
+            /Linking CXX executable / {
+              if (!first_link) first_link = $1
+              link_start[$NF] = $1
+            }
+            /Built target / {
+              if ($NF in link_start) {
+                links += 1
+                total += $1 - link_start[$NF]
+                last_link = $1
+                delete link_start[$NF]
+              }
+            }
+            END {
+              printf "Executable links: %d\n", links
+              printf "Seconds from the first link to the last: %.1f\n", last_link - first_link
+              printf "Seconds summed over all links: %.1f\n", total
+            }
+          ' "${LINK_TIME_LOG}"
+        else
+          echo "Link time log is missing: ${LINK_TIME_LOG}"
+        fi
 
     - name: Build (Windows)
       if: runner.os == 'Windows'
