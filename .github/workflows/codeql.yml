@@ -42,8 +42,24 @@ jobs:
         languages: cpp
 
     - name: Build
+      env:
+        # Pull requests analyze product code only. Main pushes, the weekly
+        # schedule, and manual runs keep tests, because the main analysis
+        # decides whether CodeQL alerts open or close on the Security page.
+        BUILD_TESTS: ${{ github.event_name == 'pull_request' && 'OFF' || 'ON' }}
       run: |
-        cmake -B build -DCMAKE_BUILD_TYPE=Release
+        if [ "${BUILD_TESTS}" = "OFF" ]; then
+          scope="CodeQL scope: product targets only (GNFS_BUILD_TESTS=OFF)"
+        else
+          scope="CodeQL scope: product and tests (GNFS_BUILD_TESTS=ON)"
+        fi
+        echo "${scope}"
+        {
+          echo "## CodeQL Scope"
+          echo
+          echo "${scope}"
+        } >> "${GITHUB_STEP_SUMMARY}"
+        cmake -B build -DCMAKE_BUILD_TYPE=Release -DGNFS_BUILD_TESTS="${BUILD_TESTS}"
         make -C build -j"$(nproc)"
 
     - name: Perform CodeQL Analysis
