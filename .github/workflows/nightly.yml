@@ -49,16 +49,32 @@ jobs:
           ctest --output-on-failure --tests-regex '^GNFS_E2E_Ladder' --no-tests=error
 
       # CTest shows passing output only in LastTest.log, so the records are
-      # copied into the summary for reading without opening the raw log.
+      # copied into the summary for reading without opening the raw log. Each
+      # record is parsed first: a rung that passes with a broken record must
+      # fail the job instead of leaving unreadable evidence.
       - name: Publish the ladder records
         if: always()
         working-directory: build
         run: |
+          validator='
+          import json, sys
+          for line in sys.stdin.read().splitlines():
+              try:
+                  value = json.loads(line[len("GNFS_E2E_LADDER "):])
+              except ValueError as error:
+                  sys.exit("malformed GNFS_E2E_LADDER record: " + str(error) + "\n" + line)
+              if not isinstance(value, dict):
+                  sys.exit("GNFS_E2E_LADDER record is not a JSON object: " + line)
+          '
+          log="Testing/Temporary/LastTest.log"
+          status=0
           records="LastTest.log is missing; the ladder tests did not run."
-          if [[ -f Testing/Temporary/LastTest.log ]]; then
-            records="$(grep -E '^GNFS_E2E_LADDER ' Testing/Temporary/LastTest.log || true)"
+          if [[ -f "${log}" ]]; then
+            records="$(grep -E '^GNFS_E2E_LADDER ' "${log}" || true)"
             if [[ -z "${records}" ]]; then
               records="No GNFS_E2E_LADDER record was printed."
+            else
+              printf '%s\n' "${records}" | python3 -c "${validator}" || status=$?
             fi
           fi
           echo "${records}"
@@ -68,7 +84,12 @@ jobs:
             echo '```text'
             echo "${records}"
             echo '```'
+            if [[ "${status}" != 0 ]]; then
+              echo
+              echo "At least one record is not a JSON object. See the job log."
+            fi
           } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
 
   # One 50-digit structured factorization. This job collects experimental
   # evidence: a timeout, an out-of-memory kill, or a failed factorization must
@@ -101,15 +122,32 @@ jobs:
         run: |
           ctest --output-on-failure --tests-regex '^GNFS_E2E_50d$' --timeout 17100 --no-tests=error
 
+      # The record is parsed before it is published. This job stays
+      # non-blocking, so a broken record is reported and the job still ends
+      # green.
       - name: Publish the 50-digit record
         if: always()
         working-directory: build
         run: |
+          validator='
+          import json, sys
+          for line in sys.stdin.read().splitlines():
+              try:
+                  value = json.loads(line[len("GNFS_E2E_LADDER "):])
+              except ValueError as error:
+                  sys.exit("malformed GNFS_E2E_LADDER record: " + str(error) + "\n" + line)
+              if not isinstance(value, dict):
+                  sys.exit("GNFS_E2E_LADDER record is not a JSON object: " + line)
+          '
+          log="Testing/Temporary/LastTest.log"
+          status=0
           records="LastTest.log is missing; the 50-digit rung did not run."
-          if [[ -f Testing/Temporary/LastTest.log ]]; then
-            records="$(grep -E '^GNFS_E2E_LADDER ' Testing/Temporary/LastTest.log || true)"
+          if [[ -f "${log}" ]]; then
+            records="$(grep -E '^GNFS_E2E_LADDER ' "${log}" || true)"
             if [[ -z "${records}" ]]; then
               records="No GNFS_E2E_LADDER record was printed."
+            else
+              printf '%s\n' "${records}" | python3 -c "${validator}" || status=$?
             fi
           fi
           echo "${records}"
@@ -119,7 +157,12 @@ jobs:
             echo '```text'
             echo "${records}"
             echo '```'
+            if [[ "${status}" != 0 ]]; then
+              echo
+              echo "At least one record is not a JSON object. See the job log."
+            fi
           } >> "${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
 
       - name: Upload 50-digit evidence logs
         if: always()
