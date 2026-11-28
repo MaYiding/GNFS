@@ -294,8 +294,8 @@ The PR CI intentionally has three layers:
      does not select them.
    - macOS Release also passes a thin link-time optimization (ThinLTO) cache
      directory to the linker and saves it with `actions/cache`, because the
-     ThinLTO links of the 279 executables still take about seven minutes when
-     ccache answers every compile.
+     ThinLTO links of the 279 executables still take about seven and a half
+     minutes when ccache answers every compile.
    - Windows Release runs `instant` plus the targeted fast
      `BWKrylovMmapIntegration` contract. This required end-to-end witness
      exercises the real Win32 raw-mapping and compressed positioned-I/O paths
