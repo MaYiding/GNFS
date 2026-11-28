@@ -348,7 +348,11 @@ private:
     }
     size_t end = max_bytes;
     // A continuation byte at `end` belongs to a sequence that starts before it.
-    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xc0U) == 0x80U) {
+    while (end > 0) {
+        const unsigned byte = static_cast<unsigned char>(text[end]);
+        if ((byte & 0xc0U) != 0x80U) {
+            break;
+        }
         --end;
     }
     return text.substr(0, end);
