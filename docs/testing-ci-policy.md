@@ -45,6 +45,11 @@ Longest measured enabled tests:
 
 Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Windows, and high CTest parallelism can change runtime by an order of magnitude.
 
+The four GNFS evidence ladder CTests also carry the `ladder` label, which is
+not a tier. `unit` and `full` select every CTest with `ctest -R '.*'` and pass
+`--label-exclude ladder`, so the ladder runs only where a job selects it by
+name.
+
 `HarnessHooks` aggregates isolated hook and runner CLI contracts, including
 fresh interpreter, fixture, and reporting processes. It retains the `instant`
 label so the existing Debug, sanitizer, coverage, and platform lanes still
@@ -410,10 +415,10 @@ never run there.
   failed factorization is recorded but does not turn the nightly run red. It
   uploads `build/Testing/Temporary/` on every outcome.
 
-All four CTests are enabled, because `ctest` offers no option to run a test
-that is marked `DISABLED`. The `unit` and `full` modes of `scripts/test.sh`
-run `ctest -R '.*'`, so they include the ladder, and the 50-digit rung alone
-can take up to its 14400-second timeout.
+All four CTests are enabled and also carry the `ladder` label, because
+`ctest` offers no option to run a test that is marked `DISABLED` and the jobs
+select the rungs by name. The `unit` and `full` modes of `scripts/test.sh` run
+`ctest -R '.*'` and exclude that label, so they do not run the ladder.
 
 `test_gnfs_e2e_ladder` factors one fixture per process through
 `Pipeline::run()`. It sets `GNFS_DISABLE_SIQS=1` and calls
@@ -453,19 +458,22 @@ JSON object fails the step or counts as a failed rung. The object carries:
   `matrix_cols`, `matrix_nonzeros`, `matrix_excess`, `dependencies_found`,
   `dependencies_tried`, and the lifetime `peak_rss_bytes`.
 
-Statistics are `null` when `Pipeline::run()` threw before it published them. A
-timeout kills the process before it prints, so a missing line means that the
-rung never finished. The time budgets are provisional until the first nightly
-runs report stage wall times.
+Statistics are `null` when `Pipeline::run()` threw before it published them;
+the stage timings, the structured-route counts, and the peak RSS stay in the
+record. A timeout kills the process before it prints, so a missing line means
+that the rung never finished. The time budgets are provisional until the first
+nightly runs report stage wall times. The `TIMEOUT` property of each CTest is
+the effective budget; `ctest --timeout` does not override it.
 
 To add a rung, append the fixture to `kFixtures` in
-`tests/test_gnfs_e2e_ladder.cpp`, register its CTest with `LABELS` and
-`TIMEOUT`, and add it to the nightly job that should run it. A CTest with
-arguments or a `heavy` or `stress` label stays inside the protected CMake
-boundary, so the registration also moves the boundary digest in
-`scripts/check_distributed_sieve_policy.py`. The expected primes live in the
-CTest command and in the `gnfs-e2e-ladder` mode of `scripts/test.sh`, which
-runs the 30-, 35-, and 40-digit rungs locally and defaults to a Release build.
+`tests/test_gnfs_e2e_ladder.cpp`, register its CTest with its tier, the
+`ladder` label, and `TIMEOUT`, and add it to the nightly job that should run
+it. A CTest with arguments or a `heavy` or `stress` label stays inside the
+protected CMake boundary, so the registration also moves the boundary digest
+in `scripts/check_distributed_sieve_policy.py`. The expected primes live in
+the CTest command and in the `gnfs-e2e-ladder` mode of `scripts/test.sh`,
+which runs the 30-, 35-, and 40-digit rungs locally and defaults to a Release
+build.
 
 ## ThreadSanitizer Lane
 
