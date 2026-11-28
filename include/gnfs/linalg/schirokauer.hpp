@@ -566,6 +566,12 @@ struct SchirokaurConfig {
     // 2^-39 share of the pairs in that box. Such a pair is counted and
     // reported.
     //
+    // Platform cost: without __int128 (MSVC) mul_mod_u64 is a double-and-add
+    // loop with one step per bit of its second operand, so the Schirokauer
+    // part of the matrix build runs up to 40 steps per multiplication at
+    // k = 40 where it ran up to 8 at k = 8. The columns are the same on every
+    // platform; the cost was not measured.
+    //
     // The cap is 62 for ℓ = 2: the hot paths reduce the signed a modulo
     // (int64_t)ell_k, so precompute_for_prime rejects ℓ^k above INT64_MAX, and
     // mul_mod_u64 is exact for every 64-bit operand below that limit. The
