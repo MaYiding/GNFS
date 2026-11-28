@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -8,6 +7,8 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+
+#include "test_assert.hpp"
 
 namespace gnfs::util {
 
@@ -123,11 +124,11 @@ public:
 
     // 元素访问（operator[] 在 Debug 模式下做边界检查）
     [[nodiscard]] T& operator[](size_t i) noexcept {
-        assert(i < size_ && "SmallVector::operator[] index out of bounds");
+        TEST_ASSERT(i < size_ && "SmallVector::operator[] index out of bounds");
         return data()[i];
     }
     [[nodiscard]] const T& operator[](size_t i) const noexcept {
-        assert(i < size_ && "SmallVector::operator[] index out of bounds");
+        TEST_ASSERT(i < size_ && "SmallVector::operator[] index out of bounds");
         return data()[i];
     }
 
@@ -144,20 +145,20 @@ public:
     }
 
     [[nodiscard]] T& front() noexcept {
-        assert(size_ > 0 && "SmallVector::front on empty vector");
+        TEST_ASSERT(size_ > 0 && "SmallVector::front on empty vector");
         return data()[0];
     }
     [[nodiscard]] const T& front() const noexcept {
-        assert(size_ > 0 && "SmallVector::front on empty vector");
+        TEST_ASSERT(size_ > 0 && "SmallVector::front on empty vector");
         return data()[0];
     }
 
     [[nodiscard]] T& back() noexcept {
-        assert(size_ > 0 && "SmallVector::back on empty vector");
+        TEST_ASSERT(size_ > 0 && "SmallVector::back on empty vector");
         return data()[size_ - 1];
     }
     [[nodiscard]] const T& back() const noexcept {
-        assert(size_ > 0 && "SmallVector::back on empty vector");
+        TEST_ASSERT(size_ > 0 && "SmallVector::back on empty vector");
         return data()[size_ - 1];
     }
 
