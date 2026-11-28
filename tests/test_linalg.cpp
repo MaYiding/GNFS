@@ -1817,8 +1817,8 @@ void test_schirokauer_non_monic_split_quadratic() {
                                 {41, 54, -82, 3}, 415, 171, true);
 }
 
-// Degenerate Schirokauer rows (all-zero map vectors) are counted in
-// MatrixBuildResult. Only the count is new; no matrix bit changes.
+// Degenerate Schirokauer rows (all-zero map vectors) and precision fallbacks
+// are counted in MatrixBuildResult. Only the counts are new; no matrix bit changes.
 void test_matrix_builder_counts_degenerate_schirokauer_rows() {
     std::cout << "Testing MatrixBuilder degenerate Schirokauer row count..." << std::endl;
 
@@ -1872,6 +1872,9 @@ void test_matrix_builder_counts_degenerate_schirokauer_rows() {
         GNFS_TEST_CHECK(result->matrix.num_rows() == 8);
         GNFS_TEST_CHECK(count_zero_rows(*result) == 3);
         GNFS_TEST_CHECK(result->schirokauer_degenerate_rows == 3);
+        // The same three rows are precision fallbacks: one per zero-filled
+        // Schirokauer computation.
+        GNFS_TEST_CHECK(result->schirokauer_precision_fallbacks == 3);
     }
     for (size_t row = 0; row < relations.size(); ++row) {
         GNFS_TEST_CHECK(vector.matrix.row(row).indices() == streaming.matrix.row(row).indices());
@@ -1887,6 +1890,7 @@ void test_matrix_builder_counts_degenerate_schirokauer_rows() {
     const auto disabled = MatrixBuilder(config).build_with_qc(relations, fb, ctx);
     GNFS_TEST_CHECK(disabled.mapping.num_schirokauer_columns == 0);
     GNFS_TEST_CHECK(disabled.schirokauer_degenerate_rows == 0);
+    GNFS_TEST_CHECK(disabled.schirokauer_precision_fallbacks == 0);
 
     std::cout << "  Degenerate Schirokauer row count: PASSED" << std::endl;
 }

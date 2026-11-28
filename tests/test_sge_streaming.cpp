@@ -201,7 +201,8 @@ static bool mappings_equal(const ColumnMapping& a, const ColumnMapping& b) {
 static bool build_results_equal(const MatrixBuildResult& a, const MatrixBuildResult& b) {
     return matrices_equal(a.matrix, b.matrix) && mappings_equal(a.mapping, b.mapping) &&
            a.row_to_relation == b.row_to_relation &&
-           a.schirokauer_degenerate_rows == b.schirokauer_degenerate_rows;
+           a.schirokauer_degenerate_rows == b.schirokauer_degenerate_rows &&
+           a.schirokauer_precision_fallbacks == b.schirokauer_precision_fallbacks;
 }
 
 static MatrixBuilderConfig minimal_mb_config() {

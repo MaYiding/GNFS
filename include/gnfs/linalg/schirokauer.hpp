@@ -722,6 +722,22 @@ public:
     /// Fast computation for a single prime using fixed-size arrays
     [[nodiscard]] std::vector<uint32_t> compute_for_prime_fast(int64_t a, uint64_t b,
                                                                size_t prime_idx) const {
+        uint64_t ignored_fallbacks = 0;
+        return compute_for_prime_fast(a, b, prime_idx, ignored_fallbacks);
+    }
+
+    /// compute_for_prime_fast, additionally counting precision fallbacks.
+    ///
+    /// One fallback is counted for each factor whose columns are zero-filled
+    /// because the ℓ-adic precision of γ = a - bα is insufficient: γ ≡ 0 mod ℓ^k,
+    /// or a stripped valuation v with v + 2 > k. Such columns are not the
+    /// character of γ, so a row that hits this carries a wrong constraint. The
+    /// structural zero padding of factors that cannot be Hensel-lifted (f has
+    /// repeated roots mod ℓ) is a property of f, not a precision loss, and is
+    /// not counted.
+    [[nodiscard]] std::vector<uint32_t>
+    compute_for_prime_fast(int64_t a, uint64_t b, size_t prime_idx,
+                           uint64_t& precision_fallbacks) const {
 
         if (prime_idx >= config_.primes.size()) {
             return std::vector<uint32_t>(degree_, 0);
@@ -731,10 +747,10 @@ public:
 
         if (!info.is_split) {
             // Standard case: f irreducible mod ℓ
-            return compute_unsplit(a, b, info);
+            return compute_unsplit(a, b, info, &precision_fallbacks);
         } else {
             // Split case: f = ∏ fᵢ mod ℓ
-            return compute_split(a, b, info);
+            return compute_split(a, b, info, &precision_fallbacks);
         }
     }
 
@@ -763,8 +779,10 @@ public:
     /// When gcd(a, b) is divisible by ℓ we strip the ℓ-part first, matching
     /// the split-case handling in compute_split. If γ ≡ 0 mod ℓ^k entirely,
     /// the Schirokauer map is undefined and we return zero columns.
-    [[nodiscard]] std::vector<uint32_t> compute_unsplit(int64_t a, uint64_t b,
-                                                        const PrimeInfo& info) const {
+    /// `precision_fallbacks` (optional) counts each zero-column return.
+    [[nodiscard]] std::vector<uint32_t>
+    compute_unsplit(int64_t a, uint64_t b, const PrimeInfo& info,
+                    uint64_t* precision_fallbacks = nullptr) const {
 
         int64_t a_mod = a % static_cast<int64_t>(info.ell_k);
         if (a_mod < 0)
@@ -775,6 +793,7 @@ public:
         uint64_t c0 = static_cast<uint64_t>(a_mod);
         uint64_t c1 = neg_b;
         if (c0 == 0 && c1 == 0) {
+            note_precision_fallback(precision_fallbacks);
             return std::vector<uint32_t>(degree_, 0);
         }
         uint32_t strip_v = 0;
@@ -784,9 +803,11 @@ public:
             ++strip_v;
         }
         // Precision after stripping is k-v bits in ℓ^k; (coeff-1)/ℓ mod ℓ needs k-v ≥ 2.
-        // When strip_v ≥ k-1, extracted bits are below noise floor — return zeros
-        // (symmetric with the all-zero short-circuit above).
+        // When strip_v ≥ k-1, the known bits of γ no longer determine the column,
+        // so the columns are not the character of γ: return zeros and count the
+        // fallback (symmetric with the all-zero short-circuit above).
         if (strip_v + 2 > config_.exponent_k) {
+            note_precision_fallback(precision_fallbacks);
             return std::vector<uint32_t>(degree_, 0);
         }
         c0 %= info.ell_k;
@@ -811,8 +832,10 @@ public:
     ///   If γ ≡ 0 mod (fᵢ, ℓ): strip ℓ-part to get unit before computing map
     ///   Compute unit^(ℓ^{dᵢ} - 1) mod (fᵢ, ℓ^k)
     ///   Extract (result - 1) / ℓ mod ℓ → dᵢ columns
-    [[nodiscard]] std::vector<uint32_t> compute_split(int64_t a, uint64_t b,
-                                                      const PrimeInfo& info) const {
+    /// `precision_fallbacks` (optional) counts each zero-filled factor, once.
+    [[nodiscard]] std::vector<uint32_t>
+    compute_split(int64_t a, uint64_t b, const PrimeInfo& info,
+                  uint64_t* precision_fallbacks = nullptr) const {
 
         std::vector<uint32_t> result;
         result.reserve(degree_);
@@ -836,7 +859,9 @@ public:
                 // the unit part. For non-units (γ ≡ 0 mod ℓ), the formula
                 // (γ^{ℓ-1} - 1)/ℓ is undefined, so we must strip ℓ first.
                 if (gamma == 0) {
-                    // γ ≡ 0 mod ℓ^k — degenerate, set Schirokauer to 0
+                    // γ ≡ 0 mod ℓ^k: the unit part is unknown, so the column is
+                    // set to 0 and counted as a precision fallback.
+                    note_precision_fallback(precision_fallbacks);
                     result.push_back(0);
                     continue;
                 }
@@ -846,10 +871,14 @@ public:
                     ++strip_v;
                 }
                 // gamma is now the unit part (coprime to ℓ), known mod ℓ^{k-v}.
-                // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2; otherwise the extracted bit is noise.
-                // Production split-degree-1 path can hit strip_v ≥ k-1 even with gcd(a,b)=1
-                // when γ = a - b·r aligns with the Hensel-lifted root r. Fallback to 0.
+                // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2. The split-degree-1 path reaches
+                // strip_v ≥ k-1 for coprime (a, b) when γ = a - b·r is highly
+                // divisible by ℓ: unlike the other paths it does not strip a common
+                // factor of a and b. The true column is bit v+1 of γ, which the
+                // lift does not know, so the columns are set to 0 and the fallback
+                // is counted.
                 if (strip_v + 2 > config_.exponent_k) {
+                    note_precision_fallback(precision_fallbacks);
                     result.push_back(0);
                     continue;
                 }
@@ -889,6 +918,7 @@ public:
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
                 if (c0 == 0 && c1 == 0) {
+                    note_precision_fallback(precision_fallbacks);
                     result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
@@ -900,8 +930,10 @@ public:
                     ++strip_v;
                 }
                 // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
-                // Below that threshold the extracted bits are below noise floor.
+                // Below that threshold the known bits of γ no longer determine
+                // the columns.
                 if (strip_v + 2 > config_.exponent_k) {
+                    note_precision_fallback(precision_fallbacks);
                     result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
@@ -934,6 +966,7 @@ public:
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
                 if (c0 == 0 && c1 == 0) {
+                    note_precision_fallback(precision_fallbacks);
                     result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
@@ -945,7 +978,10 @@ public:
                     ++strip_v;
                 }
                 // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
+                // Below that threshold the known bits of γ no longer determine
+                // the columns.
                 if (strip_v + 2 > config_.exponent_k) {
+                    note_precision_fallback(precision_fallbacks);
                     result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
@@ -965,7 +1001,9 @@ public:
             }
         }
 
-        // Pad to degree_ if needed (shouldn't happen if factorization is correct)
+        // Pad to degree_ if needed: factors with multiplicity > 1 cannot be
+        // Hensel-lifted and have no columns (see factorize_and_setup). This
+        // padding depends on f alone, so it is not a precision fallback.
         if (result.size() < degree_)
             result.resize(degree_);
 
@@ -981,11 +1019,20 @@ public:
     /// Compute Schirokauer map values as a flat vector (for matrix construction)
     /// Returns values for all primes concatenated
     [[nodiscard]] std::vector<uint32_t> compute_flat(int64_t a, uint64_t b) const {
+        uint64_t ignored_fallbacks = 0;
+        return compute_flat(a, b, ignored_fallbacks);
+    }
+
+    /// compute_flat, additionally adding the number of precision fallbacks of
+    /// this element to `precision_fallbacks`. The values are identical to those
+    /// of compute_flat(a, b); a fallback contributes zero columns.
+    [[nodiscard]] std::vector<uint32_t> compute_flat(int64_t a, uint64_t b,
+                                                     uint64_t& precision_fallbacks) const {
         std::vector<uint32_t> result;
         result.reserve(num_columns());
 
         for (size_t i = 0; i < config_.primes.size(); ++i) {
-            auto map = compute_for_prime_fast(a, b, i);
+            auto map = compute_for_prime_fast(a, b, i, precision_fallbacks);
             for (uint32_t v : map) {
                 result.push_back(v);
             }
@@ -995,6 +1042,13 @@ public:
     }
 
 private:
+    /// Record one precision fallback when the caller asked for the count.
+    static void note_precision_fallback(uint64_t* precision_fallbacks) noexcept {
+        if (precision_fallbacks != nullptr) {
+            ++*precision_fallbacks;
+        }
+    }
+
     const PolynomialContext& ctx_;
     Config config_;
     uint32_t degree_;

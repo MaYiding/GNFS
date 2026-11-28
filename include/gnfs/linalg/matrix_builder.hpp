@@ -153,12 +153,19 @@ struct MatrixBuildResult {
     SparseMatrix matrix;                 // 构建的矩阵
     ColumnMapping mapping;               // 列映射信息
     std::vector<size_t> row_to_relation; // 行索引 -> 原始关系索引的映射
-    // Rows whose Schirokauer vector is identically zero (degenerate rows).
-    // compute_unsplit / compute_split fall back to zero columns when the
-    // ℓ-adic precision is insufficient. A genuine element of the kernel of λ
-    // yields the same zero vector, so this count is an upper bound on the
-    // number of precision fallbacks. Diagnostics only: no matrix bit changes.
+    // Rows whose Schirokauer vector is identically zero. An element on which
+    // every column of λ vanishes, a genuine square in particular, gives the
+    // same zero vector as a precision fallback, and for a degree-3 map a large
+    // share of the rows is zero for that reason alone. The count therefore is
+    // not a precision indicator; precision losses are counted separately in
+    // schirokauer_precision_fallbacks. Diagnostics only: no matrix bit changes.
     size_t schirokauer_degenerate_rows = 0;
+    // Number of Schirokauer computations whose columns were zero-filled
+    // because the ℓ-adic precision of a - bα was insufficient (see
+    // SchirokaurMap::compute_for_prime_fast). Each (a, b) pair of a row counts
+    // on its own, and one fallback is counted per affected factor. A row that
+    // hits this carries a wrong constraint. Diagnostics only.
+    uint64_t schirokauer_precision_fallbacks = 0;
     // Number of QC column evaluations whose argument a - b*r is 0 modulo the
     // QC prime. The Legendre symbol is undefined there, so the column records 0
     // and stops certifying that a dependency is a square. QC primes are chosen
@@ -356,9 +363,11 @@ public:
         // 元素互不冲突;build_row_with_qc / class_group->compute_binary_characters /
         // schirokauer->compute_flat 全部 const,无内部状态修改。
         // SchirokauerMap::compute_flat 1M+ relations 是热点。
-        // Degenerate Schirokauer rows are counted per thread. Only the final
-        // sum is read, after parallel_for_index has joined every worker.
+        // Degenerate Schirokauer rows and precision fallbacks are counted per
+        // thread. Only the final sums are read, after parallel_for_index has
+        // joined every worker.
         std::atomic<size_t> degenerate_schirokauer_rows{0};
+        std::atomic<uint64_t> schirokauer_precision_fallbacks{0};
         const bool count_degenerate_schirokauer = schirokauer && schirokauer->num_columns() > 0;
         // Rows are built concurrently, so the zero count of the QC columns is
         // accumulated in a shared atomic and published in the result.
@@ -392,13 +401,18 @@ public:
             // λ(∏ x_i) = Σ λ(x_i) mod ℓ.  Sum all pairs, then take mod 2 for GF(2).
             if (schirokauer) {
                 const auto& rel = relations[i];
-                auto sm_values = schirokauer->compute_flat(rel.a, rel.b);
+                uint64_t row_precision_fallbacks = 0;
+                auto sm_values = schirokauer->compute_flat(rel.a, rel.b, row_precision_fallbacks);
 
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                    auto extra_sm = schirokauer->compute_flat(ea, eb);
+                    auto extra_sm = schirokauer->compute_flat(ea, eb, row_precision_fallbacks);
                     for (size_t j = 0; j < sm_values.size(); ++j) {
                         sm_values[j] += extra_sm[j];
                     }
+                }
+                if (row_precision_fallbacks > 0) {
+                    schirokauer_precision_fallbacks.fetch_add(row_precision_fallbacks,
+                                                              std::memory_order_relaxed);
                 }
 
                 size_t sm_start = result.mapping.schirokauer_start();
@@ -418,6 +432,8 @@ public:
         });
         result.schirokauer_degenerate_rows =
             degenerate_schirokauer_rows.load(std::memory_order_relaxed);
+        result.schirokauer_precision_fallbacks =
+            schirokauer_precision_fallbacks.load(std::memory_order_relaxed);
         result.qc_zero_legendre_count = qc_zero_legendre_count.load(std::memory_order_relaxed);
 
         return result;
@@ -555,9 +571,11 @@ public:
         // local deserialize) and VectorRelationSource (const access) satisfy
         // this. The relation goes out of scope at the end of each lambda
         // invocation — no accumulation in any shared structure.
-        // Degenerate Schirokauer rows are counted per thread. Only the final
-        // sum is read, after parallel_for_index has joined every worker.
+        // Degenerate Schirokauer rows and precision fallbacks are counted per
+        // thread. Only the final sums are read, after parallel_for_index has
+        // joined every worker.
         std::atomic<std::size_t> degenerate_schirokauer_rows{0};
+        std::atomic<uint64_t> schirokauer_precision_fallbacks{0};
         const bool count_degenerate_schirokauer = schirokauer && schirokauer->num_columns() > 0;
         std::atomic<uint64_t> qc_zero_legendre_count{0};
         gnfs::util::ThreadPool pool(0);
@@ -583,12 +601,17 @@ public:
             }
 
             if (schirokauer) {
-                auto sm_values = schirokauer->compute_flat(rel.a, rel.b);
+                uint64_t row_precision_fallbacks = 0;
+                auto sm_values = schirokauer->compute_flat(rel.a, rel.b, row_precision_fallbacks);
                 for (const auto& [ea, eb] : rel.extra_ab_pairs) {
-                    auto extra_sm = schirokauer->compute_flat(ea, eb);
+                    auto extra_sm = schirokauer->compute_flat(ea, eb, row_precision_fallbacks);
                     for (std::size_t j = 0; j < sm_values.size(); ++j) {
                         sm_values[j] += extra_sm[j];
                     }
+                }
+                if (row_precision_fallbacks > 0) {
+                    schirokauer_precision_fallbacks.fetch_add(row_precision_fallbacks,
+                                                              std::memory_order_relaxed);
                 }
                 std::size_t sm_start = result.mapping.schirokauer_start();
                 bool any_schirokauer_bit = false;
@@ -612,6 +635,8 @@ public:
         });
         result.schirokauer_degenerate_rows =
             degenerate_schirokauer_rows.load(std::memory_order_relaxed);
+        result.schirokauer_precision_fallbacks =
+            schirokauer_precision_fallbacks.load(std::memory_order_relaxed);
         result.qc_zero_legendre_count = qc_zero_legendre_count.load(std::memory_order_relaxed);
 
         return result;
