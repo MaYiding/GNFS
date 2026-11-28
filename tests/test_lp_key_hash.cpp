@@ -43,7 +43,7 @@ void set_env_and_reload(const char* value) {
     lp_hash_mix_reset_env_cache_for_testing();
 }
 
-}  // namespace
+} // namespace
 
 // ---------- ENV parsing tests ----------
 
@@ -51,7 +51,7 @@ void test_env_unset_is_auto() {
     std::cout << "Testing ENV unset → Auto..." << std::endl;
     set_env_and_reload(nullptr);
     TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
-    TEST_ASSERT(lp_hash_mix_enabled());  // Auto enables mixing
+    TEST_ASSERT(lp_hash_mix_enabled()); // Auto enables mixing
     std::cout << "  PASS" << std::endl;
 }
 
@@ -96,13 +96,13 @@ void test_env_unrecognized_is_auto() {
     set_env_and_reload("");
     TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
-    set_env_and_reload("2");  // unrecognized number → Auto, not ForceOn
+    set_env_and_reload("2"); // unrecognized number → Auto, not ForceOn
     TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
-    set_env_and_reload("true");  // not in token set → Auto
+    set_env_and_reload("true"); // not in token set → Auto
     TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
-    set_env_and_reload("ON");  // case-sensitive; uppercase → Auto
+    set_env_and_reload("ON"); // case-sensitive; uppercase → Auto
     TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::Auto);
 
     set_env_and_reload(nullptr);
@@ -130,10 +130,8 @@ void test_splitmix64_known_vectors() {
     for (const auto& v : vectors) {
         const std::uint64_t actual = mix_lp_key(v.input);
         if (actual != v.expected) {
-            std::cerr << "[FAIL] mix_lp_key(0x" << std::hex << v.input
-                      << ") = 0x" << actual
-                      << " expected 0x" << v.expected
-                      << std::dec << std::endl;
+            std::cerr << "[FAIL] mix_lp_key(0x" << std::hex << v.input << ") = 0x" << actual
+                      << " expected 0x" << v.expected << std::dec << std::endl;
         }
         TEST_ASSERT(actual == v.expected);
     }
@@ -153,8 +151,7 @@ void test_splitmix64_known_vectors() {
 }
 
 void test_mix_lp_key_determinism() {
-    std::cout << "Testing mix_lp_key determinism (same input → same output)..."
-              << std::endl;
+    std::cout << "Testing mix_lp_key determinism (same input → same output)..." << std::endl;
     // Call twice on a sweep of inputs; both calls must yield identical
     // output. Floats / wall-clock dependency would surface here.
     for (std::uint64_t i = 0; i < 10000; ++i) {
@@ -164,9 +161,9 @@ void test_mix_lp_key_determinism() {
     }
     // Also test high-bit-pattern inputs.
     const std::uint64_t weird_inputs[] = {
-        0x8000000000000000ULL,  // sign bit only
-        0x5555555555555555ULL,  // alternating bits
-        0xAAAAAAAAAAAAAAAAULL,  // alternating bits (other phase)
+        0x8000000000000000ULL, // sign bit only
+        0x5555555555555555ULL, // alternating bits
+        0xAAAAAAAAAAAAAAAAULL, // alternating bits (other phase)
         0x123456789ABCDEF0ULL,
     };
     for (std::uint64_t k : weird_inputs) {
@@ -176,8 +173,7 @@ void test_mix_lp_key_determinism() {
 }
 
 void test_mix_lp_key_avalanche() {
-    std::cout << "Testing mix_lp_key avalanche (neighbours differ a lot)..."
-              << std::endl;
+    std::cout << "Testing mix_lp_key avalanche (neighbours differ a lot)..." << std::endl;
     // A 1-bit input change should flip a large number of output bits.
     // Splitmix64 has very strong avalanche — neighbouring inputs (e.g.,
     // 0 vs 1) typically differ in close to half (~32) of the 64 output
@@ -186,16 +182,14 @@ void test_mix_lp_key_avalanche() {
     const std::uint64_t b = mix_lp_key(1);
     const std::uint64_t diff = a ^ b;
     const int popcount = gnfs::util::popcount64(diff);
-    std::cout << "    popcount(mix(0) ^ mix(1)) = " << popcount
-              << " (target >= 20)" << std::endl;
+    std::cout << "    popcount(mix(0) ^ mix(1)) = " << popcount << " (target >= 20)" << std::endl;
     TEST_ASSERT(popcount >= 20);
 
     // Same for a second neighbour pair (0xCAFE vs 0xCAFF).
     const std::uint64_t c = mix_lp_key(0xCAFEULL);
     const std::uint64_t d = mix_lp_key(0xCAFFULL);
     const int p2 = gnfs::util::popcount64(c ^ d);
-    std::cout << "    popcount(mix(0xCAFE) ^ mix(0xCAFF)) = " << p2
-              << std::endl;
+    std::cout << "    popcount(mix(0xCAFE) ^ mix(0xCAFF)) = " << p2 << std::endl;
     TEST_ASSERT(p2 >= 20);
 
     std::cout << "  PASS" << std::endl;
@@ -204,41 +198,36 @@ void test_mix_lp_key_avalanche() {
 // ---------- Gate semantics ----------
 
 void test_maybe_mix_force_off_returns_input() {
-    std::cout << "Testing maybe_mix_lp_key under ForceOff (passthrough)..."
-              << std::endl;
+    std::cout << "Testing maybe_mix_lp_key under ForceOff (passthrough)..." << std::endl;
     set_env_and_reload("0");
     TEST_ASSERT(!lp_hash_mix_enabled());
 
-    const std::uint64_t inputs[] = {
-        0, 1, 0xDEADBEEFULL, 0xFFFFFFFFFFFFFFFFULL, 42, 0xCAFEBABEULL
-    };
+    const std::uint64_t inputs[] = {0, 1, 0xDEADBEEFULL, 0xFFFFFFFFFFFFFFFFULL, 42, 0xCAFEBABEULL};
     for (std::uint64_t k : inputs) {
         const std::uint64_t out = maybe_mix_lp_key(k);
-        TEST_ASSERT(out == k);  // strict passthrough
+        TEST_ASSERT(out == k); // strict passthrough
     }
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
 }
 
 void test_maybe_mix_force_on_equals_mix() {
-    std::cout << "Testing maybe_mix_lp_key under ForceOn (equals mix_lp_key)..."
-              << std::endl;
+    std::cout << "Testing maybe_mix_lp_key under ForceOn (equals mix_lp_key)..." << std::endl;
     set_env_and_reload("1");
     TEST_ASSERT(lp_hash_mix_enabled());
 
     for (std::uint64_t i = 0; i < 1000; ++i) {
         const std::uint64_t mixed = mix_lp_key(i);
         const std::uint64_t gated = maybe_mix_lp_key(i);
-        TEST_ASSERT(gated == mixed);  // strict per-input parity
+        TEST_ASSERT(gated == mixed); // strict per-input parity
     }
     set_env_and_reload(nullptr);
     std::cout << "  PASS" << std::endl;
 }
 
 void test_maybe_mix_auto_equals_mix() {
-    std::cout << "Testing maybe_mix_lp_key under Auto (equals mix_lp_key)..."
-              << std::endl;
-    set_env_and_reload(nullptr);  // Auto
+    std::cout << "Testing maybe_mix_lp_key under Auto (equals mix_lp_key)..." << std::endl;
+    set_env_and_reload(nullptr); // Auto
     TEST_ASSERT(lp_hash_mix_enabled());
 
     for (std::uint64_t i = 0; i < 1000; ++i) {
@@ -253,7 +242,7 @@ void test_maybe_mix_auto_equals_mix() {
 
 void test_lp_key_hash_determinism() {
     std::cout << "Testing LpKeyHash deterministic operator()..." << std::endl;
-    set_env_and_reload("1");  // ensure mixing on
+    set_env_and_reload("1"); // ensure mixing on
     LpKeyHash h;
     for (std::uint64_t i = 0; i < 1000; ++i) {
         const std::size_t a = h(i);
@@ -265,22 +254,17 @@ void test_lp_key_hash_determinism() {
 }
 
 void test_lp_key_hash_distinct_outputs_for_lp_shaped_inputs() {
-    std::cout << "Testing LpKeyHash distinct outputs for LP-shaped inputs..."
-              << std::endl;
-    set_env_and_reload("1");  // force mixing
+    std::cout << "Testing LpKeyHash distinct outputs for LP-shaped inputs..." << std::endl;
+    set_env_and_reload("1"); // force mixing
     LpKeyHash h;
 
     // Synthetic LP-key-shaped values: (prime_id << 1) | side for a
     // handful of small primes and both sides.
     const std::uint64_t lp_shaped[] = {
-        (static_cast<std::uint64_t>(2) << 1) | 0,
-        (static_cast<std::uint64_t>(3) << 1) | 0,
-        (static_cast<std::uint64_t>(5) << 1) | 0,
-        (static_cast<std::uint64_t>(7) << 1) | 0,
-        (static_cast<std::uint64_t>(2) << 1) | 1,
-        (static_cast<std::uint64_t>(3) << 1) | 1,
-        (static_cast<std::uint64_t>(5) << 1) | 1,
-        (static_cast<std::uint64_t>(7) << 1) | 1,
+        (static_cast<std::uint64_t>(2) << 1) | 0, (static_cast<std::uint64_t>(3) << 1) | 0,
+        (static_cast<std::uint64_t>(5) << 1) | 0, (static_cast<std::uint64_t>(7) << 1) | 0,
+        (static_cast<std::uint64_t>(2) << 1) | 1, (static_cast<std::uint64_t>(3) << 1) | 1,
+        (static_cast<std::uint64_t>(5) << 1) | 1, (static_cast<std::uint64_t>(7) << 1) | 1,
     };
     std::unordered_set<std::size_t> hashes;
     for (std::uint64_t k : lp_shaped) {
@@ -296,8 +280,7 @@ void test_lp_key_hash_distinct_outputs_for_lp_shaped_inputs() {
 /// Compute the largest bucket load factor for an unordered_set after
 /// inserting `keys`. Returns the maximum number of elements in any
 /// single bucket.
-template <typename HashSet>
-std::size_t max_bucket_load(const HashSet& set) {
+template <typename HashSet> std::size_t max_bucket_load(const HashSet& set) {
     std::size_t max_load = 0;
     for (std::size_t b = 0; b < set.bucket_count(); ++b) {
         max_load = std::max(max_load, set.bucket_size(b));
@@ -309,7 +292,7 @@ void test_lp_key_hash_distribution_vs_identity() {
     std::cout << "Testing LpKeyHash distribution vs identity hash "
                  "(informational)..."
               << std::endl;
-    set_env_and_reload("1");  // force mixing for the LpKeyHash path
+    set_env_and_reload("1"); // force mixing for the LpKeyHash path
 
     // Build 10000 LP-key-shaped uint64_t. For each "prime id" we
     // include both sides, walking the prime id by a small step (we
@@ -362,8 +345,7 @@ void test_lp_key_hash_distribution_vs_identity() {
 }
 
 void test_lp_key_hash_in_empty_and_single_set() {
-    std::cout << "Testing LpKeyHash with empty and single-element sets..."
-              << std::endl;
+    std::cout << "Testing LpKeyHash with empty and single-element sets..." << std::endl;
     set_env_and_reload("1");
 
     // Empty set roundtrip — nothing should explode.
@@ -385,8 +367,7 @@ void test_lp_key_hash_in_empty_and_single_set() {
 // ---------- Reset cache hook ----------
 
 void test_reset_env_cache_picks_up_new_value() {
-    std::cout << "Testing reset_env_cache_for_testing re-reads ENV..."
-              << std::endl;
+    std::cout << "Testing reset_env_cache_for_testing re-reads ENV..." << std::endl;
     set_env_and_reload("1");
     TEST_ASSERT(lp_hash_mix_mode() == LpHashMixMode::ForceOn);
 

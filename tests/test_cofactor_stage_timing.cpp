@@ -24,7 +24,7 @@
 // below may keep their own assert checks live here. The checks of this file
 // use TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
-#  undef NDEBUG
+#undef NDEBUG
 #endif
 
 #include "gnfs/cofactor/stage_timing.hpp"
@@ -47,10 +47,11 @@ using namespace gnfs::cofactor;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST_PASS(name) do { \
-    std::cout << "  PASS: " << name << "\n"; \
-    ++tests_passed; \
-} while (0)
+#define TEST_PASS(name)                                                                            \
+    do {                                                                                           \
+        std::cout << "  PASS: " << name << "\n";                                                   \
+        ++tests_passed;                                                                            \
+    } while (0)
 
 // Helper: clear stats and reset env cache between tests.
 static void reset_state_with_env(const char* env_value /* nullable */) {
@@ -78,7 +79,7 @@ static void test_env_empty_off() {
     std::cout << "Testing GNFS_COFACTOR_TIMING_ENABLE=\"\" => off..." << std::endl;
     reset_state_with_env("");
     TEST_ASSERT(cofactor_timing_enabled() == false);
-    reset_state_with_env(nullptr);  // restore default
+    reset_state_with_env(nullptr); // restore default
     TEST_PASS("env empty string disables");
 }
 
@@ -102,8 +103,8 @@ static void test_env_other_values_off() {
     std::cout << "Testing GNFS_COFACTOR_TIMING_ENABLE various non-\"1\" => off..." << std::endl;
     // Strict matching: only the exact string "1" enables. Leading whitespace,
     // trailing whitespace, "true", "TRUE", "01", "10", "yes" all disable.
-    const char* others[] = {"true", "TRUE", "yes", "01", "10", "2", " 1", "1 ",
-                            "garbage", "on", "ON"};
+    const char* others[] = {"true", "TRUE", "yes",     "01", "10", "2",
+                            " 1",   "1 ",   "garbage", "on", "ON"};
     for (const char* v : others) {
         reset_state_with_env(v);
         TEST_ASSERT(cofactor_timing_enabled() == false &&
@@ -166,8 +167,7 @@ static void test_enabled_mode_counter_increments() {
     TEST_ASSERT(total > 0 && "total_ns should be > 0 after 5x100us scopes");
     // Sanity: each scope >= 100us, total >= ~400us = 4e5 ns. Allow some
     // slack for clock resolution / scheduler.
-    TEST_ASSERT(total >= 100'000ULL &&
-                "total_ns should be at least 100us across 5 scopes");
+    TEST_ASSERT(total >= 100'000ULL && "total_ns should be at least 100us across 5 scopes");
 
     reset_state_with_env(nullptr);
     TEST_PASS("enabled mode increments call_count and total_ns");
@@ -199,8 +199,7 @@ static void test_nested_timers_independent() {
 
     TEST_ASSERT(outer_calls == 1 && "outer timer ran exactly once");
     TEST_ASSERT(inner_calls == 1 && "inner timer ran exactly once");
-    TEST_ASSERT(outer_total > inner_total &&
-                "outer timer encloses inner so total must be larger");
+    TEST_ASSERT(outer_total > inner_total && "outer timer encloses inner so total must be larger");
     TEST_ASSERT(inner_total > 0 && "inner timer recorded non-zero time");
 
     reset_state_with_env(nullptr);
@@ -229,7 +228,8 @@ static void test_concurrent_timers_atomic() {
             }
         });
     }
-    for (auto& th : threads) th.join();
+    for (auto& th : threads)
+        th.join();
 
     const uint64_t calls = stats.call_count_for(CofactorStage::BrentPollardRho);
     TEST_ASSERT(calls == static_cast<uint64_t>(N_THREADS * N_PER) &&
@@ -255,7 +255,8 @@ static void test_format_summary_when_disabled() {
 }
 
 static void test_format_summary_when_enabled_nonzero() {
-    std::cout << "Testing format_cofactor_timing_summary when enabled with nonzero counters..." << std::endl;
+    std::cout << "Testing format_cofactor_timing_summary when enabled with nonzero counters..."
+              << std::endl;
     reset_state_with_env("1");
     {
         StageTimer t(CofactorStage::EcmStage2);
@@ -350,7 +351,7 @@ static void test_move_assign_finalizes_prior() {
         StageTimer b(CofactorStage::EcmStage2);
         std::this_thread::sleep_for(std::chrono::microseconds(100));
 
-        a = std::move(b);  // finalizes the prior Squfof timer, adopts EcmStage2.
+        a = std::move(b); // finalizes the prior Squfof timer, adopts EcmStage2.
         std::this_thread::sleep_for(std::chrono::microseconds(100));
         // At end of scope, a's dtor records EcmStage2.
         // b is moved-from and its dtor does nothing.
@@ -372,12 +373,12 @@ static void test_move_assign_finalizes_prior() {
 static void test_stage_name_lookup() {
     std::cout << "Testing stage_name() returns expected strings..." << std::endl;
     using std::string;
-    TEST_ASSERT(string(stage_name(CofactorStage::TrialDivision))   == "trial");
-    TEST_ASSERT(string(stage_name(CofactorStage::Squfof))          == "squfof");
+    TEST_ASSERT(string(stage_name(CofactorStage::TrialDivision)) == "trial");
+    TEST_ASSERT(string(stage_name(CofactorStage::Squfof)) == "squfof");
     TEST_ASSERT(string(stage_name(CofactorStage::BrentPollardRho)) == "brent_rho");
-    TEST_ASSERT(string(stage_name(CofactorStage::PollardRho))      == "pollard_rho");
-    TEST_ASSERT(string(stage_name(CofactorStage::EcmStage1))       == "ecm_s1");
-    TEST_ASSERT(string(stage_name(CofactorStage::EcmStage2))       == "ecm_s2");
+    TEST_ASSERT(string(stage_name(CofactorStage::PollardRho)) == "pollard_rho");
+    TEST_ASSERT(string(stage_name(CofactorStage::EcmStage1)) == "ecm_s1");
+    TEST_ASSERT(string(stage_name(CofactorStage::EcmStage2)) == "ecm_s2");
     TEST_PASS("stage_name covers all 6 stages with stable strings");
 }
 
@@ -399,8 +400,7 @@ static void test_perf_timer_overhead() {
         (void)t;
     }
     const auto t1_off = std::chrono::steady_clock::now();
-    const double off_ms = std::chrono::duration<double, std::milli>(
-                              t1_off - t0_off).count();
+    const double off_ms = std::chrono::duration<double, std::milli>(t1_off - t0_off).count();
 
     // ON measurement.
     reset_state_with_env("1");
@@ -411,13 +411,11 @@ static void test_perf_timer_overhead() {
         (void)t;
     }
     const auto t1_on = std::chrono::steady_clock::now();
-    const double on_ms = std::chrono::duration<double, std::milli>(
-                             t1_on - t0_on).count();
+    const double on_ms = std::chrono::duration<double, std::milli>(t1_on - t0_on).count();
 
     std::cout << "  [perf info] " << N << " StageTimer scopes: "
               << "OFF=" << off_ms << "ms, ON=" << on_ms
-              << "ms, overhead per scope = "
-              << ((on_ms - off_ms) * 1e6 / N) << " ns\n";
+              << "ms, overhead per scope = " << ((on_ms - off_ms) * 1e6 / N) << " ns\n";
     // Sanity: both should finish well under 10 seconds.
     TEST_ASSERT(off_ms < 10000.0);
     TEST_ASSERT(on_ms < 10000.0);
@@ -458,8 +456,7 @@ int main() {
     tests_failed += !run_case(test_perf_timer_overhead);
 
     std::cout << "\n===========================================\n";
-    std::cout << "  Results: " << tests_passed << " passed, "
-              << tests_failed << " failed\n";
+    std::cout << "  Results: " << tests_passed << " passed, " << tests_failed << " failed\n";
     std::cout << "===========================================\n";
 
     return tests_failed > 0 ? 1 : 0;

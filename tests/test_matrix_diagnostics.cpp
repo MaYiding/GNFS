@@ -12,9 +12,9 @@
 #include <cstdint>
 #include <iostream>
 
-using gnfs::linalg::SparseMatrix;
-using gnfs::linalg::MatrixDiagnostics;
 using gnfs::linalg::compute_matrix_diagnostics;
+using gnfs::linalg::MatrixDiagnostics;
+using gnfs::linalg::SparseMatrix;
 using gnfs::test::run_case;
 
 void test_empty_matrix() {
@@ -39,7 +39,7 @@ void test_rows_no_cols() {
     // early; we just need it to not crash and not report stale stats.
     SparseMatrix M(5, 0);
     auto d = compute_matrix_diagnostics(M);
-    TEST_ASSERT(d.empty_cols == 0);  // no cols → no empty_cols either
+    TEST_ASSERT(d.empty_cols == 0); // no cols → no empty_cols either
     std::cout << "  PASS" << std::endl;
 }
 
@@ -58,7 +58,8 @@ void test_zero_rows_with_cols() {
 void test_identity_like() {
     std::cout << "Testing 4×4 identity-like (every col is singleton)..." << std::endl;
     SparseMatrix M(4, 4);
-    for (uint32_t i = 0; i < 4; ++i) M.row(i).set(i);
+    for (uint32_t i = 0; i < 4; ++i)
+        M.row(i).set(i);
     auto d = compute_matrix_diagnostics(M);
     // Each row has weight 1, each col has weight 1
     TEST_ASSERT(d.empty_rows == 0);
@@ -66,7 +67,7 @@ void test_identity_like() {
     TEST_ASSERT(d.min_row_weight == 1);
     TEST_ASSERT(d.max_row_weight == 1);
     TEST_ASSERT(d.empty_cols == 0);
-    TEST_ASSERT(d.singleton_cols == 4);  // every col is SGE-eliminable
+    TEST_ASSERT(d.singleton_cols == 4); // every col is SGE-eliminable
     TEST_ASSERT(d.max_col_weight == 1);
     TEST_ASSERT(d.avg_col_weight == 1.0);
     std::cout << "  PASS" << std::endl;
@@ -86,14 +87,14 @@ void test_empty_rows() {
     M.row(4).set(0);
     M.row(4).set(1);
     auto d = compute_matrix_diagnostics(M);
-    TEST_ASSERT(d.empty_rows == 2);          // rows 0, 3
-    TEST_ASSERT(d.singleton_rows == 1);      // row 1
+    TEST_ASSERT(d.empty_rows == 2);     // rows 0, 3
+    TEST_ASSERT(d.singleton_rows == 1); // row 1
     TEST_ASSERT(d.min_row_weight == 0);
     TEST_ASSERT(d.max_row_weight == 2);
     // Col weights: 0→{1,4}=2, 1→{2,4}=2, 2→{2}=1, 3→{}=0
-    TEST_ASSERT(d.empty_cols == 1);          // col 3
-    TEST_ASSERT(d.singleton_cols == 1);      // col 2
-    TEST_ASSERT(d.low_weight_cols == 2);     // cols 0, 1 (weight 2 ∈ [2,4])
+    TEST_ASSERT(d.empty_cols == 1);      // col 3
+    TEST_ASSERT(d.singleton_cols == 1);  // col 2
+    TEST_ASSERT(d.low_weight_cols == 2); // cols 0, 1 (weight 2 ∈ [2,4])
     TEST_ASSERT(d.max_col_weight == 2);
     std::cout << "  PASS" << std::endl;
 }
@@ -113,7 +114,7 @@ void test_dense_block() {
     TEST_ASSERT(d.max_row_weight == 3);
     TEST_ASSERT(d.empty_cols == 0);
     TEST_ASSERT(d.singleton_cols == 0);
-    TEST_ASSERT(d.low_weight_cols == 3);     // all 3 cols have weight 3 ∈ [2,4]
+    TEST_ASSERT(d.low_weight_cols == 3); // all 3 cols have weight 3 ∈ [2,4]
     TEST_ASSERT(d.max_col_weight == 3);
     TEST_ASSERT(d.avg_col_weight == 3.0);
     std::cout << "  PASS" << std::endl;
@@ -126,12 +127,14 @@ void test_singleton_cols_separated_from_low_weight() {
     // Col 1 weight=4 (low_weight)
     // Col 2 weight=5 (heavy, not low_weight)
     M.row(0).set(0);
-    for (uint32_t i = 0; i < 4; ++i) M.row(i).set(1);
-    for (uint32_t i = 0; i < 5; ++i) M.row(i).set(2);
+    for (uint32_t i = 0; i < 4; ++i)
+        M.row(i).set(1);
+    for (uint32_t i = 0; i < 5; ++i)
+        M.row(i).set(2);
     auto d = compute_matrix_diagnostics(M);
     TEST_ASSERT(d.empty_cols == 0);
-    TEST_ASSERT(d.singleton_cols == 1);     // col 0
-    TEST_ASSERT(d.low_weight_cols == 1);    // col 1 only
+    TEST_ASSERT(d.singleton_cols == 1);  // col 0
+    TEST_ASSERT(d.low_weight_cols == 1); // col 1 only
     TEST_ASSERT(d.max_col_weight == 5);
     std::cout << "  PASS" << std::endl;
 }
@@ -160,9 +163,9 @@ void test_dup_set_is_idempotent() {
     auto d = compute_matrix_diagnostics(M);
     // Row 0 weight should be 1, not 3
     TEST_ASSERT(d.singleton_rows == 1);
-    TEST_ASSERT(d.min_row_weight == 0);   // row 1 is empty
+    TEST_ASSERT(d.min_row_weight == 0); // row 1 is empty
     TEST_ASSERT(d.max_row_weight == 1);
-    TEST_ASSERT(d.singleton_cols == 1);   // col 0
+    TEST_ASSERT(d.singleton_cols == 1); // col 0
     TEST_ASSERT(d.max_col_weight == 1);
     std::cout << "  PASS" << std::endl;
 }
@@ -171,18 +174,30 @@ void test_realistic_excess_matrix() {
     std::cout << "Testing 10×8 random-ish matrix with excess..." << std::endl;
     SparseMatrix M(10, 8);
     // Row weights varying 1..5
-    M.row(0).set(0);                              // w=1
-    M.row(1).set(1); M.row(1).set(2);             // w=2
-    M.row(2).set(0); M.row(2).set(3);             // w=2
-    M.row(3).set(4); M.row(3).set(5); M.row(3).set(6); M.row(3).set(7);  // w=4
-    M.row(4).set(0); M.row(4).set(1); M.row(4).set(2); M.row(4).set(3); M.row(4).set(4);  // w=5
-    M.row(5).set(7);                              // w=1
-    M.row(6).set(2); M.row(6).set(5);             // w=2
-    M.row(7).set(0); M.row(7).set(3); M.row(7).set(6);  // w=3
+    M.row(0).set(0); // w=1
+    M.row(1).set(1);
+    M.row(1).set(2); // w=2
+    M.row(2).set(0);
+    M.row(2).set(3); // w=2
+    M.row(3).set(4);
+    M.row(3).set(5);
+    M.row(3).set(6);
+    M.row(3).set(7); // w=4
+    M.row(4).set(0);
+    M.row(4).set(1);
+    M.row(4).set(2);
+    M.row(4).set(3);
+    M.row(4).set(4); // w=5
+    M.row(5).set(7); // w=1
+    M.row(6).set(2);
+    M.row(6).set(5); // w=2
+    M.row(7).set(0);
+    M.row(7).set(3);
+    M.row(7).set(6); // w=3
     // rows 8, 9 empty
     auto d = compute_matrix_diagnostics(M);
     TEST_ASSERT(d.empty_rows == 2);
-    TEST_ASSERT(d.singleton_rows == 2);   // rows 0, 5
+    TEST_ASSERT(d.singleton_rows == 2); // rows 0, 5
     TEST_ASSERT(d.min_row_weight == 0);
     TEST_ASSERT(d.max_row_weight == 5);
     // Col weights: 0={0,2,4,7}=4, 1={1,4}=2, 2={1,4,6}=3, 3={2,4,7}=3,

@@ -4,9 +4,9 @@
 #include "gnfs/core/integer.hpp"
 #include "gnfs/core/params.hpp"
 #include "gnfs/core/polynomial_context.hpp"
-#include "gnfs/polynomial/int_polynomial.hpp"
-#include "gnfs/polynomial/base_m.hpp"
 #include "gnfs/linalg/schirokauer.hpp"
+#include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/polynomial/int_polynomial.hpp"
 
 #include "support/test_assert.hpp"
 
@@ -60,10 +60,10 @@ void test_schirokauer_exponent() {
 
     // f(x) = x^3 + 2, N = 29, m = 3  (f(3) = 29 = N ✓)
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(2));                          // c_0
-    coeffs.push_back(Integer(static_cast<int64_t>(0)));    // c_1
-    coeffs.push_back(Integer(static_cast<int64_t>(0)));    // c_2
-    coeffs.push_back(Integer(static_cast<int64_t>(1)));    // c_3
+    coeffs.push_back(Integer(2));                       // c_0
+    coeffs.push_back(Integer(static_cast<int64_t>(0))); // c_1
+    coeffs.push_back(Integer(static_cast<int64_t>(0))); // c_2
+    coeffs.push_back(Integer(static_cast<int64_t>(1))); // c_3
     PolynomialContext ctx(Integer(29), std::move(coeffs), Integer(3));
 
     // ℓ=2 is the standard for GF(2)
@@ -71,12 +71,12 @@ void test_schirokauer_exponent() {
     config.primes = {2};
 
     SchirokaurMap sm(ctx, config);
-    TEST_ASSERT(sm.num_columns() == 3);  // d=3, one prime → 3 columns
+    TEST_ASSERT(sm.num_columns() == 3); // d=3, one prime → 3 columns
 
     // Compute for a known (a,b) pair: element = a - b*α = 5 - 2*α
     auto result = sm.compute(5, 2);
-    TEST_ASSERT(result.size() == 1);        // one prime
-    TEST_ASSERT(result[0].size() == 3);     // d=3 columns
+    TEST_ASSERT(result.size() == 1);    // one prime
+    TEST_ASSERT(result[0].size() == 3); // d=3 columns
 
     // Each map value must be in {0, 1} (mod ℓ=2)
     for (uint32_t v : result[0]) {
@@ -107,7 +107,7 @@ void test_evaluate_mod_no_overflow() {
     // Create a polynomial with large coefficients
     // f(x) = x^3 + large_coeff
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer("999999999999999999"));  // constant
+    coeffs.push_back(Integer("999999999999999999")); // constant
     coeffs.push_back(Integer(0));
     coeffs.push_back(Integer(0));
     coeffs.push_back(Integer(1));
@@ -115,7 +115,7 @@ void test_evaluate_mod_no_overflow() {
 
     // Evaluate at large x mod large p
     uint64_t x = 999999937;  // large prime
-    uint64_t p = 1000000007;  // another large prime
+    uint64_t p = 1000000007; // another large prime
 
     // This should NOT overflow
     uint64_t result = f.evaluate_mod(x, p);
@@ -127,7 +127,8 @@ void test_evaluate_mod_no_overflow() {
     Integer p_int(p);
     Integer mod_val;
     Integer::mod(mod_val, val, p_int);
-    if (mod_val.is_negative()) mod_val += p_int;
+    if (mod_val.is_negative())
+        mod_val += p_int;
     TEST_ASSERT(mod_val.to_uint64() == result);
 
     std::cout << "  PASS" << std::endl;
@@ -253,7 +254,8 @@ void test_rational_value_convention() {
 void test_special_q_range_regression() {
     std::cout << "Testing special-Q range regression..." << std::endl;
 
-    for (size_t bits : {size_t{20}, size_t{40}, size_t{60}, size_t{80}, size_t{100}, size_t{150}, size_t{200}}) {
+    for (size_t bits :
+         {size_t{20}, size_t{40}, size_t{60}, size_t{80}, size_t{100}, size_t{150}, size_t{200}}) {
         auto params = GNFSParams::compute(bits);
         TEST_ASSERT(params.special_q_min > params.algebraic_bound);
         TEST_ASSERT(params.special_q_max > params.special_q_min);
@@ -293,12 +295,12 @@ void test_schirokauer_ell2_only() {
     // f(x) = x^5 + x + 1, N = 4 (trivial — just need valid context)
     // f(1) = 3, so use m=1, N=3 → f(1)=3 ✓
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(static_cast<int64_t>(1)));   // c_0
-    coeffs.push_back(Integer(static_cast<int64_t>(1)));   // c_1
-    coeffs.push_back(Integer(static_cast<int64_t>(0)));   // c_2
-    coeffs.push_back(Integer(static_cast<int64_t>(0)));   // c_3
-    coeffs.push_back(Integer(static_cast<int64_t>(0)));   // c_4
-    coeffs.push_back(Integer(static_cast<int64_t>(1)));   // c_5
+    coeffs.push_back(Integer(static_cast<int64_t>(1))); // c_0
+    coeffs.push_back(Integer(static_cast<int64_t>(1))); // c_1
+    coeffs.push_back(Integer(static_cast<int64_t>(0))); // c_2
+    coeffs.push_back(Integer(static_cast<int64_t>(0))); // c_3
+    coeffs.push_back(Integer(static_cast<int64_t>(0))); // c_4
+    coeffs.push_back(Integer(static_cast<int64_t>(1))); // c_5
     PolynomialContext ctx(Integer(3), std::move(coeffs), Integer(1));
 
     // Convention: ℓ=2 only for GF(2) matrix
@@ -310,9 +312,9 @@ void test_schirokauer_ell2_only() {
     TEST_ASSERT(sm.num_columns() == 5);
 
     // Compute maps for several (a,b) pairs
-    auto r1 = sm.compute(1, 1);   // γ = 1 - α
-    auto r2 = sm.compute(3, 2);   // γ = 3 - 2α
-    auto r3 = sm.compute(-1, 1);  // γ = -1 - α
+    auto r1 = sm.compute(1, 1);  // γ = 1 - α
+    auto r2 = sm.compute(3, 2);  // γ = 3 - 2α
+    auto r3 = sm.compute(-1, 1); // γ = -1 - α
 
     // All results should have 1 prime × 5 columns, values in {0,1}
     for (const auto& result : {r1, r2, r3}) {
@@ -415,7 +417,7 @@ void test_params_edge_cases() {
 
     // Large N (200 bits)
     auto p200 = GNFSParams::compute(200);
-    TEST_ASSERT(p200.degree == 3);  // ≤200 bits forced to degree 3 (even-degree bug fix)
+    TEST_ASSERT(p200.degree == 3); // ≤200 bits forced to degree 3 (even-degree bug fix)
     TEST_ASSERT(p200.rational_bound > p64.rational_bound);
 
     std::cout << "  PASS" << std::endl;

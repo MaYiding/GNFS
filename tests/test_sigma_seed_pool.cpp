@@ -15,7 +15,7 @@
 // below may keep their own assert checks live here. The checks of this file
 // use TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
-#  undef NDEBUG
+#undef NDEBUG
 #endif
 
 #include "gnfs/cofactor/sigma_seed_pool.hpp"
@@ -175,16 +175,15 @@ static void test_refill_and_drain_lifo_order() {
 
     // Deterministic generator emitting [100, 101, 102, ..., 107].
     int gen_counter = 100;
-    refill_sigma_seed_pool([&gen_counter]() -> uint64_t {
-        return static_cast<uint64_t>(gen_counter++);
-    });
+    refill_sigma_seed_pool(
+        [&gen_counter]() -> uint64_t { return static_cast<uint64_t>(gen_counter++); });
     TEST_ASSERT(sigma_seed_pool_remaining() == 8);
     TEST_ASSERT(gen_counter == 108 && "Generator must run exactly 8 times");
 
     // Drain: pool is LIFO so we get [107, 106, 105, 104, 103, 102, 101, 100].
     std::vector<uint64_t> drained;
     for (int i = 0; i < 8; ++i) {
-        uint64_t f = 0xFFFFFFFFFFFFFFFFULL;  // fallback never expected
+        uint64_t f = 0xFFFFFFFFFFFFFFFFULL; // fallback never expected
         uint64_t s = get_next_sigma_seed(f);
         TEST_ASSERT(s != f && "Pool non-empty, must NOT return fresh");
         drained.push_back(s);
@@ -208,9 +207,8 @@ static void test_pool_exhaust_falls_back_to_fresh() {
     sigma_seed_pool_clear();
 
     int gen_counter = 200;
-    refill_sigma_seed_pool([&gen_counter]() -> uint64_t {
-        return static_cast<uint64_t>(gen_counter++);
-    });
+    refill_sigma_seed_pool(
+        [&gen_counter]() -> uint64_t { return static_cast<uint64_t>(gen_counter++); });
     TEST_ASSERT(sigma_seed_pool_remaining() == 3);
 
     // Drain all 3.
@@ -240,9 +238,8 @@ static void test_clear_releases_pool() {
     sigma_seed_pool_clear();
 
     int gen_counter = 0;
-    refill_sigma_seed_pool([&gen_counter]() -> uint64_t {
-        return static_cast<uint64_t>(gen_counter++);
-    });
+    refill_sigma_seed_pool(
+        [&gen_counter]() -> uint64_t { return static_cast<uint64_t>(gen_counter++); });
     TEST_ASSERT(sigma_seed_pool_remaining() == 20);
 
     sigma_seed_pool_clear();
@@ -250,9 +247,8 @@ static void test_clear_releases_pool() {
 
     // After clear, refill should run generator from scratch (count 20).
     int gen2_calls = 0;
-    refill_sigma_seed_pool([&gen2_calls]() -> uint64_t {
-        return static_cast<uint64_t>(gen2_calls++);
-    });
+    refill_sigma_seed_pool(
+        [&gen2_calls]() -> uint64_t { return static_cast<uint64_t>(gen2_calls++); });
     TEST_ASSERT(gen2_calls == 20 && "Refill after clear must repopulate");
     TEST_ASSERT(sigma_seed_pool_remaining() == 20);
 
@@ -275,20 +271,24 @@ static void test_multithread_isolation() {
 
     std::thread ta([&thread_a_ok]() {
         // Thread A: gen emits [1000, 1001, ..., 1015]
-        sigma_seed_pool_clear();  // ensure clean per-thread start
+        sigma_seed_pool_clear(); // ensure clean per-thread start
         int counter = 1000;
-        refill_sigma_seed_pool([&counter]() -> uint64_t {
-            return static_cast<uint64_t>(counter++);
-        });
-        if (sigma_seed_pool_remaining() != 16) return;
+        refill_sigma_seed_pool(
+            [&counter]() -> uint64_t { return static_cast<uint64_t>(counter++); });
+        if (sigma_seed_pool_remaining() != 16)
+            return;
         // Drain: LIFO gives [1015, 1014, ..., 1000].
         bool ok = true;
         for (int i = 0; i < 16; ++i) {
             uint64_t s = get_next_sigma_seed(0);
             uint64_t expected = static_cast<uint64_t>(1015 - i);
-            if (s != expected) { ok = false; break; }
+            if (s != expected) {
+                ok = false;
+                break;
+            }
         }
-        if (sigma_seed_pool_remaining() != 0) ok = false;
+        if (sigma_seed_pool_remaining() != 0)
+            ok = false;
         thread_a_ok = ok;
     });
 
@@ -296,17 +296,21 @@ static void test_multithread_isolation() {
         // Thread B: gen emits [2000, 2001, ..., 2015]
         sigma_seed_pool_clear();
         int counter = 2000;
-        refill_sigma_seed_pool([&counter]() -> uint64_t {
-            return static_cast<uint64_t>(counter++);
-        });
-        if (sigma_seed_pool_remaining() != 16) return;
+        refill_sigma_seed_pool(
+            [&counter]() -> uint64_t { return static_cast<uint64_t>(counter++); });
+        if (sigma_seed_pool_remaining() != 16)
+            return;
         bool ok = true;
         for (int i = 0; i < 16; ++i) {
             uint64_t s = get_next_sigma_seed(0);
             uint64_t expected = static_cast<uint64_t>(2015 - i);
-            if (s != expected) { ok = false; break; }
+            if (s != expected) {
+                ok = false;
+                break;
+            }
         }
-        if (sigma_seed_pool_remaining() != 0) ok = false;
+        if (sigma_seed_pool_remaining() != 0)
+            ok = false;
         thread_b_ok = ok;
     });
 
@@ -410,9 +414,7 @@ static void test_mt19937_generator_consistent() {
     }
 
     // Refill via real PRNG (consumes rng state).
-    refill_sigma_seed_pool([&rng]() -> uint64_t {
-        return rng();
-    });
+    refill_sigma_seed_pool([&rng]() -> uint64_t { return rng(); });
     TEST_ASSERT(sigma_seed_pool_remaining() == 32);
 
     // Drain LIFO and verify against reversed expected sequence.
@@ -440,17 +442,15 @@ static void test_refill_already_full_noop() {
     sigma_seed_pool_clear();
 
     int first_counter = 1000;
-    refill_sigma_seed_pool([&first_counter]() -> uint64_t {
-        return static_cast<uint64_t>(first_counter++);
-    });
+    refill_sigma_seed_pool(
+        [&first_counter]() -> uint64_t { return static_cast<uint64_t>(first_counter++); });
     TEST_ASSERT(sigma_seed_pool_remaining() == 5);
     TEST_ASSERT(first_counter == 1005);
 
     // Second refill: pool is already at capacity. Generator must NOT run.
     int second_counter = 9000;
-    refill_sigma_seed_pool([&second_counter]() -> uint64_t {
-        return static_cast<uint64_t>(second_counter++);
-    });
+    refill_sigma_seed_pool(
+        [&second_counter]() -> uint64_t { return static_cast<uint64_t>(second_counter++); });
     TEST_ASSERT(second_counter == 9000 && "Generator must not run when pool full");
     TEST_ASSERT(sigma_seed_pool_remaining() == 5);
 

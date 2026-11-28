@@ -58,9 +58,9 @@ void test_abpair_equality() {
     TEST_ASSERT(p1 == p2);
     TEST_ASSERT(!(p1 != p2));
 
-    TEST_ASSERT(p1 != p3);  // b differs
-    TEST_ASSERT(p1 != p4);  // a differs
-    TEST_ASSERT(p1 != p5);  // sign differs
+    TEST_ASSERT(p1 != p3); // b differs
+    TEST_ASSERT(p1 != p4); // a differs
+    TEST_ASSERT(p1 != p5); // sign differs
 
     // Self-equality
     TEST_ASSERT(p1 == p1);
@@ -217,9 +217,9 @@ void test_primepower_equality_and_ordering() {
     PrimePower a(7, 3, 2), b(7, 3, 2), c(7, 3, 1), d(7, 4, 2), e(11, 3, 2);
 
     TEST_ASSERT(a == b);
-    TEST_ASSERT(!(a == c));  // e differs
-    TEST_ASSERT(!(a == d));  // r differs
-    TEST_ASSERT(!(a == e));  // p differs
+    TEST_ASSERT(!(a == c)); // e differs
+    TEST_ASSERT(!(a == d)); // r differs
+    TEST_ASSERT(!(a == e)); // p differs
     TEST_ASSERT(a != c);
 
     // Ordering: by p first, then by r (e ignored in <)
@@ -272,7 +272,7 @@ void test_algebraic_prime_projective() {
 
     AlgebraicPrime ap_normal(uint32_t(7), uint32_t(3), uint32_t(10));
     TEST_ASSERT(!ap_normal.is_projective());
-    TEST_ASSERT(ap_normal.degree == 1);  // default
+    TEST_ASSERT(ap_normal.degree == 1); // default
 
     // PROJECTIVE_ROOT sentinel
     AlgebraicPrime ap_proj(uint32_t(7), AlgebraicPrime::PROJECTIVE_ROOT, uint32_t(10));

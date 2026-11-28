@@ -17,23 +17,23 @@
 // 11. 完整 mini-pipeline: Cofactorizer → Filter → MatrixBuilder → BL → 验证依赖
 // 12. Schirokauer map 值域与一致性验证
 
-#include <gnfs/polynomial/base_m.hpp>
-#include <gnfs/factor_base/builder.hpp>
 #include <gnfs/cofactor/cofactorizer.hpp>
+#include <gnfs/factor_base/builder.hpp>
+#include <gnfs/linalg/block_lanczos.hpp>
+#include <gnfs/linalg/matrix_builder.hpp>
+#include <gnfs/linalg/schirokauer.hpp>
+#include <gnfs/polynomial/base_m.hpp>
+#include <gnfs/polynomial/int_polynomial.hpp>
+#include <gnfs/polynomial/murphy_evaluator.hpp>
+#include <gnfs/polynomial/polynomial_optimizer.hpp>
 #include <gnfs/relation/collector.hpp>
 #include <gnfs/relation/filter.hpp>
-#include <gnfs/linalg/matrix_builder.hpp>
-#include <gnfs/linalg/block_lanczos.hpp>
-#include <gnfs/linalg/schirokauer.hpp>
-#include <gnfs/polynomial/murphy_evaluator.hpp>
-#include <gnfs/polynomial/int_polynomial.hpp>
-#include <gnfs/sqrt/rational_sqrt.hpp>
-#include <gnfs/sqrt/algebraic_sqrt.hpp>
-#include <gnfs/sieve/special_q.hpp>
-#include <gnfs/sieve/lattice_sieve.hpp>
 #include <gnfs/sieve/lattice_basis.hpp>
+#include <gnfs/sieve/lattice_sieve.hpp>
+#include <gnfs/sieve/special_q.hpp>
+#include <gnfs/sqrt/algebraic_sqrt.hpp>
 #include <gnfs/sqrt/class_group.hpp>
-#include <gnfs/polynomial/polynomial_optimizer.hpp>
+#include <gnfs/sqrt/rational_sqrt.hpp>
 
 #include "support/test_assert.hpp"
 
@@ -62,13 +62,13 @@ struct TestEnv {
 };
 
 static TestEnv make_env_143() {
-    Integer n("143");  // 11 * 13
+    Integer n("143"); // 11 * 13
     auto result = BaseMSelector::select(n, 2);
     TEST_ASSERT(result.success);
     auto ctx = BaseMSelector::create_context(n, result);
 
     FactorBaseBuilder::Options opts;
-    opts.rational_bound  = 50;
+    opts.rational_bound = 50;
     opts.algebraic_bound = 50;
     opts.parallel = false;
 
@@ -79,16 +79,19 @@ static TestEnv make_env_143() {
 // ============================================================
 // 辅助：验证依赖有效性（选中行的 XOR 应为零向量）
 // ============================================================
-static bool verify_dependency(const SparseMatrix& mat,
-                               const std::vector<bool>& dep) {
-    if (dep.size() != mat.num_rows()) return false;
+static bool verify_dependency(const SparseMatrix& mat, const std::vector<bool>& dep) {
+    if (dep.size() != mat.num_rows())
+        return false;
     std::vector<size_t> counts(mat.num_cols(), 0);
     for (size_t r = 0; r < mat.num_rows(); ++r) {
         if (r < dep.size() && dep[r]) {
-            for (uint32_t c : mat.row(r).indices()) ++counts[c];
+            for (uint32_t c : mat.row(r).indices())
+                ++counts[c];
         }
     }
-    for (size_t c : counts) if (c % 2 != 0) return false;
+    for (size_t c : counts)
+        if (c % 2 != 0)
+            return false;
     return true;
 }
 
@@ -101,7 +104,7 @@ void test_cofactorizer_n_divisible_rejection() {
 
     auto env = make_env_143();
     const auto& ctx = env.ctx;
-    const auto& fb  = env.fb;
+    const auto& fb = env.fb;
 
     // 确认环境正常
     TEST_ASSERT(fb.rational_count() > 0);
@@ -125,7 +128,8 @@ void test_cofactorizer_n_divisible_rejection() {
     const auto& stats = cof.stats();
     TEST_ASSERT(stats.total_candidates >= 1); // 至少处理了 (m_val, 1)
 
-    std::cout << "  PASS (N-divisible rejection, stats.total=" << stats.total_candidates << ")" << std::endl;
+    std::cout << "  PASS (N-divisible rejection, stats.total=" << stats.total_candidates << ")"
+              << std::endl;
     (void)result_zero;
 }
 
@@ -145,9 +149,11 @@ void test_cofactorizer_stats_tracking() {
     // 遍历小候选对
     for (int64_t a = -20; a <= 20; ++a) {
         for (uint64_t b = 1; b <= 5; ++b) {
-            if (std::gcd(uint64_t(a < 0 ? -a : a), b) != 1) continue;
+            if (std::gcd(uint64_t(a < 0 ? -a : a), b) != 1)
+                continue;
             auto r = cof.verify(a, b);
-            if (r.has_value()) ++accepted;
+            if (r.has_value())
+                ++accepted;
         }
     }
 
@@ -156,14 +162,12 @@ void test_cofactorizer_stats_tracking() {
     TEST_ASSERT(s.total_candidates > 0);
     // 所有分类之和应 == total_candidates
     // (accepted 个成功 + rejected 个失败 = total)
-    size_t rejected = s.rational_rejects + s.algebraic_rejects +
-                      s.both_rejects;
+    size_t rejected = s.rational_rejects + s.algebraic_rejects + s.both_rejects;
     // invalid_pair 也可能存在（b=0 或 gcd(a,b)!=1），但我们已经过滤了
     // accepted + rejected ≤ total_candidates（部分是 N-divisible 退出）
     TEST_ASSERT(accepted + rejected <= s.total_candidates);
 
-    std::cout << "  PASS (total=" << s.total_candidates
-              << " accepted=" << accepted
+    std::cout << "  PASS (total=" << s.total_candidates << " accepted=" << accepted
               << " rejected=" << rejected << ")" << std::endl;
 }
 
@@ -186,7 +190,8 @@ void test_cofactorizer_to_collector_pipeline() {
     size_t cof_accepted = 0;
     for (int64_t a = -30; a <= 30; ++a) {
         for (uint64_t b = 1; b <= 3; ++b) {
-            if (std::gcd(uint64_t(a < 0 ? -a : a), b) != 1) continue;
+            if (std::gcd(uint64_t(a < 0 ? -a : a), b) != 1)
+                continue;
             auto rel = cof.verify(a, b);
             if (rel.has_value()) {
                 ++cof_accepted;
@@ -204,8 +209,8 @@ void test_cofactorizer_to_collector_pipeline() {
         TEST_ASSERT(cs.total_relations == collector.size());
     }
 
-    std::cout << "  PASS (cof_accepted=" << cof_accepted
-              << " collector.size=" << collector.size() << ")" << std::endl;
+    std::cout << "  PASS (cof_accepted=" << cof_accepted << " collector.size=" << collector.size()
+              << ")" << std::endl;
 }
 
 // ============================================================
@@ -213,7 +218,8 @@ void test_cofactorizer_to_collector_pipeline() {
 // 有单例大素数的关系应被过滤掉；成对的应保留
 // ============================================================
 void test_collector_to_filter_pipeline() {
-    std::cout << "Testing RelationCollector → RelationFilter pipeline (integration)..." << std::endl;
+    std::cout << "Testing RelationCollector → RelationFilter pipeline (integration)..."
+              << std::endl;
 
     RelationCollector collector;
 
@@ -281,7 +287,8 @@ void test_collector_to_filter_pipeline() {
 // Test 5: MatrixBuilder + 真实 FactorBase → 矩阵维度正确
 // ============================================================
 void test_matrix_builder_real_fb_dimensions() {
-    std::cout << "Testing MatrixBuilder with real FactorBase — dimensions (integration)..." << std::endl;
+    std::cout << "Testing MatrixBuilder with real FactorBase — dimensions (integration)..."
+              << std::endl;
 
     auto env = make_env_143();
     const auto& fb = env.fb;
@@ -302,10 +309,10 @@ void test_matrix_builder_real_fb_dimensions() {
     }
 
     MatrixBuilderConfig cfg;
-    cfg.include_sign_column  = false;
-    cfg.include_qc_columns   = false;
-    cfg.include_class_group  = false;
-    cfg.include_schirokauer  = false;
+    cfg.include_sign_column = false;
+    cfg.include_qc_columns = false;
+    cfg.include_class_group = false;
+    cfg.include_schirokauer = false;
     MatrixBuilder builder(cfg);
     auto result = builder.build(rels, fb);
 
@@ -316,8 +323,8 @@ void test_matrix_builder_real_fb_dimensions() {
     // row_to_relation 映射完整
     TEST_ASSERT(result.row_to_relation.size() == 4);
 
-    std::cout << "  PASS (rows=4, cols=" << result.matrix.num_cols()
-              << " rat=" << rat_cnt << " alg=" << alg_cnt << ")" << std::endl;
+    std::cout << "  PASS (rows=4, cols=" << result.matrix.num_cols() << " rat=" << rat_cnt
+              << " alg=" << alg_cnt << ")" << std::endl;
 }
 
 // ============================================================
@@ -325,7 +332,8 @@ void test_matrix_builder_real_fb_dimensions() {
 // 构造 r0 XOR r1 XOR r2 = 0 的三行，验证 BL 找到该依赖
 // ============================================================
 void test_matrix_to_lanczos_dependency() {
-    std::cout << "Testing MatrixBuilder → BlockLanczos — known dependency (integration)..." << std::endl;
+    std::cout << "Testing MatrixBuilder → BlockLanczos — known dependency (integration)..."
+              << std::endl;
 
     auto env = make_env_143();
     const auto& fb = env.fb;
@@ -337,29 +345,29 @@ void test_matrix_to_lanczos_dependency() {
     std::vector<Relation> rels;
     {
         Relation r(10, 1);
-        r.rational_factors  = {0u};
+        r.rational_factors = {0u};
         r.algebraic_factors = {0u};
         rels.push_back(std::move(r));
     }
     {
         Relation r(11, 1);
-        r.rational_factors  = {1u};
+        r.rational_factors = {1u};
         r.algebraic_factors = {1u};
         rels.push_back(std::move(r));
     }
     {
         Relation r(12, 1);
-        r.rational_factors  = {0u, 1u};
+        r.rational_factors = {0u, 1u};
         r.algebraic_factors = {0u, 1u};
         rels.push_back(std::move(r));
     }
 
     // 禁用所有额外列，矩阵行仅由因子索引决定
     MatrixBuilderConfig cfg;
-    cfg.include_sign_column  = false;
-    cfg.include_qc_columns   = false;
-    cfg.include_class_group  = false;
-    cfg.include_schirokauer  = false;
+    cfg.include_sign_column = false;
+    cfg.include_qc_columns = false;
+    cfg.include_class_group = false;
+    cfg.include_schirokauer = false;
     MatrixBuilder builder(cfg);
     auto br = builder.build(rels, fb);
 
@@ -389,10 +397,11 @@ void test_matrix_to_lanczos_dependency() {
 // 对 BaseMSelector 选出的多项式进行评分，结果应有限
 // ============================================================
 void test_murphy_with_real_poly_ctx() {
-    std::cout << "Testing MurphyEvaluator with real PolynomialContext (integration)..." << std::endl;
+    std::cout << "Testing MurphyEvaluator with real PolynomialContext (integration)..."
+              << std::endl;
 
     // 使用稍大的 N 以让 Murphy 评分更有意义
-    Integer n("10403");  // 101 * 103
+    Integer n("10403"); // 101 * 103
     auto result = BaseMSelector::select(n, 2);
     TEST_ASSERT(result.success);
     auto ctx = BaseMSelector::create_context(n, result);
@@ -413,7 +422,7 @@ void test_murphy_with_real_poly_ctx() {
     // 使用快速参数（减少采样点）
     MurphyParams params;
     params.sample_points = 200;
-    params.alpha_bound   = 1000;
+    params.alpha_bound = 1000;
     params.skewness_steps = 5;
     MurphyEvaluator evaluator(params);
 
@@ -425,8 +434,8 @@ void test_murphy_with_real_poly_ctx() {
     TEST_ASSERT(std::isfinite(score.alpha_f));
     TEST_ASSERT(std::isfinite(score.alpha_g));
 
-    std::cout << "  PASS (log_e_score=" << score.log_e_score
-              << " alpha_f=" << score.alpha_f << ")" << std::endl;
+    std::cout << "  PASS (log_e_score=" << score.log_e_score << " alpha_f=" << score.alpha_f << ")"
+              << std::endl;
 }
 
 // ============================================================
@@ -445,9 +454,9 @@ void test_fb_sieve_count_invariants() {
         uint32_t alg_bound;
     };
     Config configs[] = {
-        {"143",           2,   50,   50},
-        {"10403",         2,  200,  200},
-        {"1000036000099", 3,  500,  500},
+        {"143", 2, 50, 50},
+        {"10403", 2, 200, 200},
+        {"1000036000099", 3, 500, 500},
     };
 
     for (const auto& c : configs) {
@@ -457,7 +466,7 @@ void test_fb_sieve_count_invariants() {
         auto ctx = BaseMSelector::create_context(n, result);
 
         FactorBaseBuilder::Options opts;
-        opts.rational_bound  = c.rat_bound;
+        opts.rational_bound = c.rat_bound;
         opts.algebraic_bound = c.alg_bound;
         opts.parallel = false;
 
@@ -480,10 +489,9 @@ void test_fb_sieve_count_invariants() {
             TEST_ASSERT(alg[i].p > c.alg_bound);
         }
 
-        std::cout << "  N=" << c.n_str
-                  << " rat=" << fb.rational_count()
-                  << " alg=" << fb.algebraic_count()
-                  << " sieve_alg=" << fb.sieve_algebraic_count() << " OK" << std::endl;
+        std::cout << "  N=" << c.n_str << " rat=" << fb.rational_count()
+                  << " alg=" << fb.algebraic_count() << " sieve_alg=" << fb.sieve_algebraic_count()
+                  << " OK" << std::endl;
     }
     std::cout << "  PASS" << std::endl;
 }
@@ -495,13 +503,13 @@ void test_fb_sieve_count_invariants() {
 // 使用 N=10403 (101×103) 产生首项系数=1 的多项式
 // ============================================================
 static TestEnv make_env_for_schirokauer() {
-    Integer n("10403");  // 101 * 103
+    Integer n("10403"); // 101 * 103
     auto result = BaseMSelector::select(n, 2);
     TEST_ASSERT(result.success);
     auto ctx = BaseMSelector::create_context(n, result);
 
     FactorBaseBuilder::Options opts;
-    opts.rational_bound  = 200;
+    opts.rational_bound = 200;
     opts.algebraic_bound = 200;
     opts.parallel = false;
     auto fb = FactorBaseBuilder::build(ctx, opts);
@@ -530,20 +538,20 @@ void test_schirokauer_matrix_builder_integration() {
 
     // 无 Schirokauer 列
     MatrixBuilderConfig cfg_no_sch;
-    cfg_no_sch.include_sign_column  = false;
-    cfg_no_sch.include_qc_columns   = false;
-    cfg_no_sch.include_class_group  = false;
-    cfg_no_sch.include_schirokauer  = false;
+    cfg_no_sch.include_sign_column = false;
+    cfg_no_sch.include_qc_columns = false;
+    cfg_no_sch.include_class_group = false;
+    cfg_no_sch.include_schirokauer = false;
     MatrixBuilder builder_no(cfg_no_sch);
     auto result_no = builder_no.build_with_qc(rels, fb, ctx);
 
     // 有 Schirokauer 列 (ℓ=2)
     MatrixBuilderConfig cfg_sch;
-    cfg_sch.include_sign_column  = false;
-    cfg_sch.include_qc_columns   = false;
-    cfg_sch.include_class_group  = false;
-    cfg_sch.include_schirokauer  = true;
-    cfg_sch.schirokauer_primes   = {2};
+    cfg_sch.include_sign_column = false;
+    cfg_sch.include_qc_columns = false;
+    cfg_sch.include_class_group = false;
+    cfg_sch.include_schirokauer = true;
+    cfg_sch.schirokauer_primes = {2};
     MatrixBuilder builder_sch(cfg_sch);
     auto result_sch = builder_sch.build_with_qc(rels, fb, ctx);
 
@@ -581,11 +589,11 @@ void test_matrix_builder_all_columns() {
 
     // 开启 sign + Schirokauer (QC 对小 N 的暴力根检查太慢，跳过)
     MatrixBuilderConfig cfg;
-    cfg.include_sign_column  = true;
-    cfg.include_qc_columns   = false;
-    cfg.include_class_group  = false;
-    cfg.include_schirokauer  = true;
-    cfg.schirokauer_primes   = {2};
+    cfg.include_sign_column = true;
+    cfg.include_qc_columns = false;
+    cfg.include_class_group = false;
+    cfg.include_schirokauer = true;
+    cfg.schirokauer_primes = {2};
     MatrixBuilder builder(cfg);
     auto result = builder.build_with_qc(rels, fb, ctx);
 
@@ -593,12 +601,10 @@ void test_matrix_builder_all_columns() {
 
     // 列映射一致性：
     // sign (0 或 1) + rat_fb + alg_fb + LP + QC + Schirokauer
-    size_t expected_total = (cfg.include_sign_column ? 1 : 0)
-                          + m.num_rational_fb + m.num_algebraic_fb
-                          + m.num_large_primes_rat + m.num_large_primes_alg
-                          + m.num_qc_columns
-                          + m.num_class_group_columns
-                          + m.num_schirokauer_columns;
+    size_t expected_total = (cfg.include_sign_column ? 1 : 0) + m.num_rational_fb +
+                            m.num_algebraic_fb + m.num_large_primes_rat + m.num_large_primes_alg +
+                            m.num_qc_columns + m.num_class_group_columns +
+                            m.num_schirokauer_columns;
 
     TEST_ASSERT(result.matrix.num_cols() == expected_total);
 
@@ -615,10 +621,8 @@ void test_matrix_builder_all_columns() {
     // Schirokauer 列数 > 0
     TEST_ASSERT(m.num_schirokauer_columns > 0);
 
-    std::cout << "  PASS (total_cols=" << result.matrix.num_cols()
-              << " sign=1"
-              << " rat=" << m.num_rational_fb
-              << " alg=" << m.num_algebraic_fb
+    std::cout << "  PASS (total_cols=" << result.matrix.num_cols() << " sign=1"
+              << " rat=" << m.num_rational_fb << " alg=" << m.num_algebraic_fb
               << " sch=" << m.num_schirokauer_columns << ")" << std::endl;
 }
 
@@ -644,7 +648,8 @@ void test_full_mini_pipeline() {
     for (int64_t a = -40; a <= 40; ++a) {
         for (uint64_t b = 1; b <= 5; ++b) {
             uint64_t abs_a = uint64_t(a < 0 ? -a : a);
-            if (std::gcd(abs_a, b) != 1) continue;
+            if (std::gcd(abs_a, b) != 1)
+                continue;
             auto rel = cof.verify(a, b);
             if (rel.has_value()) {
                 collector.add(std::move(*rel));
@@ -666,8 +671,8 @@ void test_full_mini_pipeline() {
     RelationFilter filter(flt_cfg);
     auto filtered = filter.filter(std::vector<Relation>(rels.begin(), rels.end()));
 
-    std::cout << "  After filter: " << filtered.size()
-              << " (removed " << filter.stats().singletons_removed << " singletons)" << std::endl;
+    std::cout << "  After filter: " << filtered.size() << " (removed "
+              << filter.stats().singletons_removed << " singletons)" << std::endl;
 
     if (filtered.size() < 3) {
         std::cout << "  SKIP (not enough filtered relations)" << std::endl;
@@ -676,10 +681,10 @@ void test_full_mini_pipeline() {
 
     // Step 3: Build matrix (minimal config for reliable dependency finding)
     MatrixBuilderConfig mat_cfg;
-    mat_cfg.include_sign_column  = false;
-    mat_cfg.include_qc_columns   = false;
-    mat_cfg.include_class_group  = false;
-    mat_cfg.include_schirokauer  = false;
+    mat_cfg.include_sign_column = false;
+    mat_cfg.include_qc_columns = false;
+    mat_cfg.include_class_group = false;
+    mat_cfg.include_schirokauer = false;
     MatrixBuilder builder(mat_cfg);
     auto mat_result = builder.build(filtered, env.fb);
 
@@ -777,12 +782,11 @@ void test_sieve_cofactor_joint() {
     FactorBaseBuilder::Options fb_opts;
     fb_opts.rational_bound = 200;
     fb_opts.algebraic_bound = 200;
-    fb_opts.special_q_bound = 500;  // 扩展到 500 供 SQ 使用
+    fb_opts.special_q_bound = 500; // 扩展到 500 供 SQ 使用
     fb_opts.parallel = false;
     auto fb = FactorBaseBuilder::build(ctx, fb_opts);
 
-    std::cout << "  FB: rat=" << fb.rational_count()
-              << " alg_sieve=" << fb.sieve_algebraic_count()
+    std::cout << "  FB: rat=" << fb.rational_count() << " alg_sieve=" << fb.sieve_algebraic_count()
               << " alg_total=" << fb.algebraic_count() << std::endl;
 
     // 配置筛法（低阈值以获取更多候选）
@@ -810,7 +814,8 @@ void test_sieve_cofactor_joint() {
 
     for (size_t i = 0; i < 3 && sq_gen.has_next(); ++i) {
         auto sq = sq_gen.next();
-        if (!sq) break;
+        if (!sq)
+            break;
         auto result = sieve.sieve_special_q(*sq);
         for (const auto& c : result.candidates) {
             candidate_pairs.emplace_back(c.a, c.b);
@@ -828,7 +833,7 @@ void test_sieve_cofactor_joint() {
         if (rel.has_value()) {
             verified++;
             TEST_ASSERT(rel->a == a);
-            TEST_ASSERT(rel->b == b);  // both uint64_t
+            TEST_ASSERT(rel->b == b); // both uint64_t
         }
     }
 
@@ -855,7 +860,8 @@ void test_rational_algebraic_sqrt_joint() {
     for (int64_t a = -50; a <= 50; ++a) {
         for (uint64_t b = 1; b <= 5; ++b) {
             uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
-            if (std::gcd(abs_a, b) != 1) continue;
+            if (std::gcd(abs_a, b) != 1)
+                continue;
             auto rel = cof.verify(a, b);
             if (rel.has_value()) {
                 rels.push_back(std::move(*rel));
@@ -872,15 +878,15 @@ void test_rational_algebraic_sqrt_joint() {
 
     // 构建矩阵（含 sign 列，确保有理侧乘积为正）
     MatrixBuilderConfig mat_cfg;
-    mat_cfg.include_sign_column  = true;
-    mat_cfg.include_qc_columns   = false;
-    mat_cfg.include_class_group  = false;
-    mat_cfg.include_schirokauer  = false;
+    mat_cfg.include_sign_column = true;
+    mat_cfg.include_qc_columns = false;
+    mat_cfg.include_class_group = false;
+    mat_cfg.include_schirokauer = false;
     MatrixBuilder builder(mat_cfg);
     auto mat_result = builder.build(rels, env.fb);
 
-    std::cout << "  Matrix: " << mat_result.matrix.num_rows() << "x"
-              << mat_result.matrix.num_cols() << std::endl;
+    std::cout << "  Matrix: " << mat_result.matrix.num_rows() << "x" << mat_result.matrix.num_cols()
+              << std::endl;
 
     if (mat_result.matrix.num_rows() <= mat_result.matrix.num_cols()) {
         std::cout << "  SKIP (matrix not overdetermined)" << std::endl;
@@ -901,24 +907,28 @@ void test_rational_algebraic_sqrt_joint() {
     size_t deps_tried = 0;
 
     for (const auto& dep : deps) {
-        if (!verify_dependency(mat_result.matrix, dep)) continue;
+        if (!verify_dependency(mat_result.matrix, dep))
+            continue;
         deps_tried++;
 
         // 将 std::vector<bool> 转为 BitVector（sqrt API 需要）
         BitVector dep_bv(dep.size());
         for (size_t i = 0; i < dep.size(); ++i) {
-            if (dep[i]) dep_bv.set(i);
+            if (dep[i])
+                dep_bv.set(i);
         }
 
         // 有理平方根
         RationalSqrt rat_sqrt;
         auto rat_result = rat_sqrt.compute(dep_bv, rels, env.fb, env.n, env.ctx.m());
-        if (!rat_result.success) continue;
+        if (!rat_result.success)
+            continue;
 
         // 代数平方根
         AlgebraicSqrt alg_sqrt;
         auto alg_result = alg_sqrt.compute(dep_bv, rels, env.ctx);
-        if (!alg_result.success) continue;
+        if (!alg_result.success)
+            continue;
 
         // gcd(X ± Y, N)
         Integer diff = rat_result.value.clone();
@@ -937,8 +947,8 @@ void test_rational_algebraic_sqrt_joint() {
             Integer factor = g1_nontrivial ? g1.clone() : g2.clone();
             Integer cofactor_val = env.n.clone();
             cofactor_val /= factor;
-            std::cout << "  Factor: " << factor.to_string()
-                      << " x " << cofactor_val.to_string() << std::endl;
+            std::cout << "  Factor: " << factor.to_string() << " x " << cofactor_val.to_string()
+                      << std::endl;
 
             // 验证 factor * cofactor = N
             Integer product = factor.clone();
@@ -948,8 +958,8 @@ void test_rational_algebraic_sqrt_joint() {
         }
     }
 
-    std::cout << "  deps_tried=" << deps_tried
-              << " factor_found=" << (factor_found ? "yes" : "no") << std::endl;
+    std::cout << "  deps_tried=" << deps_tried << " factor_found=" << (factor_found ? "yes" : "no")
+              << std::endl;
     std::cout << "  PASS" << std::endl;
 }
 
@@ -960,7 +970,7 @@ void test_rational_algebraic_sqrt_joint() {
 void test_large_relation_to_matrix_pipeline() {
     std::cout << "Testing large-scale relation → matrix pipeline (integration)..." << std::endl;
 
-    auto env = make_env_for_schirokauer();  // N=10403, FB bound=200
+    auto env = make_env_for_schirokauer(); // N=10403, FB bound=200
 
     // 收集大量关系
     CofactorizerConfig cof_cfg;
@@ -971,7 +981,8 @@ void test_large_relation_to_matrix_pipeline() {
     for (int64_t a = -100; a <= 100; ++a) {
         for (uint64_t b = 1; b <= 10; ++b) {
             uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
-            if (std::gcd(abs_a, b) != 1) continue;
+            if (std::gcd(abs_a, b) != 1)
+                continue;
             auto rel = cof.verify(a, b);
             if (rel.has_value()) {
                 rels.push_back(std::move(*rel));
@@ -1002,30 +1013,26 @@ void test_large_relation_to_matrix_pipeline() {
 
     // 构建矩阵（含 sign + Schirokauer 列）
     MatrixBuilderConfig mat_cfg;
-    mat_cfg.include_sign_column  = true;
-    mat_cfg.include_qc_columns   = false;
-    mat_cfg.include_class_group  = false;
-    mat_cfg.include_schirokauer  = true;
-    mat_cfg.schirokauer_primes   = {2};
+    mat_cfg.include_sign_column = true;
+    mat_cfg.include_qc_columns = false;
+    mat_cfg.include_class_group = false;
+    mat_cfg.include_schirokauer = true;
+    mat_cfg.schirokauer_primes = {2};
     MatrixBuilder builder(mat_cfg);
     auto mat_result = builder.build_with_qc(filtered, env.fb, env.ctx);
 
     const auto& m = mat_result.mapping;
-    std::cout << "  Matrix: " << mat_result.matrix.num_rows() << "x"
-              << mat_result.matrix.num_cols()
-              << " (sign=1 rat=" << m.num_rational_fb
-              << " alg=" << m.num_algebraic_fb
+    std::cout << "  Matrix: " << mat_result.matrix.num_rows() << "x" << mat_result.matrix.num_cols()
+              << " (sign=1 rat=" << m.num_rational_fb << " alg=" << m.num_algebraic_fb
               << " sch=" << m.num_schirokauer_columns << ")" << std::endl;
 
     TEST_ASSERT(mat_result.matrix.num_rows() == filtered.size());
     TEST_ASSERT(m.num_schirokauer_columns > 0);
 
     // 列总数一致性
-    size_t expected_cols = (mat_cfg.include_sign_column ? 1 : 0)
-                          + m.num_rational_fb + m.num_algebraic_fb
-                          + m.num_large_primes_rat + m.num_large_primes_alg
-                          + m.num_qc_columns + m.num_class_group_columns
-                          + m.num_schirokauer_columns;
+    size_t expected_cols = (mat_cfg.include_sign_column ? 1 : 0) + m.num_rational_fb +
+                           m.num_algebraic_fb + m.num_large_primes_rat + m.num_large_primes_alg +
+                           m.num_qc_columns + m.num_class_group_columns + m.num_schirokauer_columns;
     TEST_ASSERT(mat_result.matrix.num_cols() == expected_cols);
 
     // 如果超定矩阵，尝试求依赖
@@ -1092,7 +1099,8 @@ void test_sieve_parallel_vs_sequential() {
     std::vector<SpecialQ> sqs;
     for (size_t i = 0; i < 5 && sq_gen.has_next(); ++i) {
         auto sq = sq_gen.next();
-        if (sq) sqs.push_back(*sq);
+        if (sq)
+            sqs.push_back(*sq);
     }
     TEST_ASSERT(!sqs.empty());
 
@@ -1120,9 +1128,8 @@ void test_sieve_parallel_vs_sequential() {
         total_par += par_results[i].candidates.size();
     }
 
-    std::cout << "  SQs=" << sqs.size()
-              << " seq_total=" << total_seq
-              << " par_total=" << total_par << " (match)" << std::endl;
+    std::cout << "  SQs=" << sqs.size() << " seq_total=" << total_seq << " par_total=" << total_par
+              << " (match)" << std::endl;
     std::cout << "  PASS" << std::endl;
 }
 
@@ -1181,9 +1188,11 @@ void test_filter_reduces_matrix_dimensions() {
     for (int64_t a = -50; a <= 50; ++a) {
         for (uint64_t b = 1; b <= 5; ++b) {
             uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
-            if (std::gcd(abs_a, b) != 1) continue;
+            if (std::gcd(abs_a, b) != 1)
+                continue;
             auto rel = cof.verify(a, b);
-            if (rel.has_value()) rels.push_back(std::move(*rel));
+            if (rel.has_value())
+                rels.push_back(std::move(*rel));
         }
     }
 
@@ -1209,8 +1218,7 @@ void test_filter_reduces_matrix_dimensions() {
     // Filtering should not increase rows
     TEST_ASSERT(rows_filtered <= rows_unfiltered);
 
-    std::cout << "  unfiltered=" << rows_unfiltered
-              << " filtered=" << rows_filtered
+    std::cout << "  unfiltered=" << rows_unfiltered << " filtered=" << rows_filtered
               << " singletons_removed=" << filter.stats().singletons_removed << std::endl;
     std::cout << "  PASS" << std::endl;
 }
@@ -1254,8 +1262,10 @@ void test_fb_bounds_sensitivity() {
         for (int64_t a = -30; a <= 30; ++a) {
             for (uint64_t b = 1; b <= 3; ++b) {
                 uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
-                if (std::gcd(abs_a, b) != 1) continue;
-                if (cof.verify(a, b).has_value()) count++;
+                if (std::gcd(abs_a, b) != 1)
+                    continue;
+                if (cof.verify(a, b).has_value())
+                    count++;
             }
         }
         return count;
@@ -1268,11 +1278,9 @@ void test_fb_bounds_sensitivity() {
     TEST_ASSERT(rels_large >= rels_small);
 
     std::cout << "  FB_small: rat=" << fb_small.rational_count()
-              << " alg=" << fb_small.algebraic_count()
-              << " rels=" << rels_small << std::endl;
+              << " alg=" << fb_small.algebraic_count() << " rels=" << rels_small << std::endl;
     std::cout << "  FB_large: rat=" << fb_large.rational_count()
-              << " alg=" << fb_large.algebraic_count()
-              << " rels=" << rels_large << std::endl;
+              << " alg=" << fb_large.algebraic_count() << " rels=" << rels_large << std::endl;
     std::cout << "  PASS" << std::endl;
 }
 
@@ -1281,7 +1289,8 @@ void test_fb_bounds_sensitivity() {
 // 对真实 GNFS 关系验证：若 a - b*m 被有理 FB 整除，则 norm 被代数 FB 整除
 // ============================================================
 void test_norm_rational_value_consistency() {
-    std::cout << "Testing algebraic_norm + rational_value consistency (integration)..." << std::endl;
+    std::cout << "Testing algebraic_norm + rational_value consistency (integration)..."
+              << std::endl;
 
     Integer n("9991"); // 97×103
     auto poly_result = BaseMSelector::select(n, 2);
@@ -1303,10 +1312,12 @@ void test_norm_rational_value_consistency() {
     for (int64_t a = -20; a <= 20; ++a) {
         for (uint64_t b = 1; b <= 3; ++b) {
             uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
-            if (std::gcd(abs_a, b) != 1) continue;
+            if (std::gcd(abs_a, b) != 1)
+                continue;
 
             auto rel = cof.verify(a, b);
-            if (!rel.has_value()) continue;
+            if (!rel.has_value())
+                continue;
 
             // rational_value = a - b*m
             Integer rv = ctx.rational_value(a, b);
@@ -1322,7 +1333,8 @@ void test_norm_rational_value_consistency() {
     }
 
     TEST_ASSERT(checked > 0);
-    std::cout << "  Verified " << checked << " relations: rational_value and algebraic_norm both non-zero" << std::endl;
+    std::cout << "  Verified " << checked
+              << " relations: rational_value and algebraic_norm both non-zero" << std::endl;
     std::cout << "  PASS" << std::endl;
 }
 
@@ -1367,21 +1379,23 @@ void test_lattice_basis_sieve_geometry() {
             auto [a, b] = basis.to_ab(i, j);
             TEST_ASSERT(basis.verify_ab(a, b));
             // Skip trivial (a=0, b=0)
-            if (a == 0 && b == 0) continue;
+            if (a == 0 && b == 0)
+                continue;
             valid_count++;
         }
     }
     TEST_ASSERT(valid_count > 0);
 
-    std::cout << "  PASS (q=" << sq.q << " r=" << sq.r
-              << " det=" << det << " checked=" << valid_count << " lattice points)" << std::endl;
+    std::cout << "  PASS (q=" << sq.q << " r=" << sq.r << " det=" << det
+              << " checked=" << valid_count << " lattice points)" << std::endl;
 }
 
 // ============================================================
 // Session 34: Polynomial degree → FB → matrix column count
 // ============================================================
 void test_polynomial_degree_fb_matrix_consistency() {
-    std::cout << "Testing Polynomial degree → FB → matrix column consistency (integration)..." << std::endl;
+    std::cout << "Testing Polynomial degree → FB → matrix column consistency (integration)..."
+              << std::endl;
 
     // Test that different FB bounds produce consistent matrix dimensions
     // Use small N values with base-m degree 3 (fast path)
@@ -1406,15 +1420,20 @@ void test_polynomial_degree_fb_matrix_consistency() {
         for (int64_t a = -20; a <= 20; ++a) {
             for (uint64_t b = 1; b <= 2; ++b) {
                 uint64_t abs_a = static_cast<uint64_t>(a < 0 ? -a : a);
-                if (std::gcd(abs_a, b) != 1) continue;
+                if (std::gcd(abs_a, b) != 1)
+                    continue;
                 auto rel = cof.verify(a, b);
-                if (rel.has_value()) rels.push_back(std::move(*rel));
-                if (rels.size() >= 10) break;
+                if (rel.has_value())
+                    rels.push_back(std::move(*rel));
+                if (rels.size() >= 10)
+                    break;
             }
-            if (rels.size() >= 10) break;
+            if (rels.size() >= 10)
+                break;
         }
 
-        if (rels.size() < 3) continue;
+        if (rels.size() < 3)
+            continue;
 
         // Build basic matrix (no QC/ClassGroup/Schirokauer for speed)
         MatrixBuilder::Config mb_cfg;
@@ -1452,7 +1471,8 @@ void test_class_group_character_consistency() {
     for (const char* n_str : n_values) {
         Integer n(n_str);
         auto poly_result = BaseMSelector::select(n, 3);
-        if (!poly_result.success) continue;
+        if (!poly_result.success)
+            continue;
         auto ctx = BaseMSelector::create_context(n, poly_result);
 
         ClassGroup cg(ctx);

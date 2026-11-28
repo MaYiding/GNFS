@@ -9,7 +9,7 @@
 // below may keep their own assert checks live here. The checks of this file
 // use TEST_ASSERT and do not depend on NDEBUG.
 #ifdef NDEBUG
-#  undef NDEBUG
+#undef NDEBUG
 #endif
 
 #include "gnfs/relation/collector.hpp"
@@ -19,8 +19,8 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <numeric>
 #include <utility>
@@ -49,7 +49,8 @@ std::vector<ABFactors> make_deterministic_sequence(int count) {
     uint64_t b = 2;
     for (int i = 0; i < count; ++i) {
         // Bump until gcd(a,b)=1
-        while (std::gcd(util::safe_abs(a), b) != 1) ++b;
+        while (std::gcd(util::safe_abs(a), b) != 1)
+            ++b;
         ABFactors r;
         r.a = a;
         r.b = b;
@@ -73,19 +74,18 @@ Relation to_relation(const ABFactors& f) {
 // Sort relations by (a,b) for stable comparison.
 void sort_by_ab(std::vector<Relation>& v) {
     std::sort(v.begin(), v.end(), [](const Relation& l, const Relation& r) {
-        if (l.b != r.b) return l.b < r.b;
+        if (l.b != r.b)
+            return l.b < r.b;
         return l.a < r.a;
     });
 }
 
 bool same_relation(const Relation& l, const Relation& r) {
-    return l.a == r.a && l.b == r.b &&
-           l.rational_factors == r.rational_factors &&
+    return l.a == r.a && l.b == r.b && l.rational_factors == r.rational_factors &&
            l.algebraic_factors == r.algebraic_factors;
 }
 
-std::vector<Relation> collect_with_config(const std::vector<ABFactors>& seq,
-                                          bool use_pool,
+std::vector<Relation> collect_with_config(const std::vector<ABFactors>& seq, bool use_pool,
                                           size_t initial_bytes) {
     CollectorConfig cfg;
     cfg.use_pool = use_pool;
@@ -94,7 +94,7 @@ std::vector<Relation> collect_with_config(const std::vector<ABFactors>& seq,
     for (const auto& f : seq) {
         Relation r = to_relation(f);
         bool added = collector.add(std::move(r));
-        (void)added;  // Some inputs may legitimately fail validation in
+        (void)added; // Some inputs may legitimately fail validation in
                      // extreme corner cases (e.g. a=b=0); deterministic seq
                      // ensures non-degenerate pairs so this should be true.
         TEST_ASSERT(added);
@@ -102,14 +102,14 @@ std::vector<Relation> collect_with_config(const std::vector<ABFactors>& seq,
     return collector.get_relations();
 }
 
-}  // namespace
+} // namespace
 
 void test_small_sequence_bit_for_bit() {
     std::cout << "Testing small sequence: pool ON vs OFF bit-for-bit..." << std::endl;
     auto seq = make_deterministic_sequence(50);
 
     auto off = collect_with_config(seq, /*use_pool=*/false, /*bytes=*/0);
-    auto on  = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/64 * 1024);
+    auto on = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/64 * 1024);
 
     TEST_ASSERT(off.size() == on.size());
     sort_by_ab(off);
@@ -127,7 +127,7 @@ void test_medium_sequence_bit_for_bit() {
     auto seq = make_deterministic_sequence(5000);
 
     auto off = collect_with_config(seq, /*use_pool=*/false, /*bytes=*/0);
-    auto on  = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/1 * 1024 * 1024);
+    auto on = collect_with_config(seq, /*use_pool=*/true, /*bytes=*/1 * 1024 * 1024);
 
     TEST_ASSERT(off.size() == on.size());
     sort_by_ab(off);
@@ -147,16 +147,18 @@ void test_pool_stats_match_no_pool() {
     CollectorConfig cfg_off;
     cfg_off.use_pool = false;
     RelationCollector c_off(cfg_off);
-    for (const auto& f : seq) c_off.add(to_relation(f));
+    for (const auto& f : seq)
+        c_off.add(to_relation(f));
 
     CollectorConfig cfg_on;
     cfg_on.use_pool = true;
     cfg_on.pool_initial_bytes = 256 * 1024;
     RelationCollector c_on(cfg_on);
-    for (const auto& f : seq) c_on.add(to_relation(f));
+    for (const auto& f : seq)
+        c_on.add(to_relation(f));
 
     auto s_off = c_off.stats();
-    auto s_on  = c_on.stats();
+    auto s_on = c_on.stats();
 
     TEST_ASSERT(s_off.total_relations == s_on.total_relations);
     TEST_ASSERT(s_off.full_relations == s_on.full_relations);
@@ -180,7 +182,8 @@ void test_clear_recycles_pool() {
     RelationCollector collector(cfg);
 
     auto seq = make_deterministic_sequence(100);
-    for (const auto& f : seq) collector.add(to_relation(f));
+    for (const auto& f : seq)
+        collector.add(to_relation(f));
     TEST_ASSERT(collector.size() == 100);
 
     collector.clear();
@@ -188,7 +191,8 @@ void test_clear_recycles_pool() {
     TEST_ASSERT(collector.empty());
 
     // After clear, collector still accepts new additions through the (new) pool.
-    for (const auto& f : seq) collector.add(to_relation(f));
+    for (const auto& f : seq)
+        collector.add(to_relation(f));
     TEST_ASSERT(collector.size() == 100);
 
     auto out = collector.get_relations();
@@ -203,8 +207,7 @@ void test_clear_recycles_pool() {
 // here — wallclock varies wildly under sanitizers and CI.
 
 void perf_info_push_100k() {
-    std::cout << "\n[perf-info] 100k push_back timing (pool OFF vs ON)..."
-              << std::endl;
+    std::cout << "\n[perf-info] 100k push_back timing (pool OFF vs ON)..." << std::endl;
     constexpr int N = 100'000;
     auto seq = make_deterministic_sequence(N);
 
@@ -216,13 +219,14 @@ void perf_info_push_100k() {
         cfg.check_duplicates = false;
         RelationCollector collector(cfg);
         auto t0 = std::chrono::steady_clock::now();
-        for (const auto& f : seq) collector.add(to_relation(f));
+        for (const auto& f : seq)
+            collector.add(to_relation(f));
         auto t1 = std::chrono::steady_clock::now();
         return std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     };
 
     auto ms_off = run(false, 0);
-    auto ms_on  = run(true, 4 * 1024 * 1024);
+    auto ms_on = run(true, 4 * 1024 * 1024);
 
     std::cout << "  pool OFF: " << ms_off << " ms (" << N << " relations)" << std::endl;
     std::cout << "  pool ON : " << ms_on << " ms (initial chunk 4 MiB)" << std::endl;
@@ -233,8 +237,7 @@ void perf_info_push_100k() {
 }
 
 void perf_info_push_10k_warm() {
-    std::cout << "\n[perf-info] 10k push_back warm timing (ENV-driven pool)..."
-              << std::endl;
+    std::cout << "\n[perf-info] 10k push_back warm timing (ENV-driven pool)..." << std::endl;
     constexpr int N = 10'000;
     auto seq = make_deterministic_sequence(N);
 
@@ -245,7 +248,8 @@ void perf_info_push_10k_warm() {
         cfg.check_duplicates = false;
         RelationCollector collector(cfg);
         auto t0 = std::chrono::steady_clock::now();
-        for (const auto& f : seq) collector.add(to_relation(f));
+        for (const auto& f : seq)
+            collector.add(to_relation(f));
         auto t1 = std::chrono::steady_clock::now();
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
         std::cout << "  " << label << ": " << us << " us" << std::endl;

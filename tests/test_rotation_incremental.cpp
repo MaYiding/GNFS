@@ -41,7 +41,8 @@ IntPolynomial make_linear(int64_t m) {
 IntPolynomial make_poly(const std::vector<int64_t>& cs) {
     std::vector<Integer> coeffs;
     coeffs.reserve(cs.size());
-    for (int64_t c : cs) coeffs.push_back(Integer(c));
+    for (int64_t c : cs)
+        coeffs.push_back(Integer(c));
     return IntPolynomial(std::move(coeffs));
 }
 
@@ -80,17 +81,15 @@ void test_linear_short_circuit_matches_formula() {
     std::cout << "Testing: linear short-circuit matches per-prime formula..." << std::endl;
 
     MurphyParams params;
-    params.alpha_bound = 100;  // small bound so we can enumerate primes by hand
+    params.alpha_bound = 100; // small bound so we can enumerate primes by hand
     MurphyEvaluator eval(params);
 
     double alpha = eval.compute_alpha(make_linear(7));
 
     // Hand-enumerate primes ≤ 100: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37,
     // 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97 (25 primes)
-    const uint32_t primes_le_100[] = {
-        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
-        53, 59, 61, 67, 71, 73, 79, 83, 89, 97
-    };
+    const uint32_t primes_le_100[] = {2,  3,  5,  7,  11, 13, 17, 19, 23, 29, 31, 37, 41,
+                                      43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97};
     double expected = 0.0;
     for (uint32_t p : primes_le_100) {
         const double pd = static_cast<double>(p);
@@ -135,12 +134,14 @@ void test_linear_short_circuit_value_correctness() {
     sieve[0] = sieve[1] = false;
     for (size_t i = 2; i * i <= 1000; ++i) {
         if (sieve[i]) {
-            for (size_t j = i * i; j <= 1000; j += i) sieve[j] = false;
+            for (size_t j = i * i; j <= 1000; j += i)
+                sieve[j] = false;
         }
     }
     double expected = 0.0;
     for (size_t p = 2; p <= 1000; ++p) {
-        if (!sieve[p]) continue;
+        if (!sieve[p])
+            continue;
         const double pd = static_cast<double>(p);
         expected += (1.0 / pd - 1.0 / (pd - 1.0)) * std::log(pd);
     }
@@ -164,9 +165,9 @@ void test_short_circuit_not_triggered_for_higher_degree() {
 
     // Two different deg-2 polynomials with leading coeff = 1: must give
     // different alphas (would be identical if short-circuit fired).
-    auto f1 = make_poly({1, 0, 1});       // x^2 + 1
-    auto f2 = make_poly({-1, 0, 1});      // x^2 - 1
-    auto f3 = make_poly({7, -3, 1});      // x^2 - 3x + 7
+    auto f1 = make_poly({1, 0, 1});  // x^2 + 1
+    auto f2 = make_poly({-1, 0, 1}); // x^2 - 1
+    auto f3 = make_poly({7, -3, 1}); // x^2 - 3x + 7
 
     double a1 = eval.compute_alpha(f1);
     double a2 = eval.compute_alpha(f2);
@@ -190,9 +191,12 @@ void test_linear_short_circuit_various_bounds() {
     // grows (each new prime adds a negative contribution).
     auto g = make_linear(123);
 
-    MurphyParams p100; p100.alpha_bound = 100;
-    MurphyParams p1000; p1000.alpha_bound = 1000;
-    MurphyParams p10000; p10000.alpha_bound = 10000;
+    MurphyParams p100;
+    p100.alpha_bound = 100;
+    MurphyParams p1000;
+    p1000.alpha_bound = 1000;
+    MurphyParams p10000;
+    p10000.alpha_bound = 10000;
 
     MurphyEvaluator e100(p100);
     MurphyEvaluator e1000(p1000);
@@ -223,12 +227,12 @@ void test_tracker_small_primes_init() {
     const auto& sp = tracker.small_primes();
 
     // Primes ≤ 50: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47
-    const std::vector<uint32_t> expected =
-        {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47};
-    std::cout << "  primes ≤ 50 count = " << sp.size()
-              << " (expected " << expected.size() << ")" << std::endl;
+    const std::vector<uint32_t> expected = {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47};
+    std::cout << "  primes ≤ 50 count = " << sp.size() << " (expected " << expected.size() << ")"
+              << std::endl;
     TEST_ASSERT(sp.size() == expected.size());
-    for (size_t i = 0; i < sp.size(); ++i) TEST_ASSERT(sp[i] == expected[i]);
+    for (size_t i = 0; i < sp.size(); ++i)
+        TEST_ASSERT(sp[i] == expected[i]);
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -237,7 +241,7 @@ void test_tracker_small_primes_init() {
 void test_tracker_cheap_alpha_matches_formula() {
     std::cout << "Testing: cheap_alpha matches hand-computed value..." << std::endl;
 
-    RotationAlphaTracker tracker(30);  // primes 2, 3, 5, 7, 11, 13, 17, 19, 23, 29
+    RotationAlphaTracker tracker(30); // primes 2, 3, 5, 7, 11, 13, 17, 19, 23, 29
 
     // f(x) = x^2 + 1
     auto f = make_poly({1, 0, 1});
@@ -255,9 +259,7 @@ void test_tracker_cheap_alpha_matches_formula() {
     //   p=23: x^2 ≡ -1 mod 23 → no solution → 0 roots
     //   p=29: x^2 ≡ -1 mod 29 → x = ±12 → 2 roots
     const std::vector<std::pair<uint32_t, uint32_t>> data = {
-        {2, 1}, {3, 0}, {5, 2}, {7, 0}, {11, 0},
-        {13, 2}, {17, 2}, {19, 0}, {23, 0}, {29, 2}
-    };
+        {2, 1}, {3, 0}, {5, 2}, {7, 0}, {11, 0}, {13, 2}, {17, 2}, {19, 0}, {23, 0}, {29, 2}};
     double expected = 0.0;
     for (auto [p, r] : data) {
         const double pd = p;
@@ -331,7 +333,7 @@ void test_cheap_alpha_after_rotation() {
     std::cout << "Testing: cheap_alpha after rotation matches re-computation..." << std::endl;
 
     RotationAlphaTracker tracker(100);
-    auto f_init = make_poly({-1000, 5, 0, 0, 0, 1});  // x^5 + 5x - 1000
+    auto f_init = make_poly({-1000, 5, 0, 0, 0, 1}); // x^5 + 5x - 1000
     Integer m(10);
 
     const std::vector<int64_t> ks = {0, 1, -1, 2, -2, 100, -100, 12345};
@@ -344,7 +346,7 @@ void test_cheap_alpha_after_rotation() {
 
         std::cout << "  k=" << k << ", cheap_alpha = " << alpha << std::endl;
         TEST_ASSERT(std::isfinite(alpha));
-        TEST_ASSERT(alpha == alpha_check);  // bit-identical for same input
+        TEST_ASSERT(alpha == alpha_check); // bit-identical for same input
     }
 
     std::cout << "  PASSED" << std::endl;
@@ -355,7 +357,7 @@ void test_cheap_alpha_after_rotation() {
 void test_rotation_composition_associative() {
     std::cout << "Testing: rotation composition equals single-step..." << std::endl;
 
-    auto f0 = make_poly({-500, 13, -2, 0, 1});  // x^4 - 2x^2 + 13x - 500
+    auto f0 = make_poly({-500, 13, -2, 0, 1}); // x^4 - 2x^2 + 13x - 500
     Integer m(7);
 
     // Chain 3 rotations of k=1 each

@@ -115,7 +115,8 @@ void test_env_non_numeric_to_one() {
     TEST_ASSERT(ecm_stage1_parallel_threads() == 1);
 
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     const std::size_t cap = static_cast<std::size_t>(hw) * 2;
 
     // Positive values above INT_MAX must clamp instead of wrapping through

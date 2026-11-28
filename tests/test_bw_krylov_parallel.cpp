@@ -31,18 +31,21 @@ namespace {
 bool verify_dependency(const SparseMatrix& M, const std::vector<bool>& v) {
     const size_t m = M.num_rows();
     const size_t n = M.num_cols();
-    if (v.size() != m) return false;
+    if (v.size() != m)
+        return false;
 
     std::vector<uint8_t> result(n, 0);
     for (size_t r = 0; r < m; ++r) {
-        if (!v[r]) continue;
+        if (!v[r])
+            continue;
         const SparseRow& row = M.row(r);
         for (uint32_t col : row.indices()) {
             result[col] ^= 1;
         }
     }
     for (size_t c = 0; c < n; ++c) {
-        if (result[c]) return false;
+        if (result[c])
+            return false;
     }
     return true;
 }
@@ -73,8 +76,8 @@ void set_env(const char* key, const char* value) {
     }
 }
 
-double timed_find_deps(const SparseMatrix& M, size_t max_deps,
-                       size_t& out_count, size_t& out_valid) {
+double timed_find_deps(const SparseMatrix& M, size_t max_deps, size_t& out_count,
+                       size_t& out_valid) {
     BlockWiedemann bw;
     auto start = std::chrono::steady_clock::now();
     auto deps = bw.find_dependencies(M, max_deps);
@@ -84,12 +87,13 @@ double timed_find_deps(const SparseMatrix& M, size_t max_deps,
     out_count = deps.size();
     out_valid = 0;
     for (const auto& dep : deps) {
-        if (verify_dependency(M, dep)) ++out_valid;
+        if (verify_dependency(M, dep))
+            ++out_valid;
     }
     return ms;
 }
 
-}  // namespace
+} // namespace
 
 void test_k1_baseline_unchanged() {
     std::cout << "Testing K=1 baseline (ENV unset)..." << std::endl;
@@ -102,8 +106,8 @@ void test_k1_baseline_unchanged() {
     TEST_ASSERT(count > 0);
     TEST_ASSERT(valid > 0);
 
-    std::cout << "  K=1: " << count << " deps, " << valid << " valid (" << ms
-              << " ms)" << std::endl;
+    std::cout << "  K=1: " << count << " deps, " << valid << " valid (" << ms << " ms)"
+              << std::endl;
     std::cout << "  PASS" << std::endl;
 }
 
@@ -118,8 +122,8 @@ void test_k1_env_one_unchanged() {
     TEST_ASSERT(count > 0);
     TEST_ASSERT(valid > 0);
 
-    std::cout << "  K=1 (explicit): " << count << " deps, " << valid << " valid ("
-              << ms << " ms)" << std::endl;
+    std::cout << "  K=1 (explicit): " << count << " deps, " << valid << " valid (" << ms << " ms)"
+              << std::endl;
 
     set_env("GNFS_BW_KRYLOV_STREAMS", nullptr);
     std::cout << "  PASS" << std::endl;
@@ -138,8 +142,8 @@ void test_k2_streams_valid() {
     // All returned deps must be valid (we never return invalid deps).
     TEST_ASSERT(valid == count);
 
-    std::cout << "  K=2: " << count << " deps, " << valid << " valid (" << ms
-              << " ms)" << std::endl;
+    std::cout << "  K=2: " << count << " deps, " << valid << " valid (" << ms << " ms)"
+              << std::endl;
 
     set_env("GNFS_BW_KRYLOV_STREAMS", nullptr);
     std::cout << "  PASS" << std::endl;
@@ -157,8 +161,8 @@ void test_k4_streams_valid() {
     TEST_ASSERT(valid > 0);
     TEST_ASSERT(valid == count);
 
-    std::cout << "  K=4: " << count << " deps, " << valid << " valid (" << ms
-              << " ms)" << std::endl;
+    std::cout << "  K=4: " << count << " deps, " << valid << " valid (" << ms << " ms)"
+              << std::endl;
 
     set_env("GNFS_BW_KRYLOV_STREAMS", nullptr);
     std::cout << "  PASS" << std::endl;
@@ -180,16 +184,14 @@ void test_env_clamping() {
     set_env("GNFS_BW_KRYLOV_STREAMS", "garbage");
     timed_find_deps(M, 5, count, valid);
     TEST_ASSERT(valid > 0);
-    std::cout << "  K=garbage → 1: " << count << " deps, " << valid << " valid"
-              << std::endl;
+    std::cout << "  K=garbage → 1: " << count << " deps, " << valid << " valid" << std::endl;
 
     // >16 → clamped to 16. We can run K=16 but it's expensive; just sanity-check
     // the dispatcher does not crash with a small max_deps.
     set_env("GNFS_BW_KRYLOV_STREAMS", "999");
     timed_find_deps(M, 3, count, valid);
     TEST_ASSERT(valid > 0);
-    std::cout << "  K=999 → 16: " << count << " deps, " << valid << " valid"
-              << std::endl;
+    std::cout << "  K=999 → 16: " << count << " deps, " << valid << " valid" << std::endl;
 
     set_env("GNFS_BW_KRYLOV_STREAMS", nullptr);
     std::cout << "  PASS" << std::endl;
@@ -213,8 +215,7 @@ void test_zero_dependency_budget_short_circuits() {
 }
 
 void test_speedup_measurement() {
-    std::cout << "Measuring wall-time K=1 vs K=4 (informational, no assert)..."
-              << std::endl;
+    std::cout << "Measuring wall-time K=1 vs K=4 (informational, no assert)..." << std::endl;
 
     SparseMatrix M = build_matrix(5400, 5000, 150, 75757);
 

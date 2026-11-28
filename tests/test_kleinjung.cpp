@@ -1,11 +1,11 @@
 /// test_kleinjung.cpp - Kleinjung 多项式选择器测试
 
-#include "gnfs/polynomial/kleinjung_selector.hpp"
-#include "gnfs/polynomial/selector_dispatch.hpp"
-#include "gnfs/polynomial/base_m.hpp"
-#include "gnfs/polynomial/polynomial_optimizer.hpp"
 #include "gnfs/core/integer.hpp"
 #include "gnfs/core/params.hpp"
+#include "gnfs/polynomial/base_m.hpp"
+#include "gnfs/polynomial/kleinjung_selector.hpp"
+#include "gnfs/polynomial/polynomial_optimizer.hpp"
+#include "gnfs/polynomial/selector_dispatch.hpp"
 
 #include "support/test_assert.hpp"
 
@@ -22,22 +22,22 @@ void test_polynomial_derivative() {
     // f(x) = 3x^3 + 2x^2 + x + 5
     // f'(x) = 9x^2 + 4x + 1
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(5));   // 常数
-    coeffs.push_back(Integer(1));   // x
-    coeffs.push_back(Integer(2));   // x^2
-    coeffs.push_back(Integer(3));   // x^3
+    coeffs.push_back(Integer(5)); // 常数
+    coeffs.push_back(Integer(1)); // x
+    coeffs.push_back(Integer(2)); // x^2
+    coeffs.push_back(Integer(3)); // x^3
     IntPolynomial f(std::move(coeffs));
 
     IntPolynomial df = f.derivative();
 
     TEST_ASSERT(df.degree() == 2);
-    TEST_ASSERT(df[0].to_int64() == 1);   // 1
-    TEST_ASSERT(df[1].to_int64() == 4);   // 4
-    TEST_ASSERT(df[2].to_int64() == 9);   // 9
+    TEST_ASSERT(df[0].to_int64() == 1); // 1
+    TEST_ASSERT(df[1].to_int64() == 4); // 4
+    TEST_ASSERT(df[2].to_int64() == 9); // 9
 
     std::cout << "  f(x) = 3x^3 + 2x^2 + x + 5" << std::endl;
-    std::cout << "  f'(x) = " << df[2].to_int64() << "x^2 + "
-              << df[1].to_int64() << "x + " << df[0].to_int64() << std::endl;
+    std::cout << "  f'(x) = " << df[2].to_int64() << "x^2 + " << df[1].to_int64() << "x + "
+              << df[0].to_int64() << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -48,21 +48,21 @@ void test_polynomial_translate() {
     // f(x) = x^2 + 2x + 1 = (x+1)^2
     // f(x+3) = (x+4)^2 = x^2 + 8x + 16
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(1));   // 常数
-    coeffs.push_back(Integer(2));   // x
-    coeffs.push_back(Integer(1));   // x^2
+    coeffs.push_back(Integer(1)); // 常数
+    coeffs.push_back(Integer(2)); // x
+    coeffs.push_back(Integer(1)); // x^2
     IntPolynomial f(std::move(coeffs));
 
     IntPolynomial g = f.translate(3);
 
     TEST_ASSERT(g.degree() == 2);
-    TEST_ASSERT(g[0].to_int64() == 16);  // (1+3)^2 = 16
-    TEST_ASSERT(g[1].to_int64() == 8);   // 2*(1+3) = 8
-    TEST_ASSERT(g[2].to_int64() == 1);   // leading coeff unchanged
+    TEST_ASSERT(g[0].to_int64() == 16); // (1+3)^2 = 16
+    TEST_ASSERT(g[1].to_int64() == 8);  // 2*(1+3) = 8
+    TEST_ASSERT(g[2].to_int64() == 1);  // leading coeff unchanged
 
     std::cout << "  f(x) = x^2 + 2x + 1" << std::endl;
-    std::cout << "  f(x+3) = " << g[2].to_int64() << "x^2 + "
-              << g[1].to_int64() << "x + " << g[0].to_int64() << std::endl;
+    std::cout << "  f(x+3) = " << g[2].to_int64() << "x^2 + " << g[1].to_int64() << "x + "
+              << g[0].to_int64() << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -86,13 +86,13 @@ void test_polynomial_multiplication() {
     IntPolynomial h = f * g;
 
     TEST_ASSERT(h.degree() == 2);
-    TEST_ASSERT(h[0].to_int64() == 2);   // 1*2 = 2
-    TEST_ASSERT(h[1].to_int64() == 3);   // 1*1 + 1*2 = 3
-    TEST_ASSERT(h[2].to_int64() == 1);   // 1*1 = 1
+    TEST_ASSERT(h[0].to_int64() == 2); // 1*2 = 2
+    TEST_ASSERT(h[1].to_int64() == 3); // 1*1 + 1*2 = 3
+    TEST_ASSERT(h[2].to_int64() == 1); // 1*1 = 1
 
     std::cout << "  (x+1) * (x+2) = x^2 + 3x + 2" << std::endl;
-    std::cout << "  Result: " << h[2].to_int64() << "x^2 + "
-              << h[1].to_int64() << "x + " << h[0].to_int64() << std::endl;
+    std::cout << "  Result: " << h[2].to_int64() << "x^2 + " << h[1].to_int64() << "x + "
+              << h[0].to_int64() << std::endl;
     std::cout << "  PASSED" << std::endl;
 }
 
@@ -116,7 +116,7 @@ void test_stage1_candidates() {
     std::cout << "Testing Stage 1 candidate generation..." << std::endl;
 
     // 使用一个小的半素数进行测试
-    Integer n("1000000007");  // 一个大素数
+    Integer n("1000000007"); // 一个大素数
 
     KleinjungParams params;
     params.degree = 3;
@@ -149,7 +149,7 @@ void test_compare_with_basem() {
     // 这里用两个素数的乘积
     Integer p1("1000000007");
     Integer p2("1000000009");
-    Integer n = p1 * p2;  // ~60位
+    Integer n = p1 * p2; // ~60位
 
     std::cout << "  n = " << n.to_string() << std::endl;
     std::cout << "  n has " << n.num_digits() << " digits" << std::endl;
@@ -174,12 +174,13 @@ void test_compare_with_basem() {
     KleinjungSelector selector(params);
 
     // 设置进度回调
-    selector.set_progress_callback([](size_t current, size_t total, double best, const char* stage) {
-        if (current % 5 == 0 || current == total) {
-            std::cout << "    " << stage << ": " << current << "/" << total
-                      << " (best E = " << best << ")" << std::endl;
-        }
-    });
+    selector.set_progress_callback(
+        [](size_t current, size_t total, double best, const char* stage) {
+            if (current % 5 == 0 || current == total) {
+                std::cout << "    " << stage << ": " << current << "/" << total
+                          << " (best E = " << best << ")" << std::endl;
+            }
+        });
 
     auto kleinjung_result = selector.select(n);
 
@@ -211,7 +212,7 @@ void test_cancellation() {
     params.degree = 5;
     params.leading_coeff_bound = 100;
     params.num_candidates = 100;
-    params.parallel = false;  // 串行以便测试取消
+    params.parallel = false; // 串行以便测试取消
     // 快速 Murphy 参数（测取消机制，不需精确评分）
     params.murphy_params.alpha_bound = 50;
     params.murphy_params.sample_points = 100;
@@ -238,7 +239,7 @@ void test_cancellation() {
 void test_progress_callback() {
     std::cout << "Testing progress callback..." << std::endl;
 
-    Integer n("10000000019");  // 素数
+    Integer n("10000000019"); // 素数
 
     KleinjungParams params;
     params.degree = 3;
@@ -272,9 +273,9 @@ void test_polynomial_optimizer() {
 
     // 测试 estimate_skewness
     std::vector<Integer> coeffs;
-    coeffs.push_back(Integer(1000000));  // c_0
+    coeffs.push_back(Integer(1000000)); // c_0
     coeffs.push_back(Integer(static_cast<int64_t>(0)));
-    coeffs.push_back(Integer(1));         // c_2
+    coeffs.push_back(Integer(1)); // c_2
     IntPolynomial f(std::move(coeffs));
 
     double skew = PolynomialOptimizer::estimate_skewness(f);
@@ -298,9 +299,9 @@ void test_newton_root() {
     // f(x) = x^2 + 2x, m=11, f(11)=143, n=143 → f(m) mod n = 0
     {
         std::vector<Integer> c;
-        c.push_back(Integer(static_cast<int64_t>(0)));  // a0 = 0
-        c.push_back(Integer(2));                         // a1 = 2
-        c.push_back(Integer(1));                         // a2 = 1
+        c.push_back(Integer(static_cast<int64_t>(0))); // a0 = 0
+        c.push_back(Integer(2));                       // a1 = 2
+        c.push_back(Integer(1));                       // a2 = 1
         IntPolynomial f(std::move(c));
         Integer n(143);
         Integer m0(11);
@@ -315,9 +316,9 @@ void test_newton_root() {
     // f(x) = x^2 - 5, m=3, f(3)=4, n=143 → 4 mod 143 ≠ 0
     {
         std::vector<Integer> c;
-        c.push_back(Integer(-5));  // a0 = -5
-        c.push_back(Integer(static_cast<int64_t>(0)));   // a1 = 0
-        c.push_back(Integer(1));   // a2 = 1
+        c.push_back(Integer(-5));                      // a0 = -5
+        c.push_back(Integer(static_cast<int64_t>(0))); // a1 = 0
+        c.push_back(Integer(1));                       // a2 = 1
         IntPolynomial f(std::move(c));
         Integer n(143);
         Integer m0(3);
@@ -340,11 +341,11 @@ void test_newton_root() {
     // Newton 精确收敛到 x=11，f(11)=0 ≡ 0 mod 143
     {
         std::vector<Integer> c;
-        c.push_back(Integer(-11));  // a0 = -11
-        c.push_back(Integer(1));    // a1 = 1
+        c.push_back(Integer(-11)); // a0 = -11
+        c.push_back(Integer(1));   // a1 = 1
         IntPolynomial f(std::move(c));
         Integer n(143);
-        Integer m0(15);  // 起点偏离
+        Integer m0(15); // 起点偏离
 
         auto result = PolynomialOptimizer::newton_root(f, m0, n);
         TEST_ASSERT(result.has_value());
@@ -378,10 +379,8 @@ void test_from_gnfs_params() {
         TEST_ASSERT(kp.leading_coeff_bound >= 10000);
         TEST_ASSERT(kp.search_radius >= 100);
         TEST_ASSERT(kp.num_candidates >= 1000);
-        std::cout << "  25-digit: degree=" << kp.degree
-                  << " lcb=" << kp.leading_coeff_bound
-                  << " radius=" << kp.search_radius
-                  << " cands=" << kp.num_candidates << std::endl;
+        std::cout << "  25-digit: degree=" << kp.degree << " lcb=" << kp.leading_coeff_bound
+                  << " radius=" << kp.search_radius << " cands=" << kp.num_candidates << std::endl;
     }
 
     // 80-digit (264 bits): degree=3, 参数应远大于 25-digit
@@ -392,10 +391,8 @@ void test_from_gnfs_params() {
         TEST_ASSERT(kp.search_radius > 100);
         TEST_ASSERT(kp.num_candidates >= 1000);
         TEST_ASSERT(kp.murphy_params.smoothness_bound == gp.algebraic_bound);
-        std::cout << "  80-digit: degree=" << kp.degree
-                  << " lcb=" << kp.leading_coeff_bound
-                  << " radius=" << kp.search_radius
-                  << " cands=" << kp.num_candidates
+        std::cout << "  80-digit: degree=" << kp.degree << " lcb=" << kp.leading_coeff_bound
+                  << " radius=" << kp.search_radius << " cands=" << kp.num_candidates
                   << " alpha_bound=" << kp.murphy_params.alpha_bound << std::endl;
     }
 
@@ -405,10 +402,8 @@ void test_from_gnfs_params() {
         auto kp = KleinjungParams::from_gnfs_params(gp);
         TEST_ASSERT(kp.degree >= 4);
         TEST_ASSERT(kp.leading_coeff_bound > 10000);
-        std::cout << "  100-digit: degree=" << kp.degree
-                  << " lcb=" << kp.leading_coeff_bound
-                  << " radius=" << kp.search_radius
-                  << " cands=" << kp.num_candidates << std::endl;
+        std::cout << "  100-digit: degree=" << kp.degree << " lcb=" << kp.leading_coeff_bound
+                  << " radius=" << kp.search_radius << " cands=" << kp.num_candidates << std::endl;
     }
 
     // 参数单调性: 更大的 N → 更大的 leading_coeff_bound
@@ -419,8 +414,8 @@ void test_from_gnfs_params() {
         TEST_ASSERT(kp80.leading_coeff_bound >= kp50.leading_coeff_bound);
         TEST_ASSERT(kp100.leading_coeff_bound >= kp80.leading_coeff_bound);
         std::cout << "  Monotonicity: lcb 50d=" << kp50.leading_coeff_bound
-                  << " 80d=" << kp80.leading_coeff_bound
-                  << " 100d=" << kp100.leading_coeff_bound << " ✓" << std::endl;
+                  << " 80d=" << kp80.leading_coeff_bound << " 100d=" << kp100.leading_coeff_bound
+                  << " ✓" << std::endl;
     }
 
     std::cout << "  PASSED" << std::endl;
@@ -431,8 +426,8 @@ void test_kleinjung_25digit_forced_degree5() {
     std::cout << "Testing Kleinjung with 25-digit, forced degree=5..." << std::endl;
 
     // 25-digit semiprime
-    Integer p1("7654321098765432111");    // 19 digits
-    Integer p2("123457");                  // 6 digits
+    Integer p1("7654321098765432111"); // 19 digits
+    Integer p2("123457");              // 6 digits
     Integer n = p1 * p2;
     std::cout << "  n = " << n.to_string() << " (" << n.num_digits() << " digits, "
               << n.bit_length() << " bits)" << std::endl;
@@ -442,13 +437,12 @@ void test_kleinjung_25digit_forced_degree5() {
     gp.degree = 5;
 
     auto kp = KleinjungParams::from_gnfs_params(gp);
-    kp.num_candidates = 200;  // 减少候选数加速测试 (默认 2500)
-    kp.murphy_params.alpha_bound = 500;  // 测试用轻量 alpha
+    kp.num_candidates = 200;            // 减少候选数加速测试 (默认 2500)
+    kp.murphy_params.alpha_bound = 500; // 测试用轻量 alpha
     kp.murphy_params.sample_points = 200;
 
     std::cout << "  Kleinjung params: lcb=" << kp.leading_coeff_bound
-              << " radius=" << kp.search_radius
-              << " cands=" << kp.num_candidates << std::endl;
+              << " radius=" << kp.search_radius << " cands=" << kp.num_candidates << std::endl;
 
     KleinjungSelector selector(kp);
     auto result = selector.select(n);
@@ -466,10 +460,9 @@ void test_kleinjung_25digit_forced_degree5() {
     TEST_ASSERT(std::isfinite(result.score.log_e_score));
     TEST_ASSERT(result.score.log_e_score > -1e50);
 
-    std::cout << "  f degree=" << result.f.degree()
-              << ", Murphy E=" << result.score.log_e_score
-              << ", skewness=" << result.skewness
-              << ", time=" << result.elapsed_seconds << "s" << std::endl;
+    std::cout << "  f degree=" << result.f.degree() << ", Murphy E=" << result.score.log_e_score
+              << ", skewness=" << result.skewness << ", time=" << result.elapsed_seconds << "s"
+              << std::endl;
 
     std::cout << "  PASSED" << std::endl;
 }
@@ -479,7 +472,7 @@ void test_dispatch_with_gnfs_params() {
     std::cout << "Testing SelectorDispatch::select(n, GNFSParams)..." << std::endl;
 
     // degree=3 走 BaseMSelector 路径（instant）
-    Integer n("9591127858580100037");  // 19-digit
+    Integer n("9591127858580100037"); // 19-digit
     auto gp = GNFSParams::compute(n.bit_length());
 
     auto ctx = SelectorDispatch::select(n, gp);
@@ -515,7 +508,7 @@ void test_stage1_small_n_boundaries() {
         params.degree = 3;
         params.leading_coeff_bound = 5;
         params.num_candidates = 1;
-        params.search_radius = 100;  // 远大于 m_est ≈ 2
+        params.search_radius = 100; // 远大于 m_est ≈ 2
         params.murphy_params.sample_points = 50;
         params.murphy_params.alpha_bound = 50;
         KleinjungSelector selector(params);
@@ -547,9 +540,9 @@ void test_stage1_small_n_boundaries() {
         Integer n("1000000007");
         KleinjungParams params;
         params.degree = 3;
-        params.leading_coeff_bound = 1;  // 强制 ad=1
+        params.leading_coeff_bound = 1; // 强制 ad=1
         params.num_candidates = 1;
-        params.search_radius = 0;  // 单点
+        params.search_radius = 0; // 单点
         params.murphy_params.sample_points = 50;
         params.murphy_params.alpha_bound = 50;
         KleinjungSelector selector(params);

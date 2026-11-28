@@ -37,11 +37,11 @@
 
 using gnfs::core::Integer;
 using gnfs::core::PolynomialContext;
-using gnfs::linalg::SchirokaurConfig;
-using gnfs::linalg::SchirokaurMap;
 using gnfs::linalg::compute_schirokauer_flat_batch;
 using gnfs::linalg::schirokauer_threads;
 using gnfs::linalg::schirokauer_threads_reset_env_cache_for_testing;
+using gnfs::linalg::SchirokaurConfig;
+using gnfs::linalg::SchirokaurMap;
 using gnfs::test::run_case;
 
 namespace {
@@ -76,10 +76,9 @@ SchirokaurMap build_test_map(const PolynomialContext& ctx) {
 // test_pairs in test_schirokauer_deg4.cpp.
 std::vector<ABPair> make_small_batch() {
     return {
-        {1, 1}, {3, 2}, {7, 1}, {-1, 4}, {11, 3}, {-5, 2},
-        {100, 7}, {-33, 11}, {999, 1}, {1, 999},
-        {4095, 2047}, {-4095, 2047}, {1, 2}, {3, 4}, {5, 6},
-        {17, 5}, {-23, 9}, {41, 13}, {-67, 21}, {89, 1},
+        {1, 1},    {3, 2},   {7, 1},   {-1, 4},      {11, 3},       {-5, 2}, {100, 7},
+        {-33, 11}, {999, 1}, {1, 999}, {4095, 2047}, {-4095, 2047}, {1, 2},  {3, 4},
+        {5, 6},    {17, 5},  {-23, 9}, {41, 13},     {-67, 21},     {89, 1},
     };
 }
 
@@ -90,9 +89,10 @@ std::vector<ABPair> make_large_batch(std::size_t n) {
     std::vector<ABPair> out;
     out.reserve(n);
     for (std::size_t i = 0; i < n; ++i) {
-        int64_t a = static_cast<int64_t>(2 * i + 1);  // always odd → coprime to ℓ=2
-        uint64_t b = static_cast<uint64_t>(((i * 7) % 113) + 1);  // 1..113
-        if ((b & 1u) == 0u) b += 1;  // also force b odd
+        int64_t a = static_cast<int64_t>(2 * i + 1);             // always odd → coprime to ℓ=2
+        uint64_t b = static_cast<uint64_t>(((i * 7) % 113) + 1); // 1..113
+        if ((b & 1u) == 0u)
+            b += 1; // also force b odd
         out.emplace_back(a, b);
     }
     return out;
@@ -100,35 +100,37 @@ std::vector<ABPair> make_large_batch(std::size_t n) {
 
 bool flat_vectors_equal(const std::vector<std::vector<uint32_t>>& a,
                         const std::vector<std::vector<uint32_t>>& b) {
-    if (a.size() != b.size()) return false;
+    if (a.size() != b.size())
+        return false;
     for (std::size_t i = 0; i < a.size(); ++i) {
-        if (a[i].size() != b[i].size()) return false;
+        if (a[i].size() != b[i].size())
+            return false;
         for (std::size_t j = 0; j < a[i].size(); ++j) {
-            if (a[i][j] != b[i][j]) return false;
+            if (a[i][j] != b[i][j])
+                return false;
         }
     }
     return true;
 }
 
-void print_mismatch(const std::vector<ABPair>& pairs,
-                    const std::vector<std::vector<uint32_t>>& seq,
-                    const std::vector<std::vector<uint32_t>>& par,
-                    const char* label) {
+void print_mismatch(const std::vector<ABPair>& pairs, const std::vector<std::vector<uint32_t>>& seq,
+                    const std::vector<std::vector<uint32_t>>& par, const char* label) {
     std::cerr << "MISMATCH (" << label << "): batch size " << pairs.size()
-              << ", seq.size()=" << seq.size() << " par.size()=" << par.size()
-              << std::endl;
+              << ", seq.size()=" << seq.size() << " par.size()=" << par.size() << std::endl;
     std::size_t shown = 0;
     for (std::size_t i = 0; i < pairs.size() && shown < 5; ++i) {
         if (i >= seq.size() || i >= par.size() || seq[i] != par[i]) {
-            std::cerr << "  i=" << i << " (a=" << pairs[i].first << ", b="
-                      << pairs[i].second << ") seq=[";
+            std::cerr << "  i=" << i << " (a=" << pairs[i].first << ", b=" << pairs[i].second
+                      << ") seq=[";
             for (std::size_t j = 0; j < seq[i].size(); ++j) {
-                if (j) std::cerr << ',';
+                if (j)
+                    std::cerr << ',';
                 std::cerr << seq[i][j];
             }
             std::cerr << "] par=[";
             for (std::size_t j = 0; j < par[i].size(); ++j) {
-                if (j) std::cerr << ',';
+                if (j)
+                    std::cerr << ',';
                 std::cerr << par[i][j];
             }
             std::cerr << "]" << std::endl;
@@ -186,8 +188,8 @@ void test_baseline_n1_matches_per_call() {
         }
     }
     clear_env();
-    std::cout << "  baseline N=1: PASSED (" << pairs.size() << " pairs, "
-              << batch[0].size() << " columns/row)" << std::endl;
+    std::cout << "  baseline N=1: PASSED (" << pairs.size() << " pairs, " << batch[0].size()
+              << " columns/row)" << std::endl;
 }
 
 // 2. Parity N=1 vs N=4: bit-for-bit per cell.
@@ -215,7 +217,8 @@ void test_parity_n1_vs_n4() {
 void test_parity_n1_vs_hw() {
     std::cout << "Testing parity N=1 vs N=hw_concurrency (large batch)..." << std::endl;
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::string hw_str = std::to_string(hw);
 
     auto ctx = build_test_ctx();
@@ -233,8 +236,8 @@ void test_parity_n1_vs_hw() {
         std::abort();
     }
     clear_env();
-    std::cout << "  parity N=1 vs N=" << hw << ": PASSED ("
-              << pairs.size() << " pairs)" << std::endl;
+    std::cout << "  parity N=1 vs N=" << hw << ": PASSED (" << pairs.size() << " pairs)"
+              << std::endl;
 }
 
 // 4. ENV parsing across all documented forms.
@@ -244,32 +247,28 @@ void test_env_parsing() {
     // unset → 1
     set_env(nullptr);
     if (schirokauer_threads() != 1) {
-        std::cerr << "  ERROR: unset → expected 1, got "
-                  << schirokauer_threads() << std::endl;
+        std::cerr << "  ERROR: unset → expected 1, got " << schirokauer_threads() << std::endl;
         std::abort();
     }
 
     // empty string → 1
     set_env("");
     if (schirokauer_threads() != 1) {
-        std::cerr << "  ERROR: \"\" → expected 1, got "
-                  << schirokauer_threads() << std::endl;
+        std::cerr << "  ERROR: \"\" → expected 1, got " << schirokauer_threads() << std::endl;
         std::abort();
     }
 
     // "0" → 1 (treated as invalid <=0)
     set_env("0");
     if (schirokauer_threads() != 1) {
-        std::cerr << "  ERROR: \"0\" → expected 1, got "
-                  << schirokauer_threads() << std::endl;
+        std::cerr << "  ERROR: \"0\" → expected 1, got " << schirokauer_threads() << std::endl;
         std::abort();
     }
 
     // "1" → 1
     set_env("1");
     if (schirokauer_threads() != 1) {
-        std::cerr << "  ERROR: \"1\" → expected 1, got "
-                  << schirokauer_threads() << std::endl;
+        std::cerr << "  ERROR: \"1\" → expected 1, got " << schirokauer_threads() << std::endl;
         std::abort();
     }
 
@@ -278,12 +277,13 @@ void test_env_parsing() {
     // both paths).
     set_env("8");
     unsigned int hw = std::thread::hardware_concurrency();
-    if (hw == 0) hw = 4;
+    if (hw == 0)
+        hw = 4;
     std::size_t cap = static_cast<std::size_t>(hw) * 2;
     std::size_t expect_8 = (cap < 8) ? cap : 8;
     if (schirokauer_threads() != expect_8) {
-        std::cerr << "  ERROR: \"8\" → expected " << expect_8 << ", got "
-                  << schirokauer_threads() << std::endl;
+        std::cerr << "  ERROR: \"8\" → expected " << expect_8 << ", got " << schirokauer_threads()
+                  << std::endl;
         std::abort();
     }
 
@@ -291,16 +291,15 @@ void test_env_parsing() {
     // none → 0 → treated as invalid → 1).
     set_env("garbage");
     if (schirokauer_threads() != 1) {
-        std::cerr << "  ERROR: \"garbage\" → expected 1, got "
-                  << schirokauer_threads() << std::endl;
+        std::cerr << "  ERROR: \"garbage\" → expected 1, got " << schirokauer_threads()
+                  << std::endl;
         std::abort();
     }
 
     // "-5" → 1 (negative is invalid).
     set_env("-5");
     if (schirokauer_threads() != 1) {
-        std::cerr << "  ERROR: \"-5\" → expected 1, got "
-                  << schirokauer_threads() << std::endl;
+        std::cerr << "  ERROR: \"-5\" → expected 1, got " << schirokauer_threads() << std::endl;
         std::abort();
     }
 
@@ -403,13 +402,12 @@ void test_perf_info() {
     std::cout << "  PASSED (info-only, no speedup assert)" << std::endl;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     int failed = 0;
 
-    std::cout << "=== Schirokauer Parallel Dispatch Tests ===" << std::endl
-              << std::endl;
+    std::cout << "=== Schirokauer Parallel Dispatch Tests ===" << std::endl << std::endl;
 
     // Tests intentionally reset the env between cases via clear_env().
     failed += !run_case(test_baseline_n1_matches_per_call);
@@ -425,7 +423,6 @@ int main() {
         return 1;
     }
 
-    std::cout << std::endl
-              << "=== All Schirokauer Parallel Tests PASSED ===" << std::endl;
+    std::cout << std::endl << "=== All Schirokauer Parallel Tests PASSED ===" << std::endl;
     return 0;
 }

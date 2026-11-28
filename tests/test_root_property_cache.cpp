@@ -25,44 +25,41 @@ using gnfs::polynomial::RootPropertyCache;
 
 namespace {
 
-#define EXPECT_TRUE(cond)                                                       \
-    do {                                                                        \
-        if (!(cond)) {                                                          \
-            std::cerr << "FAIL: " << #cond << " at " << __FILE__ << ":"         \
-                      << __LINE__ << std::endl;                                 \
-            std::exit(1);                                                       \
-        }                                                                       \
+#define EXPECT_TRUE(cond)                                                                          \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "FAIL: " << #cond << " at " << __FILE__ << ":" << __LINE__ << std::endl;  \
+            std::exit(1);                                                                          \
+        }                                                                                          \
     } while (0)
 
-#define EXPECT_EQ(a, b)                                                         \
-    do {                                                                        \
-        auto _va = (a);                                                         \
-        auto _vb = (b);                                                         \
-        if (!(_va == _vb)) {                                                    \
-            std::cerr << "FAIL: " << #a << " == " << #b << " (" << _va          \
-                      << " vs " << _vb << ") at " << __FILE__ << ":"            \
-                      << __LINE__ << std::endl;                                 \
-            std::exit(1);                                                       \
-        }                                                                       \
+#define EXPECT_EQ(a, b)                                                                            \
+    do {                                                                                           \
+        auto _va = (a);                                                                            \
+        auto _vb = (b);                                                                            \
+        if (!(_va == _vb)) {                                                                       \
+            std::cerr << "FAIL: " << #a << " == " << #b << " (" << _va << " vs " << _vb << ") at " \
+                      << __FILE__ << ":" << __LINE__ << std::endl;                                 \
+            std::exit(1);                                                                          \
+        }                                                                                          \
     } while (0)
 
-#define EXPECT_DOUBLE_CLOSE(a, b, tol)                                          \
-    do {                                                                        \
-        double _va = (a);                                                       \
-        double _vb = (b);                                                       \
-        if (!(std::isfinite(_va) && std::isfinite(_vb)                          \
-              && std::fabs(_va - _vb) <= (tol))) {                              \
-            std::cerr << "FAIL: " << #a << " ≈ " << #b << " (" << _va           \
-                      << " vs " << _vb << ", tol=" << (tol) << ") at "          \
-                      << __FILE__ << ":" << __LINE__ << std::endl;              \
-            std::exit(1);                                                       \
-        }                                                                       \
+#define EXPECT_DOUBLE_CLOSE(a, b, tol)                                                             \
+    do {                                                                                           \
+        double _va = (a);                                                                          \
+        double _vb = (b);                                                                          \
+        if (!(std::isfinite(_va) && std::isfinite(_vb) && std::fabs(_va - _vb) <= (tol))) {        \
+            std::cerr << "FAIL: " << #a << " ≈ " << #b << " (" << _va << " vs " << _vb             \
+                      << ", tol=" << (tol) << ") at " << __FILE__ << ":" << __LINE__ << std::endl; \
+            std::exit(1);                                                                          \
+        }                                                                                          \
     } while (0)
 
 IntPolynomial poly(std::initializer_list<int64_t> coeffs) {
     std::vector<Integer> v;
     v.reserve(coeffs.size());
-    for (int64_t c : coeffs) v.emplace_back(c);
+    for (int64_t c : coeffs)
+        v.emplace_back(c);
     return IntPolynomial(std::move(v));
 }
 
@@ -178,7 +175,8 @@ void test_concurrent_mt() {
             }
         });
     }
-    for (auto& th : threads) th.join();
+    for (auto& th : threads)
+        th.join();
 
     EXPECT_EQ(mismatch.load(), size_t{0});
     EXPECT_EQ(cache.size(), NUM_THREADS * OPS_PER_THREAD);
@@ -195,9 +193,11 @@ void test_stat_counters() {
     cache.insert(3u, 1ULL, 0.0);
 
     // 5 hits.
-    for (int i = 0; i < 5; ++i) (void)cache.lookup(2u, 1ULL);
+    for (int i = 0; i < 5; ++i)
+        (void)cache.lookup(2u, 1ULL);
     // 7 misses.
-    for (uint32_t i = 0; i < 7u; ++i) (void)cache.lookup(100u + i, 1ULL);
+    for (uint32_t i = 0; i < 7u; ++i)
+        (void)cache.lookup(100u + i, 1ULL);
 
     EXPECT_EQ(cache.hit_count(), size_t{5});
     EXPECT_EQ(cache.miss_count(), size_t{7});
@@ -265,11 +265,11 @@ void test_disabled_mode() {
 // cache disambiguates via the (p, hash) tuple, not via the hash alone.
 void test_hash_stability() {
     std::cout << "test_hash_stability ... " << std::flush;
-    IntPolynomial f = poly({1, 2, 3, 4, 5});  // 1 + 2x + 3x^2 + 4x^3 + 5x^4
+    IntPolynomial f = poly({1, 2, 3, 4, 5}); // 1 + 2x + 3x^2 + 4x^3 + 5x^4
     const uint32_t p = 17;
     const uint64_t h1 = RootPropertyCache::hash_coeffs_mod_p(f, p);
     const uint64_t h2 = RootPropertyCache::hash_coeffs_mod_p(f, p);
-    EXPECT_EQ(h1, h2);  // determinism
+    EXPECT_EQ(h1, h2); // determinism
 
     // Rotation invariant: adding p·x to f leaves f mod p unchanged.
     IntPolynomial f_rot = poly({1, 2 + 17, 3, 4, 5});
@@ -279,15 +279,15 @@ void test_hash_stability() {
     // Distinct mod-p residues yield distinct hashes (with overwhelming
     // probability for FNV-1a; here we choose f differing in a single
     // small coefficient so the residues are guaranteed to differ).
-    IntPolynomial f_diff = poly({1, 2 + 1, 3, 4, 5});  // coeff[1] off by 1
+    IntPolynomial f_diff = poly({1, 2 + 1, 3, 4, 5}); // coeff[1] off by 1
     const uint64_t h_diff = RootPropertyCache::hash_coeffs_mod_p(f_diff, p);
     EXPECT_TRUE(h1 != h_diff);
 
     // Polynomials of different degree with otherwise identical residues
     // must not collide (degree mixed into the hash tail).
-    IntPolynomial f_lower_deg = poly({1, 2, 3, 4});  // degree 3
+    IntPolynomial f_lower_deg = poly({1, 2, 3, 4}); // degree 3
     const uint64_t h_lower = RootPropertyCache::hash_coeffs_mod_p(f_lower_deg, p);
-    IntPolynomial f_same_deg_zero_top = poly({1, 2, 3, 4, 0, 1});  // degree 5, leading=1
+    IntPolynomial f_same_deg_zero_top = poly({1, 2, 3, 4, 0, 1}); // degree 5, leading=1
     const uint64_t h_same_deg = RootPropertyCache::hash_coeffs_mod_p(f_same_deg_zero_top, p);
     EXPECT_TRUE(h_lower != h_same_deg);
     std::cout << "PASS\n";
@@ -303,7 +303,7 @@ void test_alpha_identity_cache_off_vs_on() {
     std::cout << "test_alpha_identity_cache_off_vs_on ... " << std::flush;
 
     MurphyParams params;
-    params.alpha_bound = 1000;  // ~168 primes; quick but representative
+    params.alpha_bound = 1000; // ~168 primes; quick but representative
 
     // Build evaluator with cache disabled by forcing capacity=0 path.
     // We cannot easily flip env mid-process (std::call_once), so we
@@ -349,8 +349,7 @@ void test_alpha_identity_cache_off_vs_on() {
     if (cache_active) {
         const auto& c = evaluator.root_cache();
         EXPECT_TRUE(c.hit_count() > 0);
-        std::cerr << "  cache hits=" << c.hit_count()
-                  << " misses=" << c.miss_count()
+        std::cerr << "  cache hits=" << c.hit_count() << " misses=" << c.miss_count()
                   << " rate=" << (100.0 * c.hit_rate()) << "%\n";
     } else {
         std::cerr << "  cache disabled (env not set), only invariance verified\n";
@@ -376,7 +375,7 @@ void test_cache_does_not_change_value() {
         return;
     }
 
-    IntPolynomial f = poly({1, 2, 0, -3, 0, 1});  // mixed-sign quintic
+    IntPolynomial f = poly({1, 2, 0, -3, 0, 1}); // mixed-sign quintic
 
     const double cold = evaluator.compute_alpha(f);
     const size_t misses_cold = evaluator.root_cache().miss_count();
@@ -387,8 +386,8 @@ void test_cache_does_not_change_value() {
     EXPECT_TRUE(hits_warm > 0);
 
     EXPECT_DOUBLE_CLOSE(cold, warm, 1e-12);
-    std::cout << "PASS (cold=" << cold << " warm=" << warm
-              << " misses=" << misses_cold << " hits=" << hits_warm << ")\n";
+    std::cout << "PASS (cold=" << cold << " warm=" << warm << " misses=" << misses_cold
+              << " hits=" << hits_warm << ")\n";
 }
 
 // Test 12: rotation-equivalent polynomials share cache slots and produce
@@ -420,22 +419,23 @@ void test_rotation_hit_rate() {
     polys.push_back(poly({1, -1 + 3, 0, 0, 0, 1}));
     polys.push_back(poly({1, -1 + 5, 0, 0, 0, 1}));
 
-    for (const auto& f : polys) (void)evaluator.compute_alpha(f);
+    for (const auto& f : polys)
+        (void)evaluator.compute_alpha(f);
     const size_t misses_first = evaluator.root_cache().miss_count();
     const size_t hits_first = evaluator.root_cache().hit_count();
 
     // Second sweep: all results are now cached.
-    for (const auto& f : polys) (void)evaluator.compute_alpha(f);
+    for (const auto& f : polys)
+        (void)evaluator.compute_alpha(f);
     const size_t hits_second = evaluator.root_cache().hit_count();
 
     EXPECT_TRUE(hits_second > hits_first);
     EXPECT_TRUE(evaluator.root_cache().miss_count() == misses_first);
-    std::cout << "PASS (first_misses=" << misses_first
-              << " first_hits=" << hits_first
+    std::cout << "PASS (first_misses=" << misses_first << " first_hits=" << hits_first
               << " second_hits=" << hits_second << ")\n";
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     std::cout << "=== RootPropertyCache tests ===\n";

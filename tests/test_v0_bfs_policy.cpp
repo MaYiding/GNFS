@@ -16,9 +16,9 @@
 #include <iostream>
 #include <string_view>
 
-using gnfs::relation::V0BfsPolicy;
 using gnfs::relation::decide_v0_bfs_policy;
 using gnfs::relation::estimate_lp_bits;
+using gnfs::relation::V0BfsPolicy;
 using gnfs::test::run_case;
 
 void test_env_unset_small_lp() {
@@ -94,13 +94,14 @@ void test_env_explicit_on_large_lp() {
 }
 
 void test_env_explicit_on_small_lp_fallback() {
-    std::cout << "Testing GNFS_V0_BFS=1 + lp_bits<22 (force-on FAILS, size gate enforces)..." << std::endl;
+    std::cout << "Testing GNFS_V0_BFS=1 + lp_bits<22 (force-on FAILS, size gate enforces)..."
+              << std::endl;
     // 25d: lp_bits=20, ENV="1" → OFF + env_force_failed=true.
     // 这是 V0_BFS 与 OOC 的关键差异: OOC 允许 small N force-on (no algorithmic
     // 失败 risk), V0_BFS 在 small LP space BFS 把 matrix 弄坏, 必须 fallback.
     V0BfsPolicy p20 = decide_v0_bfs_policy("1", uint64_t(1) << 20);
-    TEST_ASSERT(p20.enabled == false);  // <-- still off!
-    TEST_ASSERT(p20.env_force_failed == true);  // <-- but fallback signal set
+    TEST_ASSERT(p20.enabled == false);         // <-- still off!
+    TEST_ASSERT(p20.env_force_failed == true); // <-- but fallback signal set
     TEST_ASSERT(p20.reason ==
                 std::string_view("GNFS_V0_BFS=1 but lp_bits<22 (fallback to V0 standard)"));
     // 21-bit: same
