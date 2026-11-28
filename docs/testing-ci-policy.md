@@ -376,7 +376,12 @@ bootstrap packages from replacing the runtime pins. It configures the build with
 `GNFS_ENABLE_NTL=OFF`, derives the four-DLL closure with `ldd`, launches the
 packaged CLI with `/ucrt64/bin` removed from `PATH`, creates the deterministic
 ZIP, and validates its package, license, DLL, and corresponding-source
-manifest. These jobs are distinct from ordinary platform test rows: they prove
+manifest. Both jobs then run `scripts/release_smoke.py`, which performs three
+real factorizations with the release-configured binary: `360` with
+`--complete`, a 30-digit semiprime that the default route factors with SIQS,
+and a 25-digit semiprime forced through the GNFS pipeline. The Windows run
+starts the packaged `gnfs.exe` with `PATH` limited to the Windows system
+directories. These jobs are distinct from ordinary platform test rows: they prove
 release distribution and toolchain boundaries rather than duplicating unit-
 test selection.
 
