@@ -8,8 +8,8 @@
 //   5. Config parse/serialize round-trip for method field
 //   6. Edge cases (prime input, perfect power, tiny N)
 
-#include <gnfs/api/factorizer.hpp>
 #include <gnfs/api/config.hpp>
+#include <gnfs/api/factorizer.hpp>
 #include <gnfs/api/pipeline.hpp>
 #include <gnfs/api/progress.hpp>
 #include <gnfs/api/result.hpp>
@@ -31,10 +31,15 @@ using gnfs::core::Integer;
 static int pass_count = 0;
 static int fail_count = 0;
 
-#define TEST(name) \
-    std::cout << "  " << #name << "... " << std::flush; \
-    if (run_case(test_##name())) { ++pass_count; std::cout << "OK\n"; } \
-    else { ++fail_count; std::cout << "FAILED\n"; }
+#define TEST(name)                                                                                 \
+    std::cout << "  " << #name << "... " << std::flush;                                            \
+    if (run_case([&] { return test_##name(); })) {                                                 \
+        ++pass_count;                                                                              \
+        std::cout << "OK\n";                                                                       \
+    } else {                                                                                       \
+        ++fail_count;                                                                              \
+        std::cout << "FAILED\n";                                                                   \
+    }
 
 // ============================================================
 // 1. Method selection logic tests
@@ -132,8 +137,7 @@ bool test_select_boundary_100d() {
 // ============================================================
 
 bool test_override_trial() {
-    auto [m, r] = Pipeline::select_method(332, 100,
-        FactorizationMethod::TrialDivision);
+    auto [m, r] = Pipeline::select_method(332, 100, FactorizationMethod::TrialDivision);
     TEST_ASSERT(m == FactorizationMethod::TrialDivision);
     TEST_ASSERT(r == "user specified");
     return true;
@@ -141,8 +145,7 @@ bool test_override_trial() {
 
 bool test_override_siqs() {
     // Force SIQS for small N that would normally use rho
-    auto [m, r] = Pipeline::select_method(40, 12,
-        FactorizationMethod::SIQS);
+    auto [m, r] = Pipeline::select_method(40, 12, FactorizationMethod::SIQS);
     TEST_ASSERT(m == FactorizationMethod::SIQS);
     TEST_ASSERT(r == "user specified");
     return true;
@@ -150,8 +153,7 @@ bool test_override_siqs() {
 
 bool test_override_gnfs() {
     // Force GNFS for medium N
-    auto [m, r] = Pipeline::select_method(166, 50,
-        FactorizationMethod::GNFS);
+    auto [m, r] = Pipeline::select_method(166, 50, FactorizationMethod::GNFS);
     TEST_ASSERT(m == FactorizationMethod::GNFS);
     TEST_ASSERT(r == "user specified");
     return true;
@@ -159,8 +161,7 @@ bool test_override_gnfs() {
 
 bool test_override_auto() {
     // Auto override should behave like no override
-    auto [m1, r1] = Pipeline::select_method(166, 50,
-        FactorizationMethod::Auto);
+    auto [m1, r1] = Pipeline::select_method(166, 50, FactorizationMethod::Auto);
     auto [m2, r2] = Pipeline::select_method(166, 50);
     TEST_ASSERT(m1 == m2);
     return true;
@@ -185,8 +186,8 @@ bool test_factorize_rho_result() {
     // 13-digit semiprime, both factors > 10^6 → rho should find it
     auto result = factorize(Integer("1000036000099"));
     TEST_ASSERT(result.success);
-    TEST_ASSERT(result.stats.method_used == FactorizationMethod::PollardRho
-        || result.stats.method_used == FactorizationMethod::TrialDivision);
+    TEST_ASSERT(result.stats.method_used == FactorizationMethod::PollardRho ||
+                result.stats.method_used == FactorizationMethod::TrialDivision);
     TEST_ASSERT(result.factors.size() == 2);
     // Verify factors multiply back
     Integer check = result.factors[0].clone();
@@ -278,7 +279,7 @@ bool test_prime_input_has_stats() {
 
 bool test_perfect_power_has_stats() {
     // Perfect power: stats should have n_bits/n_digits populated
-    auto result = factorize(Integer("1024"));  // 2^10
+    auto result = factorize(Integer("1024")); // 2^10
     TEST_ASSERT(result.success);
     TEST_ASSERT(result.stats.n_bits > 0);
     TEST_ASSERT(result.stats.n_digits > 0);
@@ -307,7 +308,7 @@ bool test_forced_rho_failure() {
     // Use a composite that rho can't crack within its iteration limit
     // Actually, for forced rho with 100M iter limit, a 20-digit balanced semiprime
     // might be cracked. Use a safer test: prime detection catches it first.
-    auto result = factorize(Integer("10000000019"), cfg);  // prime
+    auto result = factorize(Integer("10000000019"), cfg); // prime
     TEST_ASSERT(!result.success);
     return true;
 }
@@ -317,8 +318,7 @@ bool test_forced_rho_failure() {
 // ============================================================
 
 bool test_config_method_builder() {
-    auto cfg = Config::auto_detect()
-        .set_method(FactorizationMethod::SIQS);
+    auto cfg = Config::auto_detect().set_method(FactorizationMethod::SIQS);
     TEST_ASSERT(cfg.method.has_value());
     TEST_ASSERT(*cfg.method == FactorizationMethod::SIQS);
     return true;
@@ -413,8 +413,7 @@ bool test_reason_contains_digit_count() {
 }
 
 bool test_reason_user_specified() {
-    auto [m, r] = Pipeline::select_method(166, 50,
-        FactorizationMethod::GNFS);
+    auto [m, r] = Pipeline::select_method(166, 50, FactorizationMethod::GNFS);
     TEST_ASSERT(r == "user specified");
     return true;
 }
@@ -535,7 +534,6 @@ int main() {
     TEST(env_disable_siqs_falls_through_to_gnfs);
     TEST(env_force_siqs_respects_user_override);
 
-    std::cout << "\n=== Results: " << pass_count << " passed, "
-              << fail_count << " failed ===\n";
+    std::cout << "\n=== Results: " << pass_count << " passed, " << fail_count << " failed ===\n";
     return fail_count > 0 ? 1 : 0;
 }

@@ -98,7 +98,7 @@ static int fail_count = 0;
 
 #define TEST(name)                                                                                 \
     std::cout << "  " << #name << "... " << std::flush;                                            \
-    if (run_case(test_##name())) {                                                                 \
+    if (run_case([&] { return test_##name(); })) {                                                 \
         ++pass_count;                                                                              \
         std::cout << "OK\n";                                                                       \
     } else {                                                                                       \

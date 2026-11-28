@@ -5659,12 +5659,12 @@ WORKER_CLEANUP_RECEIPT_PASTE_MACRO_ALLOWLIST = {
     ),
     ("tests/test_method_selection.cpp", "TEST"): (
         '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
-        'if(run_case(test_##name())){++pass_count;std::cout<<"OK\\n";}'
+        'if(run_case([&]{returntest_##name();})){++pass_count;std::cout<<"OK\\n";}'
         'else{++fail_count;std::cout<<"FAILED\\n";}'
     ),
     ("tests/test_api.cpp", "TEST"): (
         '(name)std::cout<<"  "<<#name<<"... "<<std::flush;'
-        'if(run_case(test_##name())){++pass_count;std::cout<<"OK\\n";}'
+        'if(run_case([&]{returntest_##name();})){++pass_count;std::cout<<"OK\\n";}'
         'else{++fail_count;std::cout<<"FAILED\\n";}'
     ),
     ("tests/test_full_resume.cpp", "RUN_TEST"): (
