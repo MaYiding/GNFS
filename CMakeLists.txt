@@ -3805,8 +3805,15 @@ if(GNFS_BUILD_TESTS)
     # end-to-end tests, so that each CI round links and runs the product
     # configuration, and the benchmarks and stress runs, so that their Release
     # records stay comparable with the earlier records, which came from
-    # LTO-linked binaries. A new benchmark belongs here. An unknown name is an
-    # error: a renamed test must not drop out of LTO silently.
+    # LTO-linked binaries. An end-to-end test exists to run the pipeline from
+    # the sieve to the square root on a real composite. A benchmark exists to
+    # report timings that a later run compares. A test of either kind belongs
+    # here whatever its name says; test_25digit is the performance test of the
+    # perf mode in scripts/test.sh. A test that stops after one or two phases,
+    # such as the checkpoint resume test, a test that only prints
+    # informational timings, and a test that calls the API for another purpose
+    # stay out. An unknown name is an error: a renamed test must not drop out
+    # of LTO silently.
     set(GNFS_LTO_TEST_TARGETS
         test_gnfs_e2e
         test_regression_gate
@@ -3814,8 +3821,11 @@ if(GNFS_BUILD_TESTS)
         test_api
         test_kleinjung_large
         test_siqs_e2e
+        test_schirokauer_non_monic_e2e
+        test_non_monic_matrix_constraints_e2e
         test_structured_filter_pipeline_120bit
         test_structured_ooc_50d_probe
+        test_25digit
         test_trial_wheel_bench
         test_batch_ecm_bench
         test_cofactor_batch_bench
