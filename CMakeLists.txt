@@ -2683,6 +2683,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SchirokauerParallel COMMAND test_schirokauer_parallel)
     set_tests_properties(SchirokauerParallel PROPERTIES LABELS "instant" TIMEOUT 60)
 
+    # Schirokauer columns of a linear factor against an exact 2-adic reference:
+    # the default exponent covers every valuation up to 37, k = 8 falls back
+    # from 7 on, and columns without a fallback do not depend on k.
+    add_executable(test_schirokauer_precision
+        tests/test_schirokauer_precision.cpp
+    )
+    target_link_libraries(test_schirokauer_precision PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SchirokauerPrecision COMMAND test_schirokauer_precision)
+    set_tests_properties(SchirokauerPrecision PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Factor base CZ root-finding per-prime parallel dispatcher (GNFS_FB_ROOTS_THREADS)
     add_executable(test_fb_roots_parallel
         tests/test_fb_roots_parallel.cpp
@@ -3030,6 +3040,16 @@ if(GNFS_BUILD_TESTS)
     target_link_libraries(test_schirokauer_non_monic_e2e PRIVATE gnfs_core Threads::Threads)
     add_test(NAME SchirokauerNonMonicE2E COMMAND test_schirokauer_non_monic_e2e)
     set_tests_properties(SchirokauerNonMonicE2E PROPERTIES LABELS "slow" TIMEOUT 300)
+
+    # Production Pipeline::run() on a 25-digit semiprime whose selected
+    # polynomial has a linear factor modulo 2. The factors must be recovered
+    # with zero Schirokauer precision fallbacks.
+    add_executable(test_schirokauer_precision_e2e
+        tests/test_schirokauer_precision_e2e.cpp
+    )
+    target_link_libraries(test_schirokauer_precision_e2e PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME SchirokauerPrecisionE2E COMMAND test_schirokauer_precision_e2e)
+    set_tests_properties(SchirokauerPrecisionE2E PROPERTIES LABELS "fast" TIMEOUT 180)
 
     # Non-monic matrix constraints end to end: one pair-parity column when the
     # leading coefficient is not a square, and no Schirokauer column when 2

@@ -180,6 +180,19 @@ and the odd non-square cubic `7x^3 + 58x^2 + 213x + 143` with `m = 240` must
 factor 100160063. Each matrix must carry the pair-parity column, and the even
 fixture must also have no Schirokauer column. The Linux Release deep gate runs
 it.
+`SchirokauerPrecision` is an instant contract for the column of a linear
+factor. An exact `Integer` reference lifts the root of the factor to modulo
+2^64 by Newton iteration and reads bit v+1 of a - b·r directly, with
+v = v₂(a - b·r). Pairs that cover every valuation from 0 to 37 with both column
+values must match the reference at the default exponent with zero precision
+fallbacks. The former default `k = 8` must report one fallback for every pair
+with v ≥ 7 while the reference column is 1 for half of them, and pairs without
+a fallback must carry identical columns at both exponents.
+`SchirokauerPrecisionE2E` is a `fast` end-to-end contract on the 25-digit
+semiprime 1869045589843040925386929, whose selected polynomial has a linear
+factor modulo 2. `Pipeline::run()` must recover both primes and report zero
+precision fallbacks. The test also prints the degenerate-row count of the
+matrix phase.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,
