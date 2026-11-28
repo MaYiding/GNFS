@@ -50,6 +50,7 @@
 // so the record tells a factorization by one dependency from one that needed
 // a pair.
 
+#include "support/ladder_diagnostics.hpp"
 #include "support/scoped_environment_stderr.hpp"
 #include "support/test_check.hpp"
 
@@ -73,7 +74,6 @@
 #include <locale>
 #include <memory>
 #include <mutex>
-#include <numeric>
 #include <optional>
 #include <ostream>
 #include <sstream>
@@ -89,13 +89,15 @@ using gnfs::api::FactorizationMethod;
 using gnfs::api::FactorResult;
 using gnfs::api::FactorStats;
 using gnfs::api::LogEntry;
-using gnfs::api::LogLevel;
 using gnfs::api::Phase;
 using gnfs::api::Pipeline;
 using gnfs::api::ProgressInfo;
 using gnfs::core::Integer;
 using gnfs::core::PolynomialContext;
 using gnfs::tests::support::ScopedEnvironmentVariable;
+
+// The pure helpers behind the diagnostics of the record.
+namespace diag = gnfs::tests::support;
 
 namespace {
 
@@ -105,22 +107,8 @@ constexpr std::string_view kStructuredMatrixRecordPrefix = "structured_filter_ma
 // Phase::LinearAlgebra starts with the matrix build. This progress event is
 // the first one that the dependency solver announces.
 constexpr std::string_view kSolverStartMessage = "SGE preprocessing";
-// Message texts of the square root stage. The pipeline logs a failed rational
-// or algebraic square root as a Warn whose text starts with the failure name
-// and ends with the reason that the square root code returned.
-constexpr std::string_view kAlgebraicSqrtFailedPrefix = "Algebraic sqrt failed";
-constexpr std::string_view kRationalSqrtFailedPrefix = "Rational sqrt failed";
-// The parity pre-check of the algebraic square root runs before Hensel
-// lifting and rejects the dependency without either square root algorithm.
-constexpr std::string_view kIdealParityReason = "Algebraic ideal powers parity check failed";
-// The rational square root rejects an odd prime exponent for the same reason:
-// the selected relations do not multiply to a square.
-constexpr std::string_view kRationalFactorBaseParityReason = "Factor base exponent not even";
-constexpr std::string_view kRationalLargePrimeParityReason = "Large prime exponent not even";
-// The algebraic square root reaches Couveignes only after Hensel lifting
-// returned no root, unless GNFS_FORCE_COUVEIGNES=1 skips Hensel.
-constexpr std::string_view kCouveignesFailedReason = "Couveignes algorithm failed";
-constexpr std::string_view kHenselName = "Hensel";
+// The square-root failure samples are distinct after truncation, cut to a
+// bounded length, and limited in count.
 constexpr size_t kSqrtFailureSampleLimit = 20;
 constexpr size_t kSqrtFailureSampleChars = 240;
 // The polynomial selection logs its root as "m=<root> time=<seconds>s".
@@ -129,45 +117,6 @@ constexpr std::string_view kPolynomialRootLogPrefix = "m=";
 // with one event and announces every pair that it tries.
 constexpr std::string_view kXorCombinationsMessage = "Trying XOR combinations";
 constexpr std::string_view kXorDependencyMessagePrefix = "Trying XOR dependency ";
-
-// Categories of the Warn and Error messages that the square root stage
-// emits. One message can fall into several categories: an algebraic failure
-// also counts under its reason, and a Couveignes failure counts as a Hensel
-// failure as well unless the process forces the Couveignes path.
-enum class SqrtFailureCategory : uint8_t {
-    AlgebraicSqrtFailed,
-    RationalSqrtFailed,
-    IdealParityPrecheckFailed,
-    RationalParityFailed,
-    CouveignesFailed,
-    HenselRelated,
-    OtherSquareRoot,
-    Count
-};
-constexpr size_t kSqrtFailureCategoryCount = static_cast<size_t>(SqrtFailureCategory::Count);
-
-[[nodiscard]] constexpr std::string_view
-sqrt_failure_category_name(SqrtFailureCategory category) noexcept {
-    switch (category) {
-    case SqrtFailureCategory::AlgebraicSqrtFailed:
-        return "algebraic_sqrt_failed";
-    case SqrtFailureCategory::RationalSqrtFailed:
-        return "rational_sqrt_failed";
-    case SqrtFailureCategory::IdealParityPrecheckFailed:
-        return "ideal_parity_precheck_failed";
-    case SqrtFailureCategory::RationalParityFailed:
-        return "rational_parity_failed";
-    case SqrtFailureCategory::CouveignesFailed:
-        return "couveignes_failed";
-    case SqrtFailureCategory::HenselRelated:
-        return "hensel_related";
-    case SqrtFailureCategory::OtherSquareRoot:
-        return "other_square_root";
-    case SqrtFailureCategory::Count:
-        break;
-    }
-    return "unknown";
-}
 
 struct LadderFixture final {
     uint32_t digits;
@@ -340,24 +289,6 @@ private:
     bool running_ = false;
 };
 
-// Cuts a UTF-8 text to at most `max_bytes` bytes without splitting a
-// multi-byte sequence.
-[[nodiscard]] std::string_view truncate_utf8(std::string_view text, size_t max_bytes) noexcept {
-    if (text.size() <= max_bytes) {
-        return text;
-    }
-    size_t end = max_bytes;
-    // A continuation byte at `end` belongs to a sequence that starts before it.
-    while (end > 0) {
-        const unsigned byte = static_cast<unsigned char>(text[end]);
-        if ((byte & 0xc0U) != 0x80U) {
-            break;
-        }
-        --end;
-    }
-    return text.substr(0, end);
-}
-
 // Whether a process variable is set to exactly "1".
 [[nodiscard]] bool environment_flag_set(const char* name) noexcept {
     const char* value = std::getenv(name);
@@ -424,7 +355,7 @@ public:
         return run_polynomial_m_;
     }
 
-    [[nodiscard]] std::array<size_t, kSqrtFailureCategoryCount> sqrt_failure_counts() const {
+    [[nodiscard]] std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts() const {
         const std::lock_guard<std::mutex> lock(mutex_);
         return sqrt_failure_counts_;
     }
@@ -450,47 +381,18 @@ private:
         run_polynomial_m_ = std::move(root);
     }
 
-    // Counts one Warn or Error message of the square root stage under every
-    // category that it matches and keeps its text as a sample. The caller
-    // holds the mutex.
+    // Counts one failure log of the square root stage under every category
+    // that it matches and keeps its text as a sample. Other logs stay
+    // unrecorded. The caller holds the mutex.
     void observe_sqrt_failure(const LogEntry& entry) {
-        if (entry.level != LogLevel::Warn && entry.level != LogLevel::Error) {
+        const auto match = diag::classify_sqrt_failure_log(entry, force_couveignes_);
+        if (!match.any()) {
             return;
         }
-        const std::string& message = entry.message;
-        const bool algebraic = message.starts_with(kAlgebraicSqrtFailedPrefix);
-        const bool rational = message.starts_with(kRationalSqrtFailedPrefix);
-        if (entry.phase != Phase::SquareRoot && !algebraic && !rational) {
-            return;
-        }
-
-        bool counted = false;
-        const auto count = [this, &counted](SqrtFailureCategory category) {
-            ++sqrt_failure_counts_[static_cast<size_t>(category)];
-            counted = true;
-        };
-        const bool couveignes = message.find(kCouveignesFailedReason) != std::string::npos;
-        if (algebraic) {
-            count(SqrtFailureCategory::AlgebraicSqrtFailed);
-        }
-        if (rational) {
-            count(SqrtFailureCategory::RationalSqrtFailed);
-        }
-        if (message.find(kIdealParityReason) != std::string::npos) {
-            count(SqrtFailureCategory::IdealParityPrecheckFailed);
-        }
-        if (rational && (message.find(kRationalFactorBaseParityReason) != std::string::npos ||
-                         message.find(kRationalLargePrimeParityReason) != std::string::npos)) {
-            count(SqrtFailureCategory::RationalParityFailed);
-        }
-        if (couveignes) {
-            count(SqrtFailureCategory::CouveignesFailed);
-        }
-        if (message.find(kHenselName) != std::string::npos || (couveignes && !force_couveignes_)) {
-            count(SqrtFailureCategory::HenselRelated);
-        }
-        if (!counted) {
-            count(SqrtFailureCategory::OtherSquareRoot);
+        for (size_t category = 0; category < sqrt_failure_counts_.size(); ++category) {
+            if (match.categories[category]) {
+                ++sqrt_failure_counts_[category];
+            }
         }
 
         // Samples are distinct after truncation, so a label that differs only
@@ -498,7 +400,7 @@ private:
         if (sqrt_failure_samples_.size() >= kSqrtFailureSampleLimit) {
             return;
         }
-        const std::string sample(truncate_utf8(message, kSqrtFailureSampleChars));
+        const std::string sample(diag::truncate_utf8(entry.message, kSqrtFailureSampleChars));
         if (std::find(sqrt_failure_samples_.begin(), sqrt_failure_samples_.end(), sample) ==
             sqrt_failure_samples_.end()) {
             sqrt_failure_samples_.push_back(sample);
@@ -509,201 +411,12 @@ private:
     size_t structured_filter_records_ = 0;
     size_t structured_matrix_records_ = 0;
     std::optional<std::string> run_polynomial_m_;
-    std::array<size_t, kSqrtFailureCategoryCount> sqrt_failure_counts_{};
+    std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts_{};
     std::vector<std::string> sqrt_failure_samples_;
     bool pairwise_xor_attempted_ = false;
     size_t pairwise_xor_dependencies_tried_ = 0;
     bool force_couveignes_ = false;
 };
-
-// A polynomial over F2. Index i holds the coefficient of x^i, and the vector
-// never ends with a zero coefficient. The zero polynomial is therefore empty,
-// and every other polynomial is monic.
-using F2Polynomial = std::vector<unsigned>;
-
-struct F2Division final {
-    F2Polynomial quotient;
-    F2Polynomial remainder;
-};
-
-// Degree of a polynomial, or -1 for the zero polynomial.
-[[nodiscard]] int f2_degree(const F2Polynomial& polynomial) noexcept {
-    return static_cast<int>(polynomial.size()) - 1;
-}
-
-[[nodiscard]] F2Polynomial f2_trimmed(F2Polynomial polynomial) {
-    while (!polynomial.empty() && polynomial.back() == 0U) {
-        polynomial.pop_back();
-    }
-    return polynomial;
-}
-
-// Long division. The divisor must be nonzero.
-[[nodiscard]] F2Division f2_divide(F2Polynomial dividend, const F2Polynomial& divisor) {
-    const int divisor_degree = f2_degree(divisor);
-    const int quotient_size = f2_degree(dividend) - divisor_degree + 1;
-    F2Division division;
-    if (quotient_size > 0) {
-        division.quotient.resize(static_cast<size_t>(quotient_size), 0U);
-        for (int shift = quotient_size - 1; shift >= 0; --shift) {
-            const size_t base = static_cast<size_t>(shift);
-            if (dividend[base + static_cast<size_t>(divisor_degree)] == 0U) {
-                continue;
-            }
-            division.quotient[base] = 1U;
-            for (size_t index = 0; index < divisor.size(); ++index) {
-                dividend[base + index] ^= divisor[index];
-            }
-        }
-    }
-    division.remainder = f2_trimmed(std::move(dividend));
-    return division;
-}
-
-// The gcd of two polynomials. Two zero polynomials give the zero polynomial.
-[[nodiscard]] F2Polynomial f2_gcd(F2Polynomial a, F2Polynomial b) {
-    while (!b.empty()) {
-        F2Polynomial remainder = f2_divide(std::move(a), b).remainder;
-        a = std::move(b);
-        b = std::move(remainder);
-    }
-    return a;
-}
-
-// The formal derivative. Over F2 the term x^i vanishes for even i.
-[[nodiscard]] F2Polynomial f2_derivative(const F2Polynomial& polynomial) {
-    F2Polynomial derivative;
-    for (size_t exponent = 1; exponent < polynomial.size(); ++exponent) {
-        derivative.push_back(exponent % 2 == 1 ? polynomial[exponent] : 0U);
-    }
-    return f2_trimmed(std::move(derivative));
-}
-
-[[nodiscard]] F2Polynomial f2_product(const F2Polynomial& a, const F2Polynomial& b) {
-    F2Polynomial product;
-    if (a.empty() || b.empty()) {
-        return product;
-    }
-    product.assign(a.size() + b.size(), 0U);
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (a[i] == 0U) {
-            continue;
-        }
-        for (size_t j = 0; j < b.size(); ++j) {
-            product[i + j] ^= b[j];
-        }
-    }
-    return f2_trimmed(std::move(product));
-}
-
-// The unique square root of a square in F2[x]: squaring maps the coefficient
-// of x^i to the coefficient of x^(2i).
-[[nodiscard]] F2Polynomial f2_square_root(const F2Polynomial& square) {
-    F2Polynomial root;
-    for (size_t exponent = 0; exponent < square.size(); exponent += 2) {
-        root.push_back(square[exponent]);
-    }
-    return f2_trimmed(std::move(root));
-}
-
-// `polynomial` + x.
-[[nodiscard]] F2Polynomial f2_plus_x(F2Polynomial polynomial) {
-    if (polynomial.size() < 2) {
-        polynomial.resize(2, 0U);
-    }
-    polynomial[1] ^= 1U;
-    return f2_trimmed(std::move(polynomial));
-}
-
-struct F2SquarefreeFactor final {
-    // Squarefree, but possibly a product of irreducibles that share a
-    // multiplicity.
-    F2Polynomial polynomial;
-    size_t multiplicity = 0;
-};
-
-// Squarefree factorization of a polynomial of degree at least one. The
-// factors are squarefree and pairwise coprime, and their powers rebuild the
-// input. Each round separates the factors of odd multiplicity, and the rest
-// is a square whose root goes through the next round with doubled weights.
-void f2_collect_squarefree_factors(const F2Polynomial& polynomial, size_t multiplicity_unit,
-                                   std::vector<F2SquarefreeFactor>& factors) {
-    const F2Polynomial common = f2_gcd(polynomial, f2_derivative(polynomial));
-    F2Polynomial odd_part = f2_divide(polynomial, common).quotient;
-    F2Polynomial even_part = common;
-    size_t multiplicity = 1;
-    while (f2_degree(odd_part) > 0) {
-        const F2Polynomial shared = f2_gcd(odd_part, even_part);
-        const F2Polynomial factor = f2_divide(odd_part, shared).quotient;
-        if (f2_degree(factor) > 0) {
-            factors.push_back(F2SquarefreeFactor{factor, multiplicity * multiplicity_unit});
-        }
-        odd_part = shared;
-        even_part = f2_divide(even_part, shared).quotient;
-        ++multiplicity;
-    }
-    if (f2_degree(even_part) > 0) {
-        f2_collect_squarefree_factors(f2_square_root(even_part), multiplicity_unit * 2, factors);
-    }
-}
-
-// The only two linear polynomials over F2.
-const F2Polynomial kF2X{0U, 1U};
-const F2Polynomial kF2XPlusOne{1U, 1U};
-
-// Multiplicity of `linear` in `polynomial`.
-[[nodiscard]] size_t f2_multiplicity_of(F2Polynomial polynomial, const F2Polynomial& linear) {
-    size_t multiplicity = 0;
-    while (f2_degree(polynomial) >= 1) {
-        F2Division division = f2_divide(std::move(polynomial), linear);
-        if (!division.remainder.empty()) {
-            break;
-        }
-        polynomial = std::move(division.quotient);
-        ++multiplicity;
-    }
-    return multiplicity;
-}
-
-// Rabin's test: a polynomial of degree n is irreducible when x^(2^n) is x
-// modulo the polynomial and x lies in no proper subfield, which the prime
-// divisors of n generate.
-[[nodiscard]] bool f2_is_irreducible(const F2Polynomial& polynomial) {
-    const int degree = f2_degree(polynomial);
-    if (degree <= 0) {
-        return false;
-    }
-    if (degree == 1) {
-        return true;
-    }
-    // frobenius[k] is x^(2^k) modulo the polynomial.
-    std::vector<F2Polynomial> frobenius(static_cast<size_t>(degree) + 1);
-    frobenius[0] = {0U, 1U};
-    for (int k = 1; k <= degree; ++k) {
-        const F2Polynomial& previous = frobenius[static_cast<size_t>(k) - 1];
-        frobenius[static_cast<size_t>(k)] =
-            f2_divide(f2_product(previous, previous), polynomial).remainder;
-    }
-    if (!f2_plus_x(frobenius[static_cast<size_t>(degree)]).empty()) {
-        return false;
-    }
-    // The smallest divisor above one of the remaining degree is prime, so
-    // every candidate that divides it is one of its prime divisors.
-    int remaining = degree;
-    for (int candidate = 2; candidate <= remaining; ++candidate) {
-        if (remaining % candidate != 0) {
-            continue;
-        }
-        const size_t subfield_degree = static_cast<size_t>(degree / candidate);
-        if (f2_degree(f2_gcd(f2_plus_x(frobenius[subfield_degree]), polynomial)) != 0) {
-            return false;
-        }
-        while (remaining % candidate == 0) {
-            remaining /= candidate;
-        }
-    }
-    return true;
-}
 
 // The selected polynomial reduced modulo 2 and classified over F2.
 struct PolynomialMod2Evidence final {
@@ -716,7 +429,7 @@ struct PolynomialMod2Evidence final {
     // lowers it below `degree`.
     std::optional<size_t> mod2_degree;
     // The coefficients modulo 2, from the constant term upwards.
-    std::optional<F2Polynomial> coefficients;
+    std::optional<diag::F2Polynomial> coefficients;
     // The integer coefficients, from the constant term upwards.
     std::optional<std::vector<std::string>> integer_coefficients;
     // No irreducible factor appears more than once.
@@ -741,40 +454,28 @@ struct PolynomialMod2Evidence final {
     evidence.degree = static_cast<size_t>(context.degree());
 
     std::vector<std::string> integer_coefficients;
-    F2Polynomial polynomial;
+    diag::F2Polynomial polynomial;
     for (uint32_t exponent = 0; exponent <= context.degree(); ++exponent) {
         const Integer& coefficient = context.coeff(exponent);
         integer_coefficients.push_back(coefficient.to_string());
         polynomial.push_back(coefficient.is_odd() ? 1U : 0U);
     }
-    polynomial = f2_trimmed(std::move(polynomial));
+    polynomial = diag::f2_trimmed(std::move(polynomial));
     evidence.coefficients = polynomial;
     if (!polynomial.empty()) {
         evidence.mod2_degree = polynomial.size() - 1;
     }
     evidence.integer_coefficients = std::move(integer_coefficients);
-    if (f2_degree(polynomial) < 1) {
+    if (polynomial.size() < 2) {
         evidence.error = "the polynomial has degree below one modulo 2";
         return evidence;
     }
 
-    std::vector<F2SquarefreeFactor> factors;
-    f2_collect_squarefree_factors(polynomial, 1, factors);
-    bool squarefree = true;
-    size_t exponent_gcd = 0;
-    for (const F2SquarefreeFactor& factor : factors) {
-        squarefree = squarefree && factor.multiplicity == 1;
-        exponent_gcd = std::gcd(exponent_gcd, factor.multiplicity);
-    }
-    evidence.squarefree = squarefree;
-    const size_t x_multiplicity = f2_multiplicity_of(polynomial, kF2X);
-    const size_t x_plus_one_multiplicity = f2_multiplicity_of(polynomial, kF2XPlusOne);
-    evidence.linear_factors = x_multiplicity + x_plus_one_multiplicity;
-    // A power h^k of a polynomial of lower degree exists exactly when every
-    // multiplicity is divisible by k.
-    evidence.perfect_power = exponent_gcd >= 2;
-    evidence.irreducible = factors.size() == 1 && factors.front().multiplicity == 1 &&
-                           f2_is_irreducible(factors.front().polynomial);
+    const diag::F2PolynomialType type = diag::f2_classify(polynomial);
+    evidence.squarefree = type.squarefree;
+    evidence.linear_factors = type.linear_factors;
+    evidence.perfect_power = type.perfect_power;
+    evidence.irreducible = type.irreducible;
     return evidence;
 }
 
@@ -804,22 +505,25 @@ struct PolynomialMod2Evidence final {
 [[nodiscard]] PolynomialMod2Evidence confirm_polynomial_mod2(PolynomialMod2Evidence probe,
                                                              const RouteEvidence& evidence,
                                                              std::optional<size_t> run_degree) {
-    const std::optional<std::string> run_m = evidence.run_polynomial_m();
-    const bool confirmed = probe.m.has_value() && run_m.has_value() && *run_m == *probe.m &&
-                           (!run_degree.has_value() || run_degree == probe.degree);
-    if (confirmed) {
+    diag::PolynomialSelection run_selection;
+    run_selection.m = evidence.run_polynomial_m();
+    run_selection.degree = run_degree;
+    diag::PolynomialSelection probe_selection;
+    probe_selection.m = probe.m;
+    probe_selection.degree = probe.degree;
+    switch (diag::compare_selections(probe_selection, run_selection)) {
+    case diag::PolynomialMatch::Same:
         probe.matches_run = true;
         return probe;
-    }
-    if (probe.m.has_value() && !run_m.has_value()) {
-        // run() logged no polynomial, so nothing confirms or contradicts the
-        // probe. It stays in the record as unconfirmed.
+    case diag::PolynomialMatch::Unconfirmed:
         return probe;
+    case diag::PolynomialMatch::Different:
+        break;
     }
     // run() selected another polynomial, or the probe failed.
     PolynomialMod2Evidence from_run;
-    from_run.m = run_m;
-    from_run.degree = run_degree;
+    from_run.m = run_selection.m;
+    from_run.degree = run_selection.degree;
     from_run.error = probe.error;
     if (probe.m.has_value()) {
         from_run.matches_run = false;
@@ -859,7 +563,7 @@ struct LadderRecord final {
     std::array<StageTiming, kStageCount> stages{};
     std::optional<uint64_t> peak_rss_bytes;
     // Warn and Error messages of the square root stage, counted by category.
-    std::array<size_t, kSqrtFailureCategoryCount> sqrt_failure_counts{};
+    std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts{};
     std::vector<std::string> sqrt_failure_samples;
     PolynomialMod2Evidence polynomial_mod2;
     // The XOR-pair fallback of the factor extraction started, and how many
@@ -1272,7 +976,7 @@ void append_polynomial_mod2(std::ostream& os, const PolynomialMod2Evidence& evid
     os << ",\"coefficients\":";
     if (evidence.coefficients.has_value()) {
         os << '[';
-        const F2Polynomial& coefficients = *evidence.coefficients;
+        const diag::F2Polynomial& coefficients = *evidence.coefficients;
         for (size_t index = 0; index < coefficients.size(); ++index) {
             if (index > 0) {
                 os << ',';
@@ -1363,8 +1067,8 @@ void emit_record(std::ostream& os, const LadderRecord& record) {
         if (index > 0) {
             os << ',';
         }
-        const auto category = static_cast<SqrtFailureCategory>(index);
-        os << quote(sqrt_failure_category_name(category)) << ':'
+        const auto category = static_cast<diag::SqrtFailureCategory>(index);
+        os << quote(diag::sqrt_failure_category_name(category)) << ':'
            << record.sqrt_failure_counts[index];
     }
     os << "},\"sqrt_failure_samples\":";
