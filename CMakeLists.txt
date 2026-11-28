@@ -2683,9 +2683,11 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME SchirokauerParallel COMMAND test_schirokauer_parallel)
     set_tests_properties(SchirokauerParallel PROPERTIES LABELS "instant" TIMEOUT 60)
 
-    # Schirokauer columns of a linear factor against an exact 2-adic reference:
-    # the default exponent covers every valuation up to 37, k = 8 falls back
-    # from 7 on, and columns without a fallback do not depend on k.
+    # Schirokauer columns against exact references at the default exponent: the
+    # linear-factor column against a Newton-lifted root, and the unsplit,
+    # quadratic, and cubic paths against a companion-matrix reference. The
+    # default exponent covers every valuation up to 37, k = 8 falls back from 7
+    # on, and columns without a fallback do not depend on k.
     add_executable(test_schirokauer_precision
         tests/test_schirokauer_precision.cpp
     )
