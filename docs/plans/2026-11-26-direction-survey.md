@@ -136,7 +136,10 @@
 - **精度回退（中等）。** 浪费平方根尝试，不会算错。
   - 现象：`SchirokaurConfig::exponent_k` 默认是 8（`include/gnfs/linalg/schirokauer.hpp:541`），生产路径没有改它（`include/gnfs/linalg/matrix_builder.hpp:653-656`）。$f\bmod 2$ 有一次因子时，split 路径对 $\gamma=a-b\cdot r$ 先剥去 2 的幂，剥去 $v$ 个之后要求 $k-v\ge 2$，不满足就把这一列记成 0（`schirokauer.hpp:843-855`）。于是 $v_2(a-b\cdot r)\ge 7$ 的关系被记成 0 列，这样的关系约占 0.86% 到 1.6%，其中真实位为 1 的占一半。
   - 后果：坏依赖的范数仍是平方，模 $p$ 的平方预检拦不住它，要跑完 Hensel、CRT 与 Couveignes 才失败，再换下一个依赖。
-  - 范围：81 位门禁的多项式模 2 不可约，不受影响。受影响的测试输入是 $N=10800$、$96091$、$100000980001501$、$1000000016000000063$、$2000072000198$（`tests/test_gnfs_e2e.cpp:962`、`:998`，`tests/test_regression_gate.cpp:62`，`tests/test_factor_with_kleinjung.cpp:704`，`tests/test_method_selection.cpp:199`，`tests/test_api.cpp:1579`）。
+  - 范围：81 位门禁的多项式模 2 不可约，不受影响。核实列出的受影响测试输入是 $N=10800$、$96091$、$100000980001501$、$1000000016000000063$、$2000072000198$。
+  - 测试里的调用点（写本节时读码分开的，五个输入本身出自核实）：
+    - 前三个输入有开着 Schirokauer 列建矩阵的调用点。$N=10800$ 与 $N=96091$ 走 `tests/test_gnfs_e2e.cpp` 的 `factor_gnfs`（输入在 `:962`、`:998`，建矩阵在 `:434-441`）。$N=96091$ 还在 `tests/test_regression_gate.cpp:62` 与 `tests/test_gnfs_progressive.cpp:156`（建矩阵分别在 `:278-283`、`:556-563`），以及直接走 split 路径的 `tests/test_schirokauer_strip.cpp:239-241`。$N=100000980001501$ 在 `tests/test_gnfs_progressive.cpp:163` 与 `tests/test_factor_with_kleinjung.cpp:704`（建矩阵在 `:443-448`）。
+    - 后两个输入按字面检索只出现在建不了 Schirokauer 列的调用点。$N=1000000016000000063$ 只用于自动选路的 `factorize`（`tests/test_method_selection.cpp:199`）、选多项式（`tests/test_base_m.cpp:46-47`、`tests/test_kleinjung.cpp:148-150`）与 SIQS（`tests/test_siqs.cpp:1148`）。$N=2000072000198$ 只用于 `tests/test_api.cpp:1579` 与 `tests/test_cli_event_stream.cpp:530`，两处都是自动选路。自动选路在十进制位数不超过 24 或 bit 数不超过 80 时选 Pollard rho（`src/api/pipeline.cpp:1246-1250`），在 GNFS 之前就返回（`:4330-4338`）。所以现有测试覆盖不到后两个输入的回退。
   - 改法与探测：$k\ge 20$ 回退消失，且不回退的行逐位不变，120 bit 夹具的矩阵身份不变；第 15 项取的 40 高于这个下限。现在矩阵里的 `schirokauer_degenerate_rows` 统计的是整段向量为 0 的行（`matrix_builder.hpp:412-414`、`:601-603`），回退只把对应的那一列置 0，它看不见，不能当探测器。
 - **完备性（低）。** 每个未分歧素点恰好漏掉一个局部特征。
   - 两种情形：2 惰性时，漏掉的特征落在已有因子基与大素数列的张成里，加列零收益；2 分裂成 $m$ 个素点时缺 $m-1$ 位，由二次特征列补偿。
