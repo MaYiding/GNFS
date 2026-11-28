@@ -9,15 +9,15 @@ whenToUse: When a wave of mutually independent directions is ready to build.
   own; a slow direction never delays the others. Remove each worktree once its
   pull request closes.
 args:
+  tasks:
+    type: json
+    description: The same array of directions given inline instead of in a file.
+      Exactly one of tasksFile or tasks is required.
   tasksFile:
     type: string
     description: Workspace-relative path to a JSON file holding the array of
       directions. Each entry has slug, title, brief, and acceptance, plus an
       optional reviewFocus.
-  tasks:
-    type: json
-    description: The same array of directions given inline instead of in a file.
-      Exactly one of tasksFile or tasks is required.
   wave:
     type: string
     description: Label used in the branch names, for example 20261128-5.
@@ -167,6 +167,9 @@ const STATIC =
   "step 'markdown links'                    python3 scripts/ci/check_markdown_links.py\n" +
   "[ -f scripts/ci/check_markdown_links.py ] && step 'link checker self-test' python3 scripts/ci/check_markdown_links.py --self-test\n" +
   "[ -f scripts/ci/check_env_flag_docs.py ] && step 'env flag docs' python3 scripts/ci/check_env_flag_docs.py\n" +
+  "[ -f scripts/ci/format_changed.sh ] && [ -x /tmp/gnfs-ops/cf18/bin/clang-format ] && "
+    "step 'clang-format 18 (changed files)' sh scripts/ci/format_changed.sh origin/main /tmp/gnfs-ops/cf18/bin/clang-format\n" +
+  "[ -f scripts/ci/check_test_asserts.py ] && step 'test asserts' python3 scripts/ci/check_test_asserts.py\n" +
   "step 'test catalog'                      zsh ./scripts/test.sh list\n" +
   "exit $fail\n";
 

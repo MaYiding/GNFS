@@ -93,6 +93,9 @@ const STATIC =
   // its script is on the integration branch, so a skipped pull request does not fail the gate.
   "grep -q -- '--self-test' scripts/ci/check_markdown_links.py && step 'link checker self-test' python3 scripts/ci/check_markdown_links.py --self-test\n" +
   "[ -f scripts/ci/check_env_flag_docs.py ] && step 'env flag docs' python3 scripts/ci/check_env_flag_docs.py\n" +
+  "[ -f scripts/ci/format_changed.sh ] && [ -x /tmp/gnfs-ops/cf18/bin/clang-format ] && "
+    "step 'clang-format 18 (changed files)' sh scripts/ci/format_changed.sh origin/main /tmp/gnfs-ops/cf18/bin/clang-format\n" +
+  "[ -f scripts/ci/check_test_asserts.py ] && step 'test asserts' python3 scripts/ci/check_test_asserts.py\n" +
   "step 'test catalog'                      zsh ./scripts/test.sh list\n" +
   "exit $fail\n";
 
