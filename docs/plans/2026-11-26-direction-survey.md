@@ -125,7 +125,7 @@
 - **第 17 项（十进制 50 位端到端）**：见第 1 项。接受 Nightly 多占时间，50 位作业允许失败。
 - **第 18 项（开关总览表）**：按 #421 的做法，放在 `docs/env-flags` 的模块页，由 `scripts/ci/check_env_flag_docs.py` 核对。
 - **第 19、20 项（launch guard 的形态、平方根失败统计）**：公开 `FutureLaunchGuard`（#417，`include/gnfs/util/thread_pool.hpp:76`）；不加统计字段，先用日志。
-- **表外一条：测试断言必须在 Release 下生效。** 依据：main `80895f08` 上 `tests/` 有 56 个文件用 `assert(...)`，按含 `assert(` 的行数计共 2,578 行，其中只有 7 个文件 `#undef NDEBUG`；按决定时的统计，34 个文件（1,228 处）没有任何 Release 下生效的检查，这个数的口径没有记录，本节未能复现。跑测试的通道里，`CI` 的六行矩阵只有一行是 Debug，而且只跑 instant（`.github/workflows/ci.yml:44-47`），其余五行与 deep gate 都是 Release；Sanitizers 与 Coverage 也以 Debug 构建，但只跑 instant 标签（`.github/workflows/sanitizers.yml:41`、`:58`，`.github/workflows/coverage.yml:50`、`:61`）。做法是 `tests/support/test_assert.hpp` 的 `TEST_ASSERT`，加一条 Script Checks 检查（PR #434）。
+- **表外一条：测试断言必须在 Release 下生效。** 依据：main `80895f08` 上，按 `git grep -E '(^|[^A-Za-z0-9_])assert[[:space:]]*\('` 数，`tests/` 有 56 个文件、共 2,578 行用到 `assert(...)`，不含 `static_assert`；只有 7 个文件写了 `#undef NDEBUG`，匹配的是 `#[[:space:]]*undef[[:space:]]+NDEBUG`，其中 3 个写作 `#  undef`；按决定时的统计，34 个文件（1,228 处）没有任何 Release 下生效的检查，这个数的口径没有记录，本节未能复现。跑测试的通道里，`CI` 的六行矩阵只有一行是 Debug，而且只跑 instant（`.github/workflows/ci.yml:44-47`），其余五行与 deep gate 都是 Release；Sanitizers 与 Coverage 也以 Debug 构建，但只跑 instant 标签（`.github/workflows/sanitizers.yml:41`、`:58`，`.github/workflows/coverage.yml:50`、`:61`）。做法是 `tests/support/test_assert.hpp` 的 `TEST_ASSERT`，加一条 Script Checks 检查（PR #434）。
 
 第 9 项里 CodeQL 的时长，基线取自 PR #429 的说明：main `86d7005c` 上是 50.6 分钟。抽看四次拉取请求 run（46146650998、46156617186、46157632406、46158030019），Analyze C++ 三次在 8 分 54 秒到 8 分 58 秒，一次 11 分 27 秒。
 
