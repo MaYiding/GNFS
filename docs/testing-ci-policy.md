@@ -491,19 +491,27 @@ JSON object fails the step or counts as a failed rung. The object carries:
   `dependencies_tried`, and the lifetime `peak_rss_bytes`;
 - `sqrt_failure_counts` with `sqrt_failure_samples` (the `Warn` and `Error`
   logs of the square root stage counted by category, with up to 20 distinct
-  message texts), `polynomial_mod2` (the type of the selected polynomial
-  modulo 2), and `pairwise_xor_attempted`, `pairwise_xor_dependencies_tried`,
-  and `dependencies_succeeded_before_pairwise_xor`. They exist to diagnose the
+  message texts, and the attempts that ended without a log),
+  `polynomial_mod2` (the type of the selected polynomial modulo 2), and
+  `pairwise_xor_attempted`, `pairwise_xor_dependencies_tried`, and
+  `dependencies_succeeded_before_pairwise_xor`. They exist to diagnose the
   dependencies that fail in the square root: a record shows which step
-  rejected each failed dependency, how the polynomial factors modulo 2, and
-  whether one dependency or an XOR pair produced the factors.
+  rejected each failed dependency, or that the pipeline logged nothing for
+  it, how the polynomial factors modulo 2, and whether one dependency or an
+  XOR pair produced the factors.
 
 The failure categories overlap. `algebraic_sqrt_failed` and
 `rational_sqrt_failed` count every failed square root, while
 `ideal_parity_precheck_failed`, `rational_parity_failed`, `couveignes_failed`,
 and `hensel_related` count the reasons; any other `Warn` or `Error` of that
-stage counts as `other_square_root`. `hensel_related` includes every
-Couveignes failure of a run that does not set `GNFS_FORCE_COUVEIGNES=1`,
+stage counts as `other_square_root`. `unlogged_failure` counts the attempts
+that the pipeline logs nothing about: both square roots succeeded and every
+GCD was trivial, or the dependency failed its verification first. The record
+derives it from the progress events, because the next attempt, or the end of
+a run without factors, follows such an attempt without a failure log in
+between. Every attempt before the successful one is therefore either matched
+to a category or counted as `unlogged_failure`. `hensel_related` includes
+every Couveignes failure of a run that does not set `GNFS_FORCE_COUVEIGNES=1`,
 because the algebraic square root reaches Couveignes only after Hensel lifting
 returns no root. The type in `polynomial_mod2` comes from a second
 `select_polynomial()` call with the `Config` of the run, made before the

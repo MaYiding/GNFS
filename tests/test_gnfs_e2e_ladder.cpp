@@ -38,8 +38,10 @@
 //
 // The log callback keeps the failure evidence of the square root stage. It
 // counts the Warn and Error messages of that stage by category and stores up
-// to 20 distinct message texts, so a passing run still shows why every
-// dependency before the successful one was wasted.
+// to 20 distinct message texts. The pipeline logs nothing for an attempt
+// whose square roots both succeed but whose GCDs are all trivial, so the
+// progress events of the attempts count those as unlogged failures. Together
+// the two account for every dependency before the successful one.
 //
 // The record also names the type of the selected polynomial modulo 2. Before
 // the measured run, a second Pipeline with the same Config selects the
@@ -113,10 +115,6 @@ constexpr size_t kSqrtFailureSampleLimit = 20;
 constexpr size_t kSqrtFailureSampleChars = 240;
 // The polynomial selection logs its root as "m=<root> time=<seconds>s".
 constexpr std::string_view kPolynomialRootLogPrefix = "m=";
-// Progress messages of the factor extraction. The XOR-pair fallback opens
-// with one event and announces every pair that it tries.
-constexpr std::string_view kXorCombinationsMessage = "Trying XOR combinations";
-constexpr std::string_view kXorDependencyMessagePrefix = "Trying XOR dependency ";
 
 struct LadderFixture final {
     uint32_t digits;
@@ -297,8 +295,8 @@ private:
 
 // Counts the structured-route records that the log callback observes, keeps
 // the failure evidence of the square root stage, remembers the root of the
-// polynomial that run() selected, and marks the XOR-pair fallback from the
-// progress callback.
+// polynomial that run() selected, and tracks the attempts of the factor
+// extraction from the progress callback.
 class RouteEvidence final {
 public:
     // `force_couveignes` is set when GNFS_FORCE_COUVEIGNES=1 makes the
@@ -318,15 +316,15 @@ public:
     }
 
     void observe(const ProgressInfo& info) {
-        if (info.message.starts_with(kXorCombinationsMessage)) {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            pairwise_xor_attempted_ = true;
-            return;
-        }
-        if (info.message.starts_with(kXorDependencyMessagePrefix)) {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            ++pairwise_xor_dependencies_tried_;
-        }
+        const std::lock_guard<std::mutex> lock(mutex_);
+        tracker_.observe_progress(info.message);
+    }
+
+    // Ends the attempt tracking once run() returned. A run that throws
+    // leaves its open attempt unresolved.
+    void finish(bool succeeded) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        tracker_.finish(succeeded);
     }
 
     [[nodiscard]] size_t structured_filter_records() const {
@@ -341,12 +339,12 @@ public:
 
     [[nodiscard]] bool pairwise_xor_attempted() const {
         const std::lock_guard<std::mutex> lock(mutex_);
-        return pairwise_xor_attempted_;
+        return tracker_.pairwise_xor_attempted();
     }
 
     [[nodiscard]] size_t pairwise_xor_dependencies_tried() const {
         const std::lock_guard<std::mutex> lock(mutex_);
-        return pairwise_xor_dependencies_tried_;
+        return tracker_.pairwise_xor_dependencies_tried();
     }
 
     // The root m that the polynomial selection logged, as decimal text.
@@ -355,9 +353,14 @@ public:
         return run_polynomial_m_;
     }
 
+    // The counts of the matched categories, completed by the attempts that
+    // failed without a log.
     [[nodiscard]] std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts() const {
         const std::lock_guard<std::mutex> lock(mutex_);
-        return sqrt_failure_counts_;
+        std::array<size_t, diag::kSqrtFailureCategoryCount> counts = sqrt_failure_counts_;
+        const auto unlogged = static_cast<size_t>(diag::SqrtFailureCategory::UnloggedFailure);
+        counts[unlogged] = tracker_.unlogged_failures();
+        return counts;
     }
 
     [[nodiscard]] std::vector<std::string> sqrt_failure_samples() const {
@@ -389,6 +392,7 @@ private:
         if (!match.any()) {
             return;
         }
+        tracker_.note_failure_log();
         for (size_t category = 0; category < sqrt_failure_counts_.size(); ++category) {
             if (match.categories[category]) {
                 ++sqrt_failure_counts_[category];
@@ -413,8 +417,7 @@ private:
     std::optional<std::string> run_polynomial_m_;
     std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts_{};
     std::vector<std::string> sqrt_failure_samples_;
-    bool pairwise_xor_attempted_ = false;
-    size_t pairwise_xor_dependencies_tried_ = 0;
+    diag::SqrtAttemptTracker tracker_;
     bool force_couveignes_ = false;
 };
 
@@ -562,7 +565,8 @@ struct LadderRecord final {
     double wall_total_seconds = 0.0;
     std::array<StageTiming, kStageCount> stages{};
     std::optional<uint64_t> peak_rss_bytes;
-    // Warn and Error messages of the square root stage, counted by category.
+    // Warn and Error messages of the square root stage, counted by category,
+    // and the attempts that failed without a log.
     std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts{};
     std::vector<std::string> sqrt_failure_samples;
     PolynomialMod2Evidence polynomial_mod2;
@@ -832,6 +836,7 @@ FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
         throw;
     }
     recorder.finish();
+    evidence.finish(result.success);
     const std::optional<size_t> run_degree = static_cast<size_t>(result.stats.degree);
     record.polynomial_mod2 = confirm_polynomial_mod2(probe, evidence, run_degree);
     capture_measurements(record, recorder, evidence);

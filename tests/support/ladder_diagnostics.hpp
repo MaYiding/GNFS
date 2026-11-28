@@ -2,9 +2,10 @@
 
 // Pure helpers behind the diagnostics that tests/test_gnfs_e2e_ladder.cpp
 // writes into its record: the classification of the selected polynomial over
-// F2, the classification of the square-root failure logs, the comparison of
-// two polynomial selections, and the UTF-8 cut of a message sample. The
-// ladder binary runs only nightly and asserts nothing about them, so
+// F2, the classification of the square-root failure logs, the tracking of the
+// attempts that fail without a log, the comparison of two polynomial
+// selections, and the UTF-8 cut of a message sample. The ladder binary runs
+// only nightly and asserts nothing about them, so
 // tests/test_ladder_diagnostics.cpp checks them on every pull request.
 
 #include <gnfs/api/progress.hpp>
@@ -267,11 +268,18 @@ constexpr std::string_view kRationalLargePrimeParityReason = "Large prime expone
 // returned no root, unless GNFS_FORCE_COUVEIGNES=1 skips Hensel.
 constexpr std::string_view kCouveignesFailedReason = "Couveignes algorithm failed";
 constexpr std::string_view kHenselName = "Hensel";
+// Progress messages of the factor extraction. Every attempt opens with one
+// event, and the XOR-pair fallback announces itself before its first pair.
+constexpr std::string_view kSingleDependencyMessagePrefix = "Trying dependency ";
+constexpr std::string_view kXorCombinationsMessage = "Trying XOR combinations";
+constexpr std::string_view kXorDependencyMessagePrefix = "Trying XOR dependency ";
 
 // Categories of the Warn and Error messages that the square root stage
-// emits. One message can fall into several categories: an algebraic failure
-// also counts under its reason, and a Couveignes failure counts as a Hensel
-// failure as well unless the process forces the Couveignes path.
+// emits, and of the attempts that end without one. One message can fall into
+// several categories: an algebraic failure also counts under its reason, and
+// a Couveignes failure counts as a Hensel failure as well unless the process
+// forces the Couveignes path. No log falls into UnloggedFailure;
+// SqrtAttemptTracker derives it from the sequence of attempts.
 enum class SqrtFailureCategory : uint8_t {
     AlgebraicSqrtFailed,
     RationalSqrtFailed,
@@ -280,6 +288,7 @@ enum class SqrtFailureCategory : uint8_t {
     CouveignesFailed,
     HenselRelated,
     OtherSquareRoot,
+    UnloggedFailure,
     Count
 };
 constexpr size_t kSqrtFailureCategoryCount = static_cast<size_t>(SqrtFailureCategory::Count);
@@ -301,6 +310,8 @@ sqrt_failure_category_name(SqrtFailureCategory category) noexcept {
         return "hensel_related";
     case SqrtFailureCategory::OtherSquareRoot:
         return "other_square_root";
+    case SqrtFailureCategory::UnloggedFailure:
+        return "unlogged_failure";
     case SqrtFailureCategory::Count:
         break;
     }
@@ -375,6 +386,89 @@ struct SqrtFailureMatch final {
     }
     return match;
 }
+
+// Tracks the attempts of the factor extraction and counts the failures among
+// them that leave no log. Pipeline::extract_factors logs a failed square
+// root, but it logs nothing when both square roots succeed and every GCD is
+// trivial or when a dependency fails its verification first. Such an attempt
+// is known only because the next attempt, or the end of a run without
+// factors, follows it without a failure log in between.
+class SqrtAttemptTracker final {
+public:
+    // Feeds one progress message of the pipeline.
+    void observe_progress(std::string_view message) {
+        if (message.starts_with(kXorCombinationsMessage)) {
+            close_attempt();
+            pairwise_xor_attempted_ = true;
+            return;
+        }
+        if (message.starts_with(kXorDependencyMessagePrefix)) {
+            close_attempt();
+            ++pairwise_xor_dependencies_tried_;
+            open_attempt();
+            return;
+        }
+        if (message.starts_with(kSingleDependencyMessagePrefix)) {
+            close_attempt();
+            ++single_dependencies_tried_;
+            open_attempt();
+        }
+    }
+
+    // Feeds a log entry that classify_sqrt_failure_log matched.
+    void note_failure_log() noexcept {
+        attempt_logged_ = true;
+    }
+
+    // Ends a run that returned. The last attempt produced the factors when
+    // `succeeded` is set and failed when it is not. A run that throws calls
+    // nothing, and its open attempt stays unresolved.
+    void finish(bool succeeded) noexcept {
+        if (!succeeded) {
+            close_attempt();
+        }
+        attempt_open_ = false;
+    }
+
+    [[nodiscard]] size_t single_dependencies_tried() const noexcept {
+        return single_dependencies_tried_;
+    }
+
+    [[nodiscard]] bool pairwise_xor_attempted() const noexcept {
+        return pairwise_xor_attempted_;
+    }
+
+    [[nodiscard]] size_t pairwise_xor_dependencies_tried() const noexcept {
+        return pairwise_xor_dependencies_tried_;
+    }
+
+    [[nodiscard]] size_t unlogged_failures() const noexcept {
+        return unlogged_failures_;
+    }
+
+private:
+    void open_attempt() noexcept {
+        attempt_open_ = true;
+        attempt_logged_ = false;
+    }
+
+    // Closes the open attempt. The next attempt, or the end of a run without
+    // factors, means that it failed, and without a failure log it failed
+    // silently.
+    void close_attempt() noexcept {
+        if (attempt_open_ && !attempt_logged_) {
+            ++unlogged_failures_;
+        }
+        attempt_open_ = false;
+    }
+
+    bool attempt_open_ = false;
+    bool attempt_logged_ = false;
+    size_t unlogged_failures_ = 0;
+    size_t single_dependencies_tried_ = 0;
+    bool pairwise_xor_attempted_ = false;
+    size_t pairwise_xor_dependencies_tried_ = 0;
+};
 
 // ============================================================
 // Comparison of two polynomial selections
