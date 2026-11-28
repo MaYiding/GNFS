@@ -59,6 +59,20 @@ CTest allows it 10 seconds. `scripts/test.sh` maps the checker to `util`, so
 Script Checks run the same self-test, and Docs Integrity also scans the
 tracked Markdown.
 
+`HeaderReachabilityCheckerSelfTest` is the `instant` script contract for the
+header reachability checker. It runs
+`scripts/ci/check_header_reachability.py --self-test` over a temporary tree
+and a Git checkout of it, so it needs no build product, and CTest allows it 10
+seconds. Script Checks also run the real check: starting from every C and C++
+source outside `tests/` and `bench/` and from each `/FI` forced include, it
+follows `#include` lines and lists the headers under `include/gnfs` that
+nothing reaches. `scripts/ci/production-unreachable-headers.txt` pins that
+list with the gate that guards each header, so the check fails when an
+unreachable header is not listed and when a listed header is reached, moved,
+or deleted. A new header therefore goes into production, or into the list with
+a comment that names its gate. `scripts/test.sh` maps the checker and the list
+to `util`.
+
 ### Local Change Selection
 
 The local `scripts/test.sh gate --quick` builds the binaries in
