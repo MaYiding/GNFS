@@ -2982,6 +2982,30 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
     set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 240)
 
+    # Digit-banded evidence ladder. Each CTest forces one complete GNFS
+    # factorization through Pipeline::run() above the 25-digit regression
+    # level. The heavy and stress labels keep them out of pull-request CI;
+    # the Nightly workflow selects them by name.
+    add_executable(test_gnfs_e2e_ladder
+        tests/test_gnfs_e2e_ladder.cpp
+    )
+    target_link_libraries(test_gnfs_e2e_ladder PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME GNFS_E2E_Ladder30 COMMAND test_gnfs_e2e_ladder
+        --digits 30 --route default
+        --expect 448956057488011 427415244035077)
+    add_test(NAME GNFS_E2E_Ladder35 COMMAND test_gnfs_e2e_ladder
+        --digits 35 --route default
+        --expect 508252685067849079 76762190200241549)
+    add_test(NAME GNFS_E2E_Ladder40 COMMAND test_gnfs_e2e_ladder
+        --digits 40 --route default
+        --expect 82171657662667870721 77484034867236456113)
+    add_test(NAME GNFS_E2E_50d COMMAND test_gnfs_e2e_ladder
+        --digits 50 --route structured
+        --expect 9428841820209577086544469 5036760558219709199288957)
+    set_tests_properties(GNFS_E2E_Ladder30 GNFS_E2E_Ladder35 GNFS_E2E_Ladder40
+        PROPERTIES LABELS "heavy" TIMEOUT 1800)
+    set_tests_properties(GNFS_E2E_50d PROPERTIES LABELS "stress" TIMEOUT 14400)
+
     # Schirokauer end-to-end with non-monic polynomials (leading coefficient
     # congruent to 3 mod 4): the 27-bit pipeline on an unsplit and a split
     # (linear times quadratic) fixture, each required to find a factor of N.
