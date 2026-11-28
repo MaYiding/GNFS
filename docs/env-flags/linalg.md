@@ -37,9 +37,9 @@ word-packed Gaussian elimination path used by `BlockLanczos`. The solver writes
 (default `50`, clamped to `[1, 1'000'000]`). A successful solve removes the
 checkpoint; an interrupted process may leave it for the next invocation.
 
-Resume is accepted only when the checksum, source matrix identity, matrix shape,
-packed payload, and cursor semantics all agree. For a matrix with `rows` and
-`cols`, the persisted cursor must satisfy:
+Resume is accepted only when the file digest, format version, source matrix
+identity, matrix shape, packed payload, and cursor semantics all agree. For a
+matrix with `rows` and `cols`, the persisted cursor must satisfy:
 
 ```text
 pivot_row <= rows
@@ -48,31 +48,67 @@ pivot_row <= cur_col - rows
 ```
 
 The final invariant records that every completed pivot corresponds to a matrix
-column already scanned. A checksum-valid file that violates any invariant is
+column already scanned. A digest-valid file that violates any invariant is
 rejected, removed, and replaced by a fresh run (fail-closed resume with
 deterministic fallback). This prevents a malformed or stale cursor from
 skipping elimination work or treating an uninitialized augmented matrix as a
 completed prefix.
 
-V3 checkpoints bind the state to a SHA-256 digest of the source matrix. The
-canonical byte stream starts with the ASCII tag `GNFS_SPARSE_MATRIX_ID_V1`
+V4 checkpoints bind the state to the SHA-256 fingerprint of the source matrix.
+The canonical byte stream starts with the ASCII tag `GNFS_SPARSE_MATRIX_ID_V1`
 (without a terminator), followed by `rows` and `cols`. Each row then contributes
 its nonzero count and sorted column indices. Every number uses an unsigned
 64-bit little-endian encoding. Row boundaries, row order, and column coordinates
 are significant; insertion order is not. The solver normalizes rows before this
 step, so hashing reads existing indices without copying them.
 
-The digest is computed once per solve only when checkpointing is enabled. With
-`GNFS_BL_CHECKPOINT` unset or empty, the solver does not hash the matrix. Periodic
-saves reuse the same digest.
+The matrix fingerprint is computed once per solve only when checkpointing is
+enabled. With `GNFS_BL_CHECKPOINT` unset or empty, the solver does not hash the
+matrix. Periodic saves reuse the same fingerprint.
 
-V3 retains the V2 little-endian field order through `header_checksum`, then
-inserts the 32 digest bytes before `aug_word_count`. The header checksum XORs
-`version`, `rows`, `cols`, `aug_words_per_row`, `pivot_row`, `cur_col`, `iteration`,
-and the four little-endian digest words. The payload checksum and incomplete
-magic protocol remain unchanged. A complete V3 file contains
-`120 + 8 * aug_word_count` bytes. A state without a fingerprint cannot be saved;
-the writer rejects it before truncating an existing file.
+The V4 file layout is:
+
+```text
+[u64 magic]              'BLCKPT01' bytes
+[u64 version]            4
+[u64 rows]               m
+[u64 cols]               n
+[u64 aug_words_per_row]  ceil((m+n)/64)
+[u64 pivot_row]          next pivot row index
+[u64 cur_col]            next column to scan
+[u64 iteration]          pivots already completed
+[32 bytes digest]        SHA-256 of the bytes from the version field on
+[32 bytes matrix_fingerprint]
+[u64 aug_word_count]     rows * aug_words_per_row
+[u64[] aug_payload]      packed augmented matrix
+```
+
+Every `u64` is little-endian. A complete V4 file contains
+`136 + 8 * aug_word_count` bytes. The file digest covers the bytes from the
+version field to the last payload word and skips only its own 32 bytes, so it
+binds the cursor, the matrix fingerprint, the word count, and the exact order of
+the payload. It replaces the two XOR folds of V2 and V3, which accepted any
+permutation of the payload words. Both writing and reading compute the digest in
+one sequential scan over 64 KiB staging chunks, which costs one SHA-256 pass over
+the payload per save or load. A state without a fingerprint, or with a payload
+that does not match `rows * aug_words_per_row`, cannot be saved; the writer
+rejects it before it creates any file.
+
+Saving is atomic. `save()` creates `<base>.bl_ckpt.tmp` exclusively and fails
+without touching that name when it already exists, because another writer or an
+interrupted save owns it. It writes the complete file there with the magic still
+set to `INCOMPLETE`, hashes the payload while writing, patches the digest, flips
+the magic, flushes the file to disk, closes it, and only then renames it over
+`<base>.bl_ckpt` and flushes the directory. The target is never truncated in
+place, so a failed save leaves the previous checkpoint byte for byte intact and
+removes the temporary file. Two details follow from this protocol:
+
+- When the directory flush fails after the rename, `save()` returns `false`
+  although the new checkpoint is already published; the solver prints its usual
+  warning and continues.
+- When a solve starts with `GNFS_BL_CHECKPOINT` set, it removes a leftover
+  `.tmp` file first. Otherwise every save of that solve would be refused. One
+  base path therefore belongs to one solve at a time.
 
 The reader checks payload counts against the 64 GiB packed-payload cap and the
 vector implementation's maximum size before allocation. If allocating a valid
@@ -81,25 +117,34 @@ The allocation-failure regression uses a Linux resource limit and explicitly
 skips that probe on other platforms or under AddressSanitizer; oversized-count
 rejection remains covered on every platform.
 
-V1 native-endian and V2 little-endian files remain decodable, with an absent
-matrix fingerprint. They are not safe to resume because a different matrix may
-have the same dimensions. The solver removes these unbound checkpoints and
-restarts elimination. This one-time compatibility transition loses saved
-elimination work but does not change relation data or the resulting dependencies.
-There is no option to resume an unbound legacy state.
+V1 native-endian, V2 little-endian, and V3 files remain decodable through
+`load()`, which reports the source version in `format_version`. V1 and V2 carry
+no matrix fingerprint, and V3 has only the XOR folds, so the solver resumes none
+of them. It prints one `rejecting incompatible checkpoint` line that names the
+format version, removes the file, and restarts elimination. After this upgrade
+an existing V3 checkpoint is therefore discarded and its elimination work is
+recomputed. Relation data and the resulting dependencies do not change, and
+there is no option to resume a legacy state. New writes produce V4 only.
 
 **集成点与测试**:
-- `src/linalg/block_lanczos.cpp` — matrix identity, shape, and cursor validation
-  before copying checkpoint state into the live augmented matrix.
-- `include/gnfs/linalg/matrix_fingerprint.hpp` — canonical sparse-matrix identity.
-- `include/gnfs/linalg/bl_checkpoint.hpp` — V3 binding, legacy decoding, checksums,
-  payload bounds, and two-phase completion marker contract.
-- `tests/test_bl_checkpoint.cpp` — independent V3 byte fixture, legacy decoding,
-  identity corruption, and unbound-save preservation.
-- `tests/test_bl_resume_integration.cpp` — baseline parity, synthetic and real
-  partial resume, same-shape matrix mismatch, legacy restart, dimension mismatch
-  rejection, and impossible-cursor fallback. Resume diagnostics prove a matching
-  checkpoint was consumed instead of merely producing fresh-run parity.
+- `src/linalg/block_lanczos.cpp`: format version, matrix identity, shape, and
+  cursor validation before copying checkpoint state into the live augmented
+  matrix, plus the removal of a stale temporary file when a solve starts.
+- `include/gnfs/linalg/matrix_fingerprint.hpp`: canonical sparse-matrix identity.
+- `include/gnfs/linalg/bl_checkpoint.hpp`: V4 layout and SHA-256 digest, atomic
+  publication, legacy decoding, and payload bounds.
+- `tests/test_bl_checkpoint.cpp`: independent V4 byte and digest fixtures, legacy
+  V1 to V3 decoding, payload word swap, truncation and tampering, temporary file
+  handling, and unbound-save preservation.
+- `tests/test_bl_checkpoint_stream_failure.cpp`: every injectable allocation
+  failure in `save()`, `load()`, and `exists_and_valid()` returns failure, and a
+  failed `save()` leaves the previous checkpoint byte for byte intact, readable,
+  and without a temporary file.
+- `tests/test_bl_resume_integration.cpp`: baseline parity, synthetic and real
+  partial resume, same-shape matrix mismatch, legacy V1 to V3 restart, stale
+  temporary file removal, dimension mismatch rejection, and impossible-cursor
+  fallback. Resume diagnostics prove a matching checkpoint was consumed instead
+  of merely producing fresh-run parity.
 
 ---
 

@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
@@ -220,8 +221,11 @@ void test_ckpt_enabled_completes_and_matches_baseline() {
     std::cout << "  baseline=" << baseline.size() << " with_ckpt=" << with_ckpt.size() << std::endl;
     GNFS_TEST_CHECK(baseline_sig == with_sig && "ckpt-enabled run must match baseline deps");
 
-    // 3. Successful completion must remove the checkpoint file.
+    // 3. Successful completion must remove the checkpoint file and must not
+    //    leave a temporary file behind.
     GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
+    GNFS_TEST_CHECK(!std::filesystem::exists(
+        std::filesystem::path(BlockLanczosCheckpoint::temporary_path(base + ".bl_ckpt"))));
 
     std::cout << "  ENV-enabled run matches baseline + removes ckpt: PASS" << std::endl;
 }
@@ -671,12 +675,29 @@ static void write_legacy_identity_fixture(const std::string& path, uint64_t vers
         }
         GNFS_TEST_CHECK(file);
     };
+    // V3 XOR-folded the four little-endian words of the fingerprint digest into
+    // the header checksum and stored the digest right after that checksum.
+    const bool bound = version == BlockLanczosCheckpoint::VERSION_V3;
+    uint64_t fingerprint_fold = 0;
+    if (bound) {
+        const auto& bytes = checkpoint.matrix_fingerprint->bytes;
+        for (size_t index = 0; index < bytes.size(); ++index) {
+            fingerprint_fold ^= static_cast<uint64_t>(std::to_integer<uint8_t>(bytes[index]))
+                                << ((index % sizeof(uint64_t)) * 8);
+        }
+    }
     for (uint64_t field : {BlockLanczosCheckpoint::MAGIC, version, checkpoint.rows, checkpoint.cols,
                            checkpoint.aug_words_per_row, checkpoint.pivot_row, checkpoint.cur_col,
                            checkpoint.iteration})
         write_u64(field);
     write_u64(version ^ checkpoint.rows ^ checkpoint.cols ^ checkpoint.aug_words_per_row ^
-              checkpoint.pivot_row ^ checkpoint.cur_col ^ checkpoint.iteration);
+              checkpoint.pivot_row ^ checkpoint.cur_col ^ checkpoint.iteration ^ fingerprint_fold);
+    if (bound) {
+        const auto& bytes = checkpoint.matrix_fingerprint->bytes;
+        file.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+        GNFS_TEST_CHECK(file);
+    }
     write_u64(checkpoint.aug.size());
     uint64_t checksum = 0;
     for (uint64_t word : checkpoint.aug) {
@@ -693,12 +714,19 @@ void test_legacy_checkpoints_restart() {
     auto matrix = identity_fixture_matrix(true);
     BlockLanczos solver;
     const auto baseline = canonical(solver.find_dependencies(matrix));
-    for (uint64_t version :
-         {BlockLanczosCheckpoint::VERSION_V1, BlockLanczosCheckpoint::VERSION_V2}) {
+    constexpr uint64_t legacy_versions[] = {BlockLanczosCheckpoint::VERSION_V1,
+                                            BlockLanczosCheckpoint::VERSION_V2,
+                                            BlockLanczosCheckpoint::VERSION_V3};
+    for (const uint64_t version : legacy_versions) {
         write_legacy_identity_fixture(base + ".bl_ckpt", version);
+        // Older formats stay decodable for diagnostics. V3 even carries the
+        // matrix identity, but its XOR folds are blind to payload word swaps,
+        // so the solver must not resume from it either.
         const auto loaded = BlockLanczosCheckpoint::load(base + ".bl_ckpt");
         GNFS_TEST_CHECK(loaded.has_value());
-        GNFS_TEST_CHECK(!loaded->matrix_fingerprint);
+        GNFS_TEST_CHECK(loaded->format_version == version);
+        GNFS_TEST_CHECK(loaded->matrix_fingerprint.has_value() ==
+                        (version == BlockLanczosCheckpoint::VERSION_V3));
         std::vector<std::vector<bool>> resumed;
         std::string log;
         {
@@ -709,10 +737,63 @@ void test_legacy_checkpoints_restart() {
         }
         GNFS_TEST_CHECK(canonical(resumed) == baseline);
         GNFS_TEST_CHECK(log.find("rejecting incompatible checkpoint") != std::string::npos);
+        // The rejection names the format version instead of blaming the matrix.
+        const std::string version_line = "format version " + std::to_string(version);
+        GNFS_TEST_CHECK(log.find(version_line) != std::string::npos);
         GNFS_TEST_CHECK(log.find("resume from") == std::string::npos);
         for (const auto& dependency : resumed)
             GNFS_TEST_CHECK(dep_is_valid(matrix, dependency));
+        GNFS_TEST_CHECK(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"));
     }
+}
+
+void test_stale_temporary_removed_at_solve_start() {
+    std::cout << "Testing stale temporary file is removed when a solve starts..." << std::endl;
+    auto mat = make_dependent_matrix();
+    const auto base = tmp_base_path("stale_temporary");
+    CkptCleanup cleanup{base + ".bl_ckpt"};
+    CkptCleanup temporary_cleanup{BlockLanczosCheckpoint::temporary_path(base + ".bl_ckpt")};
+    const std::filesystem::path temporary_path = std::filesystem::path(temporary_cleanup.path);
+
+    std::vector<std::vector<bool>> baseline;
+    {
+        EnvUnsetScope guard_a("GNFS_BL_CHECKPOINT");
+        EnvUnsetScope guard_b("GNFS_BL_CHECKPOINT_INTERVAL");
+        BlockLanczos solver;
+        baseline = solver.find_dependencies(mat, 16);
+    }
+    const auto baseline_sig = canonical(baseline);
+
+    // Leftover of a save that was interrupted: INCOMPLETE magic, so no reader
+    // would accept it, yet save() refuses to write while it exists.
+    {
+        std::ofstream stale(temporary_cleanup.path, std::ios::binary | std::ios::trunc);
+        GNFS_TEST_CHECK(stale);
+        char zero[16] = {};
+        stale.write(zero, sizeof(zero));
+    }
+
+    std::vector<std::vector<bool>> resumed;
+    std::string log;
+    {
+        EnvScope guard_a("GNFS_BL_CHECKPOINT", base);
+        EnvScope guard_b("GNFS_BL_CHECKPOINT_INTERVAL", "50");
+        CerrCapture capture;
+        BlockLanczos solver;
+        resumed = solver.find_dependencies(mat, 16);
+        log = capture.output.str();
+    }
+
+    require_test(canonical(resumed) == baseline_sig, "stale temporary file changed the deps");
+    // Saves succeed only after the stale file is gone: save() refuses to write
+    // while a temporary file exists, and the solver logs each refusal.
+    require_test(log.find("save failed") == std::string::npos,
+                 "a save failed behind the stale temporary file");
+    require_test(!BlockLanczosCheckpoint::exists_and_valid(base + ".bl_ckpt"),
+                 "checkpoint survived a successful solve");
+    require_test(!std::filesystem::exists(temporary_path),
+                 "temporary file survived a successful solve");
+    std::cout << "  stale temporary file removal: PASS" << std::endl;
 }
 
 int main() {
@@ -727,6 +808,7 @@ int main() {
     test_matrix_fingerprint_canonical_bytes();
     test_bound_matrix_resume_and_mismatch_rejection();
     test_legacy_checkpoints_restart();
+    test_stale_temporary_removed_at_solve_start();
 
     std::cout << "\n===== All BL resume integration tests PASSED =====" << std::endl;
     return 0;
