@@ -501,7 +501,8 @@ JSON object fails the step or counts as a failed rung. The object carries:
 The failure categories overlap. `algebraic_sqrt_failed` and
 `rational_sqrt_failed` count every failed square root, while
 `ideal_parity_precheck_failed`, `rational_parity_failed`, `couveignes_failed`,
-and `hensel_related` count the reasons. `hensel_related` includes every
+and `hensel_related` count the reasons; any other `Warn` or `Error` of that
+stage counts as `other_square_root`. `hensel_related` includes every
 Couveignes failure of a run that does not set `GNFS_FORCE_COUVEIGNES=1`,
 because the algebraic square root reaches Couveignes only after Hensel lifting
 returns no root. The type in `polynomial_mod2` comes from a second
@@ -509,6 +510,8 @@ returns no root. The type in `polynomial_mod2` comes from a second
 measured interval, and its `matches_run` is `true` only when `Pipeline::run()`
 logged the same root `m`. When the two selections differ, the properties are
 `null` and `m` is the root that `Pipeline::run()` logged.
+`dependencies_succeeded_before_pairwise_xor` is `false` when an XOR pair
+produced the factors and `null` when GNFS produced none.
 
 Statistics are `null` when `Pipeline::run()` threw before it published them;
 the stage timings, the structured-route counts, the square-root evidence, and
