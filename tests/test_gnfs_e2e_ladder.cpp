@@ -35,6 +35,11 @@
 // and filter rounds stay separated. Phase::LinearAlgebra covers both the
 // matrix build and the dependency solver; the "SGE preprocessing" event marks
 // the boundary between them.
+//
+// The log callback keeps the failure evidence of the square root stage. It
+// counts the Warn and Error messages of that stage by category and stores up
+// to 20 distinct message texts, so a passing run still shows why every
+// dependency before the successful one was wasted.
 
 #include "support/scoped_environment_stderr.hpp"
 #include "support/test_check.hpp"
@@ -51,6 +56,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iomanip>
 #include <iostream>
@@ -71,6 +77,7 @@ using gnfs::api::FactorizationMethod;
 using gnfs::api::FactorResult;
 using gnfs::api::FactorStats;
 using gnfs::api::LogEntry;
+using gnfs::api::LogLevel;
 using gnfs::api::Phase;
 using gnfs::api::Pipeline;
 using gnfs::api::ProgressInfo;
@@ -85,6 +92,63 @@ constexpr std::string_view kStructuredMatrixRecordPrefix = "structured_filter_ma
 // Phase::LinearAlgebra starts with the matrix build. This progress event is
 // the first one that the dependency solver announces.
 constexpr std::string_view kSolverStartMessage = "SGE preprocessing";
+// Message texts of the square root stage. The pipeline logs a failed rational
+// or algebraic square root as a Warn whose text starts with the failure name
+// and ends with the reason that the square root code returned.
+constexpr std::string_view kAlgebraicSqrtFailedPrefix = "Algebraic sqrt failed";
+constexpr std::string_view kRationalSqrtFailedPrefix = "Rational sqrt failed";
+// The parity pre-check of the algebraic square root runs before Hensel
+// lifting and rejects the dependency without either square root algorithm.
+constexpr std::string_view kIdealParityReason = "Algebraic ideal powers parity check failed";
+// The rational square root rejects an odd prime exponent for the same reason:
+// the selected relations do not multiply to a square.
+constexpr std::string_view kRationalFactorBaseParityReason = "Factor base exponent not even";
+constexpr std::string_view kRationalLargePrimeParityReason = "Large prime exponent not even";
+// The algebraic square root reaches Couveignes only after Hensel lifting
+// returned no root, unless GNFS_FORCE_COUVEIGNES=1 skips Hensel.
+constexpr std::string_view kCouveignesFailedReason = "Couveignes algorithm failed";
+constexpr std::string_view kHenselName = "Hensel";
+constexpr size_t kSqrtFailureSampleLimit = 20;
+constexpr size_t kSqrtFailureSampleChars = 240;
+
+// Categories of the Warn and Error messages that the square root stage
+// emits. One message can fall into several categories: an algebraic failure
+// also counts under its reason, and a Couveignes failure counts as a Hensel
+// failure as well unless the process forces the Couveignes path.
+enum class SqrtFailureCategory : uint8_t {
+    AlgebraicSqrtFailed,
+    RationalSqrtFailed,
+    IdealParityPrecheckFailed,
+    RationalParityFailed,
+    CouveignesFailed,
+    HenselRelated,
+    OtherSquareRoot,
+    Count
+};
+constexpr size_t kSqrtFailureCategoryCount = static_cast<size_t>(SqrtFailureCategory::Count);
+
+[[nodiscard]] constexpr std::string_view
+sqrt_failure_category_name(SqrtFailureCategory category) noexcept {
+    switch (category) {
+    case SqrtFailureCategory::AlgebraicSqrtFailed:
+        return "algebraic_sqrt_failed";
+    case SqrtFailureCategory::RationalSqrtFailed:
+        return "rational_sqrt_failed";
+    case SqrtFailureCategory::IdealParityPrecheckFailed:
+        return "ideal_parity_precheck_failed";
+    case SqrtFailureCategory::RationalParityFailed:
+        return "rational_parity_failed";
+    case SqrtFailureCategory::CouveignesFailed:
+        return "couveignes_failed";
+    case SqrtFailureCategory::HenselRelated:
+        return "hensel_related";
+    case SqrtFailureCategory::OtherSquareRoot:
+        return "other_square_root";
+    case SqrtFailureCategory::Count:
+        break;
+    }
+    return "unknown";
+}
 
 struct LadderFixture final {
     uint32_t digits;
@@ -257,9 +321,35 @@ private:
     bool running_ = false;
 };
 
-// Counts the structured-route records that the log callback observes.
+// Cuts a UTF-8 text to at most `max_bytes` bytes without splitting a
+// multi-byte sequence.
+[[nodiscard]] std::string_view truncate_utf8(std::string_view text, size_t max_bytes) noexcept {
+    if (text.size() <= max_bytes) {
+        return text;
+    }
+    size_t end = max_bytes;
+    // A continuation byte at `end` belongs to a sequence that starts before it.
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xc0U) == 0x80U) {
+        --end;
+    }
+    return text.substr(0, end);
+}
+
+// Whether a process variable is set to exactly "1".
+[[nodiscard]] bool environment_flag_set(const char* name) noexcept {
+    const char* value = std::getenv(name);
+    return value != nullptr && std::string_view(value) == "1";
+}
+
+// Counts the structured-route records that the log callback observes and
+// keeps the failure evidence of the square root stage.
 class RouteEvidence final {
 public:
+    // `force_couveignes` is set when GNFS_FORCE_COUVEIGNES=1 makes the
+    // algebraic square root skip Hensel lifting, because a Couveignes failure
+    // then no longer implies that Hensel returned no root.
+    explicit RouteEvidence(bool force_couveignes) : force_couveignes_(force_couveignes) {}
+
     void observe(const LogEntry& entry) {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (entry.message.starts_with(kStructuredMatrixRecordPrefix)) {
@@ -267,6 +357,7 @@ public:
         } else if (entry.message.starts_with(kStructuredRecordPrefix)) {
             ++structured_filter_records_;
         }
+        observe_sqrt_failure(entry);
     }
 
     [[nodiscard]] size_t structured_filter_records() const {
@@ -279,10 +370,78 @@ public:
         return structured_matrix_records_;
     }
 
+    [[nodiscard]] std::array<size_t, kSqrtFailureCategoryCount> sqrt_failure_counts() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return sqrt_failure_counts_;
+    }
+
+    [[nodiscard]] std::vector<std::string> sqrt_failure_samples() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return sqrt_failure_samples_;
+    }
+
 private:
+    // Counts one Warn or Error message of the square root stage under every
+    // category that it matches and keeps its text as a sample. The caller
+    // holds the mutex.
+    void observe_sqrt_failure(const LogEntry& entry) {
+        if (entry.level != LogLevel::Warn && entry.level != LogLevel::Error) {
+            return;
+        }
+        const std::string& message = entry.message;
+        const bool algebraic = message.starts_with(kAlgebraicSqrtFailedPrefix);
+        const bool rational = message.starts_with(kRationalSqrtFailedPrefix);
+        if (entry.phase != Phase::SquareRoot && !algebraic && !rational) {
+            return;
+        }
+
+        bool counted = false;
+        const auto count = [this, &counted](SqrtFailureCategory category) {
+            ++sqrt_failure_counts_[static_cast<size_t>(category)];
+            counted = true;
+        };
+        const bool couveignes = message.find(kCouveignesFailedReason) != std::string::npos;
+        if (algebraic) {
+            count(SqrtFailureCategory::AlgebraicSqrtFailed);
+        }
+        if (rational) {
+            count(SqrtFailureCategory::RationalSqrtFailed);
+        }
+        if (message.find(kIdealParityReason) != std::string::npos) {
+            count(SqrtFailureCategory::IdealParityPrecheckFailed);
+        }
+        if (rational && (message.find(kRationalFactorBaseParityReason) != std::string::npos ||
+                         message.find(kRationalLargePrimeParityReason) != std::string::npos)) {
+            count(SqrtFailureCategory::RationalParityFailed);
+        }
+        if (couveignes) {
+            count(SqrtFailureCategory::CouveignesFailed);
+        }
+        if (message.find(kHenselName) != std::string::npos || (couveignes && !force_couveignes_)) {
+            count(SqrtFailureCategory::HenselRelated);
+        }
+        if (!counted) {
+            count(SqrtFailureCategory::OtherSquareRoot);
+        }
+
+        // Samples are distinct after truncation, so a label that differs only
+        // past the cut still counts as the same message.
+        if (sqrt_failure_samples_.size() >= kSqrtFailureSampleLimit) {
+            return;
+        }
+        const std::string sample(truncate_utf8(message, kSqrtFailureSampleChars));
+        if (std::find(sqrt_failure_samples_.begin(), sqrt_failure_samples_.end(), sample) ==
+            sqrt_failure_samples_.end()) {
+            sqrt_failure_samples_.push_back(sample);
+        }
+    }
+
     mutable std::mutex mutex_;
     size_t structured_filter_records_ = 0;
     size_t structured_matrix_records_ = 0;
+    std::array<size_t, kSqrtFailureCategoryCount> sqrt_failure_counts_{};
+    std::vector<std::string> sqrt_failure_samples_;
+    bool force_couveignes_ = false;
 };
 
 // The published statistics that the record carries. A disengaged field means
@@ -316,16 +475,22 @@ struct LadderRecord final {
     double wall_total_seconds = 0.0;
     std::array<StageTiming, kStageCount> stages{};
     std::optional<uint64_t> peak_rss_bytes;
+    // Warn and Error messages of the square root stage, counted by category.
+    std::array<size_t, kSqrtFailureCategoryCount> sqrt_failure_counts{};
+    std::vector<std::string> sqrt_failure_samples;
 };
 
-// Copies the measurements of a finished recorder into the record. Both exit
-// paths of run_ladder call it, so a run that throws keeps its timing evidence.
+// Copies the measurements and the log evidence of a finished recorder into the
+// record. Both exit paths of run_ladder call it, so a run that throws keeps
+// its timing evidence.
 void capture_measurements(LadderRecord& record, const StageRecorder& recorder,
                           const RouteEvidence& evidence) {
     record.wall_total_seconds = recorder.wall_total_seconds();
     record.stages = recorder.stages();
     record.structured_filter_records = evidence.structured_filter_records();
     record.structured_matrix_records = evidence.structured_matrix_records();
+    record.sqrt_failure_counts = evidence.sqrt_failure_counts();
+    record.sqrt_failure_samples = evidence.sqrt_failure_samples();
     record.peak_rss_bytes = gnfs::util::process_memory_snapshot().lifetime_peak_rss_bytes;
 }
 
@@ -541,9 +706,10 @@ FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
     config.set_method(FactorizationMethod::GNFS).set_verbose(false);
 
     // Declared before the Pipeline so that the callbacks never outlive their
-    // state.
+    // state. The environment is frozen at this point, so the evidence reads
+    // GNFS_FORCE_COUVEIGNES as the run sees it.
     StageRecorder recorder;
-    RouteEvidence evidence;
+    RouteEvidence evidence{environment_flag_set("GNFS_FORCE_COUVEIGNES")};
     Pipeline pipeline(n, config);
     pipeline.set_progress_callback(
         [&recorder](const ProgressInfo& info) { recorder.observe(info); });
@@ -730,6 +896,17 @@ void emit_record(std::ostream& os, const LadderRecord& record) {
     os << ",\"peak_rss_bytes\":"
        << (record.peak_rss_bytes.has_value() ? std::to_string(*record.peak_rss_bytes)
                                              : std::string("null"));
+    os << ",\"sqrt_failure_counts\":{";
+    for (size_t index = 0; index < record.sqrt_failure_counts.size(); ++index) {
+        if (index > 0) {
+            os << ',';
+        }
+        const auto category = static_cast<SqrtFailureCategory>(index);
+        os << quote(sqrt_failure_category_name(category)) << ':'
+           << record.sqrt_failure_counts[index];
+    }
+    os << "},\"sqrt_failure_samples\":";
+    append_text_array(os, record.sqrt_failure_samples);
     os << '}';
 }
 
