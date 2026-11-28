@@ -17,25 +17,25 @@
 namespace gnfs::util {
 
 /// 日志级别
-enum class LogLevel : uint8_t {
-    Trace = 0,
-    Debug = 1,
-    Info = 2,
-    Warn = 3,
-    Error = 4,
-    Fatal = 5
-};
+enum class LogLevel : uint8_t { Trace = 0, Debug = 1, Info = 2, Warn = 3, Error = 4, Fatal = 5 };
 
 /// 日志级别转字符串
 inline const char* log_level_str(LogLevel level) {
     switch (level) {
-        case LogLevel::Trace: return "TRACE";
-        case LogLevel::Debug: return "DEBUG";
-        case LogLevel::Info:  return "INFO ";
-        case LogLevel::Warn:  return "WARN ";
-        case LogLevel::Error: return "ERROR";
-        case LogLevel::Fatal: return "FATAL";
-        default: return "?????";
+    case LogLevel::Trace:
+        return "TRACE";
+    case LogLevel::Debug:
+        return "DEBUG";
+    case LogLevel::Info:
+        return "INFO ";
+    case LogLevel::Warn:
+        return "WARN ";
+    case LogLevel::Error:
+        return "ERROR";
+    case LogLevel::Fatal:
+        return "FATAL";
+    default:
+        return "?????";
     }
 }
 
@@ -68,7 +68,7 @@ public:
     /// 推荐传入 std::cerr / std::cout / std::clog 等具有静态生存期的标准流。
     void set_output(std::ostream& os) {
         std::lock_guard<std::mutex> lock(mutex_);
-        file_.reset();  // 释放任何之前 set_file 打开的文件
+        file_.reset(); // 释放任何之前 set_file 打开的文件
         output_ = &os;
     }
 
@@ -102,7 +102,8 @@ public:
 
     /// 日志输出
     void log(LogLevel level, std::string_view module, std::string_view message) {
-        if (!is_enabled(level)) return;
+        if (!is_enabled(level))
+            return;
 
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -112,8 +113,8 @@ public:
         if (timestamps_) {
             auto now = std::chrono::system_clock::now();
             auto time = std::chrono::system_clock::to_time_t(now);
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now.time_since_epoch()) % 1000;
+            const auto elapsed = now.time_since_epoch();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed) % 1000;
 
             std::tm tm_buf;
 #ifdef _WIN32
@@ -148,7 +149,8 @@ public:
     /// 格式化日志输出（简化版，不使用 std::format）
     template <typename... Args>
     void log_args(LogLevel level, std::string_view module, Args&&... args) {
-        if (!is_enabled(level)) return;
+        if (!is_enabled(level))
+            return;
 
         std::ostringstream ss;
         (ss << ... << std::forward<Args>(args));
@@ -156,11 +158,7 @@ public:
     }
 
 private:
-    Logger()
-        : level_(LogLevel::Info)
-        , output_(&std::cerr)
-        , timestamps_(true)
-        , thread_id_(false) {}
+    Logger() : level_(LogLevel::Info), output_(&std::cerr), timestamps_(true), thread_id_(false) {}
 
     ~Logger() = default;
 
