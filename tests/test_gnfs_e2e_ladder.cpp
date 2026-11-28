@@ -35,13 +35,31 @@
 // and filter rounds stay separated. Phase::LinearAlgebra covers both the
 // matrix build and the dependency solver; the "SGE preprocessing" event marks
 // the boundary between them.
+//
+// The log callback keeps the failure evidence of the square root stage. It
+// counts the Warn and Error messages of that stage by category and stores up
+// to 20 distinct message texts. The pipeline logs nothing for an attempt
+// whose square roots both succeed but whose GCDs are all trivial, so the
+// progress events of the attempts count those as unlogged failures. Together
+// the two account for every dependency before the successful one.
+//
+// The record also names the type of the selected polynomial modulo 2. Before
+// the measured run, a second Pipeline with the same Config selects the
+// polynomial again, because run() keeps the one it selects, and the root that
+// run() logs confirms that both selections agree.
+//
+// The progress callback marks the XOR-pair fallback of the factor extraction,
+// so the record tells a factorization by one dependency from one that needed
+// a pair.
 
+#include "support/ladder_diagnostics.hpp"
 #include "support/scoped_environment_stderr.hpp"
 #include "support/test_check.hpp"
 
 #include <gnfs/api/json.hpp>
 #include <gnfs/api/pipeline.hpp>
 #include <gnfs/core/integer.hpp>
+#include <gnfs/core/polynomial_context.hpp>
 #include <gnfs/util/process_memory.hpp>
 
 #include <algorithm>
@@ -51,6 +69,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iomanip>
 #include <iostream>
@@ -64,6 +83,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 using gnfs::api::Config;
@@ -75,7 +95,11 @@ using gnfs::api::Phase;
 using gnfs::api::Pipeline;
 using gnfs::api::ProgressInfo;
 using gnfs::core::Integer;
+using gnfs::core::PolynomialContext;
 using gnfs::tests::support::ScopedEnvironmentVariable;
+
+// The pure helpers behind the diagnostics of the record.
+namespace diag = gnfs::tests::support;
 
 namespace {
 
@@ -85,6 +109,12 @@ constexpr std::string_view kStructuredMatrixRecordPrefix = "structured_filter_ma
 // Phase::LinearAlgebra starts with the matrix build. This progress event is
 // the first one that the dependency solver announces.
 constexpr std::string_view kSolverStartMessage = "SGE preprocessing";
+// The square-root failure samples are distinct after truncation, cut to a
+// bounded length, and limited in count.
+constexpr size_t kSqrtFailureSampleLimit = 20;
+constexpr size_t kSqrtFailureSampleChars = 240;
+// The polynomial selection logs its root as "m=<root> time=<seconds>s".
+constexpr std::string_view kPolynomialRootLogPrefix = "m=";
 
 struct LadderFixture final {
     uint32_t digits;
@@ -257,9 +287,23 @@ private:
     bool running_ = false;
 };
 
-// Counts the structured-route records that the log callback observes.
+// Whether a process variable is set to exactly "1".
+[[nodiscard]] bool environment_flag_set(const char* name) noexcept {
+    const char* value = std::getenv(name);
+    return value != nullptr && std::string_view(value) == "1";
+}
+
+// Counts the structured-route records that the log callback observes, keeps
+// the failure evidence of the square root stage, remembers the root of the
+// polynomial that run() selected, and tracks the attempts of the factor
+// extraction from the progress callback.
 class RouteEvidence final {
 public:
+    // `force_couveignes` is set when GNFS_FORCE_COUVEIGNES=1 makes the
+    // algebraic square root skip Hensel lifting, because a Couveignes failure
+    // then no longer implies that Hensel returned no root.
+    explicit RouteEvidence(bool force_couveignes) : force_couveignes_(force_couveignes) {}
+
     void observe(const LogEntry& entry) {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (entry.message.starts_with(kStructuredMatrixRecordPrefix)) {
@@ -267,6 +311,20 @@ public:
         } else if (entry.message.starts_with(kStructuredRecordPrefix)) {
             ++structured_filter_records_;
         }
+        observe_polynomial_root(entry);
+        observe_sqrt_failure(entry);
+    }
+
+    void observe(const ProgressInfo& info) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        tracker_.observe_progress(info.message);
+    }
+
+    // Ends the attempt tracking once run() returned. A run that throws
+    // leaves its open attempt unresolved.
+    void finish(bool succeeded) {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        tracker_.finish(succeeded);
     }
 
     [[nodiscard]] size_t structured_filter_records() const {
@@ -279,11 +337,202 @@ public:
         return structured_matrix_records_;
     }
 
+    [[nodiscard]] bool pairwise_xor_attempted() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return tracker_.pairwise_xor_attempted();
+    }
+
+    [[nodiscard]] size_t pairwise_xor_dependencies_tried() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return tracker_.pairwise_xor_dependencies_tried();
+    }
+
+    // The root m that the polynomial selection logged, as decimal text.
+    [[nodiscard]] std::optional<std::string> run_polynomial_m() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return run_polynomial_m_;
+    }
+
+    // The counts of the matched categories, completed by the attempts that
+    // failed without a log.
+    [[nodiscard]] std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        std::array<size_t, diag::kSqrtFailureCategoryCount> counts = sqrt_failure_counts_;
+        const auto unlogged = static_cast<size_t>(diag::SqrtFailureCategory::UnloggedFailure);
+        counts[unlogged] = tracker_.unlogged_failures();
+        return counts;
+    }
+
+    [[nodiscard]] std::vector<std::string> sqrt_failure_samples() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return sqrt_failure_samples_;
+    }
+
 private:
+    // Keeps the root of the "m=<root> time=..." line. The caller holds the
+    // mutex.
+    void observe_polynomial_root(const LogEntry& entry) {
+        if (entry.phase != Phase::PolynomialSelection ||
+            !entry.message.starts_with(kPolynomialRootLogPrefix)) {
+            return;
+        }
+        std::string root(entry.message.substr(kPolynomialRootLogPrefix.size()));
+        const size_t space = root.find(' ');
+        if (space != std::string::npos) {
+            root.erase(space);
+        }
+        run_polynomial_m_ = std::move(root);
+    }
+
+    // Counts one failure log of the square root stage under every category
+    // that it matches and keeps its text as a sample. Other logs stay
+    // unrecorded. The caller holds the mutex.
+    void observe_sqrt_failure(const LogEntry& entry) {
+        const auto match = diag::classify_sqrt_failure_log(entry, force_couveignes_);
+        if (!match.any()) {
+            return;
+        }
+        tracker_.note_failure_log();
+        for (size_t category = 0; category < sqrt_failure_counts_.size(); ++category) {
+            if (match.categories[category]) {
+                ++sqrt_failure_counts_[category];
+            }
+        }
+
+        // Samples are distinct after truncation, so a label that differs only
+        // past the cut still counts as the same message.
+        if (sqrt_failure_samples_.size() >= kSqrtFailureSampleLimit) {
+            return;
+        }
+        const std::string sample(diag::truncate_utf8(entry.message, kSqrtFailureSampleChars));
+        if (std::find(sqrt_failure_samples_.begin(), sqrt_failure_samples_.end(), sample) ==
+            sqrt_failure_samples_.end()) {
+            sqrt_failure_samples_.push_back(sample);
+        }
+    }
+
     mutable std::mutex mutex_;
     size_t structured_filter_records_ = 0;
     size_t structured_matrix_records_ = 0;
+    std::optional<std::string> run_polynomial_m_;
+    std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts_{};
+    std::vector<std::string> sqrt_failure_samples_;
+    diag::SqrtAttemptTracker tracker_;
+    bool force_couveignes_ = false;
 };
+
+// The selected polynomial reduced modulo 2 and classified over F2.
+struct PolynomialMod2Evidence final {
+    // The root of the classified polynomial, as decimal text.
+    std::optional<std::string> m;
+    // The degree of the integer polynomial. It is the degree that the
+    // published statistics name, so it is the one that confirms the probe.
+    std::optional<size_t> degree;
+    // The degree after the reduction modulo 2. An even leading coefficient
+    // lowers it below `degree`.
+    std::optional<size_t> mod2_degree;
+    // The coefficients modulo 2, from the constant term upwards.
+    std::optional<diag::F2Polynomial> coefficients;
+    // The integer coefficients, from the constant term upwards.
+    std::optional<std::vector<std::string>> integer_coefficients;
+    // No irreducible factor appears more than once.
+    std::optional<bool> squarefree;
+    // The factors x and x + 1, counted with multiplicity.
+    std::optional<size_t> linear_factors;
+    // The polynomial is the power of a polynomial of lower degree.
+    std::optional<bool> perfect_power;
+    std::optional<bool> irreducible;
+    // True when run() logged the same root and published the same degree,
+    // false when it selected another polynomial, and disengaged when run()
+    // logged no polynomial or the selection failed.
+    std::optional<bool> matches_run;
+    // Nonempty when the selection or the reduction failed.
+    std::string error;
+};
+
+// Reduces the selected polynomial modulo 2 and classifies it over F2.
+[[nodiscard]] PolynomialMod2Evidence classify_polynomial_mod2(const PolynomialContext& context) {
+    PolynomialMod2Evidence evidence;
+    evidence.m = context.m().to_string();
+    evidence.degree = static_cast<size_t>(context.degree());
+
+    std::vector<std::string> integer_coefficients;
+    diag::F2Polynomial polynomial;
+    for (uint32_t exponent = 0; exponent <= context.degree(); ++exponent) {
+        const Integer& coefficient = context.coeff(exponent);
+        integer_coefficients.push_back(coefficient.to_string());
+        polynomial.push_back(coefficient.is_odd() ? 1U : 0U);
+    }
+    polynomial = diag::f2_trimmed(std::move(polynomial));
+    evidence.coefficients = polynomial;
+    if (!polynomial.empty()) {
+        evidence.mod2_degree = polynomial.size() - 1;
+    }
+    evidence.integer_coefficients = std::move(integer_coefficients);
+    if (polynomial.size() < 2) {
+        evidence.error = "the polynomial has degree below one modulo 2";
+        return evidence;
+    }
+
+    const diag::F2PolynomialType type = diag::f2_classify(polynomial);
+    evidence.squarefree = type.squarefree;
+    evidence.linear_factors = type.linear_factors;
+    evidence.perfect_power = type.perfect_power;
+    evidence.irreducible = type.irreducible;
+    return evidence;
+}
+
+// Selects the polynomial once more with the Config of the measured run. run()
+// keeps the PolynomialContext that it selects, so a second Pipeline is the
+// only way to read the coefficients without a change to the pipeline.
+[[nodiscard]] PolynomialMod2Evidence probe_polynomial(const Integer& n, const Config& config) {
+    try {
+        Pipeline probe(n, config);
+        return classify_polynomial_mod2(probe.select_polynomial());
+    } catch (const std::exception& error) {
+        PolynomialMod2Evidence evidence;
+        evidence.error = error.what();
+        return evidence;
+    } catch (...) {
+        PolynomialMod2Evidence evidence;
+        evidence.error = "unknown exception";
+        return evidence;
+    }
+}
+
+// Settles which polynomial the classification describes. run() logs only the
+// root of its polynomial, so agreement rests on that root and on the degree
+// that the published statistics name. Whenever the probe is not confirmed,
+// the record keeps what run() logged and drops the type of a polynomial that
+// the run never used.
+[[nodiscard]] PolynomialMod2Evidence confirm_polynomial_mod2(PolynomialMod2Evidence probe,
+                                                             const RouteEvidence& evidence,
+                                                             std::optional<size_t> run_degree) {
+    diag::PolynomialSelection run_selection;
+    run_selection.m = evidence.run_polynomial_m();
+    run_selection.degree = run_degree;
+    diag::PolynomialSelection probe_selection;
+    probe_selection.m = probe.m;
+    probe_selection.degree = probe.degree;
+    switch (diag::compare_selections(probe_selection, run_selection)) {
+    case diag::PolynomialMatch::Same:
+        probe.matches_run = true;
+        return probe;
+    case diag::PolynomialMatch::Unconfirmed:
+        return probe;
+    case diag::PolynomialMatch::Different:
+        break;
+    }
+    // run() selected another polynomial, or the probe failed.
+    PolynomialMod2Evidence from_run;
+    from_run.m = run_selection.m;
+    from_run.degree = run_selection.degree;
+    from_run.error = probe.error;
+    if (probe.m.has_value()) {
+        from_run.matches_run = false;
+    }
+    return from_run;
+}
 
 // The published statistics that the record carries. A disengaged field means
 // that Pipeline::run() threw before it published statistics.
@@ -316,16 +565,33 @@ struct LadderRecord final {
     double wall_total_seconds = 0.0;
     std::array<StageTiming, kStageCount> stages{};
     std::optional<uint64_t> peak_rss_bytes;
+    // Warn and Error messages of the square root stage, counted by category,
+    // and the attempts that failed without a log.
+    std::array<size_t, diag::kSqrtFailureCategoryCount> sqrt_failure_counts{};
+    std::vector<std::string> sqrt_failure_samples;
+    PolynomialMod2Evidence polynomial_mod2;
+    // The XOR-pair fallback of the factor extraction started, and how many
+    // pairs it tried. dependencies_succeeded_before_pairwise_xor is true when
+    // one dependency yielded the factors before that fallback, false when an
+    // XOR pair yielded them, and disengaged when GNFS produced no factors.
+    bool pairwise_xor_attempted = false;
+    size_t pairwise_xor_dependencies_tried = 0;
+    std::optional<bool> dependencies_succeeded_before_pairwise_xor;
 };
 
-// Copies the measurements of a finished recorder into the record. Both exit
-// paths of run_ladder call it, so a run that throws keeps its timing evidence.
+// Copies the measurements and the log evidence of a finished recorder into the
+// record. Both exit paths of run_ladder call it, so a run that throws keeps
+// its timing evidence.
 void capture_measurements(LadderRecord& record, const StageRecorder& recorder,
                           const RouteEvidence& evidence) {
     record.wall_total_seconds = recorder.wall_total_seconds();
     record.stages = recorder.stages();
     record.structured_filter_records = evidence.structured_filter_records();
     record.structured_matrix_records = evidence.structured_matrix_records();
+    record.sqrt_failure_counts = evidence.sqrt_failure_counts();
+    record.sqrt_failure_samples = evidence.sqrt_failure_samples();
+    record.pairwise_xor_attempted = evidence.pairwise_xor_attempted();
+    record.pairwise_xor_dependencies_tried = evidence.pairwise_xor_dependencies_tried();
     record.peak_rss_bytes = gnfs::util::process_memory_snapshot().lifetime_peak_rss_bytes;
 }
 
@@ -532,7 +798,8 @@ void verify_fixture(const CliOptions& options) {
 
 // Runs the forced-GNFS factorization and fills the measurement part of the
 // record. A pipeline exception still leaves the stage timings, the
-// structured-route counts, and the peak RSS in the record.
+// structured-route counts, the square-root evidence, and the peak RSS in the
+// record.
 FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
     const Integer n(options.fixture->n);
     const EnvironmentGuards environment = freeze_ladder_environment(options.route);
@@ -540,13 +807,20 @@ FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
     Config config;
     config.set_method(FactorizationMethod::GNFS).set_verbose(false);
 
+    // Outside the measured interval: the probe must not change the stage
+    // wall times of the record.
+    const PolynomialMod2Evidence probe = probe_polynomial(n, config);
+
     // Declared before the Pipeline so that the callbacks never outlive their
-    // state.
+    // state. The environment is frozen at this point, so the evidence reads
+    // GNFS_FORCE_COUVEIGNES as the run sees it.
     StageRecorder recorder;
-    RouteEvidence evidence;
+    RouteEvidence evidence{environment_flag_set("GNFS_FORCE_COUVEIGNES")};
     Pipeline pipeline(n, config);
-    pipeline.set_progress_callback(
-        [&recorder](const ProgressInfo& info) { recorder.observe(info); });
+    pipeline.set_progress_callback([&recorder, &evidence](const ProgressInfo& info) {
+        recorder.observe(info);
+        evidence.observe(info);
+    });
     pipeline.set_log_callback([&evidence](const LogEntry& entry) { evidence.observe(entry); });
 
     FactorResult result;
@@ -557,13 +831,23 @@ FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
         // Keep the timing evidence of the failed run in its record before the
         // exception leaves.
         recorder.finish();
+        record.polynomial_mod2 = confirm_polynomial_mod2(probe, evidence, std::nullopt);
         capture_measurements(record, recorder, evidence);
         throw;
     }
     recorder.finish();
+    evidence.finish(result.success);
+    const std::optional<size_t> run_degree = static_cast<size_t>(result.stats.degree);
+    record.polynomial_mod2 = confirm_polynomial_mod2(probe, evidence, run_degree);
     capture_measurements(record, recorder, evidence);
 
+    // The pipeline tries every single dependency before its first XOR pair,
+    // so the factors came from one dependency unless the fallback had started.
     const FactorStats& published = result.stats;
+    if (result.success && published.method_used == FactorizationMethod::GNFS) {
+        record.dependencies_succeeded_before_pairwise_xor = !record.pairwise_xor_attempted;
+    }
+
     LadderStats& stats = record.stats;
     stats.executed_algorithm = published.executed_algorithm;
     stats.algorithms_executed = published.algorithms_executed;
@@ -677,6 +961,59 @@ void append_text_array(std::ostream& os, const std::vector<std::string>& values)
     os << ']';
 }
 
+void append_bool(std::ostream& os, std::optional<bool> value) {
+    if (value.has_value()) {
+        os << (*value ? "true" : "false");
+    } else {
+        os << "null";
+    }
+}
+
+// Appends the polynomial evidence as one object. A property that the
+// evidence could not determine appears as null.
+void append_polynomial_mod2(std::ostream& os, const PolynomialMod2Evidence& evidence) {
+    os << "{\"m\":";
+    append_text(os, evidence.m);
+    os << ",\"degree\":";
+    append_count(os, evidence.degree);
+    os << ",\"mod2_degree\":";
+    append_count(os, evidence.mod2_degree);
+    os << ",\"coefficients\":";
+    if (evidence.coefficients.has_value()) {
+        os << '[';
+        const diag::F2Polynomial& coefficients = *evidence.coefficients;
+        for (size_t index = 0; index < coefficients.size(); ++index) {
+            if (index > 0) {
+                os << ',';
+            }
+            os << coefficients[index];
+        }
+        os << ']';
+    } else {
+        os << "null";
+    }
+    os << ",\"integer_coefficients\":";
+    if (evidence.integer_coefficients.has_value()) {
+        append_text_array(os, *evidence.integer_coefficients);
+    } else {
+        os << "null";
+    }
+    os << ",\"squarefree\":";
+    append_bool(os, evidence.squarefree);
+    os << ",\"linear_factors\":";
+    append_count(os, evidence.linear_factors);
+    os << ",\"perfect_power\":";
+    append_bool(os, evidence.perfect_power);
+    os << ",\"irreducible\":";
+    append_bool(os, evidence.irreducible);
+    os << ",\"matches_run\":";
+    append_bool(os, evidence.matches_run);
+    if (!evidence.error.empty()) {
+        os << ",\"error\":" << gnfs::api::json::quote(evidence.error);
+    }
+    os << '}';
+}
+
 // Writes the record as one line: the prefix and one JSON object. Statistics
 // that the pipeline never published appear as null.
 void emit_record(std::ostream& os, const LadderRecord& record) {
@@ -730,6 +1067,23 @@ void emit_record(std::ostream& os, const LadderRecord& record) {
     os << ",\"peak_rss_bytes\":"
        << (record.peak_rss_bytes.has_value() ? std::to_string(*record.peak_rss_bytes)
                                              : std::string("null"));
+    os << ",\"sqrt_failure_counts\":{";
+    for (size_t index = 0; index < record.sqrt_failure_counts.size(); ++index) {
+        if (index > 0) {
+            os << ',';
+        }
+        const auto category = static_cast<diag::SqrtFailureCategory>(index);
+        os << quote(diag::sqrt_failure_category_name(category)) << ':'
+           << record.sqrt_failure_counts[index];
+    }
+    os << "},\"sqrt_failure_samples\":";
+    append_text_array(os, record.sqrt_failure_samples);
+    os << ",\"polynomial_mod2\":";
+    append_polynomial_mod2(os, record.polynomial_mod2);
+    os << ",\"pairwise_xor_attempted\":" << (record.pairwise_xor_attempted ? "true" : "false")
+       << ",\"pairwise_xor_dependencies_tried\":" << record.pairwise_xor_dependencies_tried
+       << ",\"dependencies_succeeded_before_pairwise_xor\":";
+    append_bool(os, record.dependencies_succeeded_before_pairwise_xor);
     os << '}';
 }
 

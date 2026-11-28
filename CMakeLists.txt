@@ -2996,6 +2996,16 @@ if(GNFS_BUILD_TESTS)
     add_test(NAME RegressionGate COMMAND test_regression_gate)
     set_tests_properties(RegressionGate PROPERTIES LABELS "gate" TIMEOUT 240)
 
+    # Pure helpers behind the diagnostics of the ladder record. The ladder
+    # CTests below are heavy and run only nightly, so this instant CTest is
+    # what checks their classification on every pull request.
+    add_executable(test_ladder_diagnostics
+        tests/test_ladder_diagnostics.cpp
+    )
+    target_link_libraries(test_ladder_diagnostics PRIVATE gnfs_core Threads::Threads)
+    add_test(NAME LadderDiagnostics COMMAND test_ladder_diagnostics)
+    set_tests_properties(LadderDiagnostics PROPERTIES LABELS "instant" TIMEOUT 10)
+
     # Digit-banded evidence ladder. Each CTest forces one complete GNFS
     # factorization through Pipeline::run() above the 25-digit regression
     # level. The heavy and stress labels keep them out of pull-request CI.

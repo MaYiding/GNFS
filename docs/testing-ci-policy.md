@@ -258,6 +258,14 @@ discriminant identities, active in Release builds.
 The `LPBloom` instant contract keeps environment parsing and clamping, exact
 unique-count parity, no-false-negative membership, bounded false-positive
 rate, and constructor and storage boundaries active in Release builds.
+The `LadderDiagnostics` instant contract keeps the helpers behind the
+diagnostics of the GNFS evidence ladder active in Release builds: the F2
+polynomial classification, which an exhaustive sweep of every monic
+polynomial of degree 1 through 8 compares with brute-force references; the
+classification of the square-root failure logs on the texts that the pipeline
+and the square root emit; the tracking of the attempts that fail without a
+log; the comparison of two polynomial selections; and the UTF-8 cut of a
+message sample.
 
 Do not remove `NDEBUG` globally. Fresh-process probes and performance campaigns
 deliberately exercise the optimized Release contract. Migrate legacy unit tests
@@ -488,14 +496,69 @@ JSON object fails the step or counts as a failed rung. The object carries:
 - `relations` (raw relations collected), `relations_after_filter`,
   `sieve_rounds_completed`, `sieve_stop_reason`, `matrix_rows`,
   `matrix_cols`, `matrix_nonzeros`, `matrix_excess`, `dependencies_found`,
-  `dependencies_tried`, and the lifetime `peak_rss_bytes`.
+  `dependencies_tried`, and the lifetime `peak_rss_bytes`;
+- `sqrt_failure_counts` with `sqrt_failure_samples` (the `Warn` and `Error`
+  logs of the square root stage counted by category, with up to 20 distinct
+  message texts, and the attempts that ended without a log),
+  `polynomial_mod2` (the type of the selected polynomial modulo 2), and
+  `pairwise_xor_attempted`, `pairwise_xor_dependencies_tried`, and
+  `dependencies_succeeded_before_pairwise_xor`. They exist to diagnose the
+  dependencies that fail in the square root: a record shows which step
+  rejected each failed dependency, or that the pipeline logged nothing for
+  it, how the polynomial factors modulo 2, and whether one dependency or an
+  XOR pair produced the factors. `test_ladder_diagnostics` checks the helpers
+  behind them on every pull request; the ladder itself asserts nothing about
+  them.
+
+The failure categories overlap. `algebraic_sqrt_failed` and
+`rational_sqrt_failed` count every failed square root, while
+`ideal_parity_precheck_failed`, `rational_parity_failed`, `couveignes_failed`,
+and `hensel_related` count the reasons; any other `Warn` or `Error` of that
+stage counts as `other_square_root`. `unlogged_failure` counts the attempts
+that the pipeline logs nothing about: both square roots succeeded and every
+GCD was trivial, or the dependency failed its verification first. The record
+derives it from the progress events, because the next attempt, or the end of
+a run without factors, follows such an attempt without a failure log in
+between. Every attempt before the successful one is therefore either matched
+to a category or counted as `unlogged_failure`. `hensel_related` includes
+every Couveignes failure of a run that does not set `GNFS_FORCE_COUVEIGNES=1`,
+because the algebraic square root reaches Couveignes only after Hensel lifting
+returns no root.
+
+`polynomial_mod2` describes the polynomial that the rung selected. Its values
+come from a second `select_polynomial()` call with the `Config` of the run,
+made before the measured interval:
+
+- `m` is the root of the polynomial as decimal text, and `degree` is the
+  degree of the integer polynomial.
+- `mod2_degree` and `coefficients` are the degree and the coefficients after
+  the reduction modulo 2, from the constant term upwards. An even leading
+  coefficient lowers `mod2_degree` below `degree`.
+- `integer_coefficients` lists the coefficients of the integer polynomial,
+  from the constant term upwards, as decimal text.
+- `squarefree` is `true` when no irreducible factor repeats. `linear_factors`
+  counts the factors x and x + 1 with multiplicity. `perfect_power` is `true`
+  when the polynomial is the power of a polynomial of lower degree.
+  `irreducible` is `true` when the reduced polynomial does not factor
+  modulo 2.
+- `matches_run` is `true` only when `Pipeline::run()` logged the same root and
+  published the same degree.
+
+When the two selections differ, the properties are `null` and `m` is the
+root that `Pipeline::run()` logged. A failed selection, or a polynomial whose
+degree drops below one modulo 2, adds an `error` key, which is absent
+otherwise.
+
+`dependencies_succeeded_before_pairwise_xor` is `false` when an XOR pair
+produced the factors and `null` when GNFS produced none.
 
 Statistics are `null` when `Pipeline::run()` threw before it published them;
-the stage timings, the structured-route counts, and the peak RSS stay in the
-record. A timeout kills the process before it prints, so a missing line means
-that the rung never finished. The time budgets are provisional until the first
-nightly runs report stage wall times. The `TIMEOUT` property of each CTest is
-the effective budget; `ctest --timeout` does not override it.
+the stage timings, the structured-route counts, the square-root evidence, and
+the peak RSS stay in the record. A timeout kills the process before it prints,
+so a missing line means that the rung never finished. The time budgets are
+provisional until the first nightly runs report stage wall times. The
+`TIMEOUT` property of each CTest is the effective budget; `ctest --timeout`
+does not override it.
 
 To add a rung, append the fixture to `kFixtures` in
 `tests/test_gnfs_e2e_ladder.cpp`, register its CTest with its tier, the

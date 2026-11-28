@@ -363,6 +363,7 @@ ALL_TEST_BINARIES=(
     test_schirokauer_non_monic_e2e
     test_non_monic_matrix_constraints_e2e
     test_gnfs_e2e_ladder
+    test_ladder_diagnostics
     test_stress
     test_3lp_cofactor
     test_3lp_merge
@@ -719,6 +720,7 @@ TEST_TIMEOUT=(
     test_schirokauer_non_monic_e2e 300
     test_non_monic_matrix_constraints_e2e 300
     test_gnfs_e2e_ladder 1800
+    test_ladder_diagnostics 10
     test_gnfs_progressive    3600
     test_25digit             1800
     test_stress              43200
@@ -985,6 +987,7 @@ TEST_TIER=(
     test_schirokauer_non_monic_e2e "slow"
     test_non_monic_matrix_constraints_e2e "slow"
     test_gnfs_e2e_ladder "heavy"
+    test_ladder_diagnostics "instant"
     test_gnfs_progressive    "heavy"
     test_25digit             "heavy"
     test_stress              "stress"
@@ -1139,7 +1142,7 @@ path_to_module() {
     fi
     case "$path" in
         CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|scripts/ci/check_markdown_links.py|scripts/ci/check_header_reachability.py|scripts/ci/production-unreachable-headers.txt|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
-        tests/support/fixed_slot_executor.hpp|tests/support/logger.hpp|tests/support/small_vector.hpp|tests/support/timer.hpp) echo "util" ;;
+        tests/support/fixed_slot_executor.hpp|tests/support/ladder_diagnostics.hpp|tests/support/logger.hpp|tests/support/small_vector.hpp|tests/support/timer.hpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_primes.cpp|tests/test_timer.cpp|tests/test_mpz_powm_parallel.cpp|tests/test_mpz_mod_parallel.cpp|tests/test_mpz_gcd_parallel.cpp|tests/test_mpz_mul_parallel.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
