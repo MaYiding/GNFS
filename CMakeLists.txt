@@ -2686,8 +2686,9 @@ if(GNFS_BUILD_TESTS)
     # Schirokauer columns against exact references at the default exponent: the
     # linear-factor column against a Newton-lifted root, and the unsplit,
     # quadratic, and cubic paths against a companion-matrix reference. The
-    # default exponent covers every valuation up to 37, k = 8 falls back from 7
-    # on, and columns without a fallback do not depend on k.
+    # default exponent is exact up to valuation 38 and falls back from 39, and
+    # k = 8 falls back from 7 on; columns without a fallback do not depend on
+    # k.
     add_executable(test_schirokauer_precision
         tests/test_schirokauer_precision.cpp
     )

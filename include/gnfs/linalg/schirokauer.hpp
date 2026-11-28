@@ -551,16 +551,20 @@ struct SchirokaurConfig {
     // When f has a linear factor modulo 2, the column of that factor is bit
     // v+1 of a - b·r, with r the root of the factor lifted modulo 2^k, and
     // v = v₂(a - b·r) is unbounded: a coprime pair with a ≡ b·r (mod 2^v)
-    // exists for every v. With k = 8 every pair with v ≥ 7 lost that column,
-    // about 1% of the relations of real relation sets, and half of those
-    // carried a wrong constraint. The unsplit path and the quadratic and
-    // higher-degree paths strip a common factor of a and b first, which a
-    // coprime pair does not have, so they never fall back.
+    // exists for every v. With k = 8 every pair with v ≥ 7 lost that column.
+    // Among coprime pairs spread over a box that is about one pair in 192:
+    // two thirds of them have b odd, and one in 128 of those has v ≥ 7. The
+    // share among relations is not known; it is expected to be larger,
+    // because a norm divisible by 2^7 is easier to smooth. Half of the
+    // affected rows carry a wrong constraint. The unsplit path and the
+    // quadratic and higher-degree paths strip a common factor of a and b
+    // first, which a coprime pair does not have, so they never fall back.
     //
-    // k = 40 gives every pair with v ≤ 37 its exact column. A larger v needs
-    // a ≡ b·r (mod 2^38); with |a| and |b| at most 2^37 that leaves at most
-    // two values of a for each odd b, about a 2^-38 share of the pairs in that
-    // box. A pair that still reaches it is counted and reported.
+    // k = 40 gives every pair with v ≤ 38 its exact column, since v + 2 ≤ 40.
+    // A fallback needs v ≥ 39, that is a ≡ b·r (mod 2^39); with |a| and |b|
+    // at most 2^37 that leaves at most one value of a for each odd b, about a
+    // 2^-39 share of the pairs in that box. Such a pair is counted and
+    // reported.
     //
     // The cap is 62 for ℓ = 2: the hot paths reduce the signed a modulo
     // (int64_t)ell_k, so precompute_for_prime rejects ℓ^k above INT64_MAX, and

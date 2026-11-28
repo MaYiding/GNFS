@@ -189,12 +189,15 @@ a - b·r directly, with v = v₂(a - b·r). Another takes the companion-matrix
 power over exact integers for the unsplit path and for factors of degree two
 or more, on a quadratic and on a cubic factor; the lifted factors that serve
 as moduli are certified by an exact product first. Pairs that cover every
-valuation from 0 to 37 with both column values must match the references with
-zero precision fallbacks. The former default `k = 8` must report one fallback
-for every pair with v ≥ 7 while the reference column is 1 for half of them,
-pairs without a fallback must carry identical columns at both exponents, and
-the unsplit columns hard-coded in `LinearAlgebra` for `k = 8` must hold
-unchanged.
+valuation from 0 to 38, the range in which the default exponent is exact, must
+match the references with zero precision fallbacks, and a pair with v ≥ 39
+must report one fallback with a zero column at the default exponent while the
+reference column is 1 for half of them. The former default `k = 8` must report
+one fallback for every pair with v ≥ 7 while the reference column is 1 for
+half of them, pairs without a fallback must carry identical columns at both
+exponents, the unsplit columns hard-coded in `LinearAlgebra` for `k = 8` must
+hold unchanged, and stripping on the unsplit path must be exact up to 2^38 at
+the default exponent.
 `SchirokauerPrecisionE2E` is a `fast` end-to-end contract on the 25-digit
 semiprime 1869045589843040925386929, whose selected polynomial has a linear
 factor modulo 2. It is the one exception to the `fast` definition, recorded

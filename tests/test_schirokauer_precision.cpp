@@ -62,9 +62,11 @@ using gnfs::test::run_case;
 
 namespace {
 
-// The default exponent. It covers every pair with v ≤ 37, since v + 2 ≤ 39.
+// The default exponent. A pair with valuation v keeps its exact column while
+// v + 2 ≤ k, so the default is exact up to v = 38 and falls back from v = 39.
 constexpr uint32_t kDefaultExponent = 40;
-constexpr uint32_t kMaxCoveredValuation = 37;
+constexpr uint32_t kMaxExactValuation = kDefaultExponent - 2;
+constexpr uint32_t kFirstFallbackValuation = kDefaultExponent - 1;
 // The previous default. Its fallbacks start at v = 7.
 constexpr uint32_t kOldExponent = 8;
 constexpr uint32_t kReferenceBits = 64;
@@ -199,15 +201,16 @@ Reference reference_column(int64_t a, uint64_t b, const Integer& root) {
     return {valuation, gamma.test_bit(1) ? 1u : 0u};
 }
 
-// Pairs that cover v = 0 to kMaxCoveredValuation with both column values of
-// the linear factor. For each v and each t, the residue a of
-// r + (1 + 2t)·2^v modulo 2^(v+2) gives v₂(a - r) = v and column t with b = 1.
-// The same a as a negative number and the analogue with b = 3 repeat the pair.
-// Even b with odd a are units and add the v = 0 cases that the linear path
-// meets in production. No pair has a and b both even.
+// Pairs that cover v = 0 to kMaxExactValuation with both column values of the
+// linear factor: the range in which the default exponent is exact. For each v
+// and each t, the residue a of r + (1 + 2t)·2^v modulo 2^(v+2) gives
+// v₂(a - r) = v and column t with b = 1. The same a as a negative number and
+// the analogue with b = 3 repeat the pair. Even b with odd a are units and
+// add the v = 0 cases that the linear path meets in production. No pair has a
+// and b both even.
 std::vector<Pair> valuation_pairs(const Integer& root) {
     std::vector<Pair> pairs;
-    for (uint32_t v = 0; v <= kMaxCoveredValuation; ++v) {
+    for (uint32_t v = 0; v <= kMaxExactValuation; ++v) {
         const Integer modulus = power_of_two(v + 2);
         const int64_t signed_modulus = static_cast<int64_t>(1) << (v + 2);
         for (int64_t t = 0; t <= 1; ++t) {
@@ -235,6 +238,43 @@ std::vector<Pair> valuation_pairs(const Integer& root) {
             pairs.push_back({a, b});
             const Reference reference = reference_column(a, b, root);
             TEST_ASSERT(reference.valuation == 0);
+        }
+    }
+    return pairs;
+}
+
+// A pair with the valuation and the column that the linear factor must have.
+struct ValuedPair {
+    Pair pair;
+    uint32_t valuation;
+    uint32_t column;
+};
+
+// Pairs with v = kFirstFallbackValuation and the two valuations above it, in
+// both column values and in the three variants of valuation_pairs. The default
+// exponent cannot compute the linear column of any of them.
+std::vector<ValuedPair> fallback_pairs(const Integer& root) {
+    std::vector<ValuedPair> pairs;
+    for (uint32_t v = kFirstFallbackValuation; v < kFirstFallbackValuation + 3; ++v) {
+        const Integer modulus = power_of_two(v + 2);
+        const int64_t signed_modulus = static_cast<int64_t>(1) << (v + 2);
+        for (int64_t t = 0; t <= 1; ++t) {
+            const Integer offset = Integer(1 + 2 * t) * power_of_two(v);
+            const Integer a = residue(root + offset, modulus);
+            const Integer a_times_three = residue(Integer(3) * root + offset, modulus);
+            TEST_ASSERT(a.fits_int64());
+            TEST_ASSERT(a_times_three.fits_int64());
+            const Pair added[] = {
+                {a.to_int64(), 1},
+                {a.to_int64() - signed_modulus, 1},
+                {a_times_three.to_int64(), 3},
+            };
+            for (const Pair& pair : added) {
+                const Reference reference = reference_column(pair.a, pair.b, root);
+                TEST_ASSERT(reference.valuation == v);
+                TEST_ASSERT(reference.column == static_cast<uint32_t>(t));
+                pairs.push_back({pair, v, static_cast<uint32_t>(t)});
+            }
         }
     }
     return pairs;
@@ -525,14 +565,55 @@ void test_old_exponent_falls_back() {
     size_t fallback_ones = 0;
     check_linear_factor(kOldExponent, fallbacks, fallback_ones);
     // Every pair with v ≥ k - 1 = 7 falls back: three pairs for each of the
-    // valuations from 7 to 37. Each returns zero in place of a column that the
+    // valuations from 7 to 38. Each returns zero in place of a column that the
     // reference sets to 1 for exactly half of them.
     const size_t fallback_valuations =
-        static_cast<size_t>(kMaxCoveredValuation - (kOldExponent - 1) + 1);
+        static_cast<size_t>(kMaxExactValuation - (kOldExponent - 1) + 1);
     const size_t expected_fallbacks = 6 * fallback_valuations;
     TEST_ASSERT(fallbacks == expected_fallbacks);
     TEST_ASSERT(2 * fallback_ones == fallbacks);
     std::cout << "  old exponent: PASSED\n";
+}
+
+// The default exponent is exact up to v = 38, which the valuation pairs cover
+// with zero fallbacks, and falls back from v = 39: one fallback, and a zero
+// column in place of a column that the reference sets to 1 for half of the
+// pairs.
+void test_default_exponent_falls_back_from_v_39() {
+    std::cout << "Default exponent on the valuations it cannot reach...\n";
+    SchirokaurConfig old_config;
+    old_config.exponent_k = kOldExponent;
+    for (const Fixture* fixture : fixtures()) {
+        if (!fixture->linear_root_is_one) {
+            continue;
+        }
+        std::cout << "  " << fixture->label << "\n";
+        const PolynomialContext ctx = make_context(*fixture);
+        const Integer root = lift_root(fixture->coefficients, kReferenceBits);
+        const SchirokaurMap map(ctx);
+        const SchirokaurMap old_map(ctx, old_config);
+        const std::vector<ValuedPair> pairs = fallback_pairs(root);
+        size_t ones = 0;
+        for (const ValuedPair& valued : pairs) {
+            uint64_t counted = 0;
+            const std::vector<uint32_t> columns =
+                map.compute_flat(valued.pair.a, valued.pair.b, counted);
+            const Reference reference = reference_column(valued.pair.a, valued.pair.b, root);
+            TEST_ASSERT(reference.valuation == valued.valuation);
+            TEST_ASSERT(reference.column == valued.column);
+            TEST_ASSERT(counted == 1);
+            TEST_ASSERT(columns.size() == ctx.degree());
+            TEST_ASSERT(columns[0] == 0);
+            uint64_t old_counted = 0;
+            TEST_ASSERT(old_map.compute_flat(valued.pair.a, valued.pair.b, old_counted) == columns);
+            TEST_ASSERT(old_counted == 1);
+            ones += valued.column;
+        }
+        TEST_ASSERT(2 * ones == pairs.size());
+        std::cout << "    " << pairs.size() << " pairs, one fallback each; reference column 1 for "
+                  << ones << "\n";
+    }
+    std::cout << "  default exponent falls back from v = 39: PASSED\n";
 }
 
 // Every path at the default exponent: the unsplit path, a quadratic factor,
@@ -619,8 +700,8 @@ const UnsplitRow kUnsplitRows[] = {
 
 // The unsplit path at the default exponent. A unit gives the same columns at
 // every exponent, so the rows hard-coded for exponent 8 must hold unchanged.
-// Stripping is exact while s + 2 ≤ k: up to 2^37 at the default, and only up
-// to 2^6 at exponent 8.
+// Stripping is exact while s + 2 ≤ k: up to 2^38 at the default, with 2^39 a
+// fallback, and only up to 2^6 at exponent 8.
 void test_unsplit_path_at_default_exponent() {
     std::cout << "Unsplit path at the default exponent...\n";
     const PolynomialContext ctx = make_context(kUnsplit);
@@ -648,12 +729,16 @@ void test_unsplit_path_at_default_exponent() {
         uint64_t counted = 0;
         const std::vector<uint32_t> base = map.compute_flat(unit.a, unit.b, counted);
         TEST_ASSERT(counted == 0);
-        for (uint32_t s = 0; s <= kMaxCoveredValuation; ++s) {
+        for (uint32_t s = 0; s <= kMaxExactValuation; ++s) {
             const Pair scaled = scaled_pair(unit, s);
             uint64_t scaled_counted = 0;
             TEST_ASSERT(map.compute_flat(scaled.a, scaled.b, scaled_counted) == base);
             TEST_ASSERT(scaled_counted == 0);
         }
+        const Pair beyond = scaled_pair(unit, kFirstFallbackValuation);
+        uint64_t beyond_counted = 0;
+        TEST_ASSERT(map.compute_flat(beyond.a, beyond.b, beyond_counted) == zero_columns);
+        TEST_ASSERT(beyond_counted == 1);
         for (uint32_t s = 0; s + 2 <= kOldExponent; ++s) {
             const Pair scaled = scaled_pair(unit, s);
             uint64_t scaled_counted = 0;
@@ -668,7 +753,7 @@ void test_unsplit_path_at_default_exponent() {
         }
     }
     std::cout << "  " << (sizeof(kUnsplitRows) / sizeof(kUnsplitRows[0]))
-              << " rows keep their columns, stripping is exact up to 2^37: PASSED\n";
+              << " rows keep their columns, stripping is exact up to 2^38: PASSED\n";
 }
 
 // MatrixBuilder uses the default exponent. Its rows must carry the reference
@@ -711,6 +796,7 @@ int main() {
 
     failed += !run_case(test_default_exponent_matches_reference);
     failed += !run_case(test_old_exponent_falls_back);
+    failed += !run_case(test_default_exponent_falls_back_from_v_39);
     failed += !run_case(test_every_path_matches_references_at_default_exponent);
     failed += !run_case(test_unsplit_path_at_default_exponent);
     failed += !run_case(test_matrix_builder_rows_match_reference);
