@@ -571,6 +571,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo     # Release with debug info
 
 The build system auto-detects GMP (required), NTL when enabled (optional), Metal (optional on macOS), native CPU flags (`-mcpu=native` on Apple Silicon and `-march=native` on x86), and either ThinLTO (Clang on macOS) or LTO (GCC) when targeting Release.
 
+In Release builds, LTO covers the libraries and the `gnfs` executable; among tests, only the end-to-end executables listed in `GNFS_LTO_TEST_TARGETS` in `CMakeLists.txt` take part, and the remaining tests link the native code of the core libraries.
+
 ## Contributing
 
 Contributions are welcome. Please follow this workflow:
