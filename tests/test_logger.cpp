@@ -7,7 +7,7 @@
 //   (2) is_enabled 单调读到某个有效 level
 //   (3) 写入的 log 行不交错(mutex_ 保护)
 
-#include "gnfs/util/logger.hpp"
+#include "support/logger.hpp"
 #include "support/test_check.hpp"
 
 #include <atomic>

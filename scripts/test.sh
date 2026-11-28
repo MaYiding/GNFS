@@ -1135,6 +1135,7 @@ path_to_module() {
     fi
     case "$path" in
         CMakeLists.txt|.github/workflows/*.yml|scripts/test.sh|scripts/test-catalog/*.txt|scripts/lib/process_tree_timeout.zsh|scripts/check_harness.py|scripts/check_distributed_sieve_policy.py|scripts/ci/check_markdown_links.py|docs/harness-engineering.md|docs/testing-ci-policy.md|tests/test_process_supervisor.cmake|tests/test_harness_process_tree_timeout.zsh|tests/support/gnfs_test_process_supervisor.cpp|tests/support/bounded_child_process_fake_child.cpp) echo "util" ;;
+        tests/support/fixed_slot_executor.hpp|tests/support/logger.hpp|tests/support/small_vector.hpp|tests/support/timer.hpp) echo "util" ;;
         tests/test_resultant.cpp) echo "polynomial" ;;
         tests/test_small_vector.cpp|tests/test_sha256.cpp|tests/test_thread_pool.cpp|tests/test_joining_thread.cpp|tests/test_logger.cpp|tests/test_primes.cpp|tests/test_timer.cpp|tests/test_mpz_powm_parallel.cpp|tests/test_mpz_mod_parallel.cpp|tests/test_mpz_gcd_parallel.cpp|tests/test_mpz_mul_parallel.cpp|tests/test_durable_immutable_file.cpp|tests/test_durable_immutable_record.cpp|tests/test_mmap_file.cpp|tests/test_native_random_access_file.cpp) echo "util" ;;
         tests/test_ecm_curve_plan.cpp|tests/test_cofactor_attempt_context.cpp|tests/test_cofactor_seed_provider.cpp) echo "cofactor" ;;
@@ -1143,7 +1144,7 @@ path_to_module() {
         tests/test_structured*.cpp) echo "relation" ;;
         tests/test_krylov_sequence_mmap.cpp|tests/test_bw_krylov_mmap_integration.cpp|tests/test_krylov_compress.cpp|tests/test_krylov_compression.cpp) echo "linalg" ;;
         tests/test_api.cpp|tests/test_event_stream.cpp|tests/test_cli_event_stream.cpp|tests/test_cli_repl_config.cmake|tests/test_i18n.cpp|tests/test_method_selection.cpp|*api/*|src/cli/*|apps/macos/GNFSWorkbench/*) echo "api" ;;
-        tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
+        tests/support/post_merge_row_wire.hpp|tests/test_siqs*.cpp|*siqs/*) echo "siqs" ;;
         tests/test_sieve_basic.cpp|tests/test_sieve_checkpoint.cpp|tests/test_distributed_sieve.cpp|tests/test_distributed_sieve_worker_entry.cpp|tests/test_distributed_sieve_worker_writer_authority.cpp|tests/test_distributed_sieve_worker_execution.cpp|tests/test_distributed_sieve_worker_process.cpp|tests/test_distributed_sieve_wave_store_windows.cpp|tests/test_distributed_sieve_work_identity_codec.cpp|tests/test_distributed_sieve_work_package_codec.cpp|tests/test_distributed_sieve_worker_cleanup_codec.cpp|tests/test_distributed_sieve_merge_writer_codec.cpp|tests/test_distributed_sieve_merge_writer.cpp|tests/test_distributed_sieve_merge_writer_authority.cpp|tests/test_distributed_sieve_wave_merge_commit.cpp|tests/test_distributed_sieve_worker_cleanup_tail.cpp|tests/test_distributed_sieve_worker_cleanup_authorization_publisher.cpp|tests/test_distributed_sieve_worker_cleanup_orchestrator.cpp|tests/test_distributed_sieve_wave_result.cpp|tests/support/distributed_sieve_wave_merge_commit_fixture.hpp|tests/test_distributed_sieve_worker_work_package_file.cpp|tests/test_distributed_sieve_execution_policy.cpp|tests/test_distributed_sieve_seed_v2.cpp|tests/test_distributed_sieve_resume.cpp) echo "sieve" ;;
         *core/*)       echo "core" ;;
         *util/*)       echo "util" ;;

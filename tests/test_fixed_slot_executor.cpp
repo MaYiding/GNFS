@@ -1,6 +1,6 @@
 // test_fixed_slot_executor.cpp - static-partition parallel slot contracts
 
-#include <gnfs/util/fixed_slot_executor.hpp>
+#include "support/fixed_slot_executor.hpp"
 
 #include <algorithm>
 #include <array>
