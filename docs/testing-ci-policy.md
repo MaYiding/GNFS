@@ -437,7 +437,9 @@ The test passes only when all of the following hold:
 
 A run prints one line on stdout: `GNFS_E2E_LADDER ` followed by one JSON
 object. Both jobs copy these lines from `Testing/Temporary/LastTest.log` into
-the step summary. The object carries:
+the step summary, and the `gnfs-e2e-ladder` mode reprints the record of each
+passing rung. Each of them parses the record first, so a line that is not one
+JSON object fails the step or counts as a failed rung. The object carries:
 
 - `digits`, `n_bits`, `route`, `n`, `factors`, `executed_algorithm`,
   `algorithms_executed`, and `status` (`pass` or `fail`) with the `error` text
