@@ -700,8 +700,8 @@ void emit_record(std::ostream& os, const LadderRecord& record) {
     } else {
         os << "null";
     }
-    os << ",\"wall_total_seconds\":" << seconds_text(record.wall_total_seconds)
-       << ",\"stages\":{\"";
+    os << ",\"wall_total_seconds\":" << seconds_text(record.wall_total_seconds);
+    os << ",\"stages\":{";
     for (size_t index = 0; index < record.stages.size(); ++index) {
         if (index > 0) {
             os << ',';
