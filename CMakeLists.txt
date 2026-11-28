@@ -37,14 +37,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         set(GNFS_NATIVE_FLAG "")
     endif()
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        # LTO is a per-target property; see "Link-Time Optimization (LTO)".
         add_compile_options(-O3 ${GNFS_NATIVE_FLAG})
-        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND APPLE)
-            add_compile_options(-flto=thin)
-            add_link_options(-flto=thin)
-        elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-            add_compile_options(-flto=auto)
-            add_link_options(-flto=auto)
-        endif()
     elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
         add_compile_options(-O2 -g ${GNFS_NATIVE_FLAG})
     endif()
@@ -68,10 +62,10 @@ elseif(MSVC)
     # but only with cl 16.9+. Out of scope for this CI matrix.
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         # /O2 is the MSVC default for Release-style configs; /GL = whole-program
-        # optimisation (corresponds to LTO). /Qpar = auto-parallelize trivial
-        # loops. Caller can override.
-        add_compile_options(/O2 /GL)
-        add_link_options(/LTCG)
+        # optimisation (corresponds to LTO). /GL and /LTCG are per-target
+        # properties, see "Link-Time Optimization (LTO)". /Qpar =
+        # auto-parallelize trivial loops. Caller can override.
+        add_compile_options(/O2)
     endif()
 endif()
 
@@ -172,6 +166,146 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ============================================================
+# Link-Time Optimization (LTO)
+# ============================================================
+# LTO is a property of a target, not of the directory. A directory option
+# follows the target options on the command line, so no target could opt out of
+# add_compile_options(-flto=...), and every test executable repeated the
+# whole-program optimization of gnfs_core. Those links dominated the Release
+# CI builds. LTO now covers the libraries, the gnfs executable, and the
+# end-to-end tests listed in GNFS_LTO_TEST_TARGETS; the remaining tests link
+# the native code of the core libraries. The product keeps LTO because it is
+# shipped, and the end-to-end tests keep it so that each CI round still links
+# and runs the product configuration. The other tests check behavior, which
+# does not depend on cross-module optimization. The toolchain conditions are
+# unchanged: Release builds only, ThinLTO for Clang on macOS, -flto=auto for
+# GCC, and /GL with /LTCG for MSVC.
+set(_gnfs_lto_compile_flag "")
+set(_gnfs_lto_link_flag "")
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND APPLE)
+            set(_gnfs_lto_compile_flag -flto=thin)
+            set(_gnfs_lto_link_flag -flto=thin)
+        elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            set(_gnfs_lto_compile_flag -flto=auto)
+            set(_gnfs_lto_link_flag -flto=auto)
+        endif()
+    elseif(MSVC)
+        set(_gnfs_lto_compile_flag /GL)
+        set(_gnfs_lto_link_flag /LTCG)
+    endif()
+endif()
+
+# Enables LTO for one target. Other build types and toolchains without LTO
+# support make the call a no-op.
+function(gnfs_enable_lto target)
+    if(NOT _gnfs_lto_compile_flag)
+        return()
+    endif()
+    target_compile_options(${target} PRIVATE ${_gnfs_lto_compile_flag})
+    # Static libraries have no link step, and target_link_options() does not
+    # apply to them. Their consumers add the link option through this function.
+    get_target_property(_type ${target} TYPE)
+    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "SHARED_LIBRARY"
+        OR _type STREQUAL "MODULE_LIBRARY")
+        target_link_options(${target} PRIVATE ${_gnfs_lto_link_flag})
+    endif()
+endfunction()
+
+# A test that leaves LTO links gnfs_util and gnfs_core without the LTO option.
+# GCC and Apple Clang therefore compile both libraries as fat LTO objects,
+# which carry the native code next to the intermediate representation, so one
+# object file serves the LTO links and the native links. MSVC /GL objects
+# always carry both forms and need no extra option.
+#
+# The capability is probed at configure time because the linker takes part in
+# it: compile one function with the LTO and fat options, then link its object
+# with a plain object and without any LTO option. Both steps must succeed. MSVC
+# is not probed because cl.exe needs the Visual Studio environment that
+# execute_process() cannot provide. A failed probe, for example under a cross
+# toolchain, falls back to LTO for every test executable, which is the behavior
+# before LTO became a per-target property.
+set(GNFS_FAT_LTO_LINKABLE FALSE)
+set(_gnfs_fat_lto_flag "")
+if(NOT _gnfs_lto_compile_flag)
+    # No LTO in this configuration, so no fat LTO objects either.
+elseif(GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
+    # PGO trains with test executables, and scripts/pgo-train.sh documents them
+    # as LTO builds. PGO builds therefore keep LTO on every test executable.
+elseif(MSVC)
+    set(GNFS_FAT_LTO_LINKABLE TRUE)
+else()
+    set(_gnfs_probe_dir "${CMAKE_BINARY_DIR}/gnfs-lto-probe")
+    set(_gnfs_probe_obj "${_gnfs_probe_dir}/probe${CMAKE_CXX_OUTPUT_EXTENSION}")
+    set(_gnfs_probe_exe "${_gnfs_probe_dir}/probe${CMAKE_EXECUTABLE_SUFFIX}")
+    file(MAKE_DIRECTORY "${_gnfs_probe_dir}")
+    file(WRITE "${_gnfs_probe_dir}/probe.cpp"
+        "int gnfs_lto_probe();\n"
+        "int gnfs_lto_probe() { return 7; }\n")
+    file(WRITE "${_gnfs_probe_dir}/main.cpp"
+        "int gnfs_lto_probe();\n"
+        "int main() { return gnfs_lto_probe(); }\n")
+    # Remove the artifacts of an earlier configure so that a failed step cannot
+    # pass on a stale file.
+    file(REMOVE "${_gnfs_probe_obj}" "${_gnfs_probe_exe}")
+    execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" ${CMAKE_CXX_COMPILER_ARG1}
+            ${_gnfs_lto_compile_flag} -ffat-lto-objects
+            -c "${_gnfs_probe_dir}/probe.cpp" -o "${_gnfs_probe_obj}"
+        RESULT_VARIABLE _gnfs_probe_compile_result
+        OUTPUT_QUIET
+        ERROR_VARIABLE _gnfs_probe_compile_output
+        TIMEOUT 60)
+    execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" ${CMAKE_CXX_COMPILER_ARG1}
+            "${_gnfs_probe_dir}/main.cpp" "${_gnfs_probe_obj}"
+            -o "${_gnfs_probe_exe}"
+        RESULT_VARIABLE _gnfs_probe_link_result
+        OUTPUT_QUIET
+        ERROR_VARIABLE _gnfs_probe_link_output
+        TIMEOUT 60)
+    if(_gnfs_probe_compile_result STREQUAL "0"
+        AND _gnfs_probe_link_result STREQUAL "0"
+        AND EXISTS "${_gnfs_probe_exe}")
+        set(GNFS_FAT_LTO_LINKABLE TRUE)
+        set(_gnfs_fat_lto_flag -ffat-lto-objects)
+    else()
+        if(NOT (_gnfs_probe_compile_result STREQUAL "0"))
+            message(STATUS "GNFS fat LTO probe: the compile step failed with "
+                "result ${_gnfs_probe_compile_result}\n${_gnfs_probe_compile_output}")
+        else()
+            message(STATUS "GNFS fat LTO probe: the link step failed with "
+                "result ${_gnfs_probe_link_result}\n${_gnfs_probe_link_output}")
+        endif()
+    endif()
+endif()
+
+# Compiles a GCC or Apple Clang target as fat LTO objects. The call is a no-op
+# when fat LTO objects are unavailable or unnecessary, which includes MSVC.
+function(gnfs_enable_fat_lto_objects target)
+    if(_gnfs_fat_lto_flag)
+        target_compile_options(${target} PRIVATE ${_gnfs_fat_lto_flag})
+    endif()
+endfunction()
+
+if(_gnfs_lto_compile_flag)
+    if(GNFS_FAT_LTO_LINKABLE)
+        message(STATUS "GNFS LTO: tests link native objects (fat LTO objects)")
+    else()
+        message(STATUS "GNFS LTO: tests participate in LTO (fat LTO objects unavailable)")
+    endif()
+endif()
+
+# Test executables must take part in LTO when the core libraries are not
+# available as fat LTO objects: PGO builds and toolchains that failed the probe.
+if(NOT GNFS_FAT_LTO_LINKABLE OR GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
+    set(_gnfs_tests_use_lto TRUE)
+else()
+    set(_gnfs_tests_use_lto FALSE)
+endif()
+
+# ============================================================
 # 依赖查找
 # ============================================================
 
@@ -259,6 +393,9 @@ target_include_directories(gnfs_util PUBLIC
 if(WIN32)
     target_link_libraries(gnfs_util PUBLIC Psapi)
 endif()
+# The product takes part in LTO; see "Link-Time Optimization (LTO)".
+gnfs_enable_lto(gnfs_util)
+gnfs_enable_fat_lto_objects(gnfs_util)
 
 # gnfs_core - 核心类型库
 add_library(gnfs_core STATIC
@@ -501,6 +638,13 @@ target_link_libraries(gnfs_core PUBLIC
     gnfs_util
     Threads::Threads
 )
+# The product takes part in LTO; see "Link-Time Optimization (LTO)". The
+# distributed-sieve policy checker accepts only listed CMake commands that name
+# this target, so its options are literal instead of a gnfs_enable_lto() call.
+# A static library has no link step.
+if(_gnfs_lto_compile_flag)
+    target_compile_options(gnfs_core PRIVATE ${_gnfs_lto_compile_flag} ${_gnfs_fat_lto_flag})
+endif()
 
 if(HAVE_NTL)
     target_include_directories(gnfs_core SYSTEM PUBLIC ${NTL_INCLUDE_DIR})
@@ -520,6 +664,8 @@ target_link_libraries(gnfs PRIVATE
     gnfs_core
     Threads::Threads
 )
+# The product takes part in LTO; see "Link-Time Optimization (LTO)".
+gnfs_enable_lto(gnfs)
 
 # ============================================================
 # 测试
@@ -3579,6 +3725,48 @@ if(GNFS_BUILD_TESTS)
     endfunction()
     gnfs_add_local_module_targets("${_gate_catalog_dir}/modules.txt" ${_gate_exclusions})
 
+    # LTO policy of the test executables, applied after every test target
+    # exists so that new tests inherit the default without an edit here. See
+    # "Link-Time Optimization (LTO)".
+    #
+    # GNFS_LTO_TEST_TARGETS lists the end-to-end tests that still take part in
+    # LTO, so each CI round links and runs the product configuration end to
+    # end. An unknown name is an error: a renamed test must not drop out of
+    # LTO silently.
+    set(GNFS_LTO_TEST_TARGETS
+        test_gnfs_e2e
+        test_regression_gate
+        test_factor_with_kleinjung
+        test_api
+        test_kleinjung_large
+        test_siqs_e2e
+        test_structured_filter_pipeline_120bit
+        test_structured_ooc_50d_probe
+    )
+    foreach(_target IN LISTS GNFS_LTO_TEST_TARGETS)
+        if(NOT TARGET ${_target})
+            message(FATAL_ERROR
+                "GNFS_LTO_TEST_TARGETS names the unknown target ${_target}. "
+                "Keep the list in step with the test targets.")
+        endif()
+    endforeach()
+    if(_gnfs_tests_use_lto)
+        # Every test executable takes part in LTO, as it did before LTO became
+        # a per-target property.
+        get_property(_gnfs_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+        list(REMOVE_ITEM _gnfs_test_targets ${_targets_before_tests})
+        foreach(_target IN LISTS _gnfs_test_targets)
+            get_target_property(_type ${_target} TYPE)
+            if(_type STREQUAL "EXECUTABLE")
+                gnfs_enable_lto(${_target})
+            endif()
+        endforeach()
+    else()
+        foreach(_target IN LISTS GNFS_LTO_TEST_TARGETS)
+            gnfs_enable_lto(${_target})
+        endforeach()
+    endif()
+
     function(gnfs_write_test_source_index)
         get_property(_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
         list(REMOVE_ITEM _targets ${ARGN})
@@ -3646,6 +3834,8 @@ if(GNFS_BUILD_FUZZERS)
     target_link_options(fuzz_integer PRIVATE
         -fsanitize=fuzzer,address,undefined
     )
+    # The fuzz target keeps the LTO coverage that the directory options gave it.
+    gnfs_enable_lto(fuzz_integer)
 endif()
 
 # ============================================================
