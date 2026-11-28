@@ -329,6 +329,19 @@ request and `main` push. It deliberately has no path filter because it is a
 required check and the release preflight requires exact-SHA evidence in
 addition to the ordinary platform compiler matrix.
 
+Both jobs then run `scripts/release_smoke.py` against the release-configured
+binary they just produced. It performs three real factorizations through
+`--event-stream`: `360` with `--complete` on the default route, a 30-digit
+semiprime that the default route factors with SIQS, and a 25-digit semiprime
+forced through the GNFS pipeline with `GNFS_DISABLE_SIQS=1`. Each run must exit
+with status 0, emit valid schema-1 JSON Lines with exactly one `result` event,
+and return the expected factors. The SIQS and GNFS inputs must also report the
+algorithm that produced the split. The Windows job starts the packaged
+`bin/gnfs.exe` with `PATH` limited to the Windows system directories, so the
+bundled DLLs and not the MSYS2 installation satisfy the loader. A passing test
+matrix does not prove this, because the ordinary CI test binaries use another
+toolchain and configuration than the release package.
+
 `Workbench CI` embeds the full source SHA as `GNFSSourceRevision` in the
 application `Info.plist`. The release workflow downloads the ZIP and SHA-256
 sidecar from that exact main push workflow run, verifies the sidecar, opens the
@@ -359,9 +372,10 @@ python3 scripts/release_binary_contract.py self-test
 python3 scripts/reproducible_archive.py self-test
 python3 scripts/windows_release_runtime.py self-test
 python3 scripts/windows_runtime_contract.py self-test
+python3 scripts/release_smoke.py --self-test
 ```
 
-Script Checks runs both commands, Python bytecode compilation, and the existing
+Script Checks runs these commands, Python bytecode compilation, and the existing
 Harness validation. Workflow Security also runs `actionlint` and `zizmor`
 against every workflow change.
 
