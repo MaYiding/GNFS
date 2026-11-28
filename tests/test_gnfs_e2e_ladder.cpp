@@ -45,6 +45,10 @@
 // the measured run, a second Pipeline with the same Config selects the
 // polynomial again, because run() keeps the one it selects, and the root that
 // run() logs confirms that both selections agree.
+//
+// The progress callback marks the XOR-pair fallback of the factor extraction,
+// so the record tells a factorization by one dependency from one that needed
+// a pair.
 
 #include "support/scoped_environment_stderr.hpp"
 #include "support/test_check.hpp"
@@ -121,6 +125,10 @@ constexpr size_t kSqrtFailureSampleLimit = 20;
 constexpr size_t kSqrtFailureSampleChars = 240;
 // The polynomial selection logs its root as "m=<root> time=<seconds>s".
 constexpr std::string_view kPolynomialRootLogPrefix = "m=";
+// Progress messages of the factor extraction. The XOR-pair fallback opens
+// with one event and announces every pair that it tries.
+constexpr std::string_view kXorCombinationsMessage = "Trying XOR combinations";
+constexpr std::string_view kXorDependencyMessagePrefix = "Trying XOR dependency ";
 
 // Categories of the Warn and Error messages that the square root stage
 // emits. One message can fall into several categories: an algebraic failure
@@ -353,8 +361,9 @@ private:
 }
 
 // Counts the structured-route records that the log callback observes, keeps
-// the failure evidence of the square root stage, and remembers the root of the
-// polynomial that run() selected.
+// the failure evidence of the square root stage, remembers the root of the
+// polynomial that run() selected, and marks the XOR-pair fallback from the
+// progress callback.
 class RouteEvidence final {
 public:
     // `force_couveignes` is set when GNFS_FORCE_COUVEIGNES=1 makes the
@@ -373,6 +382,18 @@ public:
         observe_sqrt_failure(entry);
     }
 
+    void observe(const ProgressInfo& info) {
+        if (info.message.starts_with(kXorCombinationsMessage)) {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            pairwise_xor_attempted_ = true;
+            return;
+        }
+        if (info.message.starts_with(kXorDependencyMessagePrefix)) {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            ++pairwise_xor_dependencies_tried_;
+        }
+    }
+
     [[nodiscard]] size_t structured_filter_records() const {
         const std::lock_guard<std::mutex> lock(mutex_);
         return structured_filter_records_;
@@ -381,6 +402,16 @@ public:
     [[nodiscard]] size_t structured_matrix_records() const {
         const std::lock_guard<std::mutex> lock(mutex_);
         return structured_matrix_records_;
+    }
+
+    [[nodiscard]] bool pairwise_xor_attempted() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return pairwise_xor_attempted_;
+    }
+
+    [[nodiscard]] size_t pairwise_xor_dependencies_tried() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return pairwise_xor_dependencies_tried_;
     }
 
     // The root m that the polynomial selection logged, as decimal text.
@@ -476,6 +507,8 @@ private:
     std::optional<std::string> run_polynomial_m_;
     std::array<size_t, kSqrtFailureCategoryCount> sqrt_failure_counts_{};
     std::vector<std::string> sqrt_failure_samples_;
+    bool pairwise_xor_attempted_ = false;
+    size_t pairwise_xor_dependencies_tried_ = 0;
     bool force_couveignes_ = false;
 };
 
@@ -810,6 +843,13 @@ struct LadderRecord final {
     std::array<size_t, kSqrtFailureCategoryCount> sqrt_failure_counts{};
     std::vector<std::string> sqrt_failure_samples;
     PolynomialMod2Evidence polynomial_mod2;
+    // The XOR-pair fallback of the factor extraction started, and how many
+    // pairs it tried. dependencies_succeeded_before_pairwise_xor is true when
+    // one dependency yielded the factors before that fallback, false when an
+    // XOR pair yielded them, and disengaged when GNFS produced no factors.
+    bool pairwise_xor_attempted = false;
+    size_t pairwise_xor_dependencies_tried = 0;
+    std::optional<bool> dependencies_succeeded_before_pairwise_xor;
 };
 
 // Copies the measurements and the log evidence of a finished recorder into the
@@ -823,6 +863,8 @@ void capture_measurements(LadderRecord& record, const StageRecorder& recorder,
     record.structured_matrix_records = evidence.structured_matrix_records();
     record.sqrt_failure_counts = evidence.sqrt_failure_counts();
     record.sqrt_failure_samples = evidence.sqrt_failure_samples();
+    record.pairwise_xor_attempted = evidence.pairwise_xor_attempted();
+    record.pairwise_xor_dependencies_tried = evidence.pairwise_xor_dependencies_tried();
     record.peak_rss_bytes = gnfs::util::process_memory_snapshot().lifetime_peak_rss_bytes;
 }
 
@@ -1048,8 +1090,10 @@ FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
     StageRecorder recorder;
     RouteEvidence evidence{environment_flag_set("GNFS_FORCE_COUVEIGNES")};
     Pipeline pipeline(n, config);
-    pipeline.set_progress_callback(
-        [&recorder](const ProgressInfo& info) { recorder.observe(info); });
+    pipeline.set_progress_callback([&recorder, &evidence](const ProgressInfo& info) {
+        recorder.observe(info);
+        evidence.observe(info);
+    });
     pipeline.set_log_callback([&evidence](const LogEntry& entry) { evidence.observe(entry); });
 
     FactorResult result;
@@ -1069,7 +1113,13 @@ FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
     record.polynomial_mod2 = confirm_polynomial_mod2(probe, evidence, run_degree);
     capture_measurements(record, recorder, evidence);
 
+    // The pipeline tries every single dependency before its first XOR pair,
+    // so the factors came from one dependency unless the fallback had started.
     const FactorStats& published = result.stats;
+    if (result.success && published.method_used == FactorizationMethod::GNFS) {
+        record.dependencies_succeeded_before_pairwise_xor = !record.pairwise_xor_attempted;
+    }
+
     LadderStats& stats = record.stats;
     stats.executed_algorithm = published.executed_algorithm;
     stats.algorithms_executed = published.algorithms_executed;
@@ -1300,6 +1350,10 @@ void emit_record(std::ostream& os, const LadderRecord& record) {
     append_text_array(os, record.sqrt_failure_samples);
     os << ",\"polynomial_mod2\":";
     append_polynomial_mod2(os, record.polynomial_mod2);
+    os << ",\"pairwise_xor_attempted\":" << (record.pairwise_xor_attempted ? "true" : "false")
+       << ",\"pairwise_xor_dependencies_tried\":" << record.pairwise_xor_dependencies_tried
+       << ",\"dependencies_succeeded_before_pairwise_xor\":";
+    append_bool(os, record.dependencies_succeeded_before_pairwise_xor);
     os << '}';
 }
 
