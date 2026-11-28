@@ -180,6 +180,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # does not depend on cross-module optimization. The toolchain conditions are
 # unchanged: Release builds only, ThinLTO for Clang on macOS, -flto=auto for
 # GCC, and /GL with /LTCG for MSVC.
+#
+# The product targets receive exactly the LTO options that the directory
+# options gave them. The only addition, -ffat-lto-objects on gnfs_util and
+# gnfs_core with GCC and Apple Clang, is made at the end of the test block and
+# only when tests are built, because only a test links these libraries without
+# LTO.
 set(_gnfs_lto_compile_flag "")
 set(_gnfs_lto_link_flag "")
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -212,98 +218,6 @@ function(gnfs_enable_lto target)
         target_link_options(${target} PRIVATE ${_gnfs_lto_link_flag})
     endif()
 endfunction()
-
-# A test that leaves LTO links gnfs_util and gnfs_core without the LTO option.
-# GCC and Apple Clang therefore compile both libraries as fat LTO objects,
-# which carry the native code next to the intermediate representation, so one
-# object file serves the LTO links and the native links. MSVC /GL objects
-# always carry both forms and need no extra option.
-#
-# The capability is probed at configure time because the linker takes part in
-# it: compile one function with the LTO and fat options, then link its object
-# with a plain object and without any LTO option. Both steps must succeed. MSVC
-# is not probed because cl.exe needs the Visual Studio environment that
-# execute_process() cannot provide. A failed probe, for example under a cross
-# toolchain, falls back to LTO for every test executable, which is the behavior
-# before LTO became a per-target property.
-set(GNFS_FAT_LTO_LINKABLE FALSE)
-set(_gnfs_fat_lto_flag "")
-if(NOT _gnfs_lto_compile_flag)
-    # No LTO in this configuration, so no fat LTO objects either.
-elseif(GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
-    # PGO trains with test executables, and scripts/pgo-train.sh documents them
-    # as LTO builds. PGO builds therefore keep LTO on every test executable.
-elseif(MSVC)
-    set(GNFS_FAT_LTO_LINKABLE TRUE)
-else()
-    set(_gnfs_probe_dir "${CMAKE_BINARY_DIR}/gnfs-lto-probe")
-    set(_gnfs_probe_obj "${_gnfs_probe_dir}/probe${CMAKE_CXX_OUTPUT_EXTENSION}")
-    set(_gnfs_probe_exe "${_gnfs_probe_dir}/probe${CMAKE_EXECUTABLE_SUFFIX}")
-    file(MAKE_DIRECTORY "${_gnfs_probe_dir}")
-    file(WRITE "${_gnfs_probe_dir}/probe.cpp"
-        "int gnfs_lto_probe();\n"
-        "int gnfs_lto_probe() { return 7; }\n")
-    file(WRITE "${_gnfs_probe_dir}/main.cpp"
-        "int gnfs_lto_probe();\n"
-        "int main() { return gnfs_lto_probe(); }\n")
-    # Remove the artifacts of an earlier configure so that a failed step cannot
-    # pass on a stale file.
-    file(REMOVE "${_gnfs_probe_obj}" "${_gnfs_probe_exe}")
-    execute_process(
-        COMMAND "${CMAKE_CXX_COMPILER}" ${CMAKE_CXX_COMPILER_ARG1}
-            ${_gnfs_lto_compile_flag} -ffat-lto-objects
-            -c "${_gnfs_probe_dir}/probe.cpp" -o "${_gnfs_probe_obj}"
-        RESULT_VARIABLE _gnfs_probe_compile_result
-        OUTPUT_QUIET
-        ERROR_VARIABLE _gnfs_probe_compile_output
-        TIMEOUT 60)
-    execute_process(
-        COMMAND "${CMAKE_CXX_COMPILER}" ${CMAKE_CXX_COMPILER_ARG1}
-            "${_gnfs_probe_dir}/main.cpp" "${_gnfs_probe_obj}"
-            -o "${_gnfs_probe_exe}"
-        RESULT_VARIABLE _gnfs_probe_link_result
-        OUTPUT_QUIET
-        ERROR_VARIABLE _gnfs_probe_link_output
-        TIMEOUT 60)
-    if(_gnfs_probe_compile_result STREQUAL "0"
-        AND _gnfs_probe_link_result STREQUAL "0"
-        AND EXISTS "${_gnfs_probe_exe}")
-        set(GNFS_FAT_LTO_LINKABLE TRUE)
-        set(_gnfs_fat_lto_flag -ffat-lto-objects)
-    else()
-        if(NOT (_gnfs_probe_compile_result STREQUAL "0"))
-            message(STATUS "GNFS fat LTO probe: the compile step failed with "
-                "result ${_gnfs_probe_compile_result}\n${_gnfs_probe_compile_output}")
-        else()
-            message(STATUS "GNFS fat LTO probe: the link step failed with "
-                "result ${_gnfs_probe_link_result}\n${_gnfs_probe_link_output}")
-        endif()
-    endif()
-endif()
-
-# Compiles a GCC or Apple Clang target as fat LTO objects. The call is a no-op
-# when fat LTO objects are unavailable or unnecessary, which includes MSVC.
-function(gnfs_enable_fat_lto_objects target)
-    if(_gnfs_fat_lto_flag)
-        target_compile_options(${target} PRIVATE ${_gnfs_fat_lto_flag})
-    endif()
-endfunction()
-
-if(_gnfs_lto_compile_flag)
-    if(GNFS_FAT_LTO_LINKABLE)
-        message(STATUS "GNFS LTO: tests link native objects (fat LTO objects)")
-    else()
-        message(STATUS "GNFS LTO: tests participate in LTO (fat LTO objects unavailable)")
-    endif()
-endif()
-
-# Test executables must take part in LTO when the core libraries are not
-# available as fat LTO objects: PGO builds and toolchains that failed the probe.
-if(NOT GNFS_FAT_LTO_LINKABLE OR GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
-    set(_gnfs_tests_use_lto TRUE)
-else()
-    set(_gnfs_tests_use_lto FALSE)
-endif()
 
 # ============================================================
 # 依赖查找
@@ -393,9 +307,9 @@ target_include_directories(gnfs_util PUBLIC
 if(WIN32)
     target_link_libraries(gnfs_util PUBLIC Psapi)
 endif()
-# The product takes part in LTO; see "Link-Time Optimization (LTO)".
+# The product takes part in LTO; see "Link-Time Optimization (LTO)". A build
+# that includes tests adds -ffat-lto-objects at the end of the test block.
 gnfs_enable_lto(gnfs_util)
-gnfs_enable_fat_lto_objects(gnfs_util)
 
 # gnfs_core - 核心类型库
 add_library(gnfs_core STATIC
@@ -640,10 +554,11 @@ target_link_libraries(gnfs_core PUBLIC
 )
 # The product takes part in LTO; see "Link-Time Optimization (LTO)". The
 # distributed-sieve policy checker accepts only listed CMake commands that name
-# this target, so its options are literal instead of a gnfs_enable_lto() call.
-# A static library has no link step.
+# this target, so its option is literal instead of a gnfs_enable_lto() call.
+# A static library has no link step. A build that includes tests adds
+# -ffat-lto-objects at the end of the test block.
 if(_gnfs_lto_compile_flag)
-    target_compile_options(gnfs_core PRIVATE ${_gnfs_lto_compile_flag} ${_gnfs_fat_lto_flag})
+    target_compile_options(gnfs_core PRIVATE ${_gnfs_lto_compile_flag})
 endif()
 
 if(HAVE_NTL)
@@ -3729,6 +3644,101 @@ if(GNFS_BUILD_TESTS)
     # exists so that new tests inherit the default without an edit here. See
     # "Link-Time Optimization (LTO)".
     #
+    # A test that leaves LTO links gnfs_util and gnfs_core without the LTO
+    # option. GCC and Apple Clang therefore compile both libraries as fat LTO
+    # objects in a build with tests. A fat object carries the native code next
+    # to the intermediate representation, so one object file serves the LTO
+    # links and the native links. This is the only compile option that the two
+    # libraries gain over the directory options they had, and a build with
+    # GNFS_BUILD_TESTS off does not get it, because nothing links their
+    # objects natively there. MSVC /GL objects always carry both forms and
+    # need no extra option.
+    #
+    # The capability is probed at configure time because the linker takes part
+    # in it: compile one function with the LTO and fat options, then link its
+    # object with a plain object and without any LTO option. Both steps must
+    # succeed. MSVC is not probed because cl.exe needs the Visual Studio
+    # environment that execute_process() cannot provide. A failed probe, for
+    # example under a cross toolchain, falls back to LTO for every test
+    # executable, which is the behavior before LTO became a per-target property.
+    set(GNFS_FAT_LTO_LINKABLE FALSE)
+    set(_gnfs_fat_lto_flag "")
+    if(NOT _gnfs_lto_compile_flag)
+        # No LTO in this configuration, so no fat LTO objects either.
+    elseif(GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
+        # PGO trains with test executables, and scripts/pgo-train.sh documents
+        # them as LTO builds. PGO builds therefore keep LTO on every test
+        # executable and need no fat LTO objects.
+    elseif(MSVC)
+        set(GNFS_FAT_LTO_LINKABLE TRUE)
+    else()
+        set(_gnfs_probe_dir "${CMAKE_BINARY_DIR}/gnfs-lto-probe")
+        set(_gnfs_probe_obj "${_gnfs_probe_dir}/probe${CMAKE_CXX_OUTPUT_EXTENSION}")
+        set(_gnfs_probe_exe "${_gnfs_probe_dir}/probe${CMAKE_EXECUTABLE_SUFFIX}")
+        file(MAKE_DIRECTORY "${_gnfs_probe_dir}")
+        file(WRITE "${_gnfs_probe_dir}/probe.cpp"
+            "int gnfs_lto_probe();\n"
+            "int gnfs_lto_probe() { return 7; }\n")
+        file(WRITE "${_gnfs_probe_dir}/main.cpp"
+            "int gnfs_lto_probe();\n"
+            "int main() { return gnfs_lto_probe(); }\n")
+        # Remove the artifacts of an earlier configure so that a failed step
+        # cannot pass on a stale file.
+        file(REMOVE "${_gnfs_probe_obj}" "${_gnfs_probe_exe}")
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" ${CMAKE_CXX_COMPILER_ARG1}
+                ${_gnfs_lto_compile_flag} -ffat-lto-objects
+                -c "${_gnfs_probe_dir}/probe.cpp" -o "${_gnfs_probe_obj}"
+            RESULT_VARIABLE _gnfs_probe_compile_result
+            OUTPUT_QUIET
+            ERROR_VARIABLE _gnfs_probe_compile_output
+            TIMEOUT 60)
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" ${CMAKE_CXX_COMPILER_ARG1}
+                "${_gnfs_probe_dir}/main.cpp" "${_gnfs_probe_obj}"
+                -o "${_gnfs_probe_exe}"
+            RESULT_VARIABLE _gnfs_probe_link_result
+            OUTPUT_QUIET
+            ERROR_VARIABLE _gnfs_probe_link_output
+            TIMEOUT 60)
+        if(_gnfs_probe_compile_result STREQUAL "0"
+            AND _gnfs_probe_link_result STREQUAL "0"
+            AND EXISTS "${_gnfs_probe_exe}")
+            set(GNFS_FAT_LTO_LINKABLE TRUE)
+            set(_gnfs_fat_lto_flag -ffat-lto-objects)
+        else()
+            if(NOT (_gnfs_probe_compile_result STREQUAL "0"))
+                message(STATUS "GNFS fat LTO probe: the compile step failed with "
+                    "result ${_gnfs_probe_compile_result}\n${_gnfs_probe_compile_output}")
+            else()
+                message(STATUS "GNFS fat LTO probe: the link step failed with "
+                    "result ${_gnfs_probe_link_result}\n${_gnfs_probe_link_output}")
+            endif()
+        endif()
+    endif()
+    if(_gnfs_fat_lto_flag)
+        # Both names are literal: the distributed-sieve policy checker accepts
+        # only listed CMake commands that name gnfs_core.
+        target_compile_options(gnfs_util PRIVATE ${_gnfs_fat_lto_flag})
+        target_compile_options(gnfs_core PRIVATE ${_gnfs_fat_lto_flag})
+    endif()
+    if(_gnfs_lto_compile_flag)
+        if(GNFS_FAT_LTO_LINKABLE)
+            message(STATUS "GNFS LTO: tests link native objects (fat LTO objects)")
+        else()
+            message(STATUS "GNFS LTO: tests participate in LTO (fat LTO objects unavailable)")
+        endif()
+    endif()
+
+    # Test executables must take part in LTO when the core libraries are not
+    # available as fat LTO objects: PGO builds and toolchains that failed the
+    # probe.
+    if(NOT GNFS_FAT_LTO_LINKABLE OR GNFS_ENABLE_PGO_GEN OR GNFS_ENABLE_PGO_USE)
+        set(_gnfs_tests_use_lto TRUE)
+    else()
+        set(_gnfs_tests_use_lto FALSE)
+    endif()
+
     # GNFS_LTO_TEST_TARGETS lists the end-to-end tests that still take part in
     # LTO, so each CI round links and runs the product configuration end to
     # end. An unknown name is an error: a renamed test must not drop out of
