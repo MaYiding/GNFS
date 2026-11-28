@@ -376,8 +376,9 @@ std::vector<uint32_t> companion_columns(const std::vector<Integer>& monic, uint3
             else
                 coeff -= Integer(1);
         }
+        // The column is the parity of (c_i - δ_i0) / 2, not its whole value.
         coeff /= static_cast<int64_t>(2);
-        columns.push_back(coeff.is_one() ? 1u : 0u);
+        columns.push_back(coeff.is_odd() ? 1u : 0u);
     }
     return columns;
 }
