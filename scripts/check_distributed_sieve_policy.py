@@ -5543,7 +5543,7 @@ WORKER_CLEANUP_RECEIPT_RELEASE_MEMBER_BODY = (
 )
 WORKER_CLEANUP_RECEIPT_CMAKE_FILE = "CMakeLists.txt"
 WORKER_CLEANUP_RECEIPT_CMAKE_BOUNDARY_SHA256 = (
-    "b5d0cdca65be9092b66cf00b02622a4a2a505be2f33b013f755262b11a897d9d"
+    "fb24d53ce29edd15f92c7597addb865989add81beaeb2e0aa5be4bc410f4f5bc"
 )
 WORKER_CLEANUP_RECEIPT_RELEASE_TOOLCHAIN_FILE = (
     "scripts/linux-release-gcc12-toolchain.cmake"
@@ -14514,6 +14514,10 @@ class Checks:
             "add_test",
             "set_tests_properties",
             "install",
+            # A property read changes no build surface. CMakeLists.txt reads
+            # the source list of gnfs_core with it for the MSVC /GL object
+            # library.
+            "get_target_property",
         }
         approved_commands = {
             "add_executable",

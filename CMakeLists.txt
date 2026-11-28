@@ -172,23 +172,36 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # follows the target options on the command line, so no target could opt out of
 # add_compile_options(-flto=...), and every test executable repeated the
 # whole-program optimization of gnfs_core. Those links dominated the Release
-# CI builds. LTO now covers the libraries, the gnfs executable, the tests
-# listed in GNFS_LTO_TEST_TARGETS, and the test executables that stamp the
-# build type into their records; the remaining tests link the native code of
-# the core libraries. The product keeps LTO because it is shipped. The
-# end-to-end tests keep it so that each CI round still links and runs the
-# product configuration, and the benchmarks and evidence probes keep it
-# because their records must come from the product configuration. The
-# remaining tests check behavior, and their outcome does not depend on
-# cross-module optimization. The toolchain conditions are unchanged: Release
-# builds only, ThinLTO for Clang on macOS, -flto=auto for GCC, and /GL with
-# /LTCG for MSVC.
+# CI builds. LTO now covers the gnfs executable, the tests listed in
+# GNFS_LTO_TEST_TARGETS, and the test executables that stamp the build type
+# into their records; the remaining tests link the native code of the core
+# libraries. The product keeps LTO because it is shipped. The end-to-end tests
+# keep it so that each CI round still links and runs the product configuration,
+# and the benchmarks and evidence probes keep it because their records must
+# come from the product configuration. The remaining tests check behavior, and
+# their outcome does not depend on cross-module optimization. The toolchain
+# conditions are unchanged: Release builds only, ThinLTO for Clang on macOS,
+# -flto=auto for GCC, and /GL with /LTCG for MSVC.
 #
-# The product targets receive exactly the LTO options that the directory
-# options gave them. The only addition, -ffat-lto-objects on gnfs_util and
-# gnfs_core with GCC and Apple Clang, is made at the end of the test block and
-# only when tests are built, because only a test links these libraries without
-# LTO.
+# With GCC and Apple Clang, the core libraries take part in LTO as well and
+# receive exactly the options that the directory options gave them. The one
+# addition, -ffat-lto-objects on gnfs_util and gnfs_core, is made at the end of
+# the test block and only when tests are built, because only a test links these
+# libraries without LTO. A fat object carries the native code next to the
+# intermediate representation, so one archive member serves the LTO links and
+# the native links.
+#
+# With MSVC, the static libraries never receive /GL. They consist of plain
+# object files, so every test links them natively and the installed
+# libgnfs_core.lib carries no /GL object. The /GL code comes from the object
+# library gnfs_lto_objects, which compiles the sources of both libraries with
+# the same usage requirements. gnfs_enable_lto() adds it to the gnfs executable
+# and to the test executables that keep LTO, and /LTCG optimizes their code
+# together. /LTCG:OFF is not an alternative. The MSVC linker processes /GL
+# objects slowly in a link that does not run /LTCG, so a CI build with
+# /LTCG:OFF linked about 1.4 test executables per minute (12 to 16 per 10
+# minutes) where /LTCG links about 10 per minute (268 in 31 minutes), and the
+# Windows job hit its timeout.
 set(_gnfs_lto_compile_flag "")
 set(_gnfs_lto_link_flag "")
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -219,6 +232,14 @@ function(gnfs_enable_lto target)
     if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "SHARED_LIBRARY"
         OR _type STREQUAL "MODULE_LIBRARY")
         target_link_options(${target} PRIVATE ${_gnfs_lto_link_flag})
+        if(MSVC)
+            # The static libraries of this project consist of plain objects on
+            # MSVC, so the /GL objects come from gnfs_lto_objects. These
+            # objects define every symbol of the libraries, and the linker
+            # loads a library member only for a symbol that is still undefined
+            # after it has read every object file.
+            target_link_libraries(${target} PRIVATE gnfs_lto_objects)
+        endif()
     endif()
 endfunction()
 
@@ -311,8 +332,12 @@ if(WIN32)
     target_link_libraries(gnfs_util PUBLIC Psapi)
 endif()
 # The product takes part in LTO; see "Link-Time Optimization (LTO)". A build
-# that includes tests adds -ffat-lto-objects at the end of the test block.
-gnfs_enable_lto(gnfs_util)
+# that includes tests adds -ffat-lto-objects at the end of the test block. On
+# MSVC the library stays plain and gnfs_lto_objects, created after gnfs_core,
+# supplies the /GL objects.
+if(NOT MSVC)
+    gnfs_enable_lto(gnfs_util)
+endif()
 
 # gnfs_core - 核心类型库
 add_library(gnfs_core STATIC
@@ -559,8 +584,9 @@ target_link_libraries(gnfs_core PUBLIC
 # distributed-sieve policy checker accepts only listed CMake commands that name
 # this target, so its option is literal instead of a gnfs_enable_lto() call.
 # A static library has no link step. A build that includes tests adds
-# -ffat-lto-objects at the end of the test block.
-if(_gnfs_lto_compile_flag)
+# -ffat-lto-objects at the end of the test block. On MSVC the library stays
+# plain; see gnfs_lto_objects below.
+if(_gnfs_lto_compile_flag AND NOT MSVC)
     target_compile_options(gnfs_core PRIVATE ${_gnfs_lto_compile_flag})
 endif()
 
@@ -568,6 +594,22 @@ if(HAVE_NTL)
     target_include_directories(gnfs_core SYSTEM PUBLIC ${NTL_INCLUDE_DIR})
     target_link_libraries(gnfs_core PUBLIC ${NTL_LIBRARY})
     target_compile_definitions(gnfs_core PUBLIC GNFS_HAVE_NTL=1)
+endif()
+
+# MSVC: the /GL objects for the gnfs executable and for the test executables
+# that keep LTO; see "Link-Time Optimization (LTO)". The sources are the
+# sources of the two libraries, read back from the targets so that each list
+# exists once. Linking gnfs_core gives the objects the usage requirements of
+# both libraries, because the interface of gnfs_core carries its own settings
+# and those of gnfs_util. The object library is not installed.
+if(MSVC AND _gnfs_lto_compile_flag)
+    get_target_property(GNFS_UTIL_SOURCES gnfs_util SOURCES)
+    get_target_property(GNFS_CORE_SOURCES gnfs_core SOURCES)
+    add_library(gnfs_lto_objects OBJECT
+        ${GNFS_UTIL_SOURCES} ${GNFS_CORE_SOURCES}
+    )
+    target_link_libraries(gnfs_lto_objects PRIVATE gnfs_core)
+    target_compile_options(gnfs_lto_objects PRIVATE ${_gnfs_lto_compile_flag})
 endif()
 
 # ============================================================
@@ -3648,13 +3690,26 @@ if(GNFS_BUILD_TESTS)
     # "Link-Time Optimization (LTO)".
     #
     # A test that leaves LTO links gnfs_util and gnfs_core without the LTO
-    # option. GCC and Apple Clang therefore compile both libraries as fat LTO
-    # objects in a build with tests. A fat object carries the native code next
-    # to the intermediate representation, so one object file serves the LTO
-    # links and the native links. This is the only compile option that the two
+    # option, so it needs the native code of both libraries.
+    #
+    # GCC and Apple Clang compile both libraries as fat LTO objects in a build
+    # with tests. A fat object carries the native code next to the
+    # intermediate representation, so one object file serves the LTO links
+    # and the native links. This is the only compile option that the two
     # libraries gain over the directory options they had, and a build with
     # GNFS_BUILD_TESTS off does not get it, because nothing links their
     # objects natively there.
+    #
+    # MSVC needs no option. The static libraries consist of plain object
+    # files there, and gnfs_lto_objects holds the /GL code for the test
+    # executables that keep LTO. An earlier version of this policy kept /GL
+    # in the libraries and linked the other tests with /LTCG:OFF. That was
+    # slower than /LTCG: the MSVC linker processes /GL objects slowly in a
+    # link that does not run /LTCG. A CI build with /LTCG:OFF linked 12 to 16
+    # test executables per 10 minutes, against 268 in 31 minutes with /LTCG,
+    # and the Windows job hit its timeout. cl.exe is not probed because it
+    # needs the Visual Studio environment that execute_process() cannot
+    # provide.
     #
     # The capability is probed at configure time because the linker takes part
     # in it: compile one function with the LTO and fat options, then link its
@@ -3674,14 +3729,7 @@ if(GNFS_BUILD_TESTS)
         # them as LTO builds. PGO builds therefore keep LTO on every test
         # executable and need no fat LTO objects.
     elseif(MSVC)
-        # A /GL object carries the machine code as well, but Microsoft's /LTCG
-        # documentation says that a link which meets a /GL module without
-        # /LTCG is restarted with /LTCG, so the missing option alone would save
-        # nothing. The executables that leave LTO therefore link with
-        # /LTCG:OFF below, which makes the linker treat the /GL modules as if
-        # they were compiled without /GL. cl.exe is not probed because it needs
-        # the Visual Studio environment that execute_process() cannot provide,
-        # and no build has confirmed this path.
+        # The static libraries are plain objects on MSVC; see above.
         set(GNFS_TESTS_LINK_NATIVE TRUE)
     else()
         set(_gnfs_probe_dir "${CMAKE_BINARY_DIR}/gnfs-lto-probe")
@@ -3735,10 +3783,12 @@ if(GNFS_BUILD_TESTS)
         target_compile_options(gnfs_core PRIVATE ${_gnfs_fat_lto_flag})
     endif()
     if(_gnfs_lto_compile_flag)
-        if(GNFS_TESTS_LINK_NATIVE)
-            message(STATUS "GNFS LTO: tests link native objects (fat LTO objects)")
-        else()
+        if(NOT GNFS_TESTS_LINK_NATIVE)
             message(STATUS "GNFS LTO: tests participate in LTO (fat LTO objects unavailable)")
+        elseif(MSVC)
+            message(STATUS "GNFS LTO: tests link native objects (plain libraries)")
+        else()
+            message(STATUS "GNFS LTO: tests link native objects (fat LTO objects)")
         endif()
     endif()
 
@@ -3819,17 +3869,6 @@ if(GNFS_BUILD_TESTS)
     foreach(_target IN LISTS _gnfs_lto_targets)
         gnfs_enable_lto(${_target})
     endforeach()
-
-    if(MSVC AND NOT _gnfs_tests_use_lto)
-        # Without /LTCG the linker would restart with /LTCG as soon as it meets
-        # a /GL module. /LTCG:OFF makes it treat the /GL modules as if they
-        # were compiled without /GL, which is the native link these
-        # executables need (Microsoft's /LTCG documentation).
-        list(REMOVE_ITEM _gnfs_test_executables ${_gnfs_lto_targets})
-        foreach(_target IN LISTS _gnfs_test_executables)
-            target_link_options(${_target} PRIVATE /LTCG:OFF)
-        endforeach()
-    endif()
 
     function(gnfs_write_test_source_index)
         get_property(_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
