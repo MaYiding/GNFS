@@ -106,6 +106,24 @@ jobs:
         restore-keys: |
           ccache-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.cxx_compiler }}-${{ matrix.build_type }}-
 
+    # ThinLTO results of the macOS Release row. Under Apple clang a Release
+    # build links every executable as its own ThinLTO link, so the core library
+    # is optimized again for each of the 279 executables even when ccache
+    # answers every compile. The Configure step below points the linker at this
+    # directory, and the linker reuses the native code it cached there. The key
+    # names the row and its sources like the ccache key; restore-keys takes the
+    # newest entry of the row when the source hash is new. The post step saves
+    # the directory after the job. The statistics step after the build prints
+    # the size, which is expected to stay below 1 GB.
+    - name: Restore ThinLTO cache (macOS Release)
+      if: runner.os == 'macOS' && matrix.build_type == 'Release'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ github.workspace }}/.lto-cache
+        key: thinlto-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt', 'include/**', 'src/**', 'tests/**') }}
+        restore-keys: |
+          thinlto-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.build_type }}-
+
     # vcpkg writes its binary packages here (VCPKG_BINARY_SOURCES in the
     # install step). The key names the pinned vcpkg commit and the MSYS2
     # package revision patched into the GMP port; change it together with
@@ -192,15 +210,31 @@ jobs:
       if: runner.os != 'Windows'
       env:
         CXX_COMPILER: ${{ matrix.cxx_compiler }}
+        # USE_LTO_CACHE is non-empty only on the macOS Release row, the one
+        # row whose linker is pointed at the ThinLTO cache directory restored
+        # above.
+        LTO_CACHE_DIR: ${{ github.workspace }}/.lto-cache
+        USE_LTO_CACHE: ${{ runner.os == 'macOS' && matrix.build_type == 'Release' && '1' || '' }}
       run: |
         # The restored directory also carries older counters; start at zero so
         # the statistics printed after the build describe this run.
         ccache --zero-stats
+        # The other POSIX rows configure exactly as before: the array is empty
+        # and expands to no argument at all.
+        cmake_args=()
+        if [[ -n "${USE_LTO_CACHE}" ]]; then
+          # ld takes each option and its value as two arguments. The prune
+          # interval lets the linker drop stale entries, at most once a day,
+          # so the saved directory does not grow without bound.
+          linker_flags="-Wl,-cache_path_lto,${LTO_CACHE_DIR} -Wl,-prune_interval_lto,86400"
+          cmake_args+=("-DCMAKE_EXE_LINKER_FLAGS=${linker_flags}")
+        fi
         cmake -B build \
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
           -DCMAKE_CXX_COMPILER="${CXX_COMPILER}" \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-          -DGNFS_ENABLE_NATIVE_ARCH=OFF
+          -DGNFS_ENABLE_NATIVE_ARCH=OFF \
+          "${cmake_args[@]}"
 
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
