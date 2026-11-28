@@ -125,7 +125,9 @@ stderr 输出:
 | V0 | weight=2 only, pairwise merge | 50d/60d NO EXCESS (β=64% 未处理) |
 | V1 (早期) | weight=2 + recursive chain | sngl 飙升, 不稳 |
 | V2 (commit 21dcbcd, revert 9e84a73) | weight≥2 都 merge 一次 | 25d ✓ +27%, 50d ✗ -69% (chain residue) |
-| **V3 (current)** | BFS spanning tree + LP cancel check | 单元测试 6/6 PASS, 50d/60d 真实验证 待 V0+fix 后 |
+| **V3 (current)** | BFS spanning tree + LP cancel check | 单元测试 6/6 PASS；十进制 50 位五轮实测为负面，60 位没有实测（见表下说明） |
+
+2026-11-28 回填：这一行原先写的是「50d/60d 真实验证 待 V0+fix 后」。十进制 50 位的实测记录在 [docs/perf/performance-doctrine.md](performance-doctrine.md#addendum-2026-05-17-大型-perf-优化-session-记录) 的「Addendum: 2026-05-17 大型 perf 优化 session 记录」一节，表名是「V3 cascade 50d trajectory evidence (完整 Round 1-5 实测)」。结论是 V3 cascade 在十进制 50 位上五轮筛完仍无盈余：第 5 轮 β=121.6%、PASS ratio 77%，最终矩阵 282,027×365,516 无盈余，判为 FAIL。那份记录只有十进制 50 位，60 位的实测在仓库里没有记录；文末「参考」提到的 `progress.md` 在仓库里找不到，实测数据以那份记录为准。
 
 ## 参考
 

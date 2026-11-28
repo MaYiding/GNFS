@@ -98,6 +98,54 @@
 - 原因是推断，没有实测：没有查看恢复出来的目录里的时间戳，也没有做对照 run。推断的内容是：Make 靠时间戳判断新旧，恢复出来的对象若不比 checkout 的源码和新装的依赖头文件新，就会全部重编。macOS 行这一次的日志里，`brew install gmp ntl` 对 gmp 报已安装，对 ntl 是新装；「每次都重新安装 NTL」同样是推断。缓存已换成 ccache（PR #420）。
 - 同一提交上必需检查的耗时（CI 的 run 45967343806、CodeQL 的 run 45967343786）：最长的两个并行，Windows 行 47.6 分钟，`CI required` 等它结束才通过；CodeQL 的 Analyze C++ 45.0 分钟。CodeQL 里带插桩的构建 25 分钟、分析 19 分钟，工作流里没有任何缓存。这 351 个 .cpp 里 272 个是测试。§三.23 所引的 CodeQL 68.2 分钟没有注明 run，与这次的 45.0 分钟不是同一次测量，差别的原因未确认。
 
+## 2026-11-28 决定
+
+> 本节记 2026-11-28 对第五节 20 项的逐条决定，供以后的改动引用。用户当日的授权是：这些事项由代理决定，推理强度保持 `max`；对外发布（打标签、发 Release、改版本号）不在授权之内，仍由用户决定。正文其余部分不动，只在第五节表格上方加了一句指向本节。
+>
+> **依据。** 本节没有编译，也没有运行测试。PR 编号、标题与合并状态写本节时用 `gh pr view` 逐个核对：#417、#418、#421、#426、#429 已合并，#431 至 #436 仍未合并。本节引这六个未合并 PR 的脚本、头文件与作业，指的是 PR 里的内容，main 上还没有。本节的行号读自写本节时的 main `a15fa397`，不是文首所说的 `d54aba29`；所引的文件在 `80895f08` 与 `a15fa397` 上相同。其中 `tests/` 下的行号会随 PR #434 的合并移动，它改了本节引用的 12 个测试文件中的 8 个。CI 时长取自 `gh api repos/MaYiding/GNFS/actions/runs/<id>/jobs`。「ℓ=2 的两条线索」照录核实与复核的结论，数字没有复做，写本节时只重读了其中的代码位置与注释原文；「表外一条」的文件数与行数在 `80895f08` 上用 `git grep` 重数过。表里一项有几个子问而本节只答了其中一部分时，没有写到的子问就是还没有决定。
+
+### 逐条决定
+
+- **第 1 项（structured 归约）**：维持显式研究模式，默认过滤行为不变，V0_BFS 与 V3 cascade 暂不删。十进制 50 位端到端走 structured 路线，做法是 Nightly 里的证据阶梯：十进制 30、35、40 位走默认路线，50 位 structured 另设一个允许失败的实验作业（PR #436）。是否推广、是否下调 GNFS 自动选路的下界，等阶梯的证据。维持不变的依据是既有实测：structured 让十进制 50 位矩阵的盈亏由负转正，但非零元与峰值内存的代价太大，2026-08-21 已判不提升（§一 表、§三.18）。§三.18 指出 `docs/perf/v3-cascade-design.md` 没有回填，这次已回填。
+- **第 2 项（durable wave store）**：既不接入也不删，维持显式 opt-in；接入要等 50 位证据说明确有需要。fork 子进程的线程上限先测量再改，因为分布式筛的文件被策略脚本大量钉住，改动成本高。
+- **第 3 项（helper 头文件）**：只被测试用、不带门控的 5 个挪到 `tests/support`；`msvc_compat.hpp` 因为被 `/FI` 强制包含而留在原处；46 个带门控的保留为显式 opt-in，由 `scripts/ci/check_header_reachability.py` 与清单钉住（PR #432）。
+- **第 4 项（自动选路的回退语义与下界）**：维持现状，等 50 位证据。
+- **第 5 项（乘数组合与影子证明）**：维持默认关闭，不再投入。依据见 §三.20：乘数组合没有收益证据，影子证明的剩余项靠 CI 完不成。
+- **第 6 项（发布出口）**：版本合同保持 `v0.1.0`；发布不由代理执行，这是授权的例外。要补的是三个 CLI 发布包的真实分解冒烟，Workbench 包已有探针（§三.16）。
+- **第 7 项（发布供应链确定性）**：PPA 在线安装是有意设计（`docs/releasing.md:253-256`），接受外部可用性风险，不做镜像；MSYS2 基础环境不另作钉死。
+- **第 8 项（性能回归门禁）**：不设为必需检查；先在 Nightly 的证据阶梯里积累各阶段的计时。依据是阈值没有噪声依据，拉取请求上也没有可对比的基线（§三.19）。
+- **第 9 项（CI 触发策略与快速失败层）**：先做两项提速。一是 CodeQL 在拉取请求上只分析产品代码（PR #429，已合并）：拉取请求上的 Analyze C++ 由约 50 分钟降到约 9 分钟，main 推送仍分析测试代码。二是 Release 构建里测试可执行文件退出 LTO（PR #435）。Windows 行扩到 fast 层、Benchmarks 与 Coverage 的触发策略，等 #435 合并后量出 Windows 行时长再定。
+- **第 10 项（Windows 行时长与 SQUFOF oracle）**：同上，等实测。
+- **第 11 项（BL 检查点）**：原子保存与 SHA-256 校验，格式升到 V4；求解器只续算 V4（PR #431）。
+- **第 12 项（收集器的构造期保证）**：保留 setter，不改。依据是没有可达的未受保护生产路径，130 处测试声明的改动换不来收益（§三.11）。
+- **第 13 项（每个首项系数的候选配额）**：先要一条超过 400 bit 的实测，之后再做；Nightly 的证据阶梯（PR #436）给了放这类实测作业的通道。
+- **第 14 项（CLI 宽字符入口）**：Windows 上改用 `wmain`，参数在入口转成 UTF-8，配置文件与输出文件都按 UTF-8 打开（PR #433）。
+- **第 15 项（exponent_k 与偶数首项系数）**：偶数首项系数已随 #426 处理；`exponent_k` 从 8 提到 40，另开一个方向做。依据见[下一小节](#ℓ2-的两条线索)。
+- **第 16 项（空输入返回 1、平方根失败的处理）**：契约不变（`tests/test_sqrt.cpp:1815-1817`）；平方根失败已经写 Warn 日志（#418，`src/api/pipeline.cpp:4006`、`:4016`）。
+- **第 17 项（十进制 50 位端到端）**：见第 1 项。接受 Nightly 多占时间，50 位作业允许失败。
+- **第 18 项（开关总览表）**：沿用 #421 的做法。总览速查表在 `docs/env-flags/README.md` 的「补充台账速查表」，逐项的解析方式、默认值、对结果的影响与测试在各模块页的小节里；新的总览行加在那张速查表，由 `scripts/ci/check_env_flag_docs.py` 核对。
+- **第 19、20 项（launch guard 的形态、平方根失败统计）**：公开 `FutureLaunchGuard`（#417，`include/gnfs/util/thread_pool.hpp:76`）；不加统计字段，先用日志。
+- **表外一条：测试断言必须在 Release 下生效。** 依据：main `80895f08` 上，按 `git grep -E '(^|[^A-Za-z0-9_])assert[[:space:]]*\('` 数，`tests/` 有 56 个文件、共 2,578 行用到 `assert(...)`，不含 `static_assert`；只有 7 个文件写了 `#undef NDEBUG`，匹配的是 `#[[:space:]]*undef[[:space:]]+NDEBUG`，其中 3 个写作 `#  undef`；按决定时的统计，34 个文件（1,228 处）没有任何 Release 下生效的检查，这个数的口径没有记录，本节未能复现。跑测试的通道里，`CI` 的六行矩阵只有一行是 Debug，而且只跑 instant（`.github/workflows/ci.yml:44-47`），其余五行与 deep gate 都是 Release；Sanitizers 与 Coverage 也以 Debug 构建，但只跑 instant 标签（`.github/workflows/sanitizers.yml:41`、`:58`，`.github/workflows/coverage.yml:50`、`:61`）。做法是 `tests/support/test_assert.hpp` 的 `TEST_ASSERT`，加一条 Script Checks 检查（PR #434）。
+
+第 9 项里 CodeQL 的时长，基线取自 PR #429 的说明：main `86d7005c` 上是 50.6 分钟。抽看四次拉取请求 run（46146650998、46156617186、46157632406、46158030019），Analyze C++ 三次在 8 分 54 秒到 8 分 58 秒，一次 11 分 27 秒。
+
+### ℓ=2 的两条线索
+
+这两条是第 15 项的依据，各由一名核实员读码并做纯 Python 的精确 2-adic 实验，再由一名复核员换人复核，主结论成立。括号里是严重度。
+
+- **精度回退（中等）。** 浪费平方根尝试，不会算错。
+  - 现象：`SchirokaurConfig::exponent_k` 默认是 8（`include/gnfs/linalg/schirokauer.hpp:541`），生产路径没有改它（`include/gnfs/linalg/matrix_builder.hpp:653-656`）。$f\bmod 2$ 有一次因子时，split 路径对 $\gamma=a-b\cdot r$ 先剥去 2 的幂，剥去 $v$ 个之后要求 $k-v\ge 2$，不满足就把这一列记成 0（`schirokauer.hpp:843-855`）。于是 $v_2(a-b\cdot r)\ge 7$ 的关系被记成 0 列，这样的关系约占 0.86% 到 1.6%，其中真实位为 1 的占一半。
+  - 后果：坏依赖的范数仍是平方，模 $p$ 的平方预检拦不住它，要跑完 Hensel、CRT 与 Couveignes 才失败，再换下一个依赖。
+  - 范围：81 bit 门禁（RegressionGate 的 81 bit 一档，`tests/test_regression_gate.cpp:65`）的多项式模 2 不可约，不受影响。核实列出的受影响测试输入是 $N=10800$、$96091$、$100000980001501$、$1000000016000000063$、$2000072000198$。
+  - 测试里的调用点（写本节时读码分开的，五个输入本身出自核实）：
+    - 前三个输入有开着 Schirokauer 列建矩阵的调用点。$N=10800$ 与 $N=96091$ 走 `tests/test_gnfs_e2e.cpp` 的 `factor_gnfs`（输入在 `:962`、`:998`，建矩阵在 `:434-441`）。$N=96091$ 还在 `tests/test_regression_gate.cpp:62` 与 `tests/test_gnfs_progressive.cpp:156`（建矩阵分别在 `:278-283`、`:556-563`），以及直接走 split 路径的 `tests/test_schirokauer_strip.cpp:239-241`。$N=100000980001501$ 在 `tests/test_gnfs_progressive.cpp:163` 与 `tests/test_factor_with_kleinjung.cpp:704`（建矩阵在 `:443-448`）。
+    - 后两个输入按字面检索只出现在建不了 Schirokauer 列的调用点。$N=1000000016000000063$ 只用于自动选路的 `factorize`（`tests/test_method_selection.cpp:199`）、选多项式（`tests/test_base_m.cpp:46-47`、`tests/test_kleinjung.cpp:148-150`）与 SIQS（`tests/test_siqs.cpp:1148`）。$N=2000072000198$ 按字面检索出现在三处，都是自动选路：`tests/test_api.cpp:1579`、`tests/test_cli_event_stream.cpp:530`，以及工作台测试 `apps/macos/GNFSWorkbench/GNFSWorkbenchTests/ProcessGNFSRunnerTests.swift:131`（它用默认配置跑真实的 CLI，并断言方法为 rho）。自动选路在十进制位数不超过 24 或 bit 数不超过 80 时选 Pollard rho（`src/api/pipeline.cpp:1246-1250`），在 GNFS 之前就返回（`:4330-4338`）。所以现有测试覆盖不到后两个输入的回退。
+  - 改法与探测：$k\ge 20$ 回退消失，且不回退的行逐位不变，120 bit 夹具的矩阵身份不变；第 15 项取的 40 高于这个下限。现在矩阵里的 `schirokauer_degenerate_rows` 统计的是整段向量为 0 的行（`matrix_builder.hpp:412-414`、`:601-603`），回退只把对应的那一列置 0，它看不见，不能当探测器。
+- **完备性（低）。** 每个未分歧素点恰好漏掉一个局部特征。
+  - 两种情形：2 惰性时，漏掉的特征落在已有因子基与大素数列的张成里，加列零收益；2 分裂成 $m$ 个素点时缺 $m-1$ 位，由二次特征列补偿。
+  - 量级：生产路径固定开二次特征列，不少于 20 列（`include/gnfs/core/params.hpp:406-410`、`src/api/pipeline.cpp:3457-3460`），每个依赖因此失败的概率只有 $10^{-7}$ 到 $10^{-14}$ 量级。
+  - 要改的注释：$f\bmod 2$ 是完全幂时，回退列不是同态，只是噪声约束。有三处注释说过头了，要改：`include/gnfs/core/params.hpp:404` 写「QC primes ensure deps are squares in Z[α]」，`include/gnfs/linalg/matrix_builder.hpp:251` 写「Compensate: more QC primes to replace missing Schirokauer」，`include/gnfs/linalg/schirokauer.hpp:1140-1141` 写「fewer constraints but still correct」。
+
 ## 一、过去的方向脉络
 
 2026 年 3 月至 4 月的提交时间戳是按固定节距回放的，这两个月只有顺序可信。「回放」指这些提交的时间戳不是真实的工作时刻，而是按固定间隔生成的。修订时用 `git log --no-merges --format='%ci'` 按 3 至 5 月分段抽查：2026-04-15 当天依次是 16:18:45、15:30:00、14:41:15、13:52:30、13:03:45，2026-04-22 当天是 22:00:00、21:16:40、20:33:20、19:50:00，间隔固定；2026-05-11 当天是 19:23:15、19:15:49、19:11:25、19:05:09、18:54:14、18:51:12，间隔不规则。因此表内落在 3 至 4 月的行只能按提交顺序看，「4 月做内核性能」这类月内划分的可信度低于 5 月以后按日期的划分。
@@ -374,6 +422,8 @@
 - **依赖**：durable wave store 的决定。
 
 ## 五、需要你决定的事
+
+这 20 项已于 2026-11-28 决定，见[「2026-11-28 决定」](#2026-11-28-决定)一节；表格保留作当时的依据。
 
 | 编号 | 要定的事 | 关联方向 |
 |---|---|---|
