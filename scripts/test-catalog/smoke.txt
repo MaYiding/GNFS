@@ -98,6 +98,7 @@ test_schirokauer_deg4
 test_schirokauer_fastpoly
 test_schirokauer_strip
 test_schirokauer_parallel
+test_schirokauer_precision
 test_edge_cases
 test_squfof
 test_squfof_budget_corpus

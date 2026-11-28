@@ -45,6 +45,8 @@ Longest measured enabled tests:
 
 Do not classify a test from Release timing alone. Debug, sanitizer, coverage, Windows, and high CTest parallelism can change runtime by an order of magnitude.
 
+One test is a documented exception to the `fast` definition. `SchirokauerPrecisionE2E` is a complete forced-GNFS factorization of an 81-bit semiprime through `Pipeline::run()`, which the table places in `slow` by kind. It carries the `fast` label on purpose, so that all three Release PR lanes run it, Linux gcc on Ubuntu 24.04 and 22.04 and macOS clang, while a `slow` test without its own platform lane reaches the PR workflow only through the Linux Release deep gate. The exception is confined to that placement. CTest runs `fast` on Release builds only, so CI never exercises the Debug target of the tier on it, and a local `./scripts/test.sh module linalg` or `changed` run, which builds Debug by default, pays the Debug cost of the pipeline inside the 180-second budget. Keep the exception to this one test: a new real-pipeline test belongs in `slow` unless a cross-platform PR lane is its point, and then it needs a paragraph here.
+
 The four GNFS evidence ladder CTests also carry the `ladder` label, which is
 not a tier. `unit` and `full` select every CTest with `ctest -R '.*'` and pass
 `--label-exclude ladder`, so the ladder runs only where a job selects it by
@@ -161,8 +163,8 @@ odd-prime configurations separately from the GF(2) matrix prime policy.
 Its non-monic cases use cubics whose leading coefficient is congruent to 3
 modulo 4: one is unsplit modulo 2, the other splits into a linear and a
 quadratic factor. Companion-matrix reference values and hard-coded columns
-check both, and a matrix-builder case pins the count of degenerate Schirokauer
-rows.
+check both, and a matrix-builder case pins the counts of degenerate
+Schirokauer rows and precision fallbacks at the default precision.
 Two further matrix-builder cases cover the non-monic constraints. One checks
 the pair-parity column for leading coefficients 3, 7, and 12, its absence for
 1, 4, 9, and 36, the row value of merged relations, and that a merged row is
@@ -180,6 +182,28 @@ and the odd non-square cubic `7x^3 + 58x^2 + 213x + 143` with `m = 240` must
 factor 100160063. Each matrix must carry the pair-parity column, and the even
 fixture must also have no Schirokauer column. The Linux Release deep gate runs
 it.
+`SchirokauerPrecision` is an instant contract for the Schirokauer columns at
+the default exponent, `k = 40`. One exact `Integer` reference lifts the root
+of a linear factor to modulo 2^64 by Newton iteration and reads bit v+1 of
+a - b·r directly, with v = v₂(a - b·r). Another takes the companion-matrix
+power over exact integers for the unsplit path and for factors of degree two
+or more, on a quadratic and on a cubic factor; the lifted factors that serve
+as moduli are certified by an exact product first. Pairs that cover every
+valuation from 0 to 38, the range in which the default exponent is exact, must
+match the references with zero precision fallbacks, and a pair with v ≥ 39
+must report one fallback with a zero column at the default exponent while the
+reference column is 1 for half of them. The former default `k = 8` must report
+one fallback for every pair with v ≥ 7 while the reference column is 1 for
+half of them, pairs without a fallback must carry identical columns at both
+exponents, the unsplit columns hard-coded in `LinearAlgebra` for `k = 8` must
+hold unchanged, and stripping on the unsplit path must be exact up to 2^38 at
+the default exponent.
+`SchirokauerPrecisionE2E` is a `fast` end-to-end contract on the 25-digit
+semiprime 1869045589843040925386929, whose selected polynomial has a linear
+factor modulo 2. It is the one exception to the `fast` definition, recorded
+under Tier Rules. `Pipeline::run()` must recover both primes, select a
+polynomial with exactly one linear factor modulo 2, and report zero precision
+fallbacks. The test also prints the degenerate-row count of the matrix phase.
 The `KrylovCompressor` byte-codec and cross-platform
 `KrylovSequenceCompressed` contracts use Release-active checks for exact copy
 round trips, hostile header and index rejection, deterministic cache eviction,

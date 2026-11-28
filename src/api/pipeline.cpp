@@ -3590,10 +3590,10 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
         std::fprintf(stderr, "%s\n", buf);
     }
 
-    // Rows whose Schirokauer vector is all zero. The map returns all-zero
-    // columns when its ℓ-adic precision is insufficient, but a genuine kernel
-    // element yields the same vector, so read this as an upper bound on the
-    // number of precision fallbacks. Reported before any trimming.
+    // Rows whose Schirokauer vector is all zero. An element on which every
+    // column of the map vanishes gives the same vector as a precision fallback,
+    // so this count is a shape diagnostic, not a precision indicator. Reported
+    // before any trimming.
     {
         char degenerate_buf[128];
         std::snprintf(degenerate_buf, sizeof(degenerate_buf),
@@ -3601,6 +3601,30 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                       build_result.schirokauer_degenerate_rows, matrix_stats.num_rows);
         emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(degenerate_buf));
     }
+
+    // Precision fallbacks of the Schirokauer map: a - bα was known to too few
+    // ℓ-adic bits, so zero was written in place of its character. The count is
+    // a number of fallbacks, one per (a, b) pair and affected factor, not a
+    // number of rows. A fallback row carries a wrong constraint whenever the
+    // true column is 1; a dependency with an odd number of such rows is then
+    // not a square, and the square root rejects it. That costs work, never a
+    // wrong factor. Always report the count, and warn when it is not zero.
+    const auto emit_schirokauer_precision_fallbacks = [&](const char* suffix) {
+        const std::string fallbacks = std::to_string(build_result.schirokauer_precision_fallbacks);
+        const std::string rows = std::to_string(matrix_stats.num_rows);
+        emit_log(LogLevel::Info, Phase::LinearAlgebra,
+                 std::string("schirokauer precision fallbacks") + suffix + ": " + fallbacks +
+                     " in " + rows + " rows");
+        if (build_result.schirokauer_precision_fallbacks > 0) {
+            emit_log(LogLevel::Warn, Phase::LinearAlgebra,
+                     std::string("Schirokauer precision fallbacks") + suffix + ": " + fallbacks +
+                         " in " + rows +
+                         " rows; a fallback writes zero Schirokauer columns in place of the "
+                         "character, so its row carries a wrong constraint when that character "
+                         "is 1");
+        }
+    };
+    emit_schirokauer_precision_fallbacks("");
 
     if (solve_dependencies && !matrix_stats.has_excess()) {
         // BACKLOG #80 step 7 (2026-05-17): thin matrix (m ≤ n) now solved by
@@ -3715,6 +3739,9 @@ Pipeline::MatrixResult Pipeline::matrix_phase(relation::RelationReductionResult&
                           build_result.schirokauer_degenerate_rows, matrix_stats.num_rows);
             emit_log(LogLevel::Info, Phase::LinearAlgebra, std::string(degenerate_buf));
         }
+        // The trimmed matrix is rebuilt from scratch, so its fallback count is
+        // the one that describes the rows the solver sees.
+        emit_schirokauer_precision_fallbacks(" post-trim");
     }
 
     // This is the final full matrix handed to SGE and retained in

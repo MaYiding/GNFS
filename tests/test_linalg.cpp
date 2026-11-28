@@ -1817,8 +1817,8 @@ void test_schirokauer_non_monic_split_quadratic() {
                                 {41, 54, -82, 3}, 415, 171, true);
 }
 
-// Degenerate Schirokauer rows (all-zero map vectors) are counted in
-// MatrixBuildResult. Only the count is new; no matrix bit changes.
+// Degenerate Schirokauer rows (all-zero map vectors) and precision fallbacks
+// are counted in MatrixBuildResult. Only the counts are new; no matrix bit changes.
 void test_matrix_builder_counts_degenerate_schirokauer_rows() {
     std::cout << "Testing MatrixBuilder degenerate Schirokauer row count..." << std::endl;
 
@@ -1826,21 +1826,24 @@ void test_matrix_builder_counts_degenerate_schirokauer_rows() {
     using core::PolynomialContext;
 
     // 3x^3 + 55x^2 + 14x + 71 with m = 316: unsplit mod 2, same fixture as above.
+    // The builder uses the default Schirokauer precision, k = 40.
     const std::vector<Integer> coefficients = {Integer(71), Integer(14), Integer(55), Integer(3)};
     const PolynomialContext ctx(Integer("100160063"), coefficients, Integer(316));
     factor_base::FactorBase fb;
     std::vector<core::Relation> relations;
-    // Five relations with a non-zero Schirokauer vector.
+    // Five relations whose γ is a 2-adic unit.
     const std::pair<int64_t, uint64_t> regular_pairs[] = {
         {1, 2}, {3, 2}, {-5, 2}, {7, 16}, {-33, 64},
     };
     for (const auto& [a, b] : regular_pairs)
         relations.emplace_back(a, b);
-    // Precision fallback: γ = 256 - 128x has coefficients (0, 128) modulo 256.
-    // Stripping their common factor 2^7 leaves fewer than two ℓ-adic bits.
+    // γ = 256 - 128x = 2^7(2 - x). The unit part is known modulo 2^33 at k = 40,
+    // enough for the two bits the column needs, so these two rows keep the
+    // columns {0, 1, 1} of 2 - x. At k = 8 they fell back to zero columns.
     relations.emplace_back(256, 128);
-    // Both coefficients vanish modulo 2^8.
     relations.emplace_back(512, 256);
+    // The zero pair: γ ≡ 0 mod 2^40. Its unit part is unknown, so it is the one
+    // row without a Schirokauer bit and the one precision fallback.
     relations.emplace_back(0, 0);
 
     MatrixBuilderConfig config;
@@ -1870,8 +1873,10 @@ void test_matrix_builder_counts_degenerate_schirokauer_rows() {
     for (const auto* result : {&vector, &streaming}) {
         GNFS_TEST_CHECK(result->mapping.num_schirokauer_columns == 3);
         GNFS_TEST_CHECK(result->matrix.num_rows() == 8);
-        GNFS_TEST_CHECK(count_zero_rows(*result) == 3);
-        GNFS_TEST_CHECK(result->schirokauer_degenerate_rows == 3);
+        GNFS_TEST_CHECK(count_zero_rows(*result) == 1);
+        GNFS_TEST_CHECK(result->schirokauer_degenerate_rows == 1);
+        // One precision fallback: the zero pair.
+        GNFS_TEST_CHECK(result->schirokauer_precision_fallbacks == 1);
     }
     for (size_t row = 0; row < relations.size(); ++row) {
         GNFS_TEST_CHECK(vector.matrix.row(row).indices() == streaming.matrix.row(row).indices());
@@ -1881,12 +1886,20 @@ void test_matrix_builder_counts_degenerate_schirokauer_rows() {
     GNFS_TEST_CHECK(!vector.matrix.row(0).test(first));
     GNFS_TEST_CHECK(vector.matrix.row(0).test(first + 1));
     GNFS_TEST_CHECK(!vector.matrix.row(0).test(first + 2));
+    // Rows 5 and 6 recovered the columns of the unit 2 - x, {0, 1, 1}; row 7
+    // is the zero pair.
+    for (size_t row = 5; row <= 6; ++row) {
+        GNFS_TEST_CHECK(!vector.matrix.row(row).test(first));
+        GNFS_TEST_CHECK(vector.matrix.row(row).test(first + 1));
+        GNFS_TEST_CHECK(vector.matrix.row(row).test(first + 2));
+    }
 
     // Without Schirokauer columns there is nothing to count.
     config.include_schirokauer = false;
     const auto disabled = MatrixBuilder(config).build_with_qc(relations, fb, ctx);
     GNFS_TEST_CHECK(disabled.mapping.num_schirokauer_columns == 0);
     GNFS_TEST_CHECK(disabled.schirokauer_degenerate_rows == 0);
+    GNFS_TEST_CHECK(disabled.schirokauer_precision_fallbacks == 0);
 
     std::cout << "  Degenerate Schirokauer row count: PASSED" << std::endl;
 }

@@ -338,6 +338,7 @@ ALL_TEST_BINARIES=(
     test_schirokauer_fastpoly
     test_schirokauer_strip
     test_schirokauer_parallel
+    test_schirokauer_precision
     test_edge_cases
     test_integration
     test_squfof
@@ -361,6 +362,7 @@ ALL_TEST_BINARIES=(
     test_saturated_sub_simd
     test_regression_gate
     test_schirokauer_non_monic_e2e
+    test_schirokauer_precision_e2e
     test_non_monic_matrix_constraints_e2e
     test_gnfs_e2e_ladder
     test_stress
@@ -667,6 +669,7 @@ TEST_TIMEOUT=(
     test_schirokauer_fastpoly 10
     test_schirokauer_strip   10
     test_schirokauer_parallel 60
+    test_schirokauer_precision 10
     test_edge_cases          10
     test_integration         30
     test_sieve_basic         120
@@ -717,6 +720,7 @@ TEST_TIMEOUT=(
     test_bucket_sieve        120
     test_regression_gate     240
     test_schirokauer_non_monic_e2e 300
+    test_schirokauer_precision_e2e 180
     test_non_monic_matrix_constraints_e2e 300
     test_gnfs_e2e_ladder 1800
     test_gnfs_progressive    3600
@@ -933,6 +937,7 @@ TEST_TIER=(
     test_schirokauer_fastpoly "instant"
     test_schirokauer_strip   "instant"
     test_schirokauer_parallel "instant"
+    test_schirokauer_precision "instant"
     test_edge_cases          "instant"
     test_integration         "fast"
     test_sieve_basic         "fast"
@@ -983,6 +988,7 @@ TEST_TIER=(
     test_bucket_sieve        "fast"
     test_regression_gate     "gate"
     test_schirokauer_non_monic_e2e "slow"
+    test_schirokauer_precision_e2e "fast"
     test_non_monic_matrix_constraints_e2e "slow"
     test_gnfs_e2e_ladder "heavy"
     test_gnfs_progressive    "heavy"

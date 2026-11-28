@@ -538,12 +538,48 @@ struct GFPolyOps {
 /// Schirokauer map configuration
 struct SchirokaurConfig {
     std::vector<uint32_t> primes = {2}; // Primes for Schirokauer maps (usually just 2)
-    uint32_t exponent_k = 8;            // Exponent k (use ℓ^k), larger = more accurate.
-                                        // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2 bits of ℓ-adic
-                                        // precision after stripping v ℓ-factors.
-                                        // Inputs with strip_v ≥ k-1 (e.g. γ = a - b·r
-                                        // hitting Hensel root in split-degree-1 path)
-                                        // silently fall back to zero columns.
+    // Exponent k: the map is computed modulo ℓ^k.
+    //
+    // A column is ((u - 1)/ℓ) mod ℓ, where u is the unit part of γ = a - bα
+    // after its ℓ-part of valuation v is stripped, so u must be known modulo
+    // ℓ^2. The lift knows γ only modulo ℓ^k and u only modulo ℓ^(k-v). A pair
+    // with v > k - 2 therefore gets zero columns in place of its character.
+    // That is a precision fallback: the compute overloads that take a fallback
+    // counter count it, and the pipeline reports the count and warns when it is
+    // not zero.
+    //
+    // When f has a linear factor modulo 2, the column of that factor is bit
+    // v+1 of a - b·r, with r the root of the factor lifted modulo 2^k, and
+    // v = v₂(a - b·r) is unbounded: a coprime pair with a ≡ b·r (mod 2^v)
+    // exists for every v. With k = 8 every pair with v ≥ 7 lost that column.
+    // Among coprime pairs spread over a box that is about one pair in 192:
+    // two thirds of them have b odd, and one in 128 of those has v ≥ 7. The
+    // share among relations is not known; it is expected to be larger,
+    // because a norm divisible by 2^7 is easier to smooth. Half of the
+    // affected rows carry a wrong constraint. The unsplit path and the
+    // quadratic and higher-degree paths strip a common factor of a and b
+    // first, which a coprime pair does not have, so they never fall back.
+    //
+    // k = 40 gives every pair with v ≤ 38 its exact column, since v + 2 ≤ 40.
+    // A fallback needs v ≥ 39, that is a ≡ b·r (mod 2^39); with |a| and |b|
+    // at most 2^37 that leaves at most one value of a for each odd b, about a
+    // 2^-39 share of the pairs in that box. Such a pair is counted and
+    // reported.
+    //
+    // Platform cost: without __int128 (MSVC) mul_mod_u64 is a double-and-add
+    // loop with one step per bit of its second operand, so the Schirokauer
+    // part of the matrix build runs up to 40 steps per multiplication at
+    // k = 40 where it ran up to 8 at k = 8. The columns are the same on every
+    // platform; the cost was not measured.
+    //
+    // The cap is 62 for ℓ = 2: the hot paths reduce the signed a modulo
+    // (int64_t)ell_k, so precompute_for_prime rejects ℓ^k above INT64_MAX, and
+    // mul_mod_u64 is exact for every 64-bit operand below that limit. The
+    // default of 40 is meant for ℓ = 2 only. For a larger prime it is out of
+    // range, 3^40 already exceeds INT64_MAX, and the constructor throws
+    // std::overflow_error; a configuration with such a prime has to set a
+    // smaller exponent_k, at most 39 for ℓ = 3.
+    uint32_t exponent_k = 40;
     bool verbose = false;
 };
 
@@ -663,15 +699,27 @@ public:
 
 /// Schirokauer map computation for GNFS
 ///
-/// Schirokauer maps provide additional constraints to ensure the algebraic
-/// product is a square in the number field. For each prime ℓ, we get deg(f)
-/// additional columns in the matrix.
+/// The maps supply deg(f) additional columns per prime ℓ. Together with the
+/// factor-base, large-prime, sign, and quadratic-character columns they serve
+/// to make the algebraic product of a dependency a square in the number field;
+/// on their own they do not ensure that.
 ///
 /// For an element γ = a - bα in the number field K = Q(α):
 ///   λ_ℓ(γ) = (γ^(ℓ^d - 1) - 1) / ℓ mod ℓ
 ///   where d = deg(f) and ℓ^d - 1 is the group order |F_{ℓ^d}^×|
 ///
 /// For a product Πγ_i to be an ℓ-th power, we need Σλ_ℓ(γ_i) ≡ 0 mod ℓ
+///
+/// The matrix uses ℓ = 2 only. With that one prime, each unramified prime P
+/// above 2 leaves exactly one local character, (·, 2)_P, unchecked. When 2 is
+/// inert in K, the product formula puts that character in the span of the
+/// factor-base and large-prime columns. When 2 splits into m primes, m - 1
+/// bits are missing, and the quadratic-character columns that MatrixBuilder
+/// adds for every f that is reducible modulo 2 compensate for them. When f
+/// has repeated roots or is a perfect power modulo 2, the columns are
+/// incomplete or not a homomorphism (see factorize_and_setup): they are
+/// constraints without a guarantee behind them, and again the quadratic
+/// characters compensate.
 ///
 /// Precondition: no configured prime ℓ may divide the leading coefficient of
 /// f. Such an ℓ makes f degenerate modulo ℓ, and the columns computed for it
@@ -722,6 +770,23 @@ public:
     /// Fast computation for a single prime using fixed-size arrays
     [[nodiscard]] std::vector<uint32_t> compute_for_prime_fast(int64_t a, uint64_t b,
                                                                size_t prime_idx) const {
+        uint64_t ignored_fallbacks = 0;
+        return compute_for_prime_fast(a, b, prime_idx, ignored_fallbacks);
+    }
+
+    /// compute_for_prime_fast, additionally counting precision fallbacks.
+    ///
+    /// One fallback is counted for each factor whose columns are zero-filled
+    /// because the ℓ-adic precision of γ = a - bα is insufficient: γ ≡ 0 mod ℓ^k,
+    /// or a stripped valuation v with v + 2 > k. Such columns are not the
+    /// character of γ: zero replaces the true column, so the row carries a
+    /// wrong constraint whenever that column is 1. The count is a number of
+    /// fallbacks, not of rows. The structural zero padding of factors that
+    /// cannot be Hensel-lifted (f has repeated roots mod ℓ) is a property of
+    /// f, not a precision loss, and is not counted.
+    [[nodiscard]] std::vector<uint32_t>
+    compute_for_prime_fast(int64_t a, uint64_t b, size_t prime_idx,
+                           uint64_t& precision_fallbacks) const {
 
         if (prime_idx >= config_.primes.size()) {
             return std::vector<uint32_t>(degree_, 0);
@@ -731,10 +796,10 @@ public:
 
         if (!info.is_split) {
             // Standard case: f irreducible mod ℓ
-            return compute_unsplit(a, b, info);
+            return compute_unsplit(a, b, info, &precision_fallbacks);
         } else {
             // Split case: f = ∏ fᵢ mod ℓ
-            return compute_split(a, b, info);
+            return compute_split(a, b, info, &precision_fallbacks);
         }
     }
 
@@ -763,8 +828,10 @@ public:
     /// When gcd(a, b) is divisible by ℓ we strip the ℓ-part first, matching
     /// the split-case handling in compute_split. If γ ≡ 0 mod ℓ^k entirely,
     /// the Schirokauer map is undefined and we return zero columns.
-    [[nodiscard]] std::vector<uint32_t> compute_unsplit(int64_t a, uint64_t b,
-                                                        const PrimeInfo& info) const {
+    /// `precision_fallbacks` (optional) counts each zero-column return.
+    [[nodiscard]] std::vector<uint32_t>
+    compute_unsplit(int64_t a, uint64_t b, const PrimeInfo& info,
+                    uint64_t* precision_fallbacks = nullptr) const {
 
         int64_t a_mod = a % static_cast<int64_t>(info.ell_k);
         if (a_mod < 0)
@@ -775,6 +842,7 @@ public:
         uint64_t c0 = static_cast<uint64_t>(a_mod);
         uint64_t c1 = neg_b;
         if (c0 == 0 && c1 == 0) {
+            note_precision_fallback(precision_fallbacks);
             return std::vector<uint32_t>(degree_, 0);
         }
         uint32_t strip_v = 0;
@@ -784,9 +852,11 @@ public:
             ++strip_v;
         }
         // Precision after stripping is k-v bits in ℓ^k; (coeff-1)/ℓ mod ℓ needs k-v ≥ 2.
-        // When strip_v ≥ k-1, extracted bits are below noise floor — return zeros
-        // (symmetric with the all-zero short-circuit above).
+        // When strip_v ≥ k-1, the known bits of γ no longer determine the column,
+        // so the columns are not the character of γ: return zeros and count the
+        // fallback (symmetric with the all-zero short-circuit above).
         if (strip_v + 2 > config_.exponent_k) {
+            note_precision_fallback(precision_fallbacks);
             return std::vector<uint32_t>(degree_, 0);
         }
         c0 %= info.ell_k;
@@ -811,8 +881,10 @@ public:
     ///   If γ ≡ 0 mod (fᵢ, ℓ): strip ℓ-part to get unit before computing map
     ///   Compute unit^(ℓ^{dᵢ} - 1) mod (fᵢ, ℓ^k)
     ///   Extract (result - 1) / ℓ mod ℓ → dᵢ columns
-    [[nodiscard]] std::vector<uint32_t> compute_split(int64_t a, uint64_t b,
-                                                      const PrimeInfo& info) const {
+    /// `precision_fallbacks` (optional) counts each zero-filled factor, once.
+    [[nodiscard]] std::vector<uint32_t>
+    compute_split(int64_t a, uint64_t b, const PrimeInfo& info,
+                  uint64_t* precision_fallbacks = nullptr) const {
 
         std::vector<uint32_t> result;
         result.reserve(degree_);
@@ -836,7 +908,9 @@ public:
                 // the unit part. For non-units (γ ≡ 0 mod ℓ), the formula
                 // (γ^{ℓ-1} - 1)/ℓ is undefined, so we must strip ℓ first.
                 if (gamma == 0) {
-                    // γ ≡ 0 mod ℓ^k — degenerate, set Schirokauer to 0
+                    // γ ≡ 0 mod ℓ^k: the unit part is unknown, so the column is
+                    // set to 0 and counted as a precision fallback.
+                    note_precision_fallback(precision_fallbacks);
                     result.push_back(0);
                     continue;
                 }
@@ -846,10 +920,14 @@ public:
                     ++strip_v;
                 }
                 // gamma is now the unit part (coprime to ℓ), known mod ℓ^{k-v}.
-                // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2; otherwise the extracted bit is noise.
-                // Production split-degree-1 path can hit strip_v ≥ k-1 even with gcd(a,b)=1
-                // when γ = a - b·r aligns with the Hensel-lifted root r. Fallback to 0.
+                // (coeff-1)/ℓ mod ℓ needs k-v ≥ 2. The split-degree-1 path reaches
+                // strip_v ≥ k-1 for coprime (a, b) when γ = a - b·r is highly
+                // divisible by ℓ: unlike the other paths it does not strip a common
+                // factor of a and b. The true column is bit v+1 of γ, which the
+                // lift does not know, so the columns are set to 0 and the fallback
+                // is counted.
                 if (strip_v + 2 > config_.exponent_k) {
+                    note_precision_fallback(precision_fallbacks);
                     result.push_back(0);
                     continue;
                 }
@@ -889,6 +967,7 @@ public:
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
                 if (c0 == 0 && c1 == 0) {
+                    note_precision_fallback(precision_fallbacks);
                     result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
@@ -900,8 +979,10 @@ public:
                     ++strip_v;
                 }
                 // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
-                // Below that threshold the extracted bits are below noise floor.
+                // Below that threshold the known bits of γ no longer determine
+                // the columns.
                 if (strip_v + 2 > config_.exponent_k) {
+                    note_precision_fallback(precision_fallbacks);
                     result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
@@ -934,6 +1015,7 @@ public:
                 uint64_t c0 = static_cast<uint64_t>(a_mod);
                 uint64_t c1 = neg_b;
                 if (c0 == 0 && c1 == 0) {
+                    note_precision_fallback(precision_fallbacks);
                     result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
@@ -945,7 +1027,10 @@ public:
                     ++strip_v;
                 }
                 // Need k-v ≥ 2 bits of ℓ-adic precision for (coeff-1)/ℓ mod ℓ.
+                // Below that threshold the known bits of γ no longer determine
+                // the columns.
                 if (strip_v + 2 > config_.exponent_k) {
+                    note_precision_fallback(precision_fallbacks);
                     result.resize(result.size() + fi.degree); // zero-fill
                     continue;
                 }
@@ -965,7 +1050,9 @@ public:
             }
         }
 
-        // Pad to degree_ if needed (shouldn't happen if factorization is correct)
+        // Pad to degree_ if needed: factors with multiplicity > 1 cannot be
+        // Hensel-lifted and have no columns (see factorize_and_setup). This
+        // padding depends on f alone, so it is not a precision fallback.
         if (result.size() < degree_)
             result.resize(degree_);
 
@@ -981,11 +1068,20 @@ public:
     /// Compute Schirokauer map values as a flat vector (for matrix construction)
     /// Returns values for all primes concatenated
     [[nodiscard]] std::vector<uint32_t> compute_flat(int64_t a, uint64_t b) const {
+        uint64_t ignored_fallbacks = 0;
+        return compute_flat(a, b, ignored_fallbacks);
+    }
+
+    /// compute_flat, additionally adding the number of precision fallbacks of
+    /// this element to `precision_fallbacks`. The values are identical to those
+    /// of compute_flat(a, b); a fallback contributes zero columns.
+    [[nodiscard]] std::vector<uint32_t> compute_flat(int64_t a, uint64_t b,
+                                                     uint64_t& precision_fallbacks) const {
         std::vector<uint32_t> result;
         result.reserve(num_columns());
 
         for (size_t i = 0; i < config_.primes.size(); ++i) {
-            auto map = compute_for_prime_fast(a, b, i);
+            auto map = compute_for_prime_fast(a, b, i, precision_fallbacks);
             for (uint32_t v : map) {
                 result.push_back(v);
             }
@@ -995,6 +1091,13 @@ public:
     }
 
 private:
+    /// Record one precision fallback when the caller asked for the count.
+    static void note_precision_fallback(uint64_t* precision_fallbacks) noexcept {
+        if (precision_fallbacks != nullptr) {
+            ++*precision_fallbacks;
+        }
+    }
+
     const PolynomialContext& ctx_;
     Config config_;
     uint32_t degree_;
@@ -1086,9 +1189,11 @@ private:
 
     /// Factorize f mod ℓ using DDF+EDF and Hensel lift factors to mod ℓ^k.
     /// Handles three cases:
-    ///   1. f is a perfect power mod ℓ → zero-fill all Schirokauer columns
+    ///   1. f is a perfect power mod ℓ → fall back to the unsplit formula,
+    ///      which is not a homomorphism in this case
     ///   2. f is squarefree mod ℓ → standard multi-factor Hensel lift
-    ///   3. f has repeated roots mod ℓ → lift only multiplicity-1 factors, zero-pad rest
+    ///   3. f has repeated roots mod ℓ → lift only multiplicity-1 factors,
+    ///      zero-pad the columns of the others
     void factorize_and_setup(PrimeInfo& info, uint32_t ell,
                              const std::vector<uint64_t>& f_mod_ell) {
         // Factor the squarefree part of f mod ℓ into irreducible factors
@@ -1100,9 +1205,13 @@ private:
         }
 
         // Case 1: f is a perfect power mod ℓ — no squarefree factors found
-        // Fall back to unsplit mode: use γ^(ℓ^d-1) mod (f, ℓ^k).
-        // Zero-filling would remove all Schirokauer constraints from the matrix,
-        // causing ALL dependencies to give trivial factors.
+        // Fall back to the unsplit formula γ^(ℓ^d-1) mod (f, ℓ^k), so the
+        // matrix keeps its deg(f) columns. That formula is a homomorphism only
+        // for f irreducible mod ℓ. On a perfect power it is not: in an exact
+        // experiment on a perfect cube most products failed additivity. The
+        // columns are constraints without a guarantee behind them, and the
+        // quadratic-character columns compensate (MatrixBuilder adds them for
+        // every f that is reducible modulo 2).
         if (irred_factors.empty()) {
             info.is_split = false;
             info.factors.clear();
@@ -1137,8 +1246,11 @@ private:
         // Case 3: f has repeated roots mod ℓ (deg_sum < degree_ or single factor)
         // Only multiplicity-1 factors can be Hensel-lifted (coprime with cofactor).
         // Multiplicity > 1 factors share roots with their cofactor, making Hensel
-        // lifting impossible. Those columns are zero-padded — fewer constraints
-        // but still correct (just slightly less efficient).
+        // lifting impossible. The columns of those factors are zero-padded, so
+        // the primes above ℓ that they describe get no character at all. The
+        // columns that remain are valid where they are computed, but they are
+        // not enough to make a dependency an ℓ-th power, and the
+        // quadratic-character columns compensate for what is missing.
         info.factors.clear();
 
         GFPolyOps::Poly f_ell =
@@ -1189,9 +1301,9 @@ private:
             info.factors.push_back(fi);
         }
 
-        // If no multiplicity-1 factors survived, fall back to unsplit mode.
-        // Zero-padding all columns removes Schirokauer constraints entirely,
-        // which makes ALL dependencies trivial (same failure as Case 1).
+        // If no multiplicity-1 factors survived, fall back to the unsplit
+        // formula, as in Case 1: its columns are not a homomorphism here
+        // either, and the quadratic-character columns compensate.
         if (info.factors.empty()) {
             info.is_split = false;
             info.exponent = GFPolyOps::checked_power_u64(ell, degree_) - 1;
