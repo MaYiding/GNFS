@@ -410,6 +410,11 @@ never run there.
   failed factorization is recorded but does not turn the nightly run red. It
   uploads `build/Testing/Temporary/` on every outcome.
 
+All four CTests are enabled, because `ctest` offers no option to run a test
+that is marked `DISABLED`. The `unit` and `full` modes of `scripts/test.sh`
+run `ctest -R '.*'`, so they include the ladder, and the 50-digit rung alone
+can take up to its 14400-second timeout.
+
 `test_gnfs_e2e_ladder` factors one fixture per process through
 `Pipeline::run()`. It sets `GNFS_DISABLE_SIQS=1` and calls
 `Config::set_method(FactorizationMethod::GNFS)`, so neither the automatic SIQS
