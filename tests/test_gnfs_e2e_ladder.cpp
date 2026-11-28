@@ -64,7 +64,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <utility>
 #include <vector>
 
 using gnfs::api::Config;
@@ -258,22 +257,6 @@ private:
     bool running_ = false;
 };
 
-// Stops the recorder on every exit path, including a pipeline exception.
-class RecorderScope final {
-public:
-    explicit RecorderScope(StageRecorder& recorder) : recorder_(recorder) {
-        recorder_.start();
-    }
-    ~RecorderScope() {
-        recorder_.finish();
-    }
-    RecorderScope(const RecorderScope&) = delete;
-    RecorderScope& operator=(const RecorderScope&) = delete;
-
-private:
-    StageRecorder& recorder_;
-};
-
 // Counts the structured-route records that the log callback observes.
 class RouteEvidence final {
 public:
@@ -334,6 +317,17 @@ struct LadderRecord final {
     std::array<StageTiming, kStageCount> stages{};
     std::optional<uint64_t> peak_rss_bytes;
 };
+
+// Copies the measurements of a finished recorder into the record. Both exit
+// paths of run_ladder call it, so a run that throws keeps its timing evidence.
+void capture_measurements(LadderRecord& record, const StageRecorder& recorder,
+                          const RouteEvidence& evidence) {
+    record.wall_total_seconds = recorder.wall_total_seconds();
+    record.stages = recorder.stages();
+    record.structured_filter_records = evidence.structured_filter_records();
+    record.structured_matrix_records = evidence.structured_matrix_records();
+    record.peak_rss_bytes = gnfs::util::process_memory_snapshot().lifetime_peak_rss_bytes;
+}
 
 struct EnvironmentBinding final {
     const char* name;
@@ -537,7 +531,8 @@ void verify_fixture(const CliOptions& options) {
 }
 
 // Runs the forced-GNFS factorization and fills the measurement part of the
-// record. A pipeline exception still leaves the stage timings in the record.
+// record. A pipeline exception still leaves the stage timings, the
+// structured-route counts, and the peak RSS in the record.
 FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
     const Integer n(options.fixture->n);
     const EnvironmentGuards environment = freeze_ladder_environment(options.route);
@@ -554,19 +549,21 @@ FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
         [&recorder](const ProgressInfo& info) { recorder.observe(info); });
     pipeline.set_log_callback([&evidence](const LogEntry& entry) { evidence.observe(entry); });
 
-    std::optional<FactorResult> result;
-    {
-        const RecorderScope scope(recorder);
-        result.emplace(pipeline.run());
+    FactorResult result;
+    recorder.start();
+    try {
+        result = pipeline.run();
+    } catch (...) {
+        // Keep the timing evidence of the failed run in its record before the
+        // exception leaves.
+        recorder.finish();
+        capture_measurements(record, recorder, evidence);
+        throw;
     }
+    recorder.finish();
+    capture_measurements(record, recorder, evidence);
 
-    record.wall_total_seconds = recorder.wall_total_seconds();
-    record.stages = recorder.stages();
-    record.structured_filter_records = evidence.structured_filter_records();
-    record.structured_matrix_records = evidence.structured_matrix_records();
-    record.peak_rss_bytes = gnfs::util::process_memory_snapshot().lifetime_peak_rss_bytes;
-
-    const FactorStats& published = result->stats;
+    const FactorStats& published = result.stats;
     LadderStats& stats = record.stats;
     stats.executed_algorithm = published.executed_algorithm;
     stats.algorithms_executed = published.algorithms_executed;
@@ -582,10 +579,10 @@ FactorResult run_ladder(const CliOptions& options, LadderRecord& record) {
     stats.dependencies_found = published.dependencies_found;
     stats.dependencies_tried = published.dependencies_tried;
 
-    for (const Integer& factor : result->factors) {
+    for (const Integer& factor : result.factors) {
         record.factors.push_back(factor.to_string());
     }
-    return std::move(*result);
+    return result;
 }
 
 void verify_result(const CliOptions& options, const FactorResult& result,
