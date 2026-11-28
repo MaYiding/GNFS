@@ -57,6 +57,10 @@ elseif(MSVC)
     # WIN32_LEAN_AND_MEAN trims rarely-used windows.h surface.
     # _CRT_SECURE_NO_WARNINGS silences C4996 deprecation for fopen/strcpy etc.
     add_compile_options(/W4 /permissive- /Zc:__cplusplus /utf-8)
+    # /MP compiles the source files of one target on several processes. The
+    # core libraries hold most of the translation units, and a Visual Studio
+    # generator build compiles them one after another without it.
+    add_compile_options(/MP)
     add_compile_definitions(
         NOMINMAX
         WIN32_LEAN_AND_MEAN
